@@ -1,8 +1,8 @@
 ---
-// Navbar — glass nav that hides/shows on scroll
+// Navbar — visible desde el inicio (transparente), se vuelve sólida al scrollear
 ---
 
-<nav id="navbar" class="fixed top-0 left-0 w-full z-50 transition-all duration-500" style="transform: translateY(-100%)">
+<nav id="navbar" class="fixed top-0 left-0 w-full z-50 transition-all duration-500">
   <div class="max-w-6xl mx-auto flex items-center justify-between h-16 px-4">
     <a href="#" class="text-lg font-bold tracking-tight text-white">
       Nexus<span class="text-accent">Mind</span>
@@ -34,31 +34,32 @@
 </nav>
 
 <script>
-  const nav = document.getElementById('navbar')!;
-  const mobileBtn = document.getElementById('mobileMenuBtn')!;
-  const mobileNav = document.getElementById('mobileNav')!;
-  let lastScroll = 0;
+  const nav = document.getElementById('navbar');
+  const mobileBtn = document.getElementById('mobileMenuBtn');
+  const mobileNav = document.getElementById('mobileNav');
   let mobileOpen = false;
 
+  // Scroll handler: cambia fondo entre transparente y sólido
   window.addEventListener('scroll', () => {
-    const current = window.scrollY;
-    if (current > 200 && current > lastScroll) {
-      nav.style.transform = 'translateY(-100%)';
-    } else if (current > 200) {
-      nav.style.transform = 'translateY(0)';
+    const scrollY = window.scrollY;
+    if (scrollY > 60) {
+      nav.style.background = 'rgba(10, 10, 15, 0.85)';
+      nav.style.backdropFilter = 'blur(16px)';
+      nav.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
     } else {
-      nav.style.transform = 'translateY(-100%)';
+      nav.style.background = 'transparent';
+      nav.style.backdropFilter = 'none';
+      nav.style.borderBottom = 'none';
     }
-    lastScroll = current;
   });
 
-  mobileBtn.addEventListener('click', () => {
+  mobileBtn?.addEventListener('click', () => {
     mobileOpen = !mobileOpen;
     mobileNav.style.maxHeight = mobileOpen ? '300px' : '0';
   });
 
   // Close mobile nav on link click
-  mobileNav.querySelectorAll('a').forEach(a => {
+  mobileNav?.querySelectorAll('a').forEach(a => {
     a.addEventListener('click', () => {
       mobileOpen = false;
       mobileNav.style.maxHeight = '0';
