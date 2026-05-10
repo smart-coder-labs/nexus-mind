@@ -250,7 +250,7 @@ GET  /v1/context/project    ← Obtener contexto del proyecto
 | **Latency** | <50ms policy check, <200ms memory search |
 | **Security** | SOC2 Type II, encryption at rest/transit, AuthN/AuthZ granular |
 | **Identity** | SSO (SAML/OIDC/SCIM), device fingerprint, tool identity |
-| **Authorization** | RBAC híbrido + ABAC, Rego policies, permisos granulares |
+| **Authorization** | Roles 100% customizables (RBAC + ABAC), Rego policies, permisos granulares, herencia entre roles, overrides por proyecto |
 | **Memory Isolation** | Proyecto + sensibilidad + herramienta + rol |
 | **Data Residency** | US, EU, APAC; on-prem option |
 | **Audit Trails** | Inmutables, retention configurable |

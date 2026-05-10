@@ -1,7 +1,7 @@
 # NexusMind — Authentication & Authorization Specification
 
 > **Documento**: AUTH_SPEC.md
-> **Versión**: 1.0
+> **Versión**: 1.1
 > **Fecha**: Mayo 2026
 > **Propósito**: Sistema de identidad, autenticación, autorización y aislamiento de memoria para el control plane. El mecanismo que responde a: ¿quién se conecta? ¿desde dónde? ¿qué puede hacer? ¿qué memoria puede leer?
 
@@ -12,7 +12,8 @@
 1. **Identity-first** — Toda interacción con NexusMind está ligada a una identidad verificable. No hay acceso anónimo.
 2. **Zero Trust** — Cada request se autentica y autoriza individualmente. No hay sesiones largas ni confianza implícita.
 3. **Granularidad por herramienta** — Un usuario no tiene un permiso global. Tiene permisos por herramienta, por modelo, por proyecto.
-4. **Aislamiento de memoria** — La memoria es del proyecto/equipo, no del individuo. Pero el acceso está controlado por roles.
+4. **Roles 100% customizables** — No hay roles fijos. Cada empresa define sus propios roles con los permisos exactos que necesita. Los roles predefinidos son solo templates de arranque.
+5. **Aislamiento de memoria** — La memoria es del proyecto/equipo, no del individuo. Pero el acceso está controlado por roles.
 5. **Audit obligatorio** — Cada decisión de auth se registra. Cada acceso a memoria se registra. Quién, cuándo, desde dónde, qué vió.
 6. **BYO IdP** — No construimos otro identity provider. Integramos con los existentes (SSO, SAML, OIDC, SCIM).
 
@@ -184,29 +185,71 @@ Para developers que conectan su CLI/IDE directamente.
 
 ## 4. Autorización (Authorization)
 
-### 4.1 Modelo: RBAC + ABAC
+### 4.1 Modelo: RBAC + ABAC + Custom Roles
 
-NexusMind usa un modelo híbrido:
+NexusMind usa un modelo híbrido donde **los roles son 100% customizables** por cada empresa:
 
-- **RBAC** (Role-Based Access Control): Roles predefinidos con permisos agrupados
+- **Custom RBAC**: Cada empresa crea los roles que necesita. No hay roles fijos ni obligatorios.
 - **ABAC** (Attribute-Based Access Control): Políticas finas basadas en atributos del usuario, herramienta, proyecto, ubicación, etc.
+- **Herencia opcional**: Los roles pueden heredar permisos de otros roles (ej: "senior-dev hereda de junior-dev más estos 3 permisos extra").
 
-### 4.2 Roles Predefinidos
+### 4.2 Roles: 100% Customizables
 
-| Rol | Acceso a Memoria | Políticas | Audit | Admin |
-|---|---|---|---|---|
-| **Super Admin** | Total (todos los proyectos) | Crear/editar/eliminar | Total | Full |
-| **Security Officer** | Total (read-only) | Crear/editar/eliminar | Total | Read-only |
-| **Project Admin** | Su proyecto + cross-project configurado | Crear/editar en su proyecto | Su proyecto | Parcial |
-| **Developer Senior** | Su proyecto (read/write) | Read-only | Sus acciones | No |
-| **Developer Junior** | Su proyecto (read, write limitado) | No | Sus acciones | No |
-| **Viewer** | Su proyecto (read-only) | Read-only | Sus acciones | No |
-| **Tool / Agent** | Según scope de API key | Evaluación via API | Sus actions | No |
-| **Auditor** | Read-only cross-project | No | Read-only | No |
+Los roles que aparecen en este documento son **templates de arranque** — ejemplos que se instalan por defecto pero que cada empresa puede modificar, eliminar o ignorar por completo.
 
-### 4.3 Permisos Granulares
+**Cada empresa puede:**
+- Crear roles con nombres propios (ej: "Ingeniero ML", "DevOps Lead", "Contractor", "Intern")
+- Asignar permisos exactos a cada rol (selección granular de cada permiso)
+- Heredar permisos de otro rol y extenderlos
+- Clonar un rol existente y ajustarlo
+- Importar/exportar roles vía YAML (git-ops friendly)
+- Versionar roles (cada cambio queda registrado en audit trail)
+- Tener roles distintos por proyecto (un rol en proyecto A puede tener distintos permisos que el mismo rol en proyecto B)
 
-Cada permiso se define como: `resource:action`
+### 4.3 Definición de un Rol (YAML)
+
+Cada rol se define como un recurso versionado en YAML:
+
+```yaml
+apiVersion: nexusmind.io/v1
+kind: Role
+metadata:
+  name: ml-engineer
+  displayName: "ML Engineer"
+  description: "Ingeniero de machine learning con acceso a datos de entrenamiento"
+  color: "#8b5cf6"   # Color en Admin Console
+  icon: "🧠"
+  extends: []         # Puede heredar de otro rol
+  enterprise: true    # Solo disponible en plan Enterprise
+spec:
+  permissions:
+    # Memoria
+    - resource: memory
+      actions: [read, write, search]
+      constraints:
+        max_sensitivity: sensitive    # No puede ver 'critical'
+        projects: ["ml-models", "research", "inference"]
+    
+    # Políticas
+    - resource: policy
+      actions: [read]
+      constraints:
+        policies: ["ml-training-rules", "data-governance"]
+    
+    # Audit — solo sus propias acciones
+    - resource: audit
+      actions: [read]
+      constraints:
+        scope: self_only
+    
+    # Admin — ninguno
+    
+  abac_overrides: []  # ABAC rules específicas para este rol
+```
+
+### 4.4 Catálogo de Permisos Disponibles
+
+Cada permiso se define como: `resource:action`. Una empresa puede asignar **cualquier combinación** de estos a un rol:
 
 | Permiso | Descripción |
 |---|---|
@@ -214,53 +257,193 @@ Cada permiso se define como: `resource:action`
 | `memory:write` | Escribir en memoria |
 | `memory:delete` | Eliminar entradas de memoria |
 | `memory:search` | Buscar en memoria |
-| `policy:read` | Ver políticas |
+| `memory:export` | Exportar memoria a JSON/CSV |
+| `policy:read` | Ver políticas existentes |
 | `policy:create` | Crear nuevas políticas |
 | `policy:update` | Modificar políticas existentes |
 | `policy:delete` | Eliminar políticas |
 | `policy:evaluate` | Evaluar una request contra políticas |
+| `policy:export` | Exportar políticas a YAML |
 | `audit:read` | Ver audit trails |
-| `audit:export` | Exportar audit trails |
-| `admin:users` | Gestionar usuarios |
-| `admin:tools` | Registrar/revocar herramientas |
-| `admin:settings` | Configuración global |
-| `admin:billing` | Facturación |
+| `audit:export` | Exportar audit trails a CSV/PDF |
+| `audit:delete` | Forzar eliminación de registros (solo compliance officer) |
+| `role:read` | Ver roles definidos |
+| `role:create` | Crear nuevos roles |
+| `role:update` | Modificar roles existentes |
+| `role:delete` | Eliminar roles |
+| `admin:users` | Gestionar usuarios (invitar, suspender, eliminar) |
+| `admin:tools` | Registrar/revocar herramientas del ecosistema |
+| `admin:projects` | Crear/eliminar proyectos |
+| `admin:settings` | Configuración global de la instancia |
+| `admin:billing` | Ver y gestionar facturación |
+| `admin:audit` | Configurar políticas de retención de audit |
 
-### 4.4 Atributos ABAC
+### 4.5 Restricciones por Permiso (Constraints)
 
-Además del rol, las políticas pueden considerar:
-
-| Atributo | Ejemplos |
-|---|---|
-| **Usuario** | `user.department == "engineering"` |
-| **Herramienta** | `tool.id == "cursor"` |
-| **Modelo** | `model.provider == "openai"` |
-| **Proyecto** | `project.tier == "critical"` |
-| **Ubicación** | `request.ip_country == "ES"` |
-| **Horario** | `request.hour BETWEEN 9 AND 18` |
-| **Datos** | `prompt.contains("PII") == true` |
-| **Costo** | `request.estimated_cost < 0.05` |
-| **Dispositivo** | `device.is_managed == true` |
-
-### 4.5 Policy Examples
+Cada permiso puede tener restricciones adicionales:
 
 ```yaml
-# Ejemplo 1: Solo seniors pueden escribir memoria sensible
+# Ejemplo: Solo lectura de memoria hasta nivel 'internal', solo en proyecto X
+memory:read:
+  max_sensitivity: internal    # No puede leer sensitive o critical
+  projects: ["acme-webapp"]   # Solo este proyecto
+  tools: ["cursor"]            # Solo desde esta herramienta
+  time_window:                 # Solo en horario laboral
+    from: "09:00"
+    to: "18:00"
+    timezone: "Europe/Madrid"
+  rate_limit: 100              # Máximo 100 requests/minuto
+  require_mfa: true            # Requiere MFA para usar este permiso
+```
+
+### 4.6 Herencia de Roles
+
+Los roles pueden heredar permisos de otros roles, permitiendo crear jerarquías sin duplicar definiciones:
+
+```yaml
 apiVersion: nexusmind.io/v1
-kind: Policy
+kind: Role
 metadata:
-  name: memory-sensitive-write
+  name: senior-dev
+  extends: ["junior-dev"]
 spec:
-  match:
-    action: memory:write
-    tags: ["PII", "credentials", "security"]
-  rules:
-    - allow:
-        roles: ["super-admin", "security-officer", "developer-senior"]
-      deny:
-        roles: ["*"]
-  on_violation: block_and_alert
-  audit: always
+  permissions:
+    # Hereda todos los permisos de junior-dev automáticamente
+    # Solo añade los extra:
+    - resource: memory
+      actions: [delete]
+      constraints:
+        max_sensitivity: sensitive
+    - resource: policy
+      actions: [read, evaluate]
+```
+
+La herencia es **transitiva** y **aditiva**: senior-dev tiene todo lo de junior-dev + lo suyo. No se puede quitar un permiso heredado (para eso se crea un rol desde cero).
+
+### 4.7 Roles por Proyecto
+
+Un mismo rol puede tener **permisos distintos en proyectos distintos**:
+
+```yaml
+# Ana tiene rol "developer" en dos proyectos, pero con distinto acceso
+ana@acme.com:
+  project_memberships:
+    - project: acme-payments
+      role: developer
+      # En payments, developer puede leer hasta 'sensitive'
+      permissions_overrides:
+        memory:read:
+          max_sensitivity: sensitive
+    
+    - project: acme-webapp
+      role: developer
+      # En webapp, developer solo ve 'public'
+      permissions_overrides:
+        memory:read:
+          max_sensitivity: public
+```
+
+### 4.8 Roles vs. ABAC
+
+Los roles definen **qué puede hacer** un usuario. ABAC define **bajo qué condiciones**. Ambos se evalúan en conjunto:
+
+```
+Ejemplo:
+- Ana tiene rol "developer" → puede escribir memoria hasta 'sensitive'
+- ABAC: request proviene de Nigeria (location no esperada)
+- Resultado: DENIED (ABAC override)
+```
+
+Los ABAC overrides se pueden definir globalmente (para toda la empresa) o por rol.
+
+### 4.9 Templates de Arranque
+
+NexusMind incluye estos templates que las empresas pueden usar como base o ignorar:
+
+| Template | Permisos incluidos | Uso típico |
+|---|---|---|
+| **Super Admin** | Todos los permisos | Administración global |
+| **Security Officer** | audit:*, policy:*, memory:read (todo), admin:audit | Compliance y seguridad |
+| **Project Admin** | memory:*, policy:read, audit:read (su proyecto), admin:users | Líder técnico de proyecto |
+| **Developer** | memory:read/write/search (hasta sensitive), policy:read | Ingeniero senior |
+| **Junior Developer** | memory:read/search (hasta internal) | Ingeniero en formación |
+| **Viewer** | memory:read/search (hasta public) | Stakeholders, PMs |
+| **Tool / Agent** | memory:read/write (según key scope), policy:evaluate | Agentes autónomos |
+| **Auditor** | audit:read/export (cross-project) | Auditores externos |
+
+**Las empresas pueden:**
+- Usarlos tal cual
+- Modificarlos (añadir/remover permisos)
+- Borrarlos y crear los suyos desde cero
+- Tener múltiples roles con el mismo nombre pero distinta configuración
+
+### 4.10 Gestión de Roles (Admin Console)
+
+Desde la Admin Console, un usuario con permiso `role:create` puede:
+
+1. **Crear rol**: Nombre + descripción + selección granular de permisos
+2. **Clonar rol**: Duplicar un rol existente como punto de partida
+3. **Editar rol**: Añadir/remover permisos. Audit trail registra cada cambio.
+4. **Versionar rol**: Cada edición crea una nueva versión. Se puede revertir.
+5. **Exportar rol**: Descargar como YAML (git-ops)
+6. **Importar rol**: Subir YAML (ideal para infraestructura como código)
+7. **Simular rol**: Ver qué permisos tendría un usuario antes de asignárselo
+7. **Previsualizar impacto**: "¿A quiénes afecta si cambio este permiso?" — muestra lista de usuarios que perderían/ganarían acceso
+
+### 4.11 API de Roles
+
+```
+GET    /v1/roles                    → Listar roles definidos
+POST   /v1/roles                    → Crear nuevo rol
+GET    /v1/roles/:id                → Ver detalle de rol
+PUT    /v1/roles/:id                → Actualizar rol
+DELETE /v1/roles/:id                → Eliminar rol (solo si no tiene miembros)
+POST   /v1/roles/:id/clone         → Clonar rol
+POST   /v1/roles/:id/simulate      → Simular qué permisos otorga
+GET    /v1/roles/:id/members       → Usuarios con este rol
+GET    /v1/roles/:id/versions      → Historial de versiones
+POST   /v1/roles/:id/rollback      → Revertir a versión anterior
+
+GET    /v1/permissions             → Catálogo completo de permisos disponibles
+```
+
+### 4.12 Base de Datos (esquema roles)
+
+```sql
+CREATE TABLE roles (
+  id TEXT PRIMARY KEY,           -- UUID
+  org_id TEXT NOT NULL,           -- Organización a la que pertenece
+  name TEXT NOT NULL,             -- Nombre interno (ej: "ml-engineer")
+  display_name TEXT NOT NULL,     -- Nombre visible (ej: "ML Engineer")
+  description TEXT,
+  extends TEXT[],                 -- IDs de roles de los que hereda
+  color TEXT,                     -- Color para UI
+  icon TEXT,                      -- Emoji o icon path
+  yaml_definition TEXT NOT NULL,  -- Definición completa en YAML
+  version INT NOT NULL DEFAULT 1,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  is_template BOOLEAN NOT NULL DEFAULT false, -- Template de arranque
+  created_by TEXT REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE role_versions (
+  id TEXT PRIMARY KEY,
+  role_id TEXT REFERENCES roles(id),
+  version INT NOT NULL,
+  yaml_definition TEXT NOT NULL,
+  change_summary TEXT,
+  changed_by TEXT REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE project_role_overrides (
+  project_id TEXT REFERENCES projects(id),
+  role_id TEXT REFERENCES roles(id),
+  permission_overrides JSONB,  -- Permisos que se modifican para este proyecto
+  PRIMARY KEY (project_id, role_id)
+);
 ```
 
 ```yaml

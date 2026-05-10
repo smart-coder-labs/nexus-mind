@@ -15,7 +15,7 @@ Enterprise AI Platform documentation. 9 documents covering product, market, arch
 | 7 | [COMPETITIVE_MATRIX.md](./COMPETITIVE_MATRIX.md) | Head-to-head comparison vs 10+ competitors |
 | 8 | [RISK_ANALYSIS.md](./RISK_ANALYSIS.md) | Risk register, mitigation strategies, compliance roadmap |
 | 9 | [ROADMAP.md](./ROADMAP.md) | 4-phase roadmap with milestones and metrics |
-| 10 | [AUTH_SPEC.md](./AUTH_SPEC.md) | Authentication, authorization, memory isolation, SSO, RBAC, policies |
+| 10 | [AUTH_SPEC.md](./AUTH_SPEC.md) | Authentication, authorization (roles 100% custom), memory isolation, SSO, RBAC, ABAC |
 
 ## Quick Links
 
