@@ -1,5 +1,5 @@
 ---
-// Waitlist form with interest chips
+// Waitlist form with interest chips — Supabase-ready with localStorage fallback
 ---
 
 <section id="waitlist" class="py-20 px-4">
@@ -46,7 +46,9 @@
           <label class="block text-sm font-medium text-slate-300 mb-1.5">Mensaje (opcional)</label>
           <textarea id="wMessage" rows="3" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-accent/50 transition-colors duration-200 resize-none" placeholder="Cuéntanos sobre tu stack actual..."></textarea>
         </div>
-        <button type="submit" class="w-full bg-accent hover:bg-blue-500 text-white py-3.5 rounded-xl text-base font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.01] active:scale-[0.98]">
+        <!-- Hidden status message -->
+        <div id="formStatus" class="hidden text-sm text-center"></div>
+        <button type="submit" id="submitBtn" class="w-full bg-accent hover:bg-blue-500 text-white py-3.5 rounded-xl text-base font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.01] active:scale-[0.98]">
           Join the Waitlist
         </button>
         <p class="text-xs text-slate-600 text-center">No spam. Sin compromiso. Te avisaremos cuando tengamos slots disponibles.</p>
@@ -85,12 +87,15 @@
     chip.addEventListener('click', () => chip.classList.toggle('selected'));
   });
 
-  // Form submit
-  document.getElementById('waitlistForm')?.addEventListener('submit', (e) => {
+  // Form submit — Supabase first, localStorage fallback
+  document.getElementById('waitlistForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+
     const name = document.getElementById('wName').value.trim();
     const email = document.getElementById('wEmail').value.trim();
     const company = document.getElementById('wCompany').value.trim();
+    const submitBtn = document.getElementById('submitBtn');
+    const status = document.getElementById('formStatus');
 
     if (!name || !email || !company) {
       window.showToast?.('Completa todos los campos requeridos.', true);
@@ -104,16 +109,40 @@
       size: document.getElementById('wSize').value,
       interests: [...document.querySelectorAll('.chip.selected')].map(c => c.getAttribute('data-value')),
       message: document.getElementById('wMessage').value.trim(),
-      timestamp: new Date().toISOString()
     };
 
-    const existing = JSON.parse(localStorage.getItem('nexusmind_waitlist') || '[]');
-    existing.push(entry);
-    localStorage.setItem('nexusmind_waitlist', JSON.stringify(existing));
+    // Disable button and show loading
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = 'Enviando...';
+    status.className = 'text-sm text-center text-slate-400';
+    status.textContent = 'Guardando tu registro...';
+
+    // Submit via Supabase (with localStorage fallback)
+    if (window.__nexusmindSubmit) {
+      const result = await window.__nexusmindSubmit(entry);
+      if (result.fallback === 'localStorage') {
+        status.textContent = '✓ Guardado localmente (Supabase no configurado)';
+      } else {
+        status.textContent = '✓ Registro guardado en la base de datos';
+      }
+    } else {
+      // Pure localStorage fallback
+      const existing = JSON.parse(localStorage.getItem('nexusmind_waitlist') || '[]');
+      existing.push({ ...entry, timestamp: new Date().toISOString() });
+      localStorage.setItem('nexusmind_waitlist', JSON.stringify(existing));
+      status.textContent = '✓ Guardado localmente';
+    }
 
     window.confetti?.();
     window.showToast?.("You're on the list! Te avisaremos cuando tengamos slots.");
     document.getElementById('waitlistForm').reset();
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+
+    // Re-enable
+    setTimeout(() => {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = 'Join the Waitlist';
+      status.className = 'hidden';
+    }, 3000);
   });
 </script>
