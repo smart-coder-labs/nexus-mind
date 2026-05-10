@@ -17,6 +17,14 @@ Enterprise AI Platform documentation. 9 documents covering product, market, arch
 | 9 | [ROADMAP.md](./ROADMAP.md) | 4-phase roadmap with milestones and metrics |
 | 10 | [AUTH_SPEC.md](./AUTH_SPEC.md) | Authentication, authorization (roles 100% custom), memory isolation, SSO, RBAC, ABAC |
 
+## Architecture Decision Records
+
+→ [docs/adr/](./adr/)
+
+| # | Título | Estado |
+|---|--------|--------|
+| [ADR-001](./adr/ADR-001.md) | Lenguaje de Implementación del Core de Memoria | Aceptado |
+
 ## Quick Links
 
 - [Landing Page](../apps/landing/)
