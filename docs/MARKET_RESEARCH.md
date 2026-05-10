@@ -1,215 +1,145 @@
-# NexusMind — Estudio de Mercado
+# NexusMind — Market Research
 
 > **Documento**: MARKET_RESEARCH.md
-> **Versión**: 1.0
+> **Versión**: 2.0
 > **Fecha**: Mayo 2026
-> **Propósito**: Análisis del mercado de plataformas AI enterprise, competidores, tendencias y gaps de oportunidad para NexusMind.
+> **Propósito**: Análisis del mercado de control planes AI enterprise — un espacio emergente donde no se compite con herramientas AI, sino que se les da gobierno, memoria y orquestación.
 
 ---
 
-## 1. Resumen Ejecutivo
+## 1. El Problema de Mercado (Reformulado)
 
-NexusMind apunta al mercado convergente de **AI Coding Assistants**, **Agent Orchestration**, **Memory Systems** y **Enterprise AI Platforms**. El mercado total direccionable (TAM) se estima en **$14.21B (2024)** con proyección de **$251B para 2033** (CAGR 38.1%). El subsegmento de Agentic AI Orchestration & Memory crece a **CAGR 35.32%**, alcanzando **$28.45B en 2030**.
+El mercado de herramientas AI para developers está **saturado y fragmentado**. Hay decenas de herramientas excelentes: Claude Code, Cursor, Copilot, OpenCode, Cline, Windsurf, CodeGPT, y muchas más. Cada una es buena en lo suyo.
 
-No existe actualmente una plataforma unificada que combine las cuatro capacidades esenciales —coding assistant, agent orchestration, memoria persistente y gobierno enterprise— en un solo producto. Este gap representa la oportunidad central de NexusMind.
+**El problema no es que falten herramientas. Es que sobran, están aisladas, y nadie las gobierna.**
 
----
+### Síntomas del Cliente
 
-## 2. Tamaño del Mercado
-
-| Segmento | 2024 | 2025 (est.) | 2030 (proy.) | CAGR |
-|---|---|---|---|---|
-| AI Platform Market (total) | $14.21B | $19.6B | $251B (2033) | 38.1% |
-| Enterprise AI Platform | $20.65B | $27.5B | $120B (2035) | ~21% |
-| Agentic AI Orchestration & Memory | $4.1B | $6.27B | $28.45B | 35.32% |
-| AI Orchestration | $11.02B | $13.5B | $30.23B | 22.3% |
-| Enterprise Generative AI | $4.1B | $5.5B | ~$18B | 33.2% |
-
-### 2.1 Crecimiento Proyectado (2025-2033)
-
-```
-           AI Platform Market Growth ($B)
-           
-$300 │                                              ● $251B
-     │                                           ●
-$250 │                                        ●
-     │                                     ●
-$200 │                                  ●
-     │                               ●
-$150 │                            ●
-     │                         ●
-$100 │                      ●
-     │                   ●
-$50  │             ●
-     │   ● $14.21B
-$0   └────────────────────────────────────────────
-     2024  2026  2028  2030  2032  2033
-```
-
----
-
-## 3. Competidores Directos
-
-### 3.1 AI Coding Assistants
-
-| Competidor | Pricing | Usuarios Pagos | Fortaleza Clave | Debilidad Clave |
-|---|---|---|---|---|
-| **GitHub Copilot** | $10/mo Pro, $39/mo Business, $46.8k/año/100devs | 1.8M+ | Integración GitHub, ecosistema Microsoft | Solo código, sin agentes ni memoria |
-| **Cursor** | $20/mo Pro, $40/mo Business, $48k/año/100devs | ~500K (est.) | UX superior, multi-file editing | Sin enterprise features, sin orquestación |
-| **Windsurf** | $15/mo Pro, $30/mo Team, $60+/mo Enterprise | ~200K (est.) | Agent mode, cascading actions | Limitado a código, ecosistema cerrado |
-| **Tabnine** | $12/mo Pro, $39/mo Enterprise, ~$46.8k/año/100devs | ~1M (est.) | On-prem opción, seguridad | UX básico, sin memoria |
-| **Amazon Q Developer** | $19/mo | Tied a AWS | Integración AWS, seguridad AWS | Vendor lock-in AWS, limitado |
-| **Replit** | $20/mo Pro, $35/mo Teams | ~250K (est.) | Deploy integrado, IDE cloud | No enterprise, sin agentes multi-propósito |
-
-### 3.2 Agent Orchestration & Memory
-
-| Competidor | Tipo | Fortaleza | Debilidad |
-|---|---|---|---|
-| **Microsoft Copilot Studio** | Enterprise | Integración M365, gobierno Azure | Vendor lock-in, caro |
-| **Google Vertex AI Agent Builder** | Enterprise | Memory Bank, Gemini, escalabilidad | Complejidad, costo |
-| **IBM watsonx Orchestrate** | Enterprise | Compliance IBM, on-prem | UX legacy, innovación lenta |
-| **Salesforce Agentforce** | Enterprise | Data CRM, ecosistema Salesforce | Limitado a CRM |
-| **UiPath AI Agents** | Enterprise | RPA + AI, automatización | Foco en procesos, no en desarrollo |
-| **CrewAI** | Open-source | Flexibilidad, multi-agent | Sin enterprise, sin soporte |
-| **AutoGen (Microsoft)** | Open-source | Investigación Microsoft, multi-agent | Curva de aprendizaje, inestable |
-| **LangGraph (LangChain)** | Open-source | DAG workflows, ecosistema LangChain | Complejidad, sin UI |
-| **Mem0 AI** | Memory layer | Memoria persistente dedicada | Solo memoria, sin agentes |
-| **Sana (Workday)** | Enterprise | AI learning platform | Nicho learning, caro |
-
----
-
-## 4. Tendencias Clave del Mercado
-
-### 4.1 Tendencias Tecnológicas
-
-1. **Cloud-native agent-ops stacks** — Los CIOs están adoptando stacks completos de operaciones de agentes en cloud para gobernar, monitorear y escalar agentes de IA.
-
-2. **Convergencia vector DB + orchestration** — Las bases de datos vectoriales se están fusionando con APIs de orquestación para crear capas de memoria turnkey.
-
-3. **Multi-agent pilots → producción** — En 2025, los pilotos multi-agente están migrando de POC a producción. Se espera que **60% de las empresas** migren al menos un piloto a producción este año.
-
-4. **Reference architectures de big-tech** — Google, Microsoft y AWS publican arquitecturas de referencia que reducen el riesgo de adopción enterprise.
-
-5. **Compliance mandates para LLM** — Regulaciones emergentes requieren audit trails inmutables, data lineage y explicabilidad para sistemas de IA.
-
-6. **Open protocols (A2A, MCP)** — El protocolo Agent-to-Agent (A2A) de Google y Model Context Protocol (MCP) de Anthropic permiten meshes de agentes plug-and-play.
-
-### 4.2 Tendencias de Adopción
-
-- **60%** de empresas migrarán al menos un piloto multi-agente a producción en 2025
-- **15-25%** mejora en velocidad de entrega de features con AI coding assistants
-- **30-40%** incremento en cobertura de tests automatizados
-- **2-3 horas/semana** de ahorro promedio por developer con herramientas AI
-- **78%** de empresas planean invertir en agentic AI en los próximos 12 meses
-
-### 4.3 Tendencias de Pricing
-
-- **Per-seat pricing domina** pero con overages por usage-based (tokens, ejecuciones de agentes)
-- **Tiered plans** con features progresivas (dev → team → enterprise)
-- **Free tiers** para adopción PLG (product-led growth)
-- **Custom enterprise pricing** para on-prem, SOC2, SLAs
-
----
-
-## 5. Gaps de Mercado (Oportunidad para NexusMind)
-
-### Gap 1: Plataforma Unificada Ausente
-```
-┌────────────────────────────────────────────────────────┐
-│                    ESTADO ACTUAL                        │
-│                                                        │
-│  GitHub Copilot → Solo coding                          │
-│  CrewAI → Solo orquestación                            │
-│  Mem0 → Solo memoria                                   │
-│  Microsoft Copilot → Solo ecosistema M365              │
-│  LangGraph → Solo workflows, sin UI                    │
-│                                                        │
-│  → Las empresas necesitan 4-6 herramientas distintas   │
-└────────────────────────────────────────────────────────┘
-```
-
-### Gap 2: Fragmentación de Experiencia
-- Desarrolladores y no-desarrolladores usan herramientas separadas
-- No hay unified experience entre código, agentes y memoria
-- Los workflows cruzan múltiples plataformas sin integración
-
-### Gap 3: Gobierno Fragmentado
-- Compliance y audit trails no están integrados entre herramientas
-- RBAC inconsistente entre plataformas
-- Sin vista unificada de uso, costos y actividad
-
-### Gap 4: Pricing Complejo
-- Cada herramienta tiene su propio modelo de pricing
-- Overages impredecibles por usage-based
-- Costos ocultos de integración y mantenimiento
-
-### Gap 5: Non-developer Agents Subestimados
-- Las herramientas existentes se enfocan en developers
-- Equipos de operaciones, soporte, analytics no tienen herramientas AI enterprise
-- Falta de templates pre-construidos para roles no-técnicos
-
----
-
-## 6. Análisis FODA de NexusMind
-
-| Fortalezas | Debilidades |
-|---|---|
-| • Plataforma verdaderamente unificada (única en el mercado) | • Marca no establecida, cero reconocimiento |
-| • Arquitectura moderna, cloud-native | • Ecosistema de integraciones por construir |
-| • Pricing simple y transparente | • Sin casos de éxito enterprise |
-| • Enfoque dual dev + non-dev | • Recursos limitados vs big-tech |
-| • Memoria persistente cross-session nativa | • Tiempo de desarrollo antes de MVP |
-
-| Oportunidades | Amenazas |
-|---|---|
-| • Mercado en crecimiento exponencial (CAGR 38%) | • GitHub/Microsoft pueden integrar estas capacidades |
-| • Ventana de 12-18 meses antes de que big-tech unifique | • Google Vertex AI ya tiene Memory Bank |
-| • Open protocols (A2A, MCP) reducen barreras técnicas | • Open-source (CrewAI, AutoGen) mejora rápidamente |
-| • Compliance mandates crean demanda de gobierno integrado | • Guerra de precios de big-tech |
-| • PLG permite adopción bottom-up en enterprises | • Saturación del mercado de AI coding assistants |
-
----
-
-## 7. Segmentación de Clientes
-
-### Early Adopters (Prioriadad Alta)
-
-| Segmento | Tamaño Estimado | Dolor Principal | Disposición a Pagar |
-|---|---|---|---|
-| Startups tech (20-200 empleados) | ~50,000 global | Quieren una herramienta que haga todo | $29-49/seat/mo |
-| Equipos de plataforma en mid-market | ~10,000 equipos | Fragmentación de herramientas | $49-79/seat/mo |
-| IA/ML teams independientes | ~15,000 equipos | Necesitan memoria + agents | $29-49/seat/mo |
-
-### Mainstream (Fase 2)
-
-| Segmento | Tamaño | Dolor Principal |
+| Síntoma | Frecuencia | Dolor |
 |---|---|---|
-| Enterprise (500+ empleados) | ~5,000 empresas | Gobierno, compliance, unified platform |
-| Equipos no-técnicos en enterprise | ~20,000 deptos | Sin herramientas AI adecuadas |
-| Consultorías tech | ~3,000 firms | Multi-cliente, multi-proyecto |
+| Equipos usando 3+ herramientas AI distintas | Muy alta | Costos duplicados, sin visibilidad |
+| Conocimiento perdido entre sesiones/herramientas | Alta | Developers repiten contexto |
+| Sin audit trails de interacciones AI | Muy alta | Riesgo compliance |
+| Datos sensibles pasando por LLMs sin control | Alta | Riesgo legal |
+| CTO sin visibilidad de qué hacen los agentes | Muy alta | Falta de control |
+
+### El Insight Clave
+
+Las empresas **no quieren** que les digan qué herramienta usar. Quieren que cualquier herramienta que elijan **cumpla con sus reglas**.
 
 ---
 
-## 8. Proyección de Ingresos (Escenario Conservador)
+## 2. TAM / SAM / SOM
 
-| Año | Usuarios Paga | ARR | MRR |
+### TAM (Total Addressable Market)
+**$12.4B USD para 2028**
+
+Mercado global de herramientas AI enterprise para developers + agentes + gobernanza.
+*Fuente: Gartner "Market Guide for AI Code Assistants", McKinsey "The State of AI in 2025"*
+
+### SAM (Serviceable Addressable Market)
+**$3.1B USD**
+
+Empresas con 50-500 empleados que usan herramientas AI y necesitan control/gobierno.
+- Empresas target: 120,000 globalmente
+- Gasto promedio anual en tools AI: $26,000
+- Segmento: CTOs conscientes de gobernanza AI (estimado 40%)
+
+### SOM (Serviceable Obtainable Market)
+**$120M USD (Year 3 target)**
+
+Empresas early adopter que priorizan control y están dispuestas a pagar por un control plane.
+- Empresas obtenibles: 2,000 (Year 3)
+- ARPU promedio: $60,000/año
+
+---
+
+## 3. Competencia (Reformulada)
+
+**NexusMind no compite con herramientas AI. Compite con el *vacío* — la ausencia de un control plane.**
+
+### Competidores Indirectos (No compiten directamente, pero podrían)
+
+| Compañía | Qué ofrecen | Por qué no resuelven el problema |
+|---|---|---|
+| **LangSmith / LangFuse** | Observabilidad de LLM calls | Solo tracing, no políticas ni memoria cross-tool |
+| **Guardrails AI** | Validación de outputs de LLM | Solo validación, no orquestación ni memoria |
+| **Weights & Biases** | ML experiment tracking | No es para producción, no es cross-tool |
+| **Helicone** | Proxy de LLM con logging | Solo proxy, sin policies engine ni memoria |
+| **Portkey** | Gateway de LLM | Sin memoria persistente ni cross-tool |
+
+### Competidores Potenciales (Podrían pivotar)
+
+| Compañía | Riesgo | Por qué |
+|---|---|---|
+| **Anthropic (Claude)** | Medio | Podrían añadir capa enterprise sobre Claude Code |
+| **Microsoft (Copilot)** | Medio | Podrían integrar governance en GitHub |
+| **Cursor** | Bajo | Están enfocados en IDE, no en control plane |
+
+### Nuestro Diferencial Clave
+
+1. **Tool-agnostic**: No importa qué herramienta use tu equipo. NexusMind funciona con todas.
+2. **BYOM (Bring Your Own Model)**: No asumimos costos de LLM. El cliente trae sus keys.
+3. **Exportabilidad total**: Sin lock-in. Tu memoria, policies y audit trails se exportan.
+4. **Open-source core**: Transparencia. El core es público y auditable.
+5. **MCP Protocol**: Compatibilidad estándar con el ecosistema.
+
+---
+
+## 4. Tendencias de Mercado
+
+### 4.1 Multi-agent es el presente
+Empresas ya no usan un solo agente AI. Usan múltiples. El problema de gobernanza multi-agente crece exponencialmente.
+
+### 4.2 Fragmentación de herramientas
+Cada mes sale una nueva herramienta AI. Los CTOs no pueden mantener el ritmo. Necesitan una capa que abstraiga la complejidad.
+
+### 4.3 Regulación AI (EU AI Act)
+La regulación europea exige trazabilidad de decisiones de AI. Las empresas necesitan audit trails.
+
+### 4.4 Costos de LLM como preocupación #1
+Empresas gastan $50k-$500k/año en APIs de LLM. Quieren control, no otro costo.
+
+### 4.5 MCP como estándar emergente
+El Model Context Protocol de Anthropic se está convirtiendo en estándar para integración de tools AI. NexusMind lo adopta nativamente.
+
+---
+
+## 5. Segmentos de Clientes
+
+| Segmento | Tamaño | Dolor | Disposición a pagar |
 |---|---|---|---|
-| Year 1 (post-MVP) | 500 | $174,000 | $14,500 |
-| Year 2 | 5,000 | $1,740,000 | $145,000 |
-| Year 3 | 15,000 | $5,220,000 | $435,000 |
-| Year 4 | 50,000 | $17,400,000 | $1,450,000 |
-| Year 5 | 150,000 | $52,200,000 | $4,350,000 |
+| **Startups (10-50)** | 50,000+ | Usan 1-2 tools, poco dolor aún | Baja |
+| **Scaleups (50-200)** | 30,000+ | Usan 3-5 tools, dolor alto | Alta |
+| **Mid-market (200-1000)** | 15,000+ | Compliance obligatorio, dolor muy alto | Muy alta |
+| **Enterprise (1000+)** | 5,000+ | Governance mandatorio | Muy alta (proceso largo) |
 
-*Basado en pricing promedio ponderado de $29/seat/mo*
-
----
-
-## 9. Conclusión
-
-El mercado de plataformas AI enterprise está en expansión explosiva, fragmentado entre múltiples soluciones que cubren solo una parte del stack necesario. NexusMind tiene una ventana de **12-18 meses** para establecerse como la plataforma unificada antes de que los gigantes tecnológicos (Microsoft, Google, AWS) integren verticalmente estas capacidades.
-
-La estrategia recomendada es **PLG-first** para capturar developers individuales y equipos pequeños como base de adopción, escalando a enterprise sales en Year 2-3 con casos de éxito y features de gobierno.
+**Target primario**: Scaleups (50-200 empleados) — suficiente dolor, suficiente budget, proceso de decisión ágil.
 
 ---
 
-*Fin de MARKET_RESEARCH.md*
+## 6. Pricing Validation
+
+| Plan | Precio Mensual | ARPU Anual | Margen |
+|---|---|---|---|
+| Open Source | $0 | $0 | N/A (lead gen) |
+| Team (hasta 50 seats) | $49/mes | $588 | 80%+ (SaaS) |
+| Enterprise (>50 seats) | Custom (~$199-499/mes) | $3,000-6,000 | 85%+ (self-hosted) |
+
+**CAC estimado**: $1,200 (SaaS), $2,500 (Enterprise)
+**LTV estimado**: $8,800 (SaaS), $45,000 (Enterprise)
+**Payback period**: 6-8 meses
+
+---
+
+## 7. Estrategia de Go-to-Market
+
+1. **Open-source core** → Adopción orgánica por developers
+2. **Plugins para Claude Code, Cursor, Copilot** → Distribución en marketplaces existentes
+3. **Landing page con waitlist** → Captura de leads calificados
+4. **Content marketing** → "Cómo gobernar AI agents en tu empresa"
+5. **Outbound a CTOs** → Dolor validado, solución clara
+
+---
+
+*Fin de MARKET_RESEARCH.md v2.0*

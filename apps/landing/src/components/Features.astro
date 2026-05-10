@@ -6,20 +6,20 @@
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14" data-reveal>
       <span class="text-xs font-semibold tracking-widest text-accent uppercase">Features</span>
-      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Todo lo que necesitas.<br/>Nada que sobre.</h2>
+      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Un control plane,<br/>no otra herramienta.</h2>
     </div>
 
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
       {[
-        { icon: '🤖', title: 'AI Agent Playground', desc: 'Chat multi-modelo con tools, code execution y streaming. Para developers y no-developers.' },
-        { icon: '🧠', title: 'Persistent Memory', desc: 'Memoria cross-session con búsqueda híbrida FTS + vector. Lo que aprendes no se pierde.' },
-        { icon: '🔄', title: 'Agent Orchestration', desc: 'Sub-agentes jerárquicos con DAG workflows. Delega tareas complejas a tu ejército de agents.' },
-        { icon: '🏢', title: 'Enterprise Admin', desc: 'RBAC granular, SSO (SAML/OIDC/SCIM), audit trails inmutables. Lo que compliance necesita.' },
-        { icon: '🌐', title: 'Multi-model Gateway', desc: 'BYOM (Bring Your Own Model). Routing inteligente por costo y latencia. Fallback automático.' },
-        { icon: '📊', title: 'Knowledge Base', desc: 'Conecta wikis, docs, repos, Jira, Notion, Confluence. Tu contexto siempre disponible.' },
-        { icon: '🛠️', title: 'Non-dev Agents', desc: 'Agentes pre-construidos para soporte, operaciones y data analysis. Sin código.' },
-        { icon: '🔒', title: 'On-prem Option', desc: 'Data sovereignty, SOC2, despliegue en tu infraestructura. Para empresas reguladas.' },
-        { icon: '📦', title: 'Marketplace', desc: 'Plugins, templates e integraciones. La comunidad construye sobre NexusMind.' },
+        { icon: '🧠', title: 'Memoria Cross-Tool', desc: 'Contexto persistente entre Claude Code, Cursor, Copilot y cualquier agente. Sin repetir nada.' },
+        { icon: '🔒', title: 'Policy Engine', desc: 'Reglas centralizadas que cualquier herramienta respeta. PII redaction, model whitelist, cost controls.' },
+        { icon: '📋', title: 'Audit Trail Universal', desc: 'Todas las interacciones AI de tu empresa en un solo lugar. Inmutable, exportable, auditable.' },
+        { icon: '🤖', title: 'Multi-Agent Orchestration', desc: 'Coordina Claude Code + CrewAI + Cline + agentes custom en flujos chain, fan-out y handoff.' },
+        { icon: '🌐', title: 'Tool-Agnostic Plugins', desc: 'MCP protocol + SDKs + plugins oficiales para Claude Code, Cursor, Copilot, OpenCode y más.' },
+        { icon: '🏢', title: 'Enterprise Admin', desc: 'RBAC granular, SSO (SAML/OIDC), dashboard de uso, analytics de costos cross-tool.' },
+        { icon: '🔑', title: 'BYOM (Bring Your Model)', desc: 'Sin costos de LLM ocultos. Trae tus keys de OpenAI, Anthropic, Google o corre modelos locales.' },
+        { icon: '🔐', title: 'On-prem / Self-hosted', desc: 'Single binary deploy. Sin dependencias externas. Tus datos nunca salen de tu infraestructura.' },
+        { icon: '📦', title: 'Exportabilidad Total', desc: 'Zero lock-in. Memoria, políticas y audit trails se exportan. Si te vas, te llevas todo.' },
       ].map((f, i) => (
         <div class="feature-card" data-reveal data-reveal-delay={i * 80}>
           <div class="text-3xl mb-3">{f.icon}</div>

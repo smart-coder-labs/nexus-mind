@@ -1,21 +1,40 @@
 # NexusMind — Product Requirements Document (PRD)
 
 > **Documento**: PRD.md
-> **Versión**: 1.0
+> **Versión**: 2.0
 > **Fecha**: Mayo 2026
-> **Propósito**: Definición completa del producto, visión, personas, features y requerimientos para NexusMind.
+> **Propósito**: Definición del producto — un control plane universal para herramientas AI enterprise, no un reemplazo de ellas.
 
 ---
 
 ## 1. Product Vision
 
-> **"La plataforma AI unificada para que las empresas potencien a todos sus equipos con agentes inteligentes, memoria persistente y orquestación — todo desde un solo lugar, con gobierno corporativo."**
+> **"El control plane que unifica todas las herramientas AI de tu empresa — sin importar qué agente, qué modelo o qué IDE use cada equipo. Un centro de gravedad para reglas, memoria, trazabilidad y gobierno."**
 
-NexusMind elimina la fragmentación actual del mercado de herramientas AI enterprise, donde los equipos de desarrollo, operaciones, soporte y análisis usan herramientas separadas sin integración. Proporcionamos un ecosistema completo donde:
+NexusMind **no compite** con GitHub Copilot, Claude Code, Cursor, ni ningún agente AI. Por el contrario, los **potencia** al proveer una capa de orquestación, memoria persistente y gobierno que cualquier herramienta puede consumir.
 
-- **Developers** escriben código con asistencia AI, orquestan agentes y mantienen memoria de contexto
-- **Equipos no-técnicos** ejecutan agentes pre-construidos para automatizar operaciones, analizar datos y dar soporte
-- **Administradores** gobiernan todo con RBAC granular, audit trails, SSO y control de costos
+El problema real no es que falten buenas herramientas AI — sobran. El problema es que cada equipo elige la suya, no hay trazabilidad, el conocimiento se pierde cuando alguien se va, y nadie sabe qué datos sensibles están pasando por APIs de terceros.
+
+**NexusMind no reemplaza herramientas. Las orquesta.**
+
+```
+[Claude Code]  ─┐
+[Cursor]       ─┤
+[GitHub Copilot]─┼──→  NexusMind Control Plane  ──→  Reglas empresa
+[OpenCode]     ─┤       │                          ──→  Memoria persistente
+[CrewAI]       ─┤       │                          ──→  Audit trails
+[Agentes custom]─┘       │                          ──→  SSO / RBAC
+                         ▼
+              Cualquier LLM (BYOM)
+              OpenAI · Anthropic · Google · Open-source
+```
+
+### Principios Fundamentales
+
+1. **BYOT (Bring Your Own Tool)** — NexusMind no reemplaza Claude Code, Cursor, Copilot ni ningún agente. Al contrario: les da superpoderes (memoria, contexto, reglas).
+2. **Zero Lock-in** — Si mañana dejas NexusMind, tu memoria se exporta, tus reglas se exportan, tus audit trails se exportan. No hay dependencia.
+3. **Multi-agent Orchestration** — El CTO decide: "Quiero que cualquier agente que use mi equipo cumpla estas reglas". NexusMind las aplica sin importar qué herramienta esté usando el developer.
+4. **Capa de gobierno, no de reemplazo** — El valor está en el centro, no en el borde.
 
 ---
 
@@ -25,51 +44,38 @@ NexusMind elimina la fragmentación actual del mercado de herramientas AI enterp
 
 | Atributo | Descripción |
 |---|---|
-| **Rol** | Toma decisiones de compra para herramientas de productividad del equipo de ingeniería |
-| **Dolores** | Equipo usa 4-5 herramientas AI distintas; costos dispersos; sin visibilidad de uso; compliance es un dolor de cabeza |
-| **Necesidades** | Plataforma unificada con gobierno, reportes de uso, SSO, facturación consolidada |
-| **Criterios de compra** | Seguridad enterprise, SOC2, on-prem opción, ROI demostrable, soporte enterprise |
-| **Frases típicas** | "Necesito una solución que mis equipos puedan adoptar sin romper nuestras políticas de seguridad" |
+| **Rol** | Toma decisiones de compra para herramientas de productividad del equipo |
+| **Dolores actuales** | Cada equipo usa herramientas AI distintas; costos dispersos; sin visibilidad de uso; compliance es un dolor de cabeza; no tiene control sobre qué hacen los agentes |
+| **Valor de NexusMind** | Control centralizado sobre cualquier herramienta AI que use su equipo. Sin importar si usan Claude Code, Cursor, Copilot o agentes custom |
+| **Criterios de compra** | Integración con tools existentes (no reemplazo), seguridad enterprise, audit trails, exportabilidad de datos |
+| **Frases típicas** | "No quiero decirle al equipo qué herramienta usar. Quiero que cualquier herramienta que usen cumpla con nuestras políticas." |
 
-### 2.2 Developer Individual — *Usuario Primario*
+### 2.2 Developer — *Usuario Primario*
 
 | Atributo | Descripción |
 |---|---|
-| **Rol** | Ingeniero de software que escribe código diariamente |
-| **Dolores** | Cambia entre Copilot, ChatGPT y toolings propios para memoria; pierde contexto entre sesiones; tareas repetitivas de boilerplate |
-| **Necesidades** | AI coding assistant + memoria persistente + agentes que ejecuten tareas complejas |
-| **Criterios** | Latencia baja (<500ms), integración IDE, CLI potente, multi-modelo |
-| **Frases típicas** | "Quiero que mi AI me entienda sin tener que repetirle todo cada vez" |
+| **Rol** | Ingeniero que usa herramientas AI para escribir código |
+| **Dolores actuales** | Pierde contexto entre sesiones, entre herramientas, entre equipos. Cada herramienta tiene su propia "memoria" |
+| **Valor de NexusMind** | Memoria unificada cross-tool. Lo que aprendió con Claude Code está disponible cuando usa Cursor. El contexto del proyecto persiste sin importar el IDE |
+| **Frases típicas** | "Quiero que mi AI me entienda sin importar qué herramienta esté usando" |
 
 ### 2.3 Product Manager / Analyst — *Usuario No-Técnico*
 
 | Atributo | Descripción |
 |---|---|
-| **Rol** | Define features, analiza datos, coordina equipos, escribe documentación |
-| **Dolores** | No sabe programar; las herramientas AI existentes son muy técnicas; pasa horas en tareas repetitivas de análisis y reporting |
-| **Necesidades** | Agentes pre-construidos para análisis de datos, generación de informes, resúmenes de reuniones, queries SQL sin saber SQL |
-| **Criterios** | UI intuitiva, lenguaje natural como input, templates listos para usar |
-| **Frases típicas** | "Necesito analizar estos datos pero no voy a aprender Python para eso" |
+| **Rol** | Define features, analiza datos, coordina equipos |
+| **Dolores actuales** | No sabe programar; los agentes AI que usan los devs están fuera de su alcance |
+| **Valor de NexusMind** | Agentes pre-construidos que se integran con la memoria de la empresa. Con gobernanza, trazabilidad y sin depender de developers |
+| **Frases típicas** | "Necesito que los agentes que usa el equipo también puedan ayudarme a mí" |
 
 ### 2.4 Compliance / Security Officer — *Stakeholder*
 
 | Atributo | Descripción |
 |---|---|
-| **Rol** | Garantiza que todas las herramientas cumplan con políticas de seguridad, privacidad y compliance |
-| **Dolores** | Herramientas AI son "cajas negras"; sin audit trails; datos pueden filtrarse a modelos externos |
-| **Necesidades** | Audit trails inmutables, RBAC granular, data residency, on-prem option, SOC2 reports |
-| **Criterios** | Certificaciones, encryption at rest/transit, retention policies, data isolation |
-| **Frases típicas** | "¿Dónde quedan los datos? ¿Quién accedió? ¿Podemos auditar cada interacción?" |
-
-### 2.5 IT Operations — *Implementador*
-
-| Atributo | Descripción |
-|---|---|
-| **Rol** | Instala, configura y mantiene la plataforma en infraestructura corporativa |
-| **Dolores** | Multi-tenancy complejo, escalado, monitoreo, integración con IAM existente |
-| **Necesidades** | Deploy sencillo (Docker/K8s), health endpoints, metrics (Prometheus), logs estructurados |
-| **Criterios** | Documentación clara, helm charts, terraform modules, APIs de administración |
-| **Frases típicas** | "Que se pueda deployar con un docker-compose y configurar con variables de entorno" |
+| **Rol** | Garantiza compliance en herramientas de productividad |
+| **Dolores actuales** | Herramientas AI son "cajas negras"; sin audit trails; datos pueden filtrarse a modelos externos |
+| **Valor de NexusMind** | Audit trails inmutables de *todas* las interacciones AI de la empresa, sin importar la herramienta. PII redaction automática. Políticas centralizadas |
+| **Frases típicas** | "Necesito saber qué datos está viendo cada agente, en todo momento" |
 
 ---
 
@@ -77,211 +83,162 @@ NexusMind elimina la fragmentación actual del mercado de herramientas AI enterp
 
 ### 3.1 Priorización
 
-| Prioridad | Feature | Esfuerzo Estimado | Dependencias |
+| Prioridad | Feature | Esfuerzo | Dependencias |
 |---|---|---|---|
-| **P0** | AI Agent Playground | 8 semanas | Gateway layer |
-| **P0** | Memory System | 6 semanas | SQLite + embeddings |
-| **P0** | Sub-agent Orchestration | 8 semanas | Agent Runtime |
-| **P0** | Enterprise Admin Console | 6 semanas | Backend API |
-| **P1** | Multi-model Gateway | 4 semanas | Gateway layer |
-| **P1** | Knowledge Base Integration | 6 semanas | Memory System |
-| **P1** | Non-developer Agents | 6 semanas | Agent Runtime, UI |
-| **P2** | Cloud Sync & Collaboration | 6 semanas | Auth, Memory |
-| **P2** | Custom Agent Builder | 8 semanas | UI, Agent Runtime |
-| **P2** | Marketplace | 6 semanas | Everything |
+| **P0** | Memory System (unificado, cross-tool) | 6 sem | SQLite + embeddings |
+| **P0** | Policy Engine (reglas centralizadas) | 4 sem | Backend API |
+| **P0** | Audit Trail (todas las interacciones) | 4 sem | Backend API |
+| **P0** | Tool Integrations API (plugins para Claude, Cursor, etc.) | 6 sem | Memory System |
+| **P1** | Multi-agent Orchestration | 8 sem | Agent Runtime |
+| **P1** | Enterprise Admin Console | 6 sem | Backend API |
+| **P1** | MCP / Open-Context Plugins | 4 sem | Tool Integrations |
+| **P2** | Non-developer Agents | 6 sem | UI, Agent Runtime |
+| **P2** | Analytics & Cost Control | 4 sem | Audit Trail |
+| **P2** | Custom Agent Builder | 8 sem | UI, Agent Runtime |
 
 ---
 
-### P0: AI Agent Playground
+### P0: Memory System (Cross-Tool)
 
-**Descripción**: El core del producto — un entorno interactivo donde los usuarios pueden chatear con modelos AI, escribir y ejecutar código, usar herramientas, y mantener contexto conversacional persistente.
+**Descripción**: Sistema de memoria persistente accesible por cualquier herramienta AI. Un developer usando Claude Code puede acceder al mismo contexto que cuando usaba Cursor la semana pasada. La memoria es del **proyecto/equipo**, no de la herramienta.
 
-**Sub-features**:
-- Chat interface multi-turn con streaming (SSE)
-- Multi-model support (GPT-4, Claude, Gemini, open-source)
-- Code execution sandbox (Python, JS, Go, SQL)
-- Tool use (file system, web search, database queries, API calls)
-- Context-aware responses basadas en memoria histórica
-- Session management (start, pause, resume, end)
-- Multi-modal input (texto, archivos, imágenes)
+**Arquitectura**:
 
-**UX Flow**:
 ```
-Usuario escribe query → Model Router selecciona modelo →
-  ┌─ Si requiere código → Sandbox ejecuta → resultado vuelve al chat
-  └─ Si requiere memoria → Memory System busca → contexto inyectado
-  └─ Si requiere tool → Tool Executor → resultado vuelve al chat
-Response streamed al usuario → memoria episódica actualizada
+[Claude Code] ──┐
+[Cursor]       ─┤
+[Copilot]      ─┼──→ NexusMind Memory API ──→ SQLite FTS5 + Vectors
+[OpenCode]     ─┤                                │
+[CrewAI]       ─┘                                ▼
+                                           Embeddings → semantic search
 ```
 
 **Acceptance Criteria**:
-- [ ] Streaming de respuestas en <500ms first token
-- [ ] Soporte para 5+ modelos AI
-- [ ] Sandbox ejecuta código de forma segura (no-access outside container)
-- [ ] Memoria cross-session funcional
-- [ ] Tool use configurable por rol
+- [ ] APIs REST para write/read/search memory desde cualquier tool
+- [ ] Plugins/extensiones para Claude Code, Cursor, Copilot, OpenCode
+- [ ] Búsqueda híbrida FTS + semántica
+- [ ] <100ms FTS search, <200ms vector search
+- [ ] Memoria cross-session y cross-tool verificable
 
 ---
 
-### P0: Memory System
+### P0: Policy Engine
 
-**Descripción**: Sistema de memoria persistente que permite a los agentes recordar información entre conversaciones, sesiones y proyectos. Combina búsqueda full-text (FTS5) con búsqueda semántica (vector embeddings).
+**Descripción**: Motor de reglas centralizado que define qué puede y qué no puede hacer cada agente. Las reglas se aplican sin importar qué herramienta esté usando el usuario.
 
-**Sub-features**:
-- **Memoria Episódica**: Registro cronológico de interacciones
-- **Memoria Semántica**: Conocimiento extraído y estructurado
-- **Memoria Procedural**: Preferencias, configuraciones, patrones de trabajo
-- **Auto-summarization**: Compresión automática de contextos largos
-- **Context Window Management**: Selección inteligente de qué incluir en el contexto
-- **Cross-session persistence**: La memoria persiste entre sesiones
-- **Memory search**: Búsqueda híbrida (FTS + vector)
+**Ejemplos de políticas**:
+- "Ningún agente puede enviar datos a modelos externos sin aprobación"
+- "Código con PII debe ser redactado antes de enviarse a cualquier LLM"
+- "Los audit trails de interacciones con Claude Code deben retenerse 90 días"
+- "Solo el equipo de backend puede ejecutar agentes contra producción"
 
 **Arquitectura**:
 ```
-┌────────────────────────────┐
-│     MEMORY SYSTEM          │
-│                            │
-│  ┌──────────────────┐      │
-│  │ SQLite + FTS5    │──────├──→ Full-text search
-│  └──────────────────┘      │
-│  ┌──────────────────┐      │
-│  │ Vector Store     │──────├──→ Semantic search
-│  │ (sqlite-vss /    │      │
-│  │  pgvector)       │      │
-│  └──────────────────┘      │
-│  ┌──────────────────┐      │
-│  │ Embedding Service│──────├──→ text-embedding-3-small
-│  └──────────────────┘      │
-│  ┌──────────────────┐      │
-│  │ Summarizer       │──────├──→ LLM-based compression
-│  └──────────────────┘      │
-└────────────────────────────┘
+[Tool] → NexusMind Policy Gateway → ¿Permitido?
+   │           │                          │
+   │           ├── Check RBAC ────────────┤
+   │           ├── Check Data Rules ──────┤
+   │           ├── Check Model Policy ────┤
+   │           └── Log to Audit Trail ────┤
+   ▼                                      ▼
+ Ejecuta o Rechaza                  Siempre auditoría
 ```
 
 **Acceptance Criteria**:
-- [ ] Búsqueda FTS5 con ranking BM25
-- [ ] Búsqueda semántica con cosine similarity
-- [ ] Auto-summarization de conversaciones >10k tokens
-- [ ] Persistencia cross-session verificable
-- [ ] <100ms para FTS search, <200ms para vector search
+- [ ] Políticas configurables vía YAML/JSON
+- [ ] Evaluación <50ms por política
+- [ ] Rechazo con mensaje claro (ej: "Política P-042: no puedes enviar PII a modelos externos")
+- [ ] Versionado de políticas (git-ops friendly)
+- [ ] Dry-run mode para testear políticas sin aplicarlas
 
 ---
 
-### P0: Sub-agent Orchestration
+### P0: Audit Trail
 
-**Descripción**: Sistema de orquestación que permite crear, gestionar y coordinar agentes jerárquicos. Un agente principal puede delegar tareas a sub-agentes especializados, con handoff protocol y workflow DAG.
+**Descripción**: Registro inmutable de todas las interacciones AI de la empresa, sin importar qué herramienta las originó. Cada query, cada respuesta, cada decisión del policy engine queda registrada.
 
-**Sub-features**:
-- **Agent Manager**: CRUD de agentes, lifecycle management
-- **Workflow Engine**: Ejecución de DAGs de tareas
-- **Task Scheduler**: Programación de tareas recurrentes
-- **Sub-agent Lifecycle**: spawn, pause, resume, terminate
-- **Handoff Protocol**: Comunicación estructurada entre agentes
-- **State Machine**: Tracking de estados de cada agente/tarea
-- **Result Aggregation**: Recolección y consolidación de resultados
-
-**Arquitectura de Orquestación**:
+**Schema de cada registro**:
 ```
-                    ┌─────────────────────┐
-                    │   Main Agent        │
-                    │  (Coordinator)      │
-                    └──────────┬──────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-              ▼                ▼                ▼
-     ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-     │ Code Agent   │ │ Data Agent   │ │ Search Agent │
-     │ (escribe     │ │ (analiza     │ │ (busca info) │
-     │  código)     │ │  datos)      │ │              │
-     └──────────────┘ └──────────────┘ └──────────────┘
-              │                │
-              ▼                ▼
-     ┌──────────────┐ ┌──────────────┐
-     │ Test Agent   │ │ Report Agent │
-     │ (genera      │ │ (genera      │
-     │  tests)      │ │  informes)   │
-     └──────────────┘ └──────────────┘
+{
+  "timestamp": "2026-05-10T19:00:00Z",
+  "user": "ana@acme.com",
+  "tool": "claude-code",
+  "model": "claude-opus-4",
+  "action": "chat",
+  "prompt_hash": "abc123...",
+  "prompt_preview": "Escribe una función que...",
+  "response_hash": "def456...",
+  "tokens_in": 142,
+  "tokens_out": 89,
+  "policy_decisions": ["P-042: passed", "P-015: redacted PII"],
+  "cost": 0.0034,
+  "status": "allowed"
+}
 ```
 
 **Acceptance Criteria**:
-- [ ] Spawn de sub-agentes con contexto heredado
-- [ ] Handoff protocol funcional entre agentes
-- [ ] DAG workflows con dependencias entre tareas
-- [ ] State machine con recovery en caso de fallo
-- [ ] Result aggregation con merge de outputs
+- [ ] Append-only (immutable por diseño)
+- [ ] Búsqueda por usuario, tool, modelo, acción, fecha
+- [ ] Export CSV/JSON/PDF
+- [ ] Retention configurable por política
+- [ ] Hash chain para verificar integridad
 
 ---
 
-### P0: Enterprise Admin Console
+### P0: Tool Integrations API
 
-**Descripción**: Panel de administración enterprise para gobernar toda la plataforma. RBAC granular, audit trails, analytics de uso, facturación y configuración de SSO.
+**Descripción**: Capa de integración que permite a cualquier herramienta AI conectarse a NexusMind. En lugar de construir UI propia, NexusMind provee APIs y plugins que las herramientas existentes consumen.
 
-**Sub-features**:
-- **RBAC**: Roles y permisos configurables (admin, manager, dev, viewer, agent-only)
-- **Audit Trails**: Registro inmutable de todas las acciones
-- **Usage Analytics**: Dashboard de uso por usuario, equipo, feature
-- **Billing Management**: Facturación, invoices, usage reports
-- **SSO Integration**: SAML, OIDC, Google Workspace, Azure AD
-- **API Keys Management**: Rotación, scopes, rate limits
-- **Team Management**: Creación de equipos, asignación de roles
+**Integraciones target**:
+
+| Herramienta | Tipo de integración | Release |
+|---|---|---|
+| Claude Code | MCP server / Custom extension | V1 |
+| Cursor | Plugin / API | V1 |
+| GitHub Copilot | Extension API | V1 |
+| OpenCode | MCP server | V1 |
+| Cline / Roo Code | MCP server | V1 |
+| Cualquier agente | REST API genérica | Siempre |
+
+**API Surface**:
+```
+POST /v1/memory/search      ← Búsqueda semántica
+POST /v1/memory/store       ← Guardar en memoria
+POST /v1/policy/check       ← Validar contra políticas
+POST /v1/audit/log          ← Registrar interacción
+GET  /v1/context/project    ← Obtener contexto del proyecto
+```
 
 **Acceptance Criteria**:
-- [ ] CRUD de usuarios y roles
-- [ ] Audit trail con timestamp, usuario, acción, recurso, resultado
-- [ ] Dashboard de analytics en tiempo real
-- [ ] Export de reports (CSV, PDF)
-- [ ] SSO funcional con SAML 2.0 y OIDC
+- [ ] SDK en Python, TypeScript, Go
+- [ ] OpenAPI 3.0 spec completa
+- [ ] Rate limiting por API key
+- [ ] Plugins publicados para Claude Code, Cursor, Copilot
+- [ ] Documentación de integración para herramientas custom
 
 ---
 
-### P1: Multi-model Gateway
+### P1: Multi-agent Orchestration
 
-**Descripción**: Gateway inteligente que enruta requests al modelo AI óptimo según costo, latencia y calidad requerida. Soporta BYOM (Bring Your Own Model).
+**Descripción**: Orquestación de agentes que permite coordinar múltiples herramientas AI trabajando en un mismo objetivo. No importa si un agente es Claude Code, otro es un CrewAI pipeline y otro es un script custom — NexusMind los coordina.
 
-**Sub-features**:
-- **Model Router**: Selección automática basada en heurísticas
-- **Cost Optimizer**: Minimiza costo por request
-- **Fallback Chain**: Si un modelo falla, prueba el siguiente
-- **Cache Layer**: Caché de respuestas para queries frecuentes
-- **Rate Limiter**: Por API key, usuario, equipo
-
-### P1: Knowledge Base Integration
-
-**Descripción**: Conexión con fuentes de conocimiento externas para enriquecer el contexto de los agentes.
-
-**Integraciones iniciales**:
-- GitHub/GitLab repos
-- Notion workspaces
-- Confluence wikis
-- Jira issues
-- Slack channels
-- Custom webhooks/APIs
-
-### P1: Non-developer Agents
-
-**Descripción**: Agentes pre-construidos para usuarios no-técnicos, con templates y UI simplificada.
-
-**Templates iniciales**:
-- **Support Agent**: Responde preguntas frecuentes, triaje de tickets
-- **Data Analyst Agent**: Query SQL desde lenguaje natural, genera charts
-- **Ops Agent**: Monitorea sistemas, alerta sobre anomalías
-- **Report Agent**: Genera informes periódicos desde fuentes de datos
-- **Doc Agent**: Escribe y actualiza documentación
+**Patrones soportados**:
+- **Chain**: Tool A → Tool B → Tool C (secuencial)
+- **Fan-out**: Tool A → Tool B + Tool C + Tool D (paralelo)
+- **Voting**: Múltiples agentes proponen, uno decide
+- **Handoff**: Agente A delega a Agente B con contexto
 
 ---
 
-### P2: Cloud Sync & Collaboration
+### P1: Enterprise Admin Console
 
-**Descripción**: Sincronización entre instancias, compartición de agentes, memoria y workflows entre miembros del equipo.
+**Descripción**: Panel de administración para configurar políticas, ver audit trails, monitorear costos y gestionar integraciones.
 
-### P2: Custom Agent Builder
+---
 
-**Descripción**: Constructor visual de agentes con drag & drop + editor de código para personalización avanzada.
+### P1: MCP / Open-Context Plugins
 
-### P2: Marketplace
-
-**Descripción**: Tienda de plugins, templates de agentes, integraciones y tools.
+**Descripción**: Plugins estándar del protocolo MCP (Model Context Protocol) y formatos abiertos para que cualquier herramienta compatible pueda integrarse sin código custom.
 
 ---
 
@@ -289,96 +246,105 @@ Response streamed al usuario → memoria episódica actualizada
 
 | Requisito | Especificación |
 |---|---|
-| **Uptime** | 99.9% (8.76h downtime/año), 99.99% Enterprise |
-| **Latency** | <500ms first token, <2s full response para queries simples |
-| **Security** | SOC2 Type II (año 1), encryption at rest (AES-256) y in transit (TLS 1.3) |
-| **Data Residency** | US, EU, APAC regions; on-prem option para Enterprise |
-| **RBAC** | Granular: 10+ permisos predefinidos, roles custom |
-| **Audit Trails** | Inmutables, retention configurable (30d-7yr), exportables |
-| **Scalability** | Horizontal scaling (K8s), 10k+ concurrent users por instancia |
-| **Backup** | Automático cada 6h, point-in-time recovery, cross-region |
-| **Compliance** | SOC2, GDPR, HIPAA (Enterprise), ISO 27001 (Year 2) |
-| **API** | RESTful, rate-limited, versionada (v1, v2), OpenAPI 3.0 spec |
-| **Logging** | Structured JSON logs, OpenTelemetry, Prometheus metrics |
-| **Multi-tenancy** | Aislamiento de datos por organización, resource quotas |
+| **Uptime** | 99.9% (Control Plane), 99.99% Enterprise |
+| **Latency** | <50ms policy check, <200ms memory search |
+| **Security** | SOC2 Type II, encryption at rest/transit |
+| **Data Residency** | US, EU, APAC; on-prem option |
+| **Audit Trails** | Inmutables, retention configurable |
+| **Scalability** | 10k+ concurrent tools por instancia |
+| **Exportabilidad** | Memoria, policies, audit trails exportables (no lock-in) |
+| **Compliance** | GDPR, SOC2, EU AI Act (Year 1) |
 
 ---
 
-## 5. User Stories (MVP)
+## 5. User Stories
+
+### CTO Journey
+```
+Como: CTO
+Quiero: Definir una política "ningún código con PII sale a modelos externos"
+Para: Que cualquier herramienta que mi equipo use respete esa regla
+Criterios:
+- Política se aplica a Claude Code, Cursor, Copilot y agentes custom
+- Audit trail muestra cada vez que se intentó violar
+- Reporte semanal de cumplimiento
+```
 
 ### Developer Journey
-
 ```
 Como: Developer
-Quiero: Escribir código con asistencia AI que recuerde mi proyecto
-Para: No tener que repetir contexto cada vez que trabajo
-
-Criterios de aceptación:
-- Chat entiende el contexto del proyecto actual
-- Puede leer/escribir archivos en el workspace
-- Recuerda decisiones y patrones entre sesiones
-- Sugiere código relevante basado en memoria histórica
+Quiero: Que mi memoria de contexto persista entre Cursor y Claude Code
+Para: No tener que re-explicar el proyecto cada vez que cambio de herramienta
+Criterios:
+- Memoria guardada desde Cursor aparece en Claude Code
+- Búsqueda semántica funciona igual desde cualquier tool
+- No hay duplicación de contexto
 ```
 
-### Admin Journey
-
+### Compliance Journey
 ```
-Como: Admin de plataforma
-Quiero: Ver quién usa cuántos tokens y qué modelos
-Para: Controlar costos y optimizar asignación de recursos
-
-Criterios de aceptación:
-- Dashboard con gasto por equipo/usuario
-- Alertas configurables por umbral de gasto
-- Reports exportables para finance
-- Capacidad de poner límites por equipo
+Como: Compliance Officer
+Quiero: Un audit trail de todas las interacciones AI de la empresa
+Para: Demostrar en auditoría que controlamos qué datos ven los LLMs
+Criterios:
+- Exportable a PDF/CSV
+- Hash chain que verifique inmutabilidad
+- Filtro por fecha, usuario, herramienta, modelo
 ```
 
 ---
 
-## 6. Metrics & Success Criteria
+## 6. Non-Goals (lo que NexusMind NO es)
 
-| Métrica | Target MVP | Target V1 |
+| ❌ No es | ✅ Es |
+|---|---|
+| Un reemplazo de Claude Code | Un complemento que le da memoria y gobierno |
+| Un reemplazo de Cursor | Un plugin que le da contexto cross-tool |
+| Un hosting de LLMs propios | Un BYOM gateway (trae tu propio modelo) |
+| Un IDE | Un control plane que funciona con cualquier IDE |
+| Un competidor de Copilot | Un integrador que potencia Copilot |
+| Otro agente AI | El orquestador de todos los agentes |
+
+---
+
+## 7. Business Model
+
+NexusMind no cobra por LLM usage (el cliente trae sus propias keys). Cobramos por:
+
+| Plan | Precio | Incluye |
 |---|---|---|
-| DAU/MAU ratio | >30% | >50% |
-| Sessions per user/day | >3 | >5 |
-| Memory retention rate | >70% | >85% |
-| Agent success rate | >80% | >95% |
-| NPS (Developers) | >40 | >60 |
-| NPS (Non-developers) | >30 | >50 |
-| Time-to-first-value | <5 min | <2 min |
-| P95 latency | <2s | <1s |
-| Uptime | 99.5% | 99.9% |
+| **Open Source** | Gratis | Memory API, policy engine básico, audit trail local |
+| **Team** | $49/mes | + Admin console, SSO, 5 policies, 30d retention |
+| **Enterprise** | Custom | + On-prem, SOC2, retention ilimitada, SLA, soporte dedicado |
+
+No hay costos de infra LLM para NexusMind. El cliente paga sus LLMs directamente. Esto nos permite escalar sin asumir riesgo de costos de inferencia.
 
 ---
 
-## 7. Dependencies & Constraints
+## 8. Metrics & Success Criteria
 
-### External Dependencies
-- **LLM Providers**: OpenAI, Anthropic, Google (API availability y pricing)
-- **Vector Infrastructure**: sqlite-vss / pgvector / Pinecone
-- **Auth Providers**: Google, Microsoft, Okta (SSO)
-- **Cloud Providers**: AWS/GCP/Azure (infra hosting)
-- **Open Source**: CrewAI, AutoGen, LangGraph (referencia, no dependencia)
-
-### Internal Constraints
-- **Team Size**: Equipo inicial de 5-8 personas
-- **Timeline**: MVP en 6 meses, V1 en 9 meses
-- **Budget**: Seed/Series A para cubrir 18 meses de desarrollo
-- **Tech Stack**: Go backend, React frontend, SQLite/PostgreSQL
+| Métrica | Target |
+|---|---|
+| Tools integradas en el ecosistema | 10+ en 12 meses |
+| Políticas activas por empresa | >15 |
+| Tasa de cumplimiento de políticas | >99% |
+| Latencia p95 de policy check | <50ms |
+| NPS (Developers) | >60 |
+| NPS (CTOs) | >70 |
+| Tiempo de integración de nueva tool | <1 día (con SDK) |
 
 ---
 
-## 8. Open Questions / Decisiones Pendientes
+## 9. Open Questions / Decisiones Pendientes
 
-| Pregunta | Impacto | Decisión Tentativa |
-|---|---|---|
-| Open-source core o proprietary? | Estrategia de adopción | Core abierto, enterprise features cerradas |
-| Modelo de pricing exacto? | Revenue model | Per-seat + usage credits |
-| On-prem desde el día 1 o después? | Arquitectura | MVP cloud-native, on-prem en V1 |
-| Soporte para cuáles modelos open-source? | Costos | Llama 3, Mistral, Qwen desde MVP |
-| Base de datos vectorial? | Arquitectura | sqlite-vss para MVP, pgvector para scale |
+| Pregunta | Decisión Tentativa |
+|---|---|
+| Open-source core o proprietary? | Core abierto (memory + policy engine), enterprise features cerradas |
+| MCP protocol o API propia? | Ambos: MCP para compatibilidad estándar, API para features avanzadas |
+| Cómo monetizar sin cobrar LLM? | SaaS (per-seat) + Enterprise (self-hosted) |
+| Plugins mantenidos por NexusMind o comunidad? | Core mantenido por equipo, community plugins con review |
+| Base de datos vectorial? | sqlite-vss para MVP, pgvector para scale |
 
 ---
 
-*Fin de PRD.md*
+*Fin de PRD.md v2.0*

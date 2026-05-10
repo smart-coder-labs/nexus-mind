@@ -1,335 +1,165 @@
 # NexusMind — Roadmap
 
-> **Documento**: ROADMAP.md  
-> **Versión**: 1.0  
-> **Fecha**: Mayo 2026  
-> **Propósito**: Timeline de desarrollo, milestones, y entregables quarter por quarter.
+> **Documento**: ROADMAP.md
+> **Versión**: 2.0
+> **Fecha**: Mayo 2026
+> **Propósito**: Roadmap actualizado. Prioridad #1: integraciones con herramientas existentes y memoria cross-tool. No construir UI propia hasta que el control plane funcione.
 
 ---
 
-## 1. Timeline Visual
+## 1. Filosofía del Roadmap
 
-```
-2025         2026                                   2027
-Q3    Q4    Q1         Q2         Q3         Q4         Q1         Q2
-│     │     │          │          │          │          │          │
-│     │     ├──────────┤          │          │          │          │
-│     │     │  F0      │          │          │          │          │
-│     │     │  Research│          │          │          │          │
-│     │     │  & Valid │          │          │          │          │
-│     │     ├──────────┼──────────┤          │          │          │
-│     │     │           │  F1     │          │          │          │
-│     │     │           │  Core   │          │          │          │
-│     │     │           │  Found. │          │          │          │
-│     │     │           ├──────────┼──────────┤          │          │
-│     │     │           │          │  F2      │          │          │
-│     │     │           │          │  Memory  │          │          │
-│     │     │           │          │  System  │          │          │
-│     │     │           │          ├──────────┼──────────┤          │
-│     │     │           │          │          │  F3      │          │
-│     │     │           │          │          │  Agent   │          │
-│     │     │           │          │          │  Runtime │          │
-│     │     │           │          │          ├──────────┼──────────┤
-│     │     │           │          │          │          │  F4      │
-│     │     │           │          │          │          │  Orchest │
-│     │     │           │          │          │          │  -ration │
-│     │     │           │          │          │          ├──────────┤
-│     │     │           │          │          │          │          │  F5
-│     │     │           │          │          │          │          │  Enterp.
-│     │     │           │          │          │          │          │
-├─────┴─────┴─────┬─────┴─────┬───┴─────┬─────┴─────┬───┴─────┬─────┤
-│                 │           │         │           │         │     │
-│   Pre-seed      │  Seed     │         │           │ Series A│     │
-│   $500k         │  $3-5M    │         │           │ $10-15M │     │
-│                 │           │         │           │         │     │
-│   MVP           │  Beta     │         │ Public    │         │     │
-│   Prototype     │  Closed   │         │ Launch    │         │     │
-└─────────────────┴───────────┴─────────┴───────────┴─────────┴─────┘
-```
+1. **Primero integraciones, después features.** El valor está en conectar herramientas existentes, no en construir las nuestras.
+2. **Pulgas vs. Elefantes.** Un plugin para Claude Code vale más que 100 líneas de UI propia.
+3. **BYOM primero.** No tocamos costos de LLM. El cliente trae sus keys.
+4. **Open-source como strategy.** Core abierto, enterprise features cerradas.
 
 ---
 
-## 2. Phase Detail: Q1 2026 (Research & Validation)
+## 2. Fase 1: MVP — "The Integrator" (Meses 1-6)
 
-**Goal**: Validar oportunidad de mercado y asegurar seed funding.
+**Objetivo**: Demostrar que NexusMind puede integrarse con las herramientas AI más populares y proveer valor inmediato.
 
-### Milestones
+### Hitos
 
-| Milestone | Date | Status |
+| Mes | Hito | Métrica de Éxito |
 |---|---|---|
-| Market research complete | Week 2 | ✅ |
-| 20 customer interviews | Week 4 | ✅ |
-| PRD v1 complete | Week 4 | ✅ |
-| Architecture v1 complete | Week 5 | ✅ |
-| Engineering process documented | Week 5 | ✅ |
-| Business model + pricing defined | Week 6 | ✅ |
-| Seed pitch deck ready | Week 8 | 🔄 |
+| M1 | Plugin Claude Code (MCP) + Memory API | 10 developers probándolo |
+| M2 | Plugin Cursor + Policy Engine básico | 50 developers, 3 empresas piloto |
+| M3 | Plugin GitHub Copilot + Audit Trail | 100 developers, 10 empresas |
+| M4 | SDK Python + TypeScript + OpenSpec API | 3 plugins comunitarios |
+| M5 | Open-source release (GitHub) | 100 stars, 20 forks |
+| M6 | Admin Console (dashboard + analytics) | 20 empresas activas, $2K MRR |
 
-### Key Deliverables
-```
-┌──────────────────────────────────────────────┐
-│               Q1 2026 OUTPUTS                 │
-├──────────────────────────────────────────────┤
-│  1. MARKET_RESEARCH.md   ← This document     │
-│  2. PRD.md               ← You are here      │
-│  3. ARCHITECTURE.md      ← System design     │
-│  4. API_SPEC.md          ← API reference     │
-│  5. ENGINEERING_PROCESS.md ← Build plan      │
-│  6. BUSINESS_MODEL.md    ← Pricing + GTM     │
-│  7. COMPETITIVE_MATRIX.md ← Competitors      │
-│  8. RISK_ANALYSIS.md     ← Risk assessment   │
-│  9. ROADMAP.md           ← This document     │
-└──────────────────────────────────────────────┘
-```
+### Features
 
-### External Events
-- Pre-seed raise ($500k from angels/VCs)
-- Hire first 3 engineers (Go backend, React frontend, ML/AI)
-- Setup legal entity (France — SAS)
-- Open-source Engram-inspired core as community builder
+- **Integraciones:** Claude Code (MCP), Cursor (Plugin), Copilot (Extension), OpenCode (MCP)
+- **Memory API:** Store, search, semantic query. SQLite FTS5 + sqlite-vss.
+- **Policy Engine:** 5 políticas predefinidas + API para custom policies en YAML
+- **Audit Trail:** Append-only log con búsqueda básica
+- **SDKs:** Python + TypeScript + Go
+- **Deploy:** Docker compose + single binary
+- **Open-source:** Core bajo Apache 2.0 en GitHub
+
+### Arquitectura Target
+
+```
+[Claude Code] ─┐
+[Cursor]      ─┤
+[Copilot]     ─┼── NexusMind API ── SQLite (memoria + policies + audit)
+[OpenCode]    ─┤
+[Cline]       ─┘
+                    │
+                    └── BYOM: OpenAI, Claude, Google, Local LLM (cliente trae keys)
+```
 
 ---
 
-## 3. Phase Detail: Q2 2026 (Core Foundation)
+## 3. Fase 2: Crecimiento — "The Control Plane" (Meses 7-12)
 
-**Goal**: Single binary funcional con CLI, HTTP API, MCP server, SQLite.
+**Objetivo**: Consolidar NexusMind como el control plane estándar para equipos que usan AI.
 
-### Milestones
+### Hitos
 
-| Milestone | Date | Dependencies |
+| Mes | Hito | Métrica de Éxito |
 |---|---|---|
-| Project scaffolding + directory structure | Week 10 | Engineers hired |
-| CLI skeleton (cobra commands) | Week 11 | — |
-| HTTP server with Chi router + middleware | Week 12 | — |
-| SQLite schema + migrations | Week 13 | DB design from ARCHITECTURE.md |
-| User auth (JWT + API keys) | Week 14 | Schema ready |
-| MCP server with base tools | Week 15 | — |
-| React frontend scaffold | Week 16 | — |
-| Login/signup flow (frontend) | Week 17 | Auth ready |
-| Core integration tests | Week 18 | All above |
-| **MVP Demo: `nexusmind start` → server running** | **Week 18** | **—** |
+| M7 | Team plan lanzado (SaaS auto-serve) | 50 equipos pagando |
+| M8 | Enterprise plan (self-hosted) | 5 clientes enterprise |
+| M9 | Multi-agent orchestration (Chain, Fan-out, Handoff) | 100+ agentes orquestados/día |
+| M10 | SOC2 Type I + GDPR compliance docs | 10+ demos enterprise/mes |
+| M11 | 15+ tools integradas | Ecosistema crítico |
+| M12 | $45K MRR, 200 clientes, 10 enterprise | Sostenibilidad |
 
-### Team Needed
-- 1 Go backend engineer
-- 1 React frontend engineer
-- 1 ML/AI engineer (part-time, preparing for memory phase)
+### Features
 
-### Key Risks
-- Hiring delays → compress scope (drop some CLI features)
-- Auth complexity → use Auth0 as middleware initially (replace later)
+- **Multi-agent Orchestration:** Chain, Fan-out, Voting, Handoff patterns
+- **Enterprise Admin Console:** RBAC granular, custom roles, SSO
+- **Team Plan:** Self-serve signup, team management, billing
+- **Enterprise Plan:** Self-hosted (Docker/K8s/single binary), SLA, soporte dedicado
+- **SOC2:** Type I completed, Type II iniciado
+- **GDPR:** Documentation, DPA, data residency choices
+- **Integraciones nuevas:** Windsurf, Cline, Roo Code, agentes custom (SDK)
 
 ---
 
-## 4. Phase Detail: Q3 2026 (Memory System)
+## 4. Fase 3: Escalamiento — "The Platform" (Meses 13-24)
 
-**Goal**: Sistema de memoria persistente con hybrid search.
+**Objetivo**: Escalar a $1.2M ARR con foco enterprise y ecosistema de integraciones.
 
-### Milestones
+### Hitos
 
-| Milestone | Date | Dependencies |
+| Mes | Hito | Métrica de Éxito |
 |---|---|---|
-| Episodic memory CRUD + FTS5 | Week 19 | SQLite schema |
-| Full-text search with BM25 ranking | Week 21 | FTS5 index |
-| Embedding service (all-MiniLM-L6-v2) | Week 22 | ML engineer |
-| Vector search with pgvector | Week 23 | PostgreSQL migration |
-| Hybrid search (FTS + vector weighted) | Week 24 | Both search types |
-| Auto-summarization pipeline | Week 26 | Context window mgr |
-| Context window manager (sliding/relevance) | Week 27 | Summarizer |
-| Memory consolidation (auto-summarize sessions) | Week 28 | Summarizer |
-| Memory UI (search, timeline, stats) | Week 30 | Frontend |
-| **Memory System Alpha** | **Week 30** | **—** |
+| M15 | $100K MRR | Cash flow positive ops |
+| M18 | SOC2 Type II + HIPAA readiness | Enterprise pipeline >$500K |
+| M20 | Marketplace de plugins (20+ plugins de comunidad) | 5% revenue de marketplace |
+| M24 | $1.2M ARR, 500+ clientes | Series A ready |
 
-### Technical Decisions
-- SQLite FTS5 for local/on-prem deployments
-- pgvector for cloud deployments
-- Embeddings computed async (queue-based)
-- Summarizer runs on session end (non-blocking)
+### Features
 
-### Key Risks
-- Embedding model performance → benchmark before committing
-- Memory delta size → implement sliding window from day 1
-- User data sensitivity → encryption + RBAC on memory entries
+- **Marketplace:** Plugins de terceros, revenue share 80/20
+- **Custom Agent Builder:** Visual workflow + code editor
+- **HIPAA compliance:** BAA, PHI handling, audit enhancements
+- **Advanced Analytics:** Cost optimization recommendations, usage patterns
+- **API v2:** GraphQL, webhooks, real-time events
 
 ---
 
-## 5. Phase Detail: Q4 2026 (Agent Runtime)
+## 5. Fase 4: Dominio — "The Standard" (Año 3+)
 
-**Goal**: Agentes multi-modelo con sandbox y tool execution.
+**Objetivo**: Ser el estándar de facto para control plane AI en empresas.
 
-### Milestones
+### Hitos
 
-| Milestone | Date | Dependencies |
+| Mes | Hito |
+|---|---|
+| M30 | $3M ARR |
+| M36 | $4.5M ARR, profitable |
+| M48 | 2,000+ clientes, 50+ enterprise >$50K ARR |
+
+### Features
+
+- **ISO 27001**
+- **AI Governance Suite:** Automated compliance reporting
+- **Private Cloud:** AWS/GCP/Azure marketplace deployments
+- **Global:** Data residency APAC, LATAM, Middle East
+
+---
+
+## 6. Lo que NO construimos (a propósito)
+
+| No construimos | Razón |
+|---|---|
+| Un chat AI propio | Claude/ChatGPT ya lo hacen mejor. Preferimos integrarlos |
+| Un IDE | Cursor/VSCode ya existen. Preferimos plugins |
+| Un hosting de LLMs | BYOM evita costos y lock-in |
+| Un competidor de Copilot | Mejor potenciar Copilot que reemplazarlo |
+| Una UI para developers | Los plugins se integran en su flujo actual |
+
+---
+
+## 7. Dependencias Externas
+
+| Dependencia | Riesgo | Alternativa |
 |---|---|---|
-| Model gateway (OpenAI, Anthropic, Google) | Week 31 | — |
-| Smart routing (cost, latency, fallback) | Week 32 | Multi-model support |
-| LLM cache (LRU + semantic dedup) | Week 33 | Cache layer |
-| Sandbox container (gVisor) | Week 35 | DevOps infra |
-| Tool definitions (JSON Schema) | Week 36 | Sandbox ready |
-| Tool executor (Python, JS, Go runtimes) | Week 38 | Tool definitions |
-| Chat interface with SSE streaming | Week 39 | Frontend |
-| Agent selector + model selector UI | Week 40 | Chat interface |
-| Context panel (memory visible, editable) | Week 42 | — |
-| Session management UI | Week 44 | Agent runtime |
-| **Agent Runtime Beta (closed)** | **Week 44** | **—** |
-
-### Team Expansion
-- +1 ML/AI engineer (model gateways, cache, routing)
-- +1 DevOps engineer (sandbox, containerization, CI/CD)
-
-### Key Risks
-- Model provider API changes → abstracted behind gateway
-- Sandbox security → gVisor + capability drop + timeouts
-- Streaming latency → <500ms first token target
+| APIs de Cursor, Copilot, etc. | Cambios breaking en APIs | MCP como protocolo universal, fallback REST |
+| sqlite-vss (vectors) | Mantenimiento comunitario | pgvector (PostgreSQL) |
+| Modelos open-source (Llama, Mistral) | Calidad inferior a GPT/Claude | BYOM permite elegir cualquier modelo |
 
 ---
 
-## 6. Phase Detail: Q1 2027 (Orchestration)
-
-**Goal**: Orquestación de sub-agentes con DAG workflows.
-
-### Milestones
-
-| Milestone | Date | Dependencies |
-|---|---|---|
-| Agent CRUD + spec definitions | Week 45 | Agent runtime |
-| Agent lifecycle state machine | Week 46 | Agent CRUD |
-| Health checks + auto-recovery | Week 47 | State machine |
-| DAG definition language (YAML) | Week 48 | — |
-| DAG executor with parallel nodes | Week 49 | DAG parser |
-| Error handling strategies (fail, skip, retry) | Week 50 | DAG executor |
-| Sub-agent handoff protocol | Week 51 | — |
-| Result aggregation + conflict resolution | Week 52 | Handoff |
-| Task scheduler (cron-like) | Week 53 | Workflow engine |
-| DAG visualizer (frontend) | Week 56 | — |
-| **Public Launch v1.0** | **Week 56** | **Everything above** |
-
-### Key Differentiator
-DAG workflows con sub-agents jerárquicos + memoria compartida es la feature que ningún competidor tiene.
-
----
-
-## 7. Phase Detail: Q2 2027 (Enterprise + GTM)
-
-**Goal**: Características enterprise completas y lanzamiento comercial.
-
-### Milestones
-
-| Milestone | Date | Dependencies |
-|---|---|---|
-| Admin dashboard with KPIs | Week 57 | — |
-| User management + invite flow | Week 58 | Auth |
-| Team management | Week 59 | User management |
-| API Keys management | Week 60 | — |
-| RBAC with custom roles | Week 62 | — |
-| Policy engine (Casbin) | Week 63 | RBAC |
-| SSO (SAML 2.0, OIDC) | Week 64 | — |
-| SCIM provisioning | Week 65 | SSO |
-| Immutable audit trails (HMAC chain) | Week 66 | — |
-| Billing system (Stripe) | Week 67 | — |
-| Quota management | Week 68 | Billing |
-| Non-developer agent templates (Support, Data, Ops) | Week 72 | Agent runtime |
-| Agent marketplace | Week 74 | Templates |
-| Custom Agent Builder (drag & drop) | Week 76 | Marketplace |
-| SOC2 Type I audit | Week 78 | All enterprise features |
-| Beta program (20 companies) | Week 80 | SOC2 |
-| **v1.0 General Availability** | **Week 88** | **Beta feedback** |
-
-### Sales Targets
-- 20 beta customers by Week 80
-- 500 paid seats by Week 88
-- $2.5M ARR by end of Q2 2027
-
----
-
-## 8. Phase Timeline: Q3 2027+ (Scale)
-
-**Goal**: Escalar a $10M+ ARR y preparar Series B.
-
-| Quarter | Focus | Target Metric |
-|---|---|---|
-| Q3 2027 | Enterprise sales push | 100 customers, $5M ARR |
-| Q4 2027 | International expansion (UK, Germany) | $8M ARR |
-| Q1 2028 | Partner channel (SI partners) | $12M ARR |
-| Q2 2028 | APAC expansion (Japan, Singapore) | $20M ARR |
-| Q3 2028 | Enterprise features v2 (advanced compliance) | $30M ARR |
-| Q4 2028 | AI Agent Marketplace launch | $50M ARR |
-
----
-
-## 9. Dependency Graph
+## 8. Hitos de Revenue
 
 ```
-F0: Market Research
-  └── F1: Core Foundation
-        └── F2: Memory System
-              └── F3: Agent Runtime
-                    └── F4: Orchestration
-                          └── F5: Enterprise Layer
-                                └── F6: Non-dev Agents + Marketplace
-                                      └── F7: Beta + SOC2 + Launch
-```
-
-**Parallel work allowed**:
-- F1 Frontend (login, scaffold) puede empezar mientras F1 Backend termina
-- F5 Audit trails puede empezar cuando F1 Auth esté listo (no necesita esperar F4)
-- F6 Agent templates puede empezar cuando F3 Agent Runtime esté estable
-
----
-
-## 10. Team Growth
-
-```
-Phase       │ Total   │ Backend │ Frontend │ ML/AI   │ DevOps │ S&M    │ PM
-────────────┼─────────┼─────────┼──────────┼─────────┼────────┼────────┼────
-Pre-seed    │ 3       │ 1       │ 1        │ 0.5     │ 0.5    │ 0      │ 0
-Seed (Q1)   │ 6       │ 2       │ 1        │ 1       │ 1      │ 0.5    │ 0.5
-Core (Q2)   │ 8       │ 2       │ 2        │ 1       │ 1      │ 1      │ 1
-Memory (Q3) │ 10      │ 2       │ 2        │ 2       │ 1      │ 1.5    │ 1
-Agent (Q4)  │ 14      │ 3       │ 2        │ 3       │ 1      │ 3      │ 1
-Orch (Q1)   │ 18      │ 3       │ 3        │ 3       │ 2      │ 5      │ 1
-Enterp (Q2) │ 25+     │ 4       │ 3        │ 3       │ 2      │ 10     │ 2
-│
-│ Legend:
-│   F/T: Full-time / Part-time
-│   S&M: Sales & Marketing
-│   PM: Product Management
+$0     M1 ── Lanzamiento open-source
+$2K    M6 ── Primeros clientes Team plan
+$45K   M12 ─ Team + Enterprise
+$200K  M18 ─ Enterprise growth
+$500K  M24 ─ Series A ready
+$1.2M  M30 ─ Growth stage
+$4.5M  M36 ─ Profitable
 ```
 
 ---
 
-## Appendix A: Risk-Adjusted Timeline
-
-Las fechas asumen un equipo completo y sin interrupciones. Ajuste realista:
-
-| Risk | Impact on Timeline | Buffer Applied |
-|---|---|---|
-| Hiring delays (+2 months) | +2 months to all milestones | Milestones padded 2 weeks each |
-| Technical debt from speed | +1 month by F4 | Code review buffer |
-| Pivot from customer feedback | +2 months | (not in plan — contingency) |
-| Competitor surprise launch | +0 (reprioritize) | — |
-| Total buffer | ~4 months | GA: Q2 2027 → Q3-Q4 2027 realistic |
-
----
-
-## Appendix B: Quick Reference
-
-```
-Key Dates:
-  Q1 2026 → Research & Validation (we are here)
-  Q2 2026 → Core Foundation (MVP: single binary)
-  Q3 2026 → Memory System (hybrid search alpha)
-  Q4 2026 → Agent Runtime (closed beta)
-  Q1 2027 → Orchestration (public launch v1.0)
-  Q2 2027 → Enterprise + GTM (GA + SOC2)
-  Q3 2027 → Scale (Series B target)
-
-Funding:
-  Pre-seed ($500k) → Seed ($3-5M) → Series A ($10-15M) → Series B ($30-50M)
-
-Team:
-  3 → 6 → 10 → 14 → 18 → 25+ (over 2 years)
-```
-
----
-
-*Fin de ROADMAP.md*
+*Fin de ROADMAP.md v2.0*

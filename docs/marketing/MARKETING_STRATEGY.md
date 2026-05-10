@@ -2,19 +2,29 @@
 
 ## 1. Posicionamiento
 
-**Mensaje clave:** "La plataforma de AI que unifica a tus equipos."
+**Mensaje clave:** "El control plane que unifica todas las herramientas AI de tu empresa."
 
-**Tagline:** NexusMind reemplaza 5 herramientas (Copilot + CrewAI + Mem0 + Retool + Okta) en una sola plataforma con memoria persistente, agentes para todos y gobierno enterprise.
+**Tagline:** NexusMind no reemplaza tus herramientas AI — las potencia con memoria persistente, políticas de gobierno y trazabilidad total, sin importar qué agente, qué IDE o qué modelo uses.
 
-**Posicionamiento frente a competidores:**
+### Nuestra Propuesta de Valor
 
-| Competidor | Lo que hacen bien | Lo que NexusMind hace mejor |
+NexusMind es el **control plane universal** para herramientas AI. No competimos con Claude Code, Cursor, Copilot, OpenCode ni ningún agente. Al contrario:
+
+- **Para Developers:** Memoria cross-tool. Lo que aprendiste en Cursor está disponible en Claude Code.
+- **Para CTOs:** Un panel donde defines las reglas y cualquier herramienta las cumple.
+- **Para Compliance:** Audit trail de todas las interacciones AI de la empresa, sin importar la herramienta.
+- **Para Equipos:** Orquestación multi-agente. Claude Code + CrewAI + Copilot coordinados.
+
+**Competimos contra el vacío, no contra herramientas.**
+
+**Posicionamiento frente a competidores indirectos:**
+
+| Competidor | Lo que hacen | Cómo nos diferenciamos |
 |---|---|---|
-| GitHub Copilot | Coding assistant integrado en IDE | Memoria persistente + agentes no-dev + governance |
-| Cursor / Windsurf | IDE nativo AI | Multi-modelo, orquestación, memoria cross-session |
-| Mem0 / Engram | Memoria persistente | Plataforma completa, agents, enterprise admin |
-| CrewAI | Orquestación de agentes | Interfaz visual, memoria, non-dev agents |
-| Retool | Herramientas internas | AI agents que construyen tools automáticamente |
+| LangSmith/LangFuse | Observabilidad de LLM | Memoria cross-tool + policies engine |
+| Guardrails AI | Validación de outputs | Orquestación + memoria + políticas |
+| Helicone/Portkey | Proxy de LLM | Control plane completo (no solo proxy) |
+| Anthropic/Microsoft | Podrían añadir gobierno | Somos tool-agnostic, no vendor lock-in |
 
 ---
 
