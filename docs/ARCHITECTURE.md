@@ -11,10 +11,12 @@
 
 NexusMind NO es una herramienta AI más. Es un **control plane** que se sienta *entre* las herramientas AI y los LLMs, proveyendo:
 
-1. **Memoria persistente cross-tool** — El contexto del proyecto vive en NexusMind, no en la herramienta
-2. **Policy Engine** — Reglas de negocio que se aplican a cualquier herramienta
-3. **Audit Trail** — Registro inmutable de todas las interacciones
-4. **Orquestación multi-agent** — Coordinación de herramientas heterogéneas
+1. **Identidad y Autenticación** — Saber quién es cada usuario, qué herramienta usa, y desde dónde se conecta
+2. **Autorización granular** — RBAC + ABAC para decidir qué puede hacer cada quién
+3. **Memoria persistente cross-tool** — El contexto del proyecto vive en NexusMind, no en la herramienta
+4. **Policy Engine** — Reglas de negocio que se aplican a cualquier herramienta
+5. **Audit Trail** — Registro inmutable de todas las interacciones
+6. **Orquestación multi-agent** — Coordinación de herramientas heterogéneas
 
 ```
                     ┌─────────────────────────────────┐
@@ -59,6 +61,40 @@ NexusMind NO es una herramienta AI más. Es un **control plane** que se sienta *
 ---
 
 ## 2. Componentes Principales
+
+### 2.0 Identity & Auth Gateway
+
+Antes de que cualquier request llegue al Policy Gateway, pasa por la capa de identidad.
+
+Ver [AUTH_SPEC.md](./AUTH_SPEC.md) para la especificación completa.
+
+```
+Request (Tool + User)
+       │
+       ▼
+┌─────────────────────────────┐
+│  AUTH GATEWAY               │
+│                             │
+│  1. Validate JWT / API Key  │
+│  2. Verify tool identity    │
+│  3. Device fingerprint      │
+│  4. IP reputation check     │
+│  5. Rate limit              │
+└─────────────┬───────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│  SESSION MANAGER            │
+│                             │
+│  1. Resolve user + roles    │
+│  2. Resolve tool scopes     │
+│  3. Attach context (project,│
+│     sensitivity level)      │
+└─────────────┬───────────────┘
+               │
+               ▼
+     → Policy Gateway
+```
 
 ### 2.1 Policy Gateway
 

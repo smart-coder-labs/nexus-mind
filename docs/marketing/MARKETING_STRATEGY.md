@@ -14,6 +14,7 @@ NexusMind es el **control plane universal** para herramientas AI. No competimos 
 - **Para CTOs:** Un panel donde defines las reglas y cualquier herramienta las cumple.
 - **Para Compliance:** Audit trail de todas las interacciones AI de la empresa, sin importar la herramienta.
 - **Para Equipos:** Orquestación multi-agente. Claude Code + CrewAI + Copilot coordinados.
+- **Para Security:** Sabemos quién se conecta, desde dónde, con qué herramienta, y qué memoria puede leer. SSO, MFA, device fingerprint, isolation por proyecto y nivel de sensibilidad.
 
 **Competimos contra el vacío, no contra herramientas.**
 

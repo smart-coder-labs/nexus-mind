@@ -248,7 +248,10 @@ GET  /v1/context/project    ← Obtener contexto del proyecto
 |---|---|
 | **Uptime** | 99.9% (Control Plane), 99.99% Enterprise |
 | **Latency** | <50ms policy check, <200ms memory search |
-| **Security** | SOC2 Type II, encryption at rest/transit |
+| **Security** | SOC2 Type II, encryption at rest/transit, AuthN/AuthZ granular |
+| **Identity** | SSO (SAML/OIDC/SCIM), device fingerprint, tool identity |
+| **Authorization** | RBAC híbrido + ABAC, Rego policies, permisos granulares |
+| **Memory Isolation** | Proyecto + sensibilidad + herramienta + rol |
 | **Data Residency** | US, EU, APAC; on-prem option |
 | **Audit Trails** | Inmutables, retention configurable |
 | **Scalability** | 10k+ concurrent tools por instancia |

@@ -33,11 +33,20 @@
 
 ### Features
 
+- **Identidad y Auth:** — P0, crítica para seguridad
+  - SSO (SAML 2.0 + OIDC) con Okta, Azure AD, Google
+  - SCIM sync para users/groups automático
+  - API Keys con scopes y rate limiting
+  - Device fingerprint para CLI/IDE
+  - JWT session management con refresh
 - **Integraciones:** Claude Code (MCP), Cursor (Plugin), Copilot (Extension), OpenCode (MCP)
 - **Memory API:** Store, search, semantic query. SQLite FTS5 + sqlite-vss.
+- **Memory Isolation:** Por proyecto + nivel de sensibilidad
 - **Policy Engine:** 5 políticas predefinidas + API para custom policies en YAML
 - **Audit Trail:** Append-only log con búsqueda básica
+- **RBAC:** Roles Super Admin, Security Officer, Developer, Viewer
 - **SDKs:** Python + TypeScript + Go
+- **Admin Console:** Session dashboard en tiempo real
 - **Deploy:** Docker compose + single binary
 - **Open-source:** Core bajo Apache 2.0 en GitHub
 
