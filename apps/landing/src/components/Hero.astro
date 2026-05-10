@@ -1,0 +1,66 @@
+---
+// Hero section
+---
+
+<section class="relative min-h-screen flex items-center overflow-hidden bg-surface">
+  <!-- Subtle grid background -->
+  <div class="absolute inset-0 pointer-events-none" style="background-image: radial-gradient(rgba(59,130,246,0.1) 1px, transparent 1px); background-size: 40px 40px;"></div>
+  <!-- Glow orb -->
+  <div class="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full bg-accent/5 blur-3xl pointer-events-none"></div>
+
+  <div class="max-w-6xl mx-auto px-4 w-full relative z-10 pt-24 pb-16">
+    <div class="flex justify-center mb-8">
+      <span id="heroBadge" class="inline-flex items-center gap-2 text-xs font-medium text-blue-300 bg-blue-500/10 border border-blue-500/20 px-4 py-1.5 rounded-full" style="opacity:0; transform: translateY(10px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1);">
+        <span class="w-1.5 h-1.5 rounded-full bg-blue-400" style="animation: pulse-badge 2s ease-in-out infinite;"></span>
+        Enterprise AI Platform — Private Beta
+      </span>
+    </div>
+
+    <div class="text-center max-w-4xl mx-auto">
+      <h1 id="heroTitle" class="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.05]" style="opacity:0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;">
+        La plataforma de AI<br/>
+        <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-blue-300 to-emerald-300">que unifica a tus equipos</span>
+      </h1>
+      <p id="heroSub" class="mt-6 text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto leading-relaxed" style="opacity:0; transform: translateY(20px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.3s;">
+        Coding assistants, agentes autónomos, memoria persistente y gobierno enterprise — todo en una plataforma. Para developers y no-developers.
+      </p>
+    </div>
+
+    <div id="heroCtas" class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4" style="opacity:0; transform: translateY(20px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.45s;">
+      <a href="#waitlist" class="bg-accent hover:bg-blue-500 text-white px-8 py-3.5 rounded-full text-base font-semibold transition-all duration-300 inline-flex items-center gap-2 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.02] active:scale-[0.98]">
+        Join the Waitlist
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </a>
+      <a href="#waitlist" onclick="document.getElementById('waitlist')?.scrollIntoView({behavior:'smooth'});return false;" class="border border-slate-600 hover:border-accent/50 text-slate-300 hover:text-white px-8 py-3.5 rounded-full text-base font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">
+        Request Enterprise Demo
+      </a>
+    </div>
+
+    <div id="heroStats" class="mt-16 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-slate-500" style="opacity:0; transform: translateY(20px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.6s;">
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-accent"></span>
+        47+ enterprises on waitlist
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-accent"></span>
+        SOC2 compliant
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-accent"></span>
+        On-prem available
+      </span>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Staggered entrance animation
+  const els = ['heroBadge', 'heroTitle', 'heroSub', 'heroCtas', 'heroStats'].map(id => document.getElementById(id));
+  els.forEach((el, i) => {
+    if (!el) return;
+    setTimeout(() => {
+      el.style.opacity = '1';
+      el.style.transform = 'translateY(0)';
+    }, i * 120);
+  });
+</script>

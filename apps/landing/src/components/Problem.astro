@@ -1,0 +1,49 @@
+---
+// Problem section
+---
+
+<section class="py-20 px-4" data-reveal>
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-12">
+      <span class="text-xs font-semibold tracking-widest text-red-400 uppercase">The Problem</span>
+      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Tu stack AI está fragmentado</h2>
+      <p class="text-slate-400 mt-3 max-w-lg mx-auto">Y cada herramienta nueva añade complejidad, no la quita.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-6">
+      {[
+        { icon: '🧩', title: 'Herramientas Fragmentadas', desc: '5 herramientas AI distintas en tu empresa. Cada una con su login, su factura, su equipo aprendiendo desde cero.' },
+        { icon: '🧠', title: 'Conocimiento Perdido', desc: 'Un developer se va y el contexto del proyecto se va con él. La memoria muere cuando la persona se cambia de equipo.' },
+        { icon: '🔍', title: 'Gobierno Inexistente', desc: 'Sin audit trails, sin data residency, sin RBAC. Tus datos están en servidores que no controlas.' },
+      ].map((item, i) => (
+        <div class="feature-card text-center" data-reveal data-reveal-delay={i * 150}>
+          <div class="text-4xl mb-4">{item.icon}</div>
+          <h3 class="text-lg font-semibold text-white mb-2">{item.title}</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">{item.desc}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .feature-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 1rem;
+    padding: 1.75rem;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .feature-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(59,130,246,0.08), transparent 60%);
+    opacity: 0;
+    transition: opacity 0.4s;
+  }
+  .feature-card:hover::before { opacity: 1; }
+  .feature-card:hover { transform: translateY(-3px); border-color: rgba(59,130,246,0.2); }
+</style>

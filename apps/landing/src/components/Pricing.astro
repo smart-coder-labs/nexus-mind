@@ -1,0 +1,71 @@
+---
+// Pricing tiers
+---
+
+<section id="pricing" class="py-20 px-4 bg-surface-alt">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14" data-reveal>
+      <span class="text-xs font-semibold tracking-widest text-accent uppercase">Pricing</span>
+      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Planes simples. Sin sorpresas.</h2>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
+      <!-- Developer -->
+      <div class="rounded-2xl p-7 flex flex-col" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);" data-reveal>
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Developer</span>
+        <div class="mt-3">
+          <span class="text-3xl font-extrabold text-white">$29</span>
+          <span class="text-slate-500 text-sm">/seat/mo</span>
+        </div>
+        <p class="text-slate-400 text-sm mt-2">Para developers individuales que necesitan AI + memoria.</p>
+        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> AI coding assistant</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> 5GB persistent memory</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> 3 models (GPT-4o, Sonnet, Gemini)</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> FTS search</li>
+          <li class="flex items-center gap-2 text-slate-600"><span class="text-slate-600">✕</span> No orchestration</li>
+          <li class="flex items-center gap-2 text-slate-600"><span class="text-slate-600">✕</span> No enterprise admin</li>
+        </ul>
+        <a href="#waitlist" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">Join Waitlist</a>
+      </div>
+
+      <!-- Team (featured) -->
+      <div class="rounded-2xl p-7 flex flex-col relative border-accent/20" style="background: rgba(255,255,255,0.07); backdrop-filter: blur(20px); border: 1px solid rgba(59,130,246,0.2);" data-reveal data-reveal-delay="150">
+        <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-[10px] font-semibold px-3 py-1 rounded-full">Most Popular</div>
+        <span class="text-xs font-semibold text-blue-300 uppercase tracking-wider">Team</span>
+        <div class="mt-3">
+          <span class="text-3xl font-extrabold text-white">$49</span>
+          <span class="text-slate-500 text-sm">/seat/mo</span>
+        </div>
+        <p class="text-slate-400 text-sm mt-2">Para equipos que necesitan governance + orquestación.</p>
+        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Todo lo de Developer +</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> 50GB persistent memory</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Hybrid search (FTS + Vector)</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> DAG workflows (10 max)</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Admin console + RBAC</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> 5,000 agent runs/seat/mo</li>
+        </ul>
+        <a href="#waitlist" class="mt-6 block w-full bg-accent hover:bg-blue-500 text-white text-center py-2.5 rounded-full text-sm font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 active:scale-[0.98]">Join Waitlist</a>
+      </div>
+
+      <!-- Enterprise -->
+      <div class="rounded-2xl p-7 flex flex-col" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);" data-reveal data-reveal-delay="300">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Enterprise</span>
+        <div class="mt-3">
+          <span class="text-3xl font-extrabold text-white">Custom</span>
+        </div>
+        <p class="text-slate-400 text-sm mt-2">Para organizaciones que necesitan control total.</p>
+        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Todo lo de Team +</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Storage ilimitado</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> On-prem deployment</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> SOC2 + audit trails inmutables</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> SLA 99.95% + support dedicado</li>
+          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> BYOM + custom models</li>
+        </ul>
+        <a href="#waitlist" onclick="document.getElementById('waitlist')?.scrollIntoView({behavior:'smooth'});return false;" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">Contact Sales</a>
+      </div>
+    </div>
+  </div>
+</section>

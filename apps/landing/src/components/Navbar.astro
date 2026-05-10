@@ -1,0 +1,67 @@
+---
+// Navbar — glass nav that hides/shows on scroll
+---
+
+<nav id="navbar" class="fixed top-0 left-0 w-full z-50 transition-all duration-500" style="transform: translateY(-100%)">
+  <div class="max-w-6xl mx-auto flex items-center justify-between h-16 px-4">
+    <a href="#" class="text-lg font-bold tracking-tight text-white">
+      Nexus<span class="text-accent">Mind</span>
+    </a>
+    <div class="hidden sm:flex items-center gap-6 text-sm text-slate-400">
+      <a href="#features" class="hover:text-white transition-colors duration-200">Features</a>
+      <a href="#pricing" class="hover:text-white transition-colors duration-200">Pricing</a>
+      <a href="#early" class="hover:text-white transition-colors duration-200">Early Access</a>
+      <a href="#waitlist" class="bg-accent hover:bg-blue-500 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/25">Join Waitlist</a>
+    </div>
+    <!-- Mobile menu button -->
+    <button id="mobileMenuBtn" class="sm:hidden text-slate-300 hover:text-white p-2" aria-label="Toggle menu">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="3" y1="6" x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/>
+        <line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <!-- Mobile nav panel -->
+  <div id="mobileNav" class="sm:hidden bg-surface/95 backdrop-blur-xl border-t border-white/5 max-h-0 overflow-hidden transition-all duration-300">
+    <div class="flex flex-col gap-3 px-4 py-4 text-sm text-slate-300">
+      <a href="#features" class="hover:text-white transition-colors py-1">Features</a>
+      <a href="#pricing" class="hover:text-white transition-colors py-1">Pricing</a>
+      <a href="#early" class="hover:text-white transition-colors py-1">Early Access</a>
+      <a href="#waitlist" class="bg-accent hover:bg-blue-500 text-white text-center py-2 rounded-full font-medium transition-all">Join Waitlist</a>
+    </div>
+  </div>
+</nav>
+
+<script>
+  const nav = document.getElementById('navbar')!;
+  const mobileBtn = document.getElementById('mobileMenuBtn')!;
+  const mobileNav = document.getElementById('mobileNav')!;
+  let lastScroll = 0;
+  let mobileOpen = false;
+
+  window.addEventListener('scroll', () => {
+    const current = window.scrollY;
+    if (current > 200 && current > lastScroll) {
+      nav.style.transform = 'translateY(-100%)';
+    } else if (current > 200) {
+      nav.style.transform = 'translateY(0)';
+    } else {
+      nav.style.transform = 'translateY(-100%)';
+    }
+    lastScroll = current;
+  });
+
+  mobileBtn.addEventListener('click', () => {
+    mobileOpen = !mobileOpen;
+    mobileNav.style.maxHeight = mobileOpen ? '300px' : '0';
+  });
+
+  // Close mobile nav on link click
+  mobileNav.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      mobileOpen = false;
+      mobileNav.style.maxHeight = '0';
+    });
+  });
+</script>

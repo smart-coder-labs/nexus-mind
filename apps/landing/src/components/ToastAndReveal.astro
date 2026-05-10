@@ -1,0 +1,64 @@
+---
+// Toast notification + confetti + reveal observer
+---
+
+<div id="toast" class="fixed bottom-6 right-6 z-[999] px-6 py-3 rounded-xl shadow-2xl text-sm font-medium pointer-events-none transition-all duration-500" style="background: #065f46; color: #d1fae5; border: 1px solid rgba(16,185,129,0.2); max-width: 400px; transform: translateY(120px); opacity: 0;"></div>
+
+<script>
+  // Toast system
+  window.showToast = (msg, isError) => {
+    const t = document.getElementById('toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.style.transform = 'translateY(0)';
+    t.style.opacity = '1';
+    if (isError) {
+      t.style.background = '#7f1d1d';
+      t.style.color = '#fecaca';
+      t.style.borderColor = 'rgba(220,38,38,0.2)';
+    } else {
+      t.style.background = '#065f46';
+      t.style.color = '#d1fae5';
+      t.style.borderColor = 'rgba(16,185,129,0.2)';
+    }
+    setTimeout(() => {
+      t.style.transform = 'translateY(120px)';
+      t.style.opacity = '0';
+    }, 4000);
+  };
+
+  // Confetti system
+  window.confetti = () => {
+    const colors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];
+    for (let i = 0; i < 40; i++) {
+      const el = document.createElement('div');
+      el.style.cssText = `position:fixed;width:${Math.random()*6+4}px;height:${Math.random()*6+4}px;border-radius:2px;z-index:1000;pointer-events:none;left:${Math.random()*100}vw;top:-10px;background:${colors[Math.floor(Math.random()*colors.length)]};animation:confetti-fall ${Math.random()*1+1}s ease-out forwards;animation-delay:${Math.random()*0.5}s`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 2500);
+    }
+  };
+
+  // Scroll reveal observer
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const el = entry.target;
+        const delay = parseInt(el.getAttribute('data-reveal-delay')) || 0;
+        setTimeout(() => {
+          el.style.opacity = '1';
+          el.style.transform = 'translateY(0)';
+        }, delay);
+        observer.unobserve(el);
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-reveal]').forEach(el => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(30px)';
+      el.style.transition = 'opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1)';
+      observer.observe(el);
+    });
+  });
+</script>

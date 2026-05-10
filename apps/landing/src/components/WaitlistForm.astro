@@ -1,0 +1,119 @@
+---
+// Waitlist form with interest chips
+---
+
+<section id="waitlist" class="py-20 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="max-w-2xl mx-auto">
+      <div class="text-center mb-10" data-reveal>
+        <span class="text-xs font-semibold tracking-widest text-accent uppercase">Get Early Access</span>
+        <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Sé de los primeros en probar NexusMind</h2>
+        <p class="text-slate-400 mt-3">Completa el formulario y te avisaremos cuando tengamos slots disponibles para tu empresa.</p>
+      </div>
+
+      <form id="waitlistForm" class="rounded-2xl p-8 space-y-5" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);" data-reveal>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Nombre completo</label>
+          <input type="text" id="wName" required class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-accent/50 transition-colors duration-200" placeholder="e.g. Ana García" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Email corporativo</label>
+          <input type="email" id="wEmail" required class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-accent/50 transition-colors duration-200" placeholder="ana@tuempresa.com" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Empresa</label>
+          <input type="text" id="wCompany" required class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-accent/50 transition-colors duration-200" placeholder="Tu empresa S.L." />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Tamaño del equipo</label>
+          <select id="wSize" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-accent/50 transition-colors duration-200" style="appearance: none; background-image: url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpolyline points=%226 9 12 15 18 9%22/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 1rem center; background-size: 1rem;">
+            <option value="1-10" class="bg-[#0a0a0f]">1-10 personas</option>
+            <option value="11-50" class="bg-[#0a0a0f]">11-50 personas</option>
+            <option value="51-200" selected class="bg-[#0a0a0f]">51-200 personas</option>
+            <option value="200+" class="bg-[#0a0a0f]">200+ personas</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-2">¿Qué te interesa más?</label>
+          <div class="flex flex-wrap gap-2" id="interestChips">
+            <span class="chip" data-value="coding">Coding Assistant</span>
+            <span class="chip" data-value="agents">AI Agents</span>
+            <span class="chip" data-value="memory">Memory System</span>
+            <span class="chip" data-value="governance">Enterprise Governance</span>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Mensaje (opcional)</label>
+          <textarea id="wMessage" rows="3" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-accent/50 transition-colors duration-200 resize-none" placeholder="Cuéntanos sobre tu stack actual..."></textarea>
+        </div>
+        <button type="submit" class="w-full bg-accent hover:bg-blue-500 text-white py-3.5 rounded-xl text-base font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.01] active:scale-[0.98]">
+          Join the Waitlist
+        </button>
+        <p class="text-xs text-slate-600 text-center">No spam. Sin compromiso. Te avisaremos cuando tengamos slots disponibles.</p>
+      </form>
+    </div>
+  </div>
+</section>
+
+<style>
+  .chip {
+    display: inline-block;
+    padding: 0.4rem 1rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: transparent;
+    color: #94a3b8;
+    transition: all 0.2s ease;
+    user-select: none;
+  }
+  .chip:hover {
+    border-color: rgba(59,130,246,0.3);
+    color: #cbd5e1;
+  }
+  .chip.selected {
+    background: rgba(59,130,246,0.15);
+    border-color: #3b82f6;
+    color: #93c5fd;
+  }
+</style>
+
+<script>
+  // Chip toggle
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => chip.classList.toggle('selected'));
+  });
+
+  // Form submit
+  document.getElementById('waitlistForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = document.getElementById('wName').value.trim();
+    const email = document.getElementById('wEmail').value.trim();
+    const company = document.getElementById('wCompany').value.trim();
+
+    if (!name || !email || !company) {
+      window.showToast?.('Completa todos los campos requeridos.', true);
+      return;
+    }
+
+    const entry = {
+      name,
+      email,
+      company,
+      size: document.getElementById('wSize').value,
+      interests: [...document.querySelectorAll('.chip.selected')].map(c => c.getAttribute('data-value')),
+      message: document.getElementById('wMessage').value.trim(),
+      timestamp: new Date().toISOString()
+    };
+
+    const existing = JSON.parse(localStorage.getItem('nexusmind_waitlist') || '[]');
+    existing.push(entry);
+    localStorage.setItem('nexusmind_waitlist', JSON.stringify(existing));
+
+    window.confetti?.();
+    window.showToast?.("You're on the list! Te avisaremos cuando tengamos slots.");
+    document.getElementById('waitlistForm').reset();
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+  });
+</script>
