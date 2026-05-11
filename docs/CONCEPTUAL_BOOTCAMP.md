@@ -730,85 +730,329 @@ Context windows, tool use, agent memory patterns.
 
 ---
 
-# 🗺️ Roadmap de Estudio Recomendado
+# 🗺️ Roadmap de Estudio Acelerado (4 Semanas ⚡)
 
-## Fase 1: Fundamentos (Semanas 1-3)
-Dedicación: ~15h/semana
+> **Contenido idéntico al de 8 semanas, pero con 30h/semana (6días × 5h/día).**
+> Días intensivos: cada día cuenta. Domingos de repaso/descanso.
 
-Prioridad absoluta. Sin esto no puedes avanzar.
-
-```
-Semana 1 | Rust Avanzado
-Día 1-2: async/await + Tokio basics (4h)
-Día 3-4: Axum + sqlx (6h)
-Día 5:   Traits + Error handling (3h)
-Día 6-7: Construir un CRUD API en Axum + sqlx (4h)
-
-Semana 2 | SQLite + Postgres
-Día 1-2: SQLite Internals (WAL, FTS5, locking) (6h)
-Día 3-4: Postgres Internals (MVCC, indexes, RLS) (6h)
-Día 5:   pgvector + tsvector (3h)
-Día 6-7: Construir el schema de NexusMind en Postgres (4h)
-
-Semana 3 | Auth + Criptografía
-Día 1-2: OIDC + OAuth2 flows (6h)
-Día 3-4: RBAC/ABAC + Casbin (6h)
-Día 5:   Ed25519 + Merkle trees (3h)
-Día 6-7: Zero Trust patterns + device fingerprinting (4h)
-```
-
-## Fase 2: Core (Semanas 4-6)
+## 📅 Calendario General
 
 ```
-Semana 4 | MCP + AI Protocols
-- MCP spec completo (4h)
-- Construir un MCP server simple (6h)
-- Tool calling patterns (4h)
-
-Semana 5 | Vector Search + Embeddings
-- ONNX models + Candle (6h)
-- sqlite-vec + pgvector (4h)
-- Hybrid search: FTS + vectors (4h)
-
-Semana 6 | Sistemas Distribuidos
-- CAP + consistency models (4h)
-- CRDTs + conflict resolution (6h)
-- Local-first data patterns (4h)
+Semana 1 | Fundamentos (Rust + DBs)
+Semana 2 | Core (Auth + Crypto + MCP)
+Semana 3 | Avanzado (Vectors + Distributed + Sync)
+Semana 4 | Empresa (Security + DevOps + Marketing)
 ```
 
-## Fase 3: Integración (Semanas 7-8)
+---
 
-```
-Semana 7 | Sync Engine
-- SQLite → Postgres replication (6h)
-- Conflict resolution (4h)
-- Offline queue + retry (4h)
+## Semana 1 — Fundamentos (Rust + Databases)
 
-Semana 8 | Enterprise + DevOps
-- SOC2 + GDPR requirements (4h)
-- ARM cross-compilation (3h)
-- CI/CD + observability (4h)
-- Landing page + docs (4h)
+**Objetivo**: Escribir Rust async productivo y entender SQLite/Postgres a nivel interno.
+
+### Día 1: Async Rust intensivo
 ```
+Mañana (3h):
+  • Rust Async Book — Cap 1-4 (1.5h)
+  • Tokio tutorial: spawn, tasks, select! (1.5h)
+Tarde (2h):
+  • Ejercicio: echo server TCP con Tokio (1h)
+  • Pin + Unpin + Futures (lectura selectiva) (1h)
+```
+
+### Día 2: Axum + Web
+```
+Mañana (3h):
+  • Axum docs: router, handlers, extractors (1.5h)
+  • Tower middleware stack + State (1.5h)
+Tarde (2h):
+  • Ejercicio: API REST con 3 endpoints + middleware auth simple (2h)
+```
+
+### Día 3: Traits + Error handling + Serde
+```
+Mañana (3h):
+  • Rust for Rustaceans Cap 2-3 (tipos + traits) (1.5h)
+  • anyhow + thiserror patterns (1.5h)
+Tarde (2h):
+  • serde: custom serialize/deserialize, JSON, MessagePack (1h)
+  • Ejercicio: MemoryStore trait con 2 implementaciones (1h)
+```
+
+### Día 4: SQLite Internals
+```
+Mañana (3h):
+  • SQLite architecture: B-tree, pager, VFS (1h)
+  • WAL mode: cómo funciona, cuándo usarlo (1h)
+  • FTS5: tokenizers, queries, ranking BM25 (1h)
+Tarde (2h):
+  • rusqlite bundled: compile features, Connection, statements (1h)
+  • sqlite-vec: vector index, IVF-PQ (1h)
+```
+
+### Día 5: Postgres Internals
+```
+Mañana (3h):
+  • Postgres architecture: processes, shared buffers, WAL (1h)
+  • MVCC: transaction IDs, snapshots, visibility rules (1.5h)
+  • Indexes: B-tree, GiST, GIN (0.5h)
+Tarde (2h):
+  • pgvector: HNSW, IVFFlat, cosine ops (1h)
+  • tsvector + tsquery + RLS (1h)
+```
+
+### Día 6: SQL con sqlx + rusqlite
+```
+Mañana (3h):
+  • sqlx: compile-time queries, migrations, pooling (1.5h)
+  • sqlx + Postgres: execute, query_as, transactions (1.5h)
+Tarde (2h):
+  • Construir schema NexusMind en ambos motores (1h)
+  • Benchmarks: sqlite vs postgres para caso de uso (1h)
+```
+
+---
+
+## Semana 2 — Core (Auth + Crypto + MCP)
+
+**Objetivo**: Implementar auth system, audit trail criptográfico, y MCP server.
+
+### Día 1: OIDC + OAuth2
+```
+Mañana (3h):
+  • OAuth2 roles + Authorization Code + PKCE (1.5h)
+  • OIDC: ID Token, UserInfo, scopes (1.5h)
+Tarde (2h):
+  • JWT: structure, signing, validation en Rust (jsonwebtoken crate) (1h)
+  • JWKS rotation + token refresh (1h)
+```
+
+### Día 2: SAML + SCIM + BYO IdP
+```
+Mañana (3h):
+  • SAML2: SP-initiated SSO, assertions, metadata (1.5h)
+  • SCIM 2.0: Users, Groups, provisioning (1.5h)
+Tarde (2h):
+  • saml-rs crate: implementar SP en Rust (1h)
+  • Integración genérica con IdP externo (Okta, AzureAD) (1h)
+```
+
+### Día 3: RBAC + ABAC híbrido
+```
+Mañana (3h):
+  • RBAC: roles, jerarquías, conflict resolution (1h)
+  • ABAC: attributes, policies, evaluation engine (1.5h)
+  • Hybrid model + role inheritance (0.5h)
+Tarde (2h):
+  • Casbin-rs: implementar policy engine (1h)
+  • Ejercicio: 3 políticas de ejemplo para NexusMind (1h)
+```
+
+### Día 4: Zero Trust + Device Fingerprinting
+```
+Mañana (3h):
+  • NIST SP 800-207: Zero Trust Architecture (lectura dirigida) (1.5h)
+  • Session binding: user + device + tool (1h)
+  • WebAuthn/passkeys: cómo funciona (0.5h)
+Tarde (2h):
+  • webauthn-rs crate (1h)
+  • Device fingerprinting strategy para NexusMind (1h)
+```
+
+### Día 5: Criptografía Aplicada
+```
+Mañana (3h):
+  • Merkle trees: construction, inclusion proof, batch verification (1.5h)
+  • Ed25519: signing, verification, key management (1.5h)
+Tarde (2h):
+  • ed25519-dalek + sha2 en Rust (1h)
+  • Implementar audit trail con Merkle chain (1h)
+```
+
+### Día 6: MCP Protocol
+```
+Mañana (3h):
+  • MCP spec COMPLETO: host, client, server, transport (2h)
+  • Resources, Tools, Prompts, Sampling (1h)
+Tarde (2h):
+  • Construir MCP server en Rust con axum/stdio (1.5h)
+  • Testear con Claude Desktop (0.5h)
+```
+
+---
+
+## Semana 3 — Avanzado (Vectors + Distributed + Sync)
+
+**Objetivo**: Búsqueda semántica, CRDTs para sync, y el sync engine completo.
+
+### Día 1: Embedding Models + ONNX
+```
+Mañana (3h):
+  • Sentence embeddings: SBERT, all-MiniLM-L6-v2 (1h)
+  • ONNX: modelo, input/output shapes, quantization (1h)
+  • Candle: cargar modelo, inferencia, tensor ops (1h)
+Tarde (2h):
+  • Implementar embedding pipeline en Rust con Candle (1.5h)
+  • Benchmark: latency vs batch size (0.5h)
+```
+
+### Día 2: Vector Search + Índices
+```
+Mañana (3h):
+  • HNSW: algorithm, construction, search (1.5h)
+  • IVF-PQ: product quantization, inverted files (1h)
+  • Cosine similarity vs dot product vs euclidean (0.5h)
+Tarde (2h):
+  • sqlite-vec: insert, search, index IVF-PQ (1h)
+  • pgvector: HNSW index, vector_cosine_ops (1h)
+```
+
+### Día 3: Hybrid Search (FTS + Vectors)
+```
+Mañana (3h):
+  • Score fusion: weighted sum, Reciprocal Rank Fusion (1.5h)
+  • BM25 + cosine hybrid pipeline (1h)
+  • Re-ranking con cross-encoders (0.5h)
+Tarde (2h):
+  • Implementar hybrid search: FTS5 JOIN + sqlite-vec (1h)
+  • Implementar hybrid search: tsvector + pgvector (1h)
+```
+
+### Día 4: Sistemas Distribuidos — Teoría
+```
+Mañana (3h):
+  • CAP theorem + PACELC (1h)
+  • Consistency models: strong, eventual, causal (1h)
+  • Vector clocks + Lamport timestamps (1h)
+Tarde (2h):
+  • Diseñar consistency model de NexusMind (1h)
+  • Leer DDIA Cap 5-6 (replication) — dirigido (1h)
+```
+
+### Día 5: CRDTs + Conflict Resolution
+```
+Mañana (3h):
+  • CRDTs: state-based vs operation-based, merge rules (1.5h)
+  • LWW Register, RGA (list), Map CRDT (1h)
+  • Operational Transform vs CRDTs (0.5h)
+Tarde (2h):
+  • Leer paper de Kleppmann "Local-First Software" (1h)
+  • Diseñar conflict resolution para NexusMind (1h)
+```
+
+### Día 6: Sync Engine
+```
+Mañana (3h):
+  • SQLite → Postgres sync: strategies (changeset, WAL log, trigger-based) (1.5h)
+  • Sync queue: retry, backoff, idempotency (0.5h)
+  • Offline-first: pending writes, merge on reconnect (1h)
+Tarde (2h):
+  • Implementar sync queue + retry logic en Rust (1h)
+  • Integrar con MemoryStore trait (1h)
+```
+
+---
+
+## Semana 4 — Empresa (Security + DevOps + Enterprise)
+
+**Objetivo**: Hacer NexusMind enterprise-ready.
+
+### Día 1: Enterprise Security (SOC2 + GDPR)
+```
+Mañana (3h):
+  • SOC2: trust services criteria (security, availability, confidentiality) (1.5h)
+  • GDPR: data subject rights, consent, DPAs, data residency (1.5h)
+Tarde (2h):
+  • Compliance checklist para NexusMind (1h)
+  • Encryption at rest/transit strategy (1h)
+```
+
+### Día 2: Key Management + Audit
+```
+Mañana (3h):
+  • Key management: HSM, KMS, rotation policies (1.5h)
+  • Audit logging: immutability, retention, tamper-proof (1.5h)
+Tarde (2h):
+  • OWASP Top 10 review (aplicado a NexusMind) (1h)
+  • Threat modeling: session hijacking, data leak, privilege escalation (1h)
+```
+
+### Día 3: DevOps — CI/CD + Docker + ARM
+```
+Mañana (3h):
+  • GitHub Actions: caching, release workflow, matrix builds (1.5h)
+  • Docker multi-stage + distroless images (1h)
+  • cross-rs: ARM64 cross-compilation para Rust (0.5h)
+Tarde (2h):
+  • Configurar CI/CD de NexusMind (1h)
+  • Build ARM64 y testear (1h)
+```
+
+### Día 4: Observabilidad + Supabase
+```
+Mañana (3h):
+  • OpenTelemetry: tracing, metrics, logging — en Rust (1.5h)
+  • tracing crate: spans, events, subscribers (1h)
+  • Supabase: setup, RLS policies, realtime subscriptions (0.5h)
+Tarde (2h):
+  • Implementar tracing + health checks en Axum (1h)
+  • Configurar Supabase + schema initial (1h)
+```
+
+### Día 5: Componentes Clave de NexusMind
+```
+Mañana (3h):
+  • MemoryStore trait: implementación final con SQLite backend (1h)
+  • Policy Engine: evaluar ABAC policies en Rust (1h)
+  • Audit logging: Merkle chain + Ed25519 signing (1h)
+Tarde (2h):
+  • Sync Engine: integración SQLite ↔ Postgres (1h)
+  • MCP Server: expose tools + resources (1h)
+```
+
+### Día 6: Integración + Marketing Técnico
+```
+Mañana (3h):
+  • Open source license + governance model (1h)
+  • Documentation: API docs + quickstart + examples (1h)
+  • Developer personality + competitive positioning (1h)
+Tarde (2h):
+  • Repasar ddia + todos los conceptos que quedaron sueltos (1h)
+  • Plan de los próximos 30 días de código (1h)
+```
+
+---
+
+## 📊 Horas Reales
+
+| Semana | Horas | Temas cubiertos |
+|--------|-------|----------------|
+| 1 | 30h | Rust async, Axum, traits, SQLite, Postgres |
+| 2 | 30h | OIDC, SAML, RBAC/ABAC, Zero Trust, Crypto, MCP |
+| 3 | 30h | Embeddings, vector search, CRDTs, Sync Engine |
+| 4 | 30h | SOC2, GDPR, DevOps, CI/CD, componentes finales |
+| **Total** | **120h** | **12 temas completos** |
 
 ---
 
 # 📚 Biblioteca Esencial (Lectura Obligatoria)
 
-Estos son los recursos que DEBES leer/ver antes de escribir la primera línea de código:
+> Los recursos que DEBES leer/ver antes de escribir la primera línea de código.
+> En el plan acelerado: leer las partes relevantes de cada libro, no el libro completo.
 
-| Recurso | Tipo | Tiempo | Prioridad |
-|---------|------|--------|-----------|
-| *Designing Data-Intensive Applications* — Kleppmann | Libro | 20h | 🔴 |
-| *Programming Rust (2nd Ed)* — Blandy | Libro | 30h | 🔴 |
-| MCP Specification (spec.modelcontextprotocol.io) | Docs | 4h | 🔴 |
-| SQLite Documentation (sqlite.org/docs) | Docs | 8h | 🔴 |
-| Postgres Internals (interdb.jp/pg) | Web | 6h | 🔴 |
-| Rust Async Book (rust-lang.github.io/async-book) | Web | 4h | 🔴 |
-| Zero to Production in Rust — Palmieri | Libro | 20h | 🟡 |
-| *Rust for Rustaceans* — Gjengset | Libro | 15h | 🟡 |
-| OAuth 2.0 Simplified — Parecki | Libro | 4h | 🟡 |
-| NIST Zero Trust Architecture (SP 800-207) | Paper | 3h | 🟡 |
+| Recurso | Tipo | Lectura dirigida | Prioridad |
+|---------|------|-----------------|-----------|
+| *Designing Data-Intensive Applications* — Kleppmann | Libro | Caps 5-9 (replication, partitioning, transactions, consistency) — ~8h | 🔴 |
+| *Programming Rust (2nd Ed)* — Blandy | Libro | Caps 7-11, 19-21 (async, traits, error handling) — ~10h selectivo | 🔴 |
+| MCP Specification (spec.modelcontextprotocol.io) | Docs | Completo — ~4h | 🔴 |
+| SQLite Documentation (sqlite.org/docs) | Docs | WAL, FTS5, locking — ~4h | 🔴 |
+| Postgres Internals (interdb.jp/pg) | Web | MVCC, indexes, RLS — ~4h | 🔴 |
+| Rust Async Book | Web | Completo — ~4h | 🔴 |
+| *Local-First Software* — Kleppmann et al. | Paper | [Paper link](https://martin.kleppmann.com/papers/local-first.pdf) — 1h | 🔴 |
+| *NIST SP 800-207: Zero Trust* | Paper | [NIST](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf) — ejecutivo + sections 3-4 — 2h | 🔴 |
+| *OAuth 2.0 Simplified* — Parecki | Libro | Completo — ~4h | 🟡 |
+| *Rust for Rustaceans* — Gjengset | Libro | Caps 2-3 (types, traits) + Cap 7 (async) — ~6h selectivo | 🟡 |
+| *CRDT paper* — Shapiro et al. | Paper | [Paper link](https://hal.inria.fr/inria-00609399v1/document) — 1h | 🟡 |
 
 ---
 
