@@ -24,7 +24,7 @@ Enterprise AI Platform documentation. 9 documents covering product, market, arch
 | # | Título | Estado |
 |---|--------|--------|
 | [ADR-001](./adr/ADR-001.md) | Lenguaje de Implementación del Core de Memoria | Aceptado |
-| [ADR-002](./adr/ADR-002.md) | Gestor de Base de Datos para el Core de Memoria | Propuesto |
+| [ADR-002](./adr/ADR-002.md) | Gestor de Base de Datos para el Core de Memoria | Aceptado (v2) |
 
 ## Quick Links
 
