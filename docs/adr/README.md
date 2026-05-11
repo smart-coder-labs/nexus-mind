@@ -9,6 +9,7 @@ Los ADR documentan decisiones arquitectónicas significativas, incluyendo el con
 | # | Título | Estado | Fecha |
 |---|--------|--------|-------|
 | [ADR-001](./ADR-001.md) | Lenguaje de Implementación del Core de Memoria | Aceptado | Mayo 2026 |
+| [ADR-002](./ADR-002.md) | Gestor de Base de Datos para el Core de Memoria | Propuesto | Mayo 2026 |
 
 ## Estado de un ADR
 
