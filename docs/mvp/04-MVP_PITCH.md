@@ -2,29 +2,30 @@
 
 > **Documento**: 04-MVP_PITCH.md
 > **Versión**: 0.1.0
-> **Propósito**: Explicación ejecutiva de por qué este MVP — no el de 6 meses del roadmap original.
+> **Propósito**: Explicación ejecutiva de por qué este MVP — no el de 16 semanas del ADR-001.
 
 ---
 
 ## 1. El Problema (Actual)
 
-El repo tiene **13 documentos de concepto** y **cero líneas de código del producto real**.
+El repo tiene **13 documentos de concepto, 2 ADRs aceptados y una landing page**, pero **cero líneas de código del producto real**.
 
 Lo que existe:
 - `docs/PRD.md` — Producto soñado para 24 meses
 - `docs/ARCHITECTURE.md` — Sistema que requiere 3 equipos
-- `docs/ROADMAP.md` — 6 meses de Fase 1 con 5+ plugins
-- `apps/bootcamp-tracker/` — Proyecto legacy no relacionado
+- `docs/ROADMAP.md` — 6 meses de Fase 1
+- `docs/adr/ADR-001.md` — Arquitectura Rust con 8+ crates (16 semanas para Fase 1)
+- `docs/adr/ADR-002.md` — Store Abstraction Trait con SQLite → Postgres
 - `apps/landing/` — Landing page con waitlist
 
 Lo que NO existe:
-- Código del backend
+- Código del backend (Rust o cualquier otro)
 - Base de datos
 - API funcional
 - Plugin para ninguna herramienta
 - Ningún usuario usando el producto
 
-**El riesgo**: Seguir documentando en vez de construir.
+**El riesgo**: Seguir documentando y diseñando arquitectura en vez de construir.
 
 ---
 
@@ -33,36 +34,35 @@ Lo que NO existe:
 > **"Un sistema de memoria cross-tool, accesible vía API REST y MCP, permite a developers mantener contexto entre sesiones y entre herramientas AI."**
 
 Esta tesis se puede validar con:
-- **1 backend Go**
-- **1 plugin MCP** para Claude Code
+- **1 backend Rust** (~1200 líneas)
+- **1 plugin MCP** para Claude Code (~500 líneas TS)
 - **4 semanas**
 
-Si funciona, la expansión a policy engine, más plugins, SDKs, etc. tiene sentido. Si no, mejor saberlo pronto.
+Si funciona, la expansión a la arquitectura completa de ADR-001 (8+ crates, TUI, Merkle audit trail, policy engine, vectores, etc.) tiene sentido. Si no, mejor saberlo pronto.
 
 ---
 
-## 3. ¿Por qué este MVP y no el del Roadmap?
+## 3. ¿Por qué este MVP y no el del ADR-001?
 
-| Roadmap Original (6 meses) | MVP Propuesto (4 semanas) |
+| ADR-001 Fase 1 (16 semanas) | MVP Propuesto (4 semanas) |
 |---|---|
-| 5 plugins | 1 plugin (Claude Code) |
-| Policy engine completo | Sin policy engine |
-| SDKs en 3 lenguajes | Sin SDKs (REST API sola) |
-| Audit trail inmutable | Audit trail simple |
-| Admin console completa | Admin mínima |
-| SSO + RBAC | API key sola |
-| Vector search | FTS5 |
-| **$0 revenue hasta M6** | **Validación en M1** |
+| 8+ crates separados (core, store, auth, audit, server, mcp, cli, tui) | 1 crate plano `src/` |
+| TUI completa con Ratatui | Sin TUI |
+| Merkle audit trail + Ed25519 | Audit trail append-only simple |
+| Policy engine ABAC (<50μs por regla) | Sin policy engine |
+| CLI con 5+ subcomandos | 2 subcomandos (serve, keygen) |
+| Arquitectura multi-crate lista para escalar | Arquitectura plana, refactorizable |
+| **Validación en semana 16** | **Validación en semana 4** |
 
 ### Matemática Simple
 
 ```
-Roadmap original:
-  6 meses × N developers × $X/mes = $6NX antes de validar
+ADR-001 Fase 1:
+  16 semanas × 1 developer = 16 developer-weeks antes de validar
   Riesgo: construir features que nadie usa
 
 MVP propuesto:
-  1 mes × 1 developer = 1 developer-month antes de validar
+  4 semanas × 1 developer = 4 developer-weeks antes de validar
   Riesgo: solo la memoria cross-tool
 ```
 
@@ -70,7 +70,7 @@ MVP propuesto:
 
 ## 4. El MVP en una Frase
 
-> **Un backend Go que guarda memos con texto y tags en SQLite, y un plugin de Claude Code para leerlos y escribirlos. Eso es todo. El resto se construye si alguien lo pide.**
+> **Un backend Rust que guarda memos con texto y tags en SQLite (FTS5), y un plugin de Claude Code para leerlos y escribirlos. Eso es todo. El resto (TUI, vectores, policy engine, Merkle audit, 8 crates) se construye si alguien lo pide.**
 
 ---
 
@@ -99,12 +99,12 @@ Si alguna de estas métricas no se alcanza en 4 semanas, pivoteamos en lugar de 
 | Domain + DNS | ~$15/año |
 | **Total** | **~$8,500** |
 
-Para escalar a Fase 1 del Roadmap (6 meses, equipo completo):
+Para escalar a Fase 1 del ADR-001 (16 semanas, equipo completo):
 - 2-3 developers
 - Infra K8s
 - ~$120,000 - $180,000
 
-**El MVP cuesta ~5% de lo que costaría la Fase 1 completa.**
+**El MVP cuesta ~5-7% de lo que costaría la Fase 1 completa del ADR-001.**
 
 ---
 
@@ -112,9 +112,10 @@ Para escalar a Fase 1 del Roadmap (6 meses, equipo completo):
 
 ### Si el MVP funciona (métricas verdes)
 ```
-Sem 5-6:  Vector search + Policy engine básico
-Sem 7-8:  Plugin Cursor
-Sem 9-12: SDK TypeScript + Admin console mejorada
+Sem 5-6:   Vector search (Candle ONNX) + Policy engine básico
+Sem 7-8:   Plugin Cursor + Merkle audit trail
+Sem 9-12:  SDK TypeScript + Admin console mejorada
+Sem 13-16: Multi-crate refactor + TUI (Ratatui)
      →   Contratar dev #2, buscar early customers
 ```
 

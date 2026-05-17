@@ -3,7 +3,7 @@
 > **Documento**: 02-ARCHITECTURE_MVP.md
 > **Versión**: 0.1.0
 > **Fecha**: Mayo 2026
-> **Propósito**: Arquitectura reducida para el MVP de 4 semanas. Derivada de ARCHITECTURE.md pero con scope recortado.
+> **Propósito**: Arquitectura reducida para el MVP de 4 semanas. Basada en ADR-001 (Rust) y ADR-002 (SQLite).
 
 ---
 
@@ -28,8 +28,8 @@
                                 ▼
                     ┌─────────────────────────┐
                     │   NEXUSMIND BACKEND     │
-                    │   (Go)                  │
-                    │   cmd/nexusmind/        │
+                    │   (Rust + Axum)         │
+                    │   src/                  │
                     │                         │
                     │   ┌─────────────────┐   │
                     │   │ Auth (API Key)   │   │
@@ -49,10 +49,11 @@
                                 ▼
                     ┌─────────────────────────┐
                     │   SQLITE                │
-                    │   (WAL mode + FTS5)     │
+                    │   (rusqlite, WAL mode)  │
                     │                         │
-                    │   Tables:               │
+                    │   Tablas:               │
                     │   - memories            │
+                    │   - memories_fts (FTS5) │
                     │   - audit_logs          │
                     │   - api_keys            │
                     └─────────────────────────┘
@@ -62,22 +63,22 @@
 
 ## 2. Componentes MVP
 
-### 2.1 Backend (Go)
+### 2.1 Backend (Rust — un solo crate)
 
 | Componente | Archivo | Responsabilidad |
 |---|---|---|
-| **Entry point** | `cmd/nexusmind/main.go` | Config, DB init, start server |
-| **Config** | `internal/config/config.go` | ENV parsing, defaults |
-| **DB Layer** | `internal/db/db.go` | SQLite connection, WAL mode |
-| **Migrations** | `internal/db/migrations.go` | Schema creation on startup |
-| **Queries** | `internal/db/queries.go` | CRUD para memories y audit |
-| **Auth** | `internal/auth/auth.go` | API key generation + validation |
-| **Auth Middleware** | `internal/auth/middleware.go` | HTTP Bearer token check |
-| **Router** | `internal/api/router.go` | Chi router setup |
-| **Middleware** | `internal/api/middleware.go` | Logging, CORS, rate limit |
-| **Health** | `internal/api/health.go` | GET /v1/health |
-| **Memory** | `internal/api/memory.go` | POST store/search, DELETE |
-| **Audit** | `internal/api/audit.go` | POST log, GET query |
+| **Entry point** | `src/main.rs` | Config, DB init, start server |
+| **Config** | `src/config.rs` | ENV parsing + clap CLI args |
+| **DB Layer** | `src/db/connection.rs` | Rusqlite connection, WAL mode |
+| **Migrations** | `src/db/migrations.rs` | Schema creation on startup |
+| **Queries** | `src/db/queries.rs` | CRUD para memories + audit |
+| **Auth** | `src/auth/api_keys.rs` | API key generation + SHA-256 hash |
+| **Router** | `src/api/router.rs` | Axum Router setup |
+| **Middleware** | `src/api/middleware.rs` | Logging, CORS, rate limit, auth |
+| **Health** | `src/api/health.rs` | GET /v1/health |
+| **Memory** | `src/api/memory.rs` | POST store/search, DELETE, GET list |
+| **Audit** | `src/api/audit.rs` | POST log, GET query |
+| **Models** | `src/models/memory.rs` | Memory, SearchQuery, MemoryResult |
 
 ### 2.2 MCP Server (TypeScript)
 
@@ -88,7 +89,7 @@
 | **Memory Resources** | `plugins/mcp-server/src/resources/memory.ts` | search/store resources |
 | **Context Tools** | `plugins/mcp-server/src/tools/buffer-context.ts` | Inyecta contexto antes de prompts |
 
-### 2.3 Admin UI (React + Vite)
+### 2.3 Admin UI (React + Vite + Tailwind)
 
 | Componente | Archivo | Responsabilidad |
 |---|---|---|
@@ -104,11 +105,11 @@
 ```sql
 -- Tabla principal de memoria
 CREATE TABLE memories (
-    id          TEXT PRIMARY KEY,          -- mem_xxx
+    id          TEXT PRIMARY KEY,          -- UUID v4
     project     TEXT NOT NULL,             -- aislamiento por proyecto
     tool        TEXT NOT NULL,             -- "claude-code", "cli", "cursor"
     user_id     TEXT NOT NULL DEFAULT 'anonymous',
-    type        TEXT NOT NULL DEFAULT 'semantic',  -- episodic, semantic, procedural
+    memory_type TEXT NOT NULL DEFAULT 'semantic',  -- episodic, semantic, procedural
     content     TEXT NOT NULL,             -- el contenido de la memoria
     tags        TEXT DEFAULT '[]',         -- JSON array de strings
     metadata    TEXT DEFAULT '{}',         -- JSON object
@@ -129,9 +130,21 @@ CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
     VALUES (new.rowid, new.content, new.tags);
 END;
 
--- Audit trail (append-only)
+CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+    VALUES ('delete', old.rowid, old.content, old.tags);
+END;
+
+CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+    VALUES ('delete', old.rowid, old.content, old.tags);
+    INSERT INTO memories_fts(rowid, content, tags)
+    VALUES (new.rowid, new.content, new.tags);
+END;
+
+-- Audit trail (append-only, simple — sin hash chain aún)
 CREATE TABLE audit_logs (
-    id              TEXT PRIMARY KEY,       -- aud_xxx
+    id              TEXT PRIMARY KEY,
     timestamp       TEXT NOT NULL DEFAULT (datetime('now')),
     user_id         TEXT NOT NULL,
     tool            TEXT NOT NULL,
@@ -143,7 +156,7 @@ CREATE TABLE audit_logs (
     api_key_id      TEXT
 );
 
--- API keys
+-- API keys (hasheadas con SHA-256)
 CREATE TABLE api_keys (
     id          TEXT PRIMARY KEY,
     key_hash    TEXT NOT NULL UNIQUE,       -- SHA-256 del key
@@ -161,9 +174,9 @@ CREATE TABLE api_keys (
 
 | Método | Path | Auth | Descripción |
 |---|---|---|---|
-| GET | /v1/health | No | Health check |
+| GET | /v1/health | No | Health check con DB ping |
 | POST | /v1/memory/store | Sí | Guardar memoria |
-| POST | /v1/memory/search | Sí | Buscar memoria |
+| POST | /v1/memory/search | Sí | Buscar memoria (FTS5) |
 | DELETE | /v1/memory/:id | Sí | Borrar memoria |
 | GET | /v1/memory | Sí | Listar memorias (con filtros) |
 | POST | /v1/audit/log | Sí | Registrar evento audit |
@@ -182,36 +195,111 @@ NEXUSMIND_DB_PATH=./data/nexusmind.db
 NEXUSMIND_LOG_LEVEL=info
 NEXUSMIND_CORS_ORIGINS=http://localhost:3000
 NEXUSMIND_RATE_LIMIT_PER_MIN=1000
+NEXUSMIND_ADMIN_KEY=nm_admin_<random>   # Primera API key, se genera si no existe
 ```
 
-Config defaults en `internal/config/config.go` permiten correr sin .env:
-- Puerto: 8080
-- DB: `./data/nexusmind.db`
+Config en `src/config.rs` con clap + env vars:
+- Puerto default: 8080
+- DB default: `./data/nexusmind.db`
 - Log level: info
-- CORS: `*`
+- CORS default: `*`
 - Rate limit: 1000/min
 
 ---
 
-## 6. Diferencia con la Arquitectura Target
+## 6. Stack Técnico Detallado
 
-| Aspecto | Arquitectura Target (ARCHITECTURE.md) | MVP |
-|---|---|---|
-| **Auth** | SSO (SAML/OIDC) + JWT + device fingerprint | API Key simple + JWT opcional |
-| **Memory** | SQLite + sqlite-vss (vectors) | SQLite + FTS5 |
-| **Policy Engine** | Rego/OPA, YAML versionado, RBAC+ABAC | No existe |
-| **Audit** | Append-only con hash chain, export PDF/CSV | Append-only simple |
-| **MCP** | Recursos + tools completos | Solo memory/search + memory/store |
-| **Admin** | Dashboard completo con analytics | CRUD básico de memorias |
-| **SDKs** | Python + TypeScript + Go | Solo REST API (cualquier tool usa curl) |
-| **Plugins** | Cursor, Copilot, Cline, OpenCode | Solo Claude Code (MCP) |
-| **Deploy** | K8s + Helm + single binary | Docker compose |
-| **Dependencias** | PostgreSQL, Redis, OPA | Solo SQLite |
-| **Integraciones** | 5+ tools | 1 tool (Claude Code) |
+### Dependencias Rust (Cargo.toml)
+
+```toml
+[package]
+name = "nexusmind"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP Server
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Auth
+jsonwebtoken = "9"
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Rate limiting
+governor = "0.6"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = true
+codegen-units = 1
+```
+
+### Dependencias MCP (plugins/mcp-server/package.json)
+
+```json
+{
+  "name": "nexusmind-mcp-server",
+  "version": "0.1.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
+```
 
 ---
 
-## 7. Docker Compose (MVP)
+## 7. Diferencia con la Arquitectura Target
+
+| Aspecto | Arquitectura Target (ADR-001) | MVP |
+|---|---|---|
+| **Estructura** | 8+ crates separados | 1 crate plano `src/` |
+| **Auth** | SSO (SAML/OIDC) + MFA + device fingerprint | API Key simple + JWT |
+| **Memory** | SQLite + sqlite-vec embeddings + Tantivy | SQLite + FTS5 sola |
+| **Policy Engine** | ABAC custom, <50μs por regla | No existe |
+| **Audit** | Merkle tree + Ed25519 + hash chain | Append-only simple |
+| **MCP** | 19+ tools con resources completos | 3 tools básicas |
+| **Admin** | Dashboard + analytics + reports | CRUD básico de memorias |
+| **SDKs** | Python + TypeScript + Go | Solo REST API + curl |
+| **Plugins** | Cursor, Copilot, Cline, OpenCode | Solo Claude Code (MCP) |
+| **TUI** | Ratatui full app | No existe |
+| **Sync** | Git chunks + cloud sync engine | No existe |
+| **Deploy** | K8s + Helm + single binary | Docker compose |
+| **Dependencias** | SQLite + Redis + OPA | Solo SQLite (rusqlite bundled) |
+
+---
+
+## 8. Docker Compose (MVP)
 
 ```yaml
 version: '3.8'
@@ -227,6 +315,7 @@ services:
       - NEXUSMIND_DB_PATH=/data/nexusmind.db
       - NEXUSMIND_CORS_ORIGINS=http://localhost:3000
       - NEXUSMIND_LOG_LEVEL=info
+      - NEXUSMIND_ADMIN_KEY=${NEXUSMIND_ADMIN_KEY:-}
     volumes:
       - nexusmind-data:/data
 
@@ -243,6 +332,34 @@ services:
 
 volumes:
   nexusmind-data:
+```
+
+---
+
+## 9. Dockerfile (Rust multi-stage)
+
+```dockerfile
+# Stage 1: Build
+FROM rust:1.85-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+
+RUN cargo build --release --target-dir /app/target
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/nexusmind /usr/local/bin/nexusmind
+
+EXPOSE 8080
+
+ENTRYPOINT ["nexusmind", "serve"]
 ```
 
 ---

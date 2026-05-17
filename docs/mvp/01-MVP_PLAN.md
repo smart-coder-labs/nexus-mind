@@ -1,7 +1,8 @@
 # NexusMind — MVP Plan: "The Integrator"
 
-> **Objetivo**: MVPr que demuestre valor real en **4 semanas** (no 6 meses).
+> **Objetivo**: MVP que demuestre valor real en **4 semanas** (no 6 meses del roadmap original ni 16 semanas del ADR-001 Fase 1 completo).
 > **Filosofía**: Un solo endpoint funcional + un plugin real > 10 docs de arquitectura.
+> **Stack**: **Rust** (según ADR-001), no Go.
 > **Estado actual del repo**: Fase conceptual (documentos). Cero código de backend, solo landing page Astro + bootcamp-tracker (proyecto legacy no relacionado).
 
 ---
@@ -19,8 +20,10 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 | SSO (SAML/OIDC/SCIM) | API Key + JWT simple |
 | Multi-agent orchestration | Ni tocarlo |
 | Admin Console completa | Admin mínima con React + Tailwind |
-| sqlite-vss (vector search) | FTS5 search básico |
-| On-prem single binary | Docker compose inicial |
+| sqlite-vec (vector search) | FTS5 search básico |
+| On-prem single binary | Docker compose inicial + `cargo build --release` |
+| TUI (ratatui) | Ni tocarlo — solo CLI + REST API |
+| Extensibilidad vía crates | Todo en un solo crate durante MVP |
 
 ### Principio Rector
 
@@ -30,20 +33,21 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 
 ## 2. 🗺️ Sprint Plan (4 Semanas)
 
-### Semana 1: Fundación — Backend Core
+### Semana 1: Fundación — Backend Core (Rust)
 
 **Objetivo**: API REST funcional con SQLite, auth básica, endpoints de memoria.
 
 | Día | Tarea | Artefacto |
 |---|---|---|
-| 1 | Setup Go project, Dockerfile, docker-compose.yml | `cmd/nexusmind/main.go`, `Dockerfile`, `docker-compose.yml` |
-| 2 | SQLite DB layer con FTS5 + migraciones | `internal/db/db.go`, `internal/db/migrations.go` |
-| 3 | Auth middleware (API key + JWT) | `internal/auth/auth.go`, `internal/auth/middleware.go` |
-| 4 | REST API: `POST /v1/memory/store`, `POST /v1/memory/search`, `DELETE /v1/memory/:id` | `internal/api/memory.go` (router + handlers) |
-| 5 | REST API: `GET /v1/health` + rate limiting básico | `internal/api/health.go`, `internal/api/middleware.go` |
-| 6-7 | Tests + polish + documentación OpenAPI | `api/openapi.yaml`, tests |
+| 1 | Setup Rust project (cargo init, workspace, dependencias), Dockerfile, docker-compose.yml | `Cargo.toml`, `src/main.rs`, `Dockerfile`, `docker-compose.yml` |
+| 2 | SQLite DB layer con FTS5 + migraciones | `src/db/` (connection, migrations, schema) |
+| 3 | Auth middleware (API key + JWT) | `src/auth/` (key gen, validation, middleware) |
+| 4 | REST API: `POST /v1/memory/store`, `POST /v1/memory/search`, `DELETE /v1/memory/:id` | `src/api/memory.rs`, router |
+| 5 | REST API: `GET /v1/health` + rate limiting básico | `src/api/health.rs`, rate limiter |
+| 6-7 | Tests + polish + documentación OpenAPI | `api/openapi.yaml`, `tests/`, integration tests |
 
 **Definition of Done**:
+- `cargo run` arranca el server
 - `curl localhost:8080/v1/health` returns `{"status":"ok"}`
 - `POST /v1/memory/store` con body válido → 201
 - `POST /v1/memory/search` con query → resultados de FTS
@@ -65,8 +69,8 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 
 **Definition of Done**:
 - Claude Code se conecta al MCP server
-- `claude-code> /memory-store "El proyecto usa Go"` → se guarda en NexusMind
-- `claude-code> /memory-search "¿qué stack?"` → retorna resultados cross-session
+- `/nexusmind-store "El proyecto usa Rust 1.85 con Axum"` → se guarda en NexusMind
+- `/nexusmind-search "¿qué stack?"` → retorna resultados cross-session
 - README con instrucciones de instalación
 
 ### Semana 3: Memoria Cross-Tool + Admin Mínima
@@ -75,8 +79,8 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 
 | Día | Tarea | Artefacto |
 |---|---|---|
-| 1 | Memoria por proyecto (isolation básica) + tags | `internal/db/queries.go` |
-| 2 | API: `GET /v1/memory?project=X` (listar + filtrar) | `internal/api/memory.go` |
+| 1 | Memoria por proyecto (isolation básica) + tags | `src/db/queries.rs` |
+| 2 | API: `GET /v1/memory?project=X` (listar + filtrar) | `src/api/memory.rs` |
 | 3 | Admin UI: setup React + Vite + Tailwind | `admin/` (nuevo workspace) |
 | 4 | Admin UI: vista de memorias (buscar, ver, borrar) | `admin/src/pages/Memories.tsx` |
 | 5 | Admin UI: vista de audit trail simple | `admin/src/pages/AuditLog.tsx` |
@@ -98,7 +102,7 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 | 1 | README general + quickstart | `README.md` |
 | 2 | Script `make run` + `make build` + `make test` | `Makefile` |
 | 3 | GitHub Actions CI (lint, test, build) | `.github/workflows/ci.yml` |
-| 4 | Config por ENV + .env.example | `.env.example`, `config/config.go` |
+| 4 | Config por ENV + .env.example | `.env.example`, `src/config.rs` |
 | 5 | Landing page update: sección "Try the MVP" | `apps/landing/` update |
 | 6 | Bug bash + fixes | Issues cerrados |
 | 7 | **MVP Release v0.1.0** | GitHub Release |
@@ -111,40 +115,47 @@ El PRD promete mucho (policy engine, audit trail, multi-agent orchestration). Pa
 
 ---
 
-## 3. 📦 Package Structure
+## 3. 📦 Package Structure (MVP)
 
 ```
 nexus-mind/
-├── cmd/
-│   └── nexusmind/
-│       └── main.go              # Entry point del backend
-├── internal/
+├── Cargo.toml                     # Rust project (un solo crate en MVP)
+├── Cargo.lock
+├── rust-toolchain.toml            # Pin toolchain
+├── deny.toml                      # cargo-deny policy
+├── src/
+│   ├── main.rs                    # Entry point: CLI dispatcher
+│   ├── config.rs                  # ENV-based config con clap
+│   ├── lib.rs                     # Re-export de módulos
 │   ├── auth/
-│   │   ├── auth.go              # API key validation + JWT
-│   │   └── middleware.go         # HTTP middleware
+│   │   ├── mod.rs
+│   │   └── api_keys.rs            # API key generation + validation
 │   ├── db/
-│   │   ├── db.go                # SQLite connection + init
-│   │   ├── migrations.go        # Schema migrations
-│   │   └── queries.go           # Memory CRUD queries
+│   │   ├── mod.rs
+│   │   ├── connection.rs          # SQLite conexión + WAL mode
+│   │   ├── migrations.rs          # Schema on startup
+│   │   └── queries.rs             # Memory CRUD queries
 │   ├── api/
-│   │   ├── router.go            # HTTP router setup
-│   │   ├── middleware.go        # Logging, rate limit, CORS
-│   │   ├── health.go            # Health endpoint
-│   │   ├── memory.go            # Memory store/search/delete
-│   │   └── audit.go             # Audit log endpoints
-│   └── config/
-│       └── config.go            # Config from ENV/file
+│   │   ├── mod.rs
+│   │   ├── router.rs              # Axum router setup
+│   │   ├── middleware.rs          # Logging, CORS, rate limit, auth
+│   │   ├── health.rs              # GET /v1/health
+│   │   ├── memory.rs              # Memory store/search/delete handlers
+│   │   └── audit.rs               # Audit log handlers
+│   └── models/
+│       ├── mod.rs
+│       └── memory.rs              # Memory, SearchQuery, MemoryResult structs
 ├── plugins/
 │   └── mcp-server/
 │       ├── package.json
 │       ├── tsconfig.json
 │       ├── src/
-│       │   ├── index.ts         # MCP server entry
-│       │   ├── config.ts        # MCP config
+│       │   ├── index.ts           # MCP server entry (TypeScript SDK)
+│       │   ├── config.ts          # MCP config
 │       │   ├── resources/
-│       │   │   └── memory.ts    # MCP memory resources
+│       │   │   └── memory.ts      # MCP memory resources
 │       │   └── tools/
-│       │       └── buffer-context.ts  # Context injection
+│       │       └── buffer-context.ts  # Context injection tool
 │       └── README.md
 ├── admin/
 │   ├── package.json
@@ -156,36 +167,53 @@ nexus-mind/
 │       ├── main.tsx
 │       ├── App.tsx
 │       ├── api/
-│       │   └── client.ts       # NexusMind API client
+│       │   └── client.ts          # NexusMind API client
 │       └── pages/
 │           ├── Memories.tsx
 │           ├── AuditLog.tsx
 │           └── Settings.tsx
 ├── api/
-│   └── openapi.yaml            # OpenAPI 3.0 spec
-├── docker-compose.yml          # Backend + Admin + MCP
-├── Dockerfile                  # Multi-stage Go build
-├── Makefile                    # dev/build/test shortcuts
+│   └── openapi.yaml               # OpenAPI 3.0 spec
+├── docker-compose.yml             # Backend + Admin + MCP
+├── Dockerfile                     # Multi-stage Rust build
+├── Makefile                       # dev/build/test shortcuts
 ├── .env.example
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
-└── README.md                   # Quickstart + docs links
+└── README.md                      # Quickstart + docs links
 ```
 
-### ¿Por qué Go para el backend?
+### Stack Técnico (basado en ADR-001 y ADR-002)
+
+| Capa | Tecnología | Justificación |
+|---|---|---|
+| **Lenguaje** | Rust | ADR-001: performance determinista, sin GC, concurrencia real, borrow checker |
+| **Runtime async** | Tokio | Async nativo, scheduler cooperativo |
+| **HTTP/API** | Axum | Middleware typed, integración nativa con tower |
+| **Serialización** | Serde + JSON | Zero-copy deserialization, estándar Rust |
+| **SQLite** | Rusqlite (bundled) | Sin CGO, sin dependencias externas |
+| **FTS** | FTS5 + Tantivy (post-MVP) | FTS5 built-in en SQLite para MVP, Tantivy post-MVP |
+| **Auth** | API Key + JWT simple | jsonwebtoken crate |
+| **CLI** | Clap | Estándar de la industria Rust |
+| **Config** | ENV + clap | 12-factor app |
+
+> **Nota sobre la divergencia con ADR-001**: El ADR propone una arquitectura modular de 8+ crates con TUI, Merkle audit trail, policy engine, etc. Para el MVP usamos **un solo crate** con la estructura plana `src/`. La división en crates se hace post-MVP cuando haya demanda. Esto reduce el tiempo de compilación de ~3 min a ~30s y mantiene el scope manejable.
+
+### ¿Por qué Rust en vez de Go?
 
 | Razón | Detalle |
 |---|---|
-| Single binary deploy | `go build` → `./nexusmind` listo para on-prem |
-| Sin runtime dependencies | Ni Python, ni Node, ni JVM |
-| Concurrencia nativa | Goroutines para manejar múltiples tools simultáneas |
-| Compilación cruzada fácil | `GOOS=linux GOARCH=arm64 go build` |
-| Benchmark heredado | sqlite-vss ya tiene bindings Go |
+| **Sin GC** | Latencia determinística para policy engine futuro (<50μs por regla) |
+| **Concurrencia real sobre SQLite** | Rusqlite + Tokio permite >100 conexiones sin lock contention grave |
+| **Borrow checker** | Zero bugs de memoria en auth module — crítico para seguridad |
+| **Cross-compilation ARM** | `cargo build --target aarch64-unknown-linux-gnu` without CGO |
+| **Single binary** | `cargo build --release` → `./target/release/nexusmind` sin librerías externas |
+| **Ecosistema embedding** | Candle/ort para ONNX local en Fase 2 |
 
-### ¿Por qué el admin no es prioridad esta semana?
+### ¿Por qué el MCP Server va en TypeScript (no en Rust)?
 
-Porque el valor del MVP está en la **API + plugin MCP**, no en una UI. El admin se construye solo para debugging interno y para que early adopters puedan ver el estado. No más de 3 días de esfuerzo.
+El ecosistema MCP de Anthropic tiene SDK oficial en TypeScript. El MCP server es un adaptador delgado que traduce protocolo MCP a REST API calls. No necesita ser rápido — es I/O bound. Hacerlo en Rust añadiría complejidad sin beneficio para el MVP.
 
 ---
 
@@ -196,9 +224,9 @@ De las features listadas en el PRD, estas son las que entran en el MVP:
 | PRD Feature | MVP Scope | Prioridad |
 |---|---|---|
 | **Memory System** | SQLite FTS5, store/search/delete, por proyecto + tags | **P0** ✅ |
-| **Tool Integrations API** | Solo REST (no MCP en v0.1, MCP en v0.2) | **P0** ✅ |
+| **Tool Integrations API** | REST API (MCP en v0.2) | **P0** ✅ |
 | **Policy Engine** | **NO** — ni tocarlo. Post-MVP | P2 ❌ |
-| **Audit Trail** | Log simple append-only (sin hash chain) | P1 ⏳ |
+| **Audit Trail** | Log simple append-only (sin hash chain, sin Merkle) | P1 ⏳ |
 | **Multi-agent Orchestration** | **NO** | P3 ❌ |
 | **Admin Console** | Admin web mínima (solo ver memorias + audit) | P1 ⏳ |
 | **MCP / Open-Context Plugins** | MCP server para Claude Code | P0 ✅ |
@@ -210,10 +238,10 @@ De las features listadas en el PRD, estas son las que entran en el MVP:
 ### MVP Scope Total
 
 ```
-Semana 1: Backend Core (Go + SQLite)
-Semana 2: Claude Code Plugin (MCP Server)
+Semana 1: Backend Core (Rust + SQLite + Axum)
+Semana 2: Claude Code Plugin (MCP Server en TS)
 Semana 3: Cross-tool Memory + Admin UI
-Semana 4: Polish, Deploy, Release
+Semana 4: Polish, Deploy, Release v0.1.0
 ```
 
 ---
@@ -222,32 +250,35 @@ Semana 4: Polish, Deploy, Release
 
 ### SQLite vs PostgreSQL
 
+Basado en ADR-002 → SQLite para MVP, Postgres para enterprise tier.
+
 | | SQLite | PostgreSQL |
 |---|---|---|
-| Setup | `apt install sqlite3` | Servicio aparte |
-| Deploy | Archivo `.db` | Conexión TCP |
-| FTS5 | Built-in | Extension aparte |
-| Vectors | sqlite-vss (comunitario) | pgvector (maduro) |
-| Concurrencia | WAL mode maneja lectura/concurrente | Excelente |
+| Setup | Archivo `.db` | Servicio aparte |
+| Deploy | Sin dependencias | Conexión TCP |
+| FTS5 | Built-in desde 2016 | Extension tsvector |
+| Concurrencia | WAL mode | MVCC multi-writer |
+| Límite | ~30 usuarios concurrentes | Ilimitado |
 
-**Decisión**: **SQLite** para MVP. PostgreSQL en Fase 2 si hay demanda de concurrencia >10k requests/min.
+**Decisión**: **SQLite** para MVP. Store Abstraction Trait en Rust permite migrar a Postgres sin cambiar la app (ADR-002 §6.3).
 
 ### FTS5 vs Vector Search
 
-| | FTS5 | Vector (sqlite-vss) |
+| | FTS5 | Vector (sqlite-vec) |
 |---|---|---|
 | Exactitud | Keyword matching | Semantic similarity |
 | Setup | Built-in en SQLite | Extension externa |
 | Mantenimiento | Cero | Comunitario |
 | Performance | <10ms | <100ms |
 
-**Decisión**: **FTS5** para MVP. Vector search como mejora post-MVP cuando tengamos embeddings pipeline.
+**Decisión**: **FTS5** para MVP. Vector search post-MVP con Candle/ONNX para embeddings locales.
 
 ### Auth: API Key Simple
 
 Para MVP no necesitamos SSO, OIDC, ni SCIM. Una API Key por proyecto/organización es suficiente:
-- Se genera en startup si no existe (`nexusmind_*`)
+- Se genera en startup si no existe (`nm_*`)
 - Se pasa como `Authorization: Bearer <key>`
+- Se hashea con SHA-256 antes de almacenar
 - Admin puede regenerarla
 
 ---
@@ -256,17 +287,20 @@ Para MVP no necesitamos SSO, OIDC, ni SCIM. Una API Key por proyecto/organizaci�
 
 | Riesgo | Probabilidad | Impacto | Mitigación |
 |---|---|---|---|
-| **MCP protocol cambia** | Alta (early stage) | Alto | Usar REST como fallback, MCP es adaptador |
-| **Go + SQLite bindings bug** | Media | Medio | Tests + version pinning |
-| **Claude Code no soporta MCP bien** | Media | Alto | Tener REST API independiente funcionando |
-| **Developer adoption lenta** | Alta | Medio | Enfocar en early adopters del Discord de Claude |
+| **MCP protocol cambia** | Alta (early stage) | Alto | REST como fallback, MCP es adaptador delgado |
+| **Rust + Rusqlite binding bug** | Baja | Medio | Tests + version pinning, SQLite bundled |
+| **Compilación lenta en CI** | Alta | Medio | `cargo-chef` + `sccache` para caching de dependencias |
+| **Claude Code no soporta MCP bien** | Media | Alto | REST API independiente funcionando desde Semana 1 |
+| **Developer adoption lenta** | Alta | Medio | Early adopters del Discord de Claude + comunidad Rust |
 | **Scope creep** | Muy alta | Alto | **Hard cutoff: Semana 4 release o se corta** |
+| **Curva de aprendizaje Rust** | Media | Medio | MVP usa un solo crate, sin async complejo, sin macros pesadas |
 
 ---
 
 ## 7. 📋 Checklist de Release (v0.1.0)
 
 ### Must-have
+- [ ] `cargo build --release` compila sin errores
 - [ ] `docker compose up` funciona sin errores
 - [ ] POST/GET memoria funciona via curl
 - [ ] Búsqueda FTS5 devuelve resultados relevantes
@@ -283,12 +317,14 @@ Para MVP no necesitamos SSO, OIDC, ni SCIM. Una API Key por proyecto/organizaci�
 
 ### Excluido (post-MVP)
 - [ ] Policy engine
-- [ ] Vector search
+- [ ] Vector search (sqlite-vec / Candle)
 - [ ] Multi-agent orchestration
 - [ ] SSO
 - [ ] SDKs Python/Go
 - [ ] Plugins para Cursor/Copilot
-- [ ] On-prem single binary (Docker compose es suficiente)
+- [ ] TUI (ratatui)
+- [ ] Arquitectura multi-crate
+- [ ] Merkle audit trail
 
 ---
 
@@ -296,12 +332,12 @@ Para MVP no necesitamos SSO, OIDC, ni SCIM. Una API Key por proyecto/organizaci�
 
 | Componente | Archivos | Líneas estimadas |
 |---|---|---|
-| Go backend | 10-12 | ~800-1000 |
-| MCP plugin | 5-6 | ~400-500 |
+| Rust backend | 12-15 | ~1000-1200 |
+| MCP plugin (TS) | 5-6 | ~400-500 |
 | Admin UI | 8-10 | ~600-800 |
 | Config/Docs | 5-6 | ~200-300 |
 | CI/Infra | 4-5 | ~100-150 |
-| **Total** | **~32-39** | **~2100-2750** |
+| **Total** | **~34-42** | **~2300-2950** |
 
 ---
 
@@ -317,7 +353,7 @@ docker compose up -d
 curl -X POST http://localhost:8080/v1/memory/store \
   -H "Authorization: Bearer $NEXUSMIND_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"tool":"cli","project":"demo","type":"semantic","content":"El proyecto usa Go 1.22 con SQLite","tags":["tech-stack"]}'
+  -d '{"tool":"cli","project":"demo","type":"semantic","content":"El proyecto usa Rust 1.85 con Axum y SQLite","tags":["tech-stack"]}'
 
 # 2. Search memory
 curl -X POST http://localhost:8080/v1/memory/search \
@@ -343,7 +379,7 @@ curl -X POST http://localhost:8080/v1/memory/search \
 }
 
 # En Claude Code:
-# > /nexusmind-store "El proyecto usa Go 1.22"
+# > /nexusmind-store "El proyecto usa Rust 1.85 con Axum"
 # > /nexusmind-search "¿qué stack?"
 ```
 
