@@ -17,7 +17,7 @@ Built with **Astro** + **Tailwind CSS v4**.
 4. Problem — fragmentation, lost knowledge, no governance
 5. Solution — convergence diagram (Copilot + CrewAI + Mem0 + Retool + Okta → NexusMind)
 6. Features — 9 feature cards with hover effects
-7. Pricing — 3 tiers: Developer ($29), Team ($49 featured), Enterprise (Custom)
+7. Pricing — 3 tiers: Open Source ($0), Team ($49 featured), Enterprise (Custom)
 8. Waitlist Form — with interest chips, localStorage persistence
 9. Footer
 

@@ -79,7 +79,7 @@
       "version": "1.2.3",
       "type": "folder",
       "installedAt": "2026-05-17T03:57:09.720Z",
-      "updatedAt": "2026-05-17T04:27:55.379Z"
+      "updatedAt": "2026-05-17T06:19:51.710Z"
     },
     "Switch": {
       "version": "1.2.3",
@@ -99,23 +99,23 @@
       "installedAt": "2026-05-17T03:57:10.501Z",
       "updatedAt": "2026-05-17T03:57:10.501Z"
     },
-    "SearchInput": {
-      "version": "1.2.3",
-      "type": "folder",
-      "installedAt": "2026-05-17T04:26:41.274Z",
-      "updatedAt": "2026-05-17T04:27:55.348Z"
-    },
     "Label": {
       "version": "1.2.3",
       "type": "folder",
       "installedAt": "2026-05-17T04:26:41.571Z",
-      "updatedAt": "2026-05-17T04:27:55.412Z"
+      "updatedAt": "2026-05-17T06:19:51.861Z"
     },
     "Text": {
       "version": "1.2.3",
       "type": "folder",
       "installedAt": "2026-05-17T04:26:41.739Z",
-      "updatedAt": "2026-05-17T04:27:55.444Z"
+      "updatedAt": "2026-05-17T06:19:52.010Z"
+    },
+    "SearchInput": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T05:42:24.358Z",
+      "updatedAt": "2026-05-17T06:19:51.546Z"
     }
   },
   "globalCss": "./client/src/index.css"
