@@ -1,7 +1,10 @@
-# NexusMind — MVP Pitch
+# NexusMind — MVP Pitch (v1 — Archivado)
+
+> ⚠️ **Este pitch corresponde al plan v1 (developer-focused).**
+> El plan actual es enterprise. Ver [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md) para el pitch actualizado.
 
 > **Documento**: 04-MVP_PITCH.md
-> **Versión**: 0.1.0
+> **Versión**: 0.1.0 (archivado)
 > **Propósito**: Explicación ejecutiva de por qué este MVP — no el de 16 semanas del ADR-001.
 
 ---

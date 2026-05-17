@@ -8,22 +8,31 @@
 
 | # | Documento | Qué contiene |
 |---|---|---|
-| 1 | [01-MVP_PLAN.md](./01-MVP_PLAN.md) | Plan general: filosofía, sprint breakdown, feature mapping, riesgos |
-| 2 | [02-ARCHITECTURE_MVP.md](./02-ARCHITECTURE_MVP.md) | Arquitectura reducida, data model, endpoints, diff con la target |
-| 3 | [03-SCOPE_CHANGELOG.md](./03-SCOPE_CHANGELOG.md) | Qué se excluye, qué se reduce, timeline ajustado |
-| 4 | [04-MVP_PITCH.md](./04-MVP_PITCH.md) | Pitch ejecutivo: por qué este MVP y no el de 6 meses |
-| 5 | [05-TASK_BREAKDOWN.md](./05-TASK_BREAKDOWN.md) | Desglose granular día por día para las 4 semanas |
+| 0 | [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md) | **Plan principal (v2)** — MVP enterprise con multi-usuario, admin panel y demo-ready |
+| 1 | [01-MVP_PLAN.md](./01-MVP_PLAN.md) | Plan original (v1) — developer-focused, incluye MCP plugin (ahora post-MVP) |
+| 2 | [02-ARCHITECTURE_MVP.md](./02-ARCHITECTURE_MVP.md) | Arquitectura reducida (v1, single-user) |
+| 3 | [03-SCOPE_CHANGELOG.md](./03-SCOPE_CHANGELOG.md) | Scope diff contra documentos originales |
+| 4 | [04-MVP_PITCH.md](./04-MVP_PITCH.md) | Pitch ejecutivo (necesita update para v2) |
+| 5 | [05-TASK_BREAKDOWN.md](./05-TASK_BREAKDOWN.md) | Desglose granular v1 (para referencia) |
 
 ---
 
-## 🎯 Resumen
+## 🎯 Resumen (v2 — Enterprise)
 
-**Meta**: Un backend Go + SQLite + Plugin MCP para Claude Code que permita memoria cross-tool funcional.
+**Stack**: Rust + SQLite + Axum (multi-tenant) + React admin panel.
 
-**Scope**: Memory API (store/search/delete), auth por API key, admin web mínima, MCP server.
+**Meta**: Demo enterprise donde el CTO ve multi-usuario, control centralizado, audit trail y admin panel.
 
-**Excluido**: Policy engine, vector search, SDKs, SSO, multi-agent, Cursor/Copilot plugins.
+**MVP Scope**:
+- ✅ Backend multi-tenant (organizaciones, usuarios, API keys scoped)
+- ✅ Admin panel (Dashboard, Users, Memories, Audit Log)
+- ✅ Script de demo con datos de ejemplo (3 orgs, 15 usuarios)
+- ✅ Docker compose listo en 2 comandos
 
-**Costo**: ~1 developer × 4 semanas (~$8,500).
+**Pospuesto a v0.3**:
+- ❌ Plugin MCP para Claude Code
+- ❌ Integración con Cursor/Copilot
+- ❌ Vector search
+- ❌ Policy engine
 
-**Riesgo principal**: Scope creep. La regla es "hard cutoff en semana 4".
+**Ver [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md) para el plan completo.**

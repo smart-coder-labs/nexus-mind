@@ -1,9 +1,21 @@
 # NexusMind — MVP Scope Changelog
 
 > **Documento**: 03-SCOPE_CHANGELOG.md
-> **Versión**: 0.1.0
+> **Versión**: 2.0
 > **Fecha**: Mayo 2026
 > **Propósito**: Registro de decisiones de scope para el MVP vs lo que prometen los documentos existentes.
+
+---
+
+## ⚠️ Pivot: De Developer MVP a Enterprise MVP
+
+**El plan original (v1) priorizaba el plugin MCP para Claude Code sobre el multi-tenancy.**
+
+Error corregido en v2:
+- ❌ **Antes**: "Un developer con Claude Code guarda memoria"
+- ✅ **Ahora**: "Un CTO invita a su equipo, todos comparten memoria, el admin lo controla todo"
+
+**Ref**: [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md)
 
 ---
 

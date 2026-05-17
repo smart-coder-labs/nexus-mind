@@ -1,6 +1,10 @@
-# NexusMind — MVP Plan: "The Integrator"
+# NexusMind — MVP Plan v1: "The Integrator" (Archivado)
 
-> **Objetivo**: MVP que demuestre valor real en **4 semanas** (no 6 meses del roadmap original ni 16 semanas del ADR-001 Fase 1 completo).
+> ⚠️ **Este plan fue reemplazado por [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md).**
+> El foco cambió de "memoria cross-tool para un developer" a "control centralizado multi-usuario para vender a empresas".
+> Este documento se mantiene como referencia histórica.
+
+> **Objetivo original**: MVP que demuestre valor real en **4 semanas**.
 > **Filosofía**: Un solo endpoint funcional + un plugin real > 10 docs de arquitectura.
 > **Stack**: **Rust** (según ADR-001), no Go.
 > **Estado actual del repo**: Fase conceptual (documentos). Cero código de backend, solo landing page Astro + bootcamp-tracker (proyecto legacy no relacionado).

@@ -1,8 +1,11 @@
-# NexusMind — MVP Task Breakdown
+# NexusMind — MVP Task Breakdown (v1 — Archivado)
+
+> ⚠️ **Este desglose corresponde al plan v1 (developer-focused).**
+> Para el plan enterprise, ver [06-ENTERPRISE_MVP.md](./06-ENTERPRISE_MVP.md).
 
 > **Documento**: 05-TASK_BREAKDOWN.md
-> **Versión**: 0.1.0
-> **Propósito**: Desglose granular de tareas para ejecutar el MVP en 4 semanas. **Stack: Rust** (ADR-001) + SQLite (ADR-002) + MCP Server en TypeScript.
+> **Versión**: 0.1.0 (archivado)
+> **Propósito**: Desglose granular del plan v1. **Stack: Rust** (ADR-001) + SQLite (ADR-002) + MCP Server en TypeScript.
 
 ---
 
