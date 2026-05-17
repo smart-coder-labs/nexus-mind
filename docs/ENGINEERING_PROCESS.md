@@ -22,12 +22,12 @@
 
 | Componente | Tecnología | Razón |
 |---|---|---|
-| **Backend** | Go 1.22+ | Baja latencia, single binary, concurrencia nativa |
+| **Backend** | Rust (ADR-001) | Performance determinista, sin GC, concurrencia real sobre SQLite, borrow checker |
 | **Database** | SQLite (WAL + FTS5) | Sin dependencias, portable |
 | **Vectors** | sqlite-vss (MVP) → pgvector (scale) | Embeddings sin infra adicional |
 | **MCP Server** | TypeScript | Ecosistema Anthropic |
 | **Admin UI** | React + Tailwind CSS | Solo admin console, no UI de usuario final |
-| **SDKs** | Python, TypeScript, Go | Developer experience |
+| **SDKs** | Python, TypeScript, Rust (post-MVP) | Developer experience |
 | **Plugins** | Extension API (Cursor), MCP (Claude), GitHub Ext (Copilot) | Nativo |
 
 ---
@@ -54,9 +54,9 @@
 
 ## 4. CI/CD
 
-- **Lint**: golangci-lint, prettier
-- **Test**: go test, vitest (SDKs), integration tests con herramientas reales
-- **Build**: Go cross-compile (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64)
+- **Lint**: cargo clippy, prettier
+- **Test**: cargo test, vitest (SDKs), integration tests con herramientas reales
+- **Build**: cargo build --release + cross-compile (cargo-zigbuild para ARM)
 - **Release**: GitHub Actions → Docker image + single binary release
 - **Deploy**: Docker compose (dev), Helm chart (prod)
 
@@ -80,7 +80,7 @@
 | **MCP Server** | TypeScript | Claude Code, Cline, Roo Code |
 | **Extension API** | TypeScript | Cursor, VS Code |
 | **GitHub Extension** | TypeScript | Copilot |
-| **REST SDK** | Python, Go | Agentes custom |
+| **REST SDK** | Python, Rust (post-MVP) | Agentes custom |
 
 ### 6.2 Plugin Development Process
 

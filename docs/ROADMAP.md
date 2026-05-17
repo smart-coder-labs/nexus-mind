@@ -45,7 +45,7 @@
 - **Policy Engine:** 5 políticas predefinidas + API para custom policies en YAML
 - **Audit Trail:** Append-only log con búsqueda básica
 - **RBAC:** Roles Super Admin, Security Officer, Developer, Viewer
-- **SDKs:** Python + TypeScript + Go
+- **SDKs:** Python + TypeScript + Rust (post-MVP)
 - **Admin Console:** Session dashboard en tiempo real
 - **Deploy:** Docker compose + single binary
 - **Open-source:** Core bajo Apache 2.0 en GitHub
