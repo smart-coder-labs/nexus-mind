@@ -24,7 +24,7 @@
         <div class="feature-card" data-reveal data-reveal-delay={i * 80}>
           <div class="text-3xl mb-3">{f.icon}</div>
           <h3 class="font-semibold text-white mb-1">{f.title}</h3>
-          <p class="text-slate-400 text-sm leading-relaxed">{f.desc}</p>
+          <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">{f.desc}</p>
         </div>
       ))}
     </div>
@@ -33,8 +33,8 @@
 
 <style>
   .feature-card {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--color-border-primary);
     border-radius: 1rem;
     padding: 1.75rem;
     transition: all 0.3s ease;
@@ -46,10 +46,10 @@
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    background: linear-gradient(135deg, rgba(59,130,246,0.08), transparent 60%);
+    background: linear-gradient(135deg, var(--color-accent-blue-tint), transparent 60%);
     opacity: 0;
     transition: opacity 0.4s;
   }
   .feature-card:hover::before { opacity: 1; }
-  .feature-card:hover { transform: translateY(-3px); border-color: rgba(59,130,246,0.2); }
+  .feature-card:hover { transform: translateY(-3px); border-color: rgba(10,132,255,0.2); }
 </style>

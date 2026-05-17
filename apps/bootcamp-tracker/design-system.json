@@ -1,0 +1,122 @@
+{
+  "componentsDir": "./client/src/components/ui",
+  "framework": "unknown",
+  "rsc": false,
+  "components": {
+    "Accordion": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:07.686Z",
+      "updatedAt": "2026-05-17T03:57:07.686Z"
+    },
+    "Badge": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:07.861Z",
+      "updatedAt": "2026-05-17T03:57:07.861Z"
+    },
+    "Breadcrumb": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.023Z",
+      "updatedAt": "2026-05-17T03:57:08.023Z"
+    },
+    "Button": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.189Z",
+      "updatedAt": "2026-05-17T03:57:08.189Z"
+    },
+    "Card": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.393Z",
+      "updatedAt": "2026-05-17T03:57:08.393Z"
+    },
+    "Checkbox": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.558Z",
+      "updatedAt": "2026-05-17T03:57:08.558Z"
+    },
+    "Input": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.724Z",
+      "updatedAt": "2026-05-17T03:57:08.724Z"
+    },
+    "KPIBlock": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:08.911Z",
+      "updatedAt": "2026-05-17T03:57:08.911Z"
+    },
+    "Modal": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:09.069Z",
+      "updatedAt": "2026-05-17T03:57:09.069Z"
+    },
+    "Progress": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:09.218Z",
+      "updatedAt": "2026-05-17T03:57:09.218Z"
+    },
+    "Snackbar": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:09.387Z",
+      "updatedAt": "2026-05-17T03:57:09.387Z"
+    },
+    "Sparkline": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:09.559Z",
+      "updatedAt": "2026-05-17T03:57:09.559Z"
+    },
+    "Spinner": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:09.720Z",
+      "updatedAt": "2026-05-17T04:27:55.379Z"
+    },
+    "Switch": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:10.176Z",
+      "updatedAt": "2026-05-17T03:57:10.176Z"
+    },
+    "Tabs": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:10.339Z",
+      "updatedAt": "2026-05-17T03:57:10.339Z"
+    },
+    "ThemeToggle": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T03:57:10.501Z",
+      "updatedAt": "2026-05-17T03:57:10.501Z"
+    },
+    "SearchInput": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T04:26:41.274Z",
+      "updatedAt": "2026-05-17T04:27:55.348Z"
+    },
+    "Label": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T04:26:41.571Z",
+      "updatedAt": "2026-05-17T04:27:55.412Z"
+    },
+    "Text": {
+      "version": "1.2.3",
+      "type": "folder",
+      "installedAt": "2026-05-17T04:26:41.739Z",
+      "updatedAt": "2026-05-17T04:27:55.444Z"
+    }
+  },
+  "globalCss": "./client/src/index.css"
+}

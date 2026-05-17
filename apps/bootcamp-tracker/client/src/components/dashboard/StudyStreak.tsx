@@ -19,7 +19,7 @@ export function StudyStreak({ hoursPerDay }: StudyStreakProps) {
 
   return (
     <div className="surface rounded-xl p-4">
-      <div className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
+      <div className="text-sm font-medium mb-3" style={{ color: 'var(--color-text-secondary)' }}>
         Study Activity — Last 14 Days
       </div>
       <div className="flex items-end gap-1 h-16">
@@ -29,7 +29,7 @@ export function StudyStreak({ hoursPerDay }: StudyStreakProps) {
               className="w-full rounded-sm transition-all"
               style={{
                 height: `${Math.max(2, (hours / maxHours) * 52)}px`,
-                backgroundColor: hours > 0 ? 'var(--accent)' : 'var(--bg-tertiary)',
+                backgroundColor: hours > 0 ? 'var(--color-accent-blue)' : 'var(--color-bg-tertiary)',
                 opacity: hours > 0 ? Math.max(0.4, hours / maxHours) : 1,
               }}
             />
@@ -37,8 +37,8 @@ export function StudyStreak({ hoursPerDay }: StudyStreakProps) {
         ))}
       </div>
       <div className="flex justify-between mt-1">
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>14d ago</span>
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Today</span>
+        <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>14d ago</span>
+        <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>Today</span>
       </div>
     </div>
   );

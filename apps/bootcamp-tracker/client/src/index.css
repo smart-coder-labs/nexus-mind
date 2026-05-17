@@ -1,72 +1,7 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-:root {
-  --bg-primary: #0D1117;
-  --bg-secondary: #161B22;
-  --bg-tertiary: #21262D;
-  --border: #30363D;
-  --border-subtle: #21262D;
-  --text-primary: #E6EDF3;
-  --text-secondary: #8B949E;
-  --text-muted: #6E7681;
-  --accent: #58A6FF;
-  --accent-hover: #79B8FF;
-  --success: #3FB950;
-  --warning: #D29922;
-  --danger: #F85149;
-}
-
-.light {
-  --bg-primary: #FFFFFF;
-  --bg-secondary: #F6F8FA;
-  --bg-tertiary: #EAEEF2;
-  --border: #D0D7DE;
-  --border-subtle: #EAEEF2;
-  --text-primary: #1F2328;
-  --text-secondary: #656D76;
-  --text-muted: #8C959F;
-  --accent: #0969DA;
-  --accent-hover: #0550AE;
-  --success: #1A7F37;
-  --warning: #9A6700;
-  --danger: #CF222E;
-}
+@import '../../styles/apple-ds.css';
 
 * {
   box-sizing: border-box;
-}
-
-body {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: 'Inter', system-ui, sans-serif;
-  margin: 0;
-  padding: 0;
-  min-height: 100vh;
-}
-
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}
-
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes slideIn {
@@ -79,26 +14,20 @@ body {
   to { width: var(--progress-width); }
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.2s ease-out;
-}
-
 .animate-slide-in {
   animation: slideIn 0.3s ease-out;
 }
 
-/* Progress bar animation */
 .progress-bar-fill {
   transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Custom checkbox */
 .custom-checkbox {
   appearance: none;
   -webkit-appearance: none;
   width: 18px;
   height: 18px;
-  border: 2px solid var(--border);
+  border: 2px solid var(--color-border-primary);
   border-radius: 4px;
   cursor: pointer;
   position: relative;
@@ -108,8 +37,8 @@ body {
 }
 
 .custom-checkbox:checked {
-  background: var(--success);
-  border-color: var(--success);
+  background: var(--color-status-success);
+  border-color: var(--color-status-success);
 }
 
 .custom-checkbox:checked::after {
@@ -126,36 +55,28 @@ body {
 }
 
 .custom-checkbox:hover {
-  border-color: var(--accent);
+  border-color: var(--color-accent-blue);
 }
 
-/* Surface card */
 .surface {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
   border-radius: 8px;
 }
 
 .surface-hover:hover {
-  border-color: var(--accent);
+  border-color: var(--color-accent-blue);
   transition: border-color 0.15s ease;
 }
 
-/* Focus ring */
-.focus-ring:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.3);
-}
-
-/* Kbd shortcut */
 kbd {
   display: inline-block;
   padding: 2px 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'SF Mono', 'Monaco', monospace;
   font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
   border-radius: 4px;
   line-height: 1.4;
 }

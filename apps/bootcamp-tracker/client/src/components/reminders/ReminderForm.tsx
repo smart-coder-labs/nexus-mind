@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Modal } from '../ui/Modal';
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalCloseButton } from '../ui/Modal';
+import { Input } from '../ui/Input';
+import { Button } from '../ui/Button';
 import { useCreateReminder } from '../../hooks/useReminders';
 import { format } from 'date-fns';
 
@@ -31,64 +33,38 @@ export function ReminderForm({ isOpen, onClose }: ReminderFormProps) {
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New Reminder">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-            Message
-          </label>
-          <input
+    <Modal open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <ModalCloseButton />
+      <ModalHeader>
+        <ModalTitle>New Reminder</ModalTitle>
+      </ModalHeader>
+      <ModalContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Input
+            label="Message"
             type="text"
             value={message}
             onChange={e => setMessage(e.target.value)}
             placeholder="What do you want to be reminded about?"
             required
-            className="w-full px-3 py-2 rounded-lg text-sm focus-ring"
-            style={{
-              backgroundColor: 'var(--bg-tertiary)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-primary)',
-              outline: 'none',
-            }}
           />
-        </div>
-        <div>
-          <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-            Remind at
-          </label>
-          <input
+          <Input
+            label="Remind at"
             type="datetime-local"
             value={remindAt}
             onChange={e => setRemindAt(e.target.value)}
             required
-            className="w-full px-3 py-2 rounded-lg text-sm focus-ring"
-            style={{
-              backgroundColor: 'var(--bg-tertiary)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-primary)',
-              outline: 'none',
-            }}
           />
-        </div>
-        <div className="flex gap-3 justify-end pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm transition-colors hover:bg-white/5"
-            style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={create.isPending}
-            className="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
-          >
-            {create.isPending ? 'Creating...' : 'Create Reminder'}
-          </button>
-        </div>
-      </form>
+          <div className="flex gap-3 justify-end pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" loading={create.isPending}>
+              {create.isPending ? 'Creating...' : 'Create Reminder'}
+            </Button>
+          </div>
+        </form>
+      </ModalContent>
     </Modal>
   );
 }

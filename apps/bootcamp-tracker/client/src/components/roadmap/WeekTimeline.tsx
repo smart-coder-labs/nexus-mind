@@ -22,12 +22,12 @@ export function WeekTimeline({ week, days, todayKey }: WeekTimelineProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>Semana {week}</div>
-          <div className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <div className="text-xs font-mono" style={{ color: 'var(--color-text-tertiary)' }}>Semana {week}</div>
+          <div className="text-base font-semibold" style={{ color: 'var(--color-text-primary)' }}>
             {weekTitles[week] || `Week ${week}`}
           </div>
         </div>
-        <div className="text-sm font-mono" style={{ color: 'var(--text-muted)' }}>
+        <div className="text-sm font-mono" style={{ color: 'var(--color-text-tertiary)' }}>
           {completed}/{days.length} days
         </div>
       </div>

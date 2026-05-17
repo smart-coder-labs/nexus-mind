@@ -1,50 +1,49 @@
 import React from 'react';
+import { KPIBlock, KPIGroup } from '../ui/KPIBlock';
 import type { Stats } from '../../types';
 
 interface StatsPanelProps {
   stats: Stats;
 }
 
-function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
-  return (
-    <div className="surface rounded-xl p-4">
-      <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="text-2xl font-mono font-semibold tabular-nums" style={{ color: color || 'var(--text-primary)' }}>
-        {value}
-      </div>
-      {sub && <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{sub}</div>}
-    </div>
-  );
-}
-
 export function StatsPanel({ stats }: StatsPanelProps) {
   const remaining = stats.totalEstimatedHours - stats.completedHours;
+  const percentage = stats.totalSubtopics > 0
+    ? Math.round((stats.completedSubtopics / stats.totalSubtopics) * 100)
+    : 0;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <StatCard
+    <KPIGroup columns={4} gap="sm">
+      <KPIBlock
         label="Overall Progress"
-        value={`${stats.totalSubtopics > 0 ? Math.round((stats.completedSubtopics / stats.totalSubtopics) * 100) : 0}%`}
-        sub={`${stats.completedSubtopics}/${stats.totalSubtopics} subtopics`}
-        color="var(--accent)"
+        value={`${percentage}%`}
+        description={`${stats.completedSubtopics}/${stats.totalSubtopics} subtopics`}
+        variant="bordered"
+        size="sm"
       />
-      <StatCard
+      <KPIBlock
         label="Hours Left"
         value={`${remaining.toFixed(1)}h`}
-        sub={`${stats.completedHours.toFixed(1)}h done of ${stats.totalEstimatedHours}h`}
+        description={`${stats.completedHours.toFixed(1)}h done of ${stats.totalEstimatedHours}h`}
+        variant="bordered"
+        size="sm"
       />
-      <StatCard
+      <KPIBlock
         label="P0 Pending"
         value={stats.pendingP0}
-        sub="critical subtopics"
-        color={stats.pendingP0 > 0 ? 'var(--danger)' : 'var(--success)'}
+        description="critical subtopics"
+        trend={stats.pendingP0 > 0 ? 'down' : 'up'}
+        variant="bordered"
+        size="sm"
       />
-      <StatCard
+      <KPIBlock
         label="Study Streak"
         value={`${stats.studyStreak}d`}
-        sub={stats.studyStreak > 0 ? 'days in a row 🔥' : 'no sessions yet'}
-        color={stats.studyStreak > 2 ? 'var(--warning)' : undefined}
+        description={stats.studyStreak > 0 ? 'days in a row' : 'no sessions yet'}
+        trend={stats.studyStreak > 2 ? 'up' : 'neutral'}
+        variant="bordered"
+        size="sm"
       />
-    </div>
+    </KPIGroup>
   );
 }

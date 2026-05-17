@@ -2,7 +2,7 @@
 // Toast notification + confetti + reveal observer
 ---
 
-<div id="toast" class="fixed bottom-6 right-6 z-[999] px-6 py-3 rounded-xl shadow-2xl text-sm font-medium pointer-events-none transition-all duration-500" style="background: #065f46; color: #d1fae5; border: 1px solid rgba(16,185,129,0.2); max-width: 400px; transform: translateY(120px); opacity: 0;"></div>
+<div id="toast" class="fixed bottom-6 right-6 z-[999] px-6 py-3 rounded-xl shadow-2xl text-sm font-medium pointer-events-none transition-all duration-500" style="background: var(--color-bg-secondary); color: var(--color-status-success); border: 1px solid rgba(50, 215, 75, 0.2); max-width: 400px; transform: translateY(120px); opacity: 0;"></div>
 
 <script>
   // Toast system
@@ -13,13 +13,13 @@
     t.style.transform = 'translateY(0)';
     t.style.opacity = '1';
     if (isError) {
-      t.style.background = '#7f1d1d';
-      t.style.color = '#fecaca';
-      t.style.borderColor = 'rgba(220,38,38,0.2)';
+      t.style.background = 'var(--color-bg-secondary)';
+      t.style.color = 'var(--color-status-error)';
+      t.style.borderColor = 'rgba(255, 69, 58, 0.2)';
     } else {
-      t.style.background = '#065f46';
-      t.style.color = '#d1fae5';
-      t.style.borderColor = 'rgba(16,185,129,0.2)';
+      t.style.background = 'var(--color-bg-secondary)';
+      t.style.color = 'var(--color-status-success)';
+      t.style.borderColor = 'rgba(50, 215, 75, 0.2)';
     }
     setTimeout(() => {
       t.style.transform = 'translateY(120px)';

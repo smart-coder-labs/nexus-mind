@@ -7,6 +7,14 @@
     "seed": "npm run seed --prefix server"
   },
   "devDependencies": {
+    "@smart-coder-labs/apple-design-system": "^1.3.1",
     "concurrently": "^8.2.0"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "cva": "^0.0.0",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.16.0",
+    "tailwind-merge": "^3.6.0"
   }
 }

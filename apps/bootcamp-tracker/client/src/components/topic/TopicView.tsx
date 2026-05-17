@@ -14,7 +14,7 @@ export function TopicView({ topicId }: TopicViewProps) {
 
   if (isLoading) return <LoadingPage />;
   if (error || !topic) return (
-    <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
+    <div className="text-center py-16" style={{ color: 'var(--color-text-tertiary)' }}>
       Topic not found
     </div>
   );
@@ -40,17 +40,17 @@ export function TopicView({ topicId }: TopicViewProps) {
             {topic.icon}
           </div>
           <div className="flex-1">
-            <div className="text-xs font-mono mb-1" style={{ color: 'var(--text-muted)' }}>
+            <div className="text-xs font-mono mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
               TEMA {topic.number}
             </div>
-            <h1 className="text-xl font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+            <h1 className="text-xl font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>
               {topic.title}
             </h1>
             <div className="flex items-center gap-3">
               <div className="flex-1 max-w-xs">
                 <ProgressBar value={progress} color={topic.color} height={6} animated />
               </div>
-              <span className="text-sm font-mono tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+              <span className="text-sm font-mono tabular-nums" style={{ color: 'var(--color-text-secondary)' }}>
                 {completedSubtopics}/{totalSubtopics} · {progress}%
               </span>
             </div>

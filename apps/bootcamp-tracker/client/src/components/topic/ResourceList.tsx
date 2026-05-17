@@ -27,11 +27,11 @@ export function ResourceList({ resources }: ResourceListProps) {
   );
 
   return (
-    <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+    <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border-secondary)' }}>
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-white/5 transition-colors"
-        style={{ color: 'var(--text-secondary)' }}
+        style={{ color: 'var(--color-text-secondary)' }}
       >
         <span className="flex items-center gap-2">
           <span>📖</span>
@@ -46,11 +46,11 @@ export function ResourceList({ resources }: ResourceListProps) {
       </button>
 
       {open && (
-        <div className="px-3 pb-3 pt-1 space-y-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+        <div className="px-3 pb-3 pt-1 space-y-3" style={{ borderTop: '1px solid var(--color-border-secondary)' }}>
           {(Object.entries(grouped) as [Resource['type'], Resource[]][]).map(([type, items]) => (
             <div key={type}>
               <div className="text-xs font-medium mb-1.5 flex items-center gap-1.5"
-                style={{ color: 'var(--text-muted)' }}>
+                style={{ color: 'var(--color-text-tertiary)' }}>
                 <span>{typeConfig[type].emoji}</span>
                 {typeConfig[type].label}
               </div>
@@ -63,13 +63,13 @@ export function ResourceList({ resources }: ResourceListProps) {
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-start gap-1.5 hover:underline"
-                        style={{ color: 'var(--accent)' }}
+                        style={{ color: 'var(--color-accent-blue)' }}
                       >
                         <span className="mt-0.5 shrink-0">↗</span>
                         <span>{r.label}</span>
                       </a>
                     ) : (
-                      <span className="flex items-start gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+                      <span className="flex items-start gap-1.5" style={{ color: 'var(--color-text-secondary)' }}>
                         <span className="mt-0.5">•</span>
                         <span>{r.label}</span>
                       </span>

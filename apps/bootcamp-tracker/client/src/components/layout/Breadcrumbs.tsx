@@ -1,36 +1,24 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '../ui/Breadcrumb';
 
-interface Crumb {
-  label: string;
-  to?: string;
-}
-
-interface BreadcrumbsProps {
-  crumbs: Crumb[];
-}
-
-export function Breadcrumbs({ crumbs }: BreadcrumbsProps) {
+interface Crumb { label: string; to?: string; }
+export function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
   return (
-    <nav className="flex items-center gap-2 text-sm mb-6">
-      {crumbs.map((crumb, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && (
-            <span style={{ color: 'var(--text-muted)' }}>/</span>
-          )}
-          {crumb.to ? (
-            <Link
-              to={crumb.to}
-              className="transition-colors hover:underline"
-              style={{ color: 'var(--accent)' }}
-            >
-              {crumb.label}
-            </Link>
-          ) : (
-            <span style={{ color: 'var(--text-secondary)' }}>{crumb.label}</span>
-          )}
-        </React.Fragment>
-      ))}
-    </nav>
+    <Breadcrumb>
+      <BreadcrumbList>
+        {crumbs.map((crumb, i) => (
+          <BreadcrumbItem key={i}>
+            {i < crumbs.length - 1 ? (
+              <>
+                <BreadcrumbLink href={crumb.to ?? '#'}>{crumb.label}</BreadcrumbLink>
+                <BreadcrumbSeparator />
+              </>
+            ) : (
+              <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+            )}
+          </BreadcrumbItem>
+        ))}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }

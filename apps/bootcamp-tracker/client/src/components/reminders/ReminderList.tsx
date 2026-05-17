@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import { useReminders, useDismissReminder, useSnoozeReminder, useDeleteReminder } from '../../hooks/useReminders';
+import { Button } from '../ui/Button';
 import { ReminderForm } from './ReminderForm';
 import { LoadingPage } from '../ui/LoadingSpinner';
 import type { Reminder } from '../../types';
@@ -19,21 +20,21 @@ function ReminderItem({ reminder }: { reminder: Reminder }) {
         <div className="flex items-start gap-3">
           <span className="text-lg mt-0.5">{isPast ? '⏰' : '🔔'}</span>
           <div>
-            <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+            <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
               {reminder.message}
             </div>
             {reminder.subtopic_label && (
-              <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
                 Re: {reminder.subtopic_label}
               </div>
             )}
             <div className="flex items-center gap-3 mt-1.5">
               <span className={`text-xs font-mono ${isPast ? 'text-red-400' : ''}`}
-                style={!isPast ? { color: 'var(--text-muted)' } : undefined}>
+                style={!isPast ? { color: 'var(--color-text-tertiary)' } : undefined}>
                 {format(parseISO(reminder.remind_at), 'MMM d, yyyy HH:mm')}
               </span>
               {isSnoozed && reminder.snoozed_until && (
-                <span className="text-xs" style={{ color: 'var(--warning)' }}>
+                <span className="text-xs" style={{ color: 'var(--color-status-warning)' }}>
                   Snoozed until {format(parseISO(reminder.snoozed_until), 'HH:mm')}
                 </span>
               )}
@@ -51,9 +52,9 @@ function ReminderItem({ reminder }: { reminder: Reminder }) {
             }}
             className="text-xs rounded px-2 py-1 cursor-pointer"
             style={{
-              backgroundColor: 'var(--bg-tertiary)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-secondary)',
+              backgroundColor: 'var(--color-bg-tertiary)',
+              border: '1px solid var(--color-border-primary)',
+              color: 'var(--color-text-secondary)',
               outline: 'none',
             }}
             defaultValue=""
@@ -68,7 +69,7 @@ function ReminderItem({ reminder }: { reminder: Reminder }) {
             onClick={() => dismiss.mutate(reminder.id)}
             disabled={dismiss.isPending}
             className="px-2 py-1 rounded text-xs transition-colors hover:bg-white/5"
-            style={{ color: 'var(--success)', border: '1px solid rgba(63, 185, 80, 0.3)' }}
+            style={{ color: 'var(--color-status-success)', border: '1px solid rgba(52, 199, 89, 0.3)' }}
             title="Dismiss"
           >
             ✓
@@ -78,7 +79,7 @@ function ReminderItem({ reminder }: { reminder: Reminder }) {
             onClick={() => deleteR.mutate(reminder.id)}
             disabled={deleteR.isPending}
             className="px-2 py-1 rounded text-xs transition-colors hover:bg-white/5"
-            style={{ color: 'var(--danger)', border: '1px solid rgba(248, 81, 73, 0.3)' }}
+            style={{ color: 'var(--color-status-error)', border: '1px solid rgba(255, 59, 48, 0.3)' }}
             title="Delete"
           >
             ✕
@@ -100,28 +101,24 @@ export function ReminderList() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <h1 className="text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>
           🔔 Reminders
         </h1>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-          style={{ backgroundColor: 'var(--accent)', color: 'white' }}
-        >
+        <Button variant="primary" size="sm" onClick={() => setShowForm(true)}>
           + New Reminder
-        </button>
+        </Button>
       </div>
 
       {active.length === 0 ? (
         <div className="surface rounded-xl p-12 text-center">
           <div className="text-4xl mb-3">🔔</div>
-          <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          <div className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
             No active reminders
           </div>
           <button
             onClick={() => setShowForm(true)}
             className="mt-4 text-sm"
-            style={{ color: 'var(--accent)' }}
+            style={{ color: 'var(--color-accent-blue)' }}
           >
             Create one
           </button>

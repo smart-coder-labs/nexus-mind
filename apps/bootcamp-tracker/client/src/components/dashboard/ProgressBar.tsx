@@ -1,39 +1,22 @@
 import React from 'react';
+import { Progress } from '../ui/Progress';
 
 interface ProgressBarProps {
-  value: number; // 0-100
+  value: number;
+  max?: number;
   color?: string;
   height?: number;
-  showLabel?: boolean;
   animated?: boolean;
+  className?: string;
 }
 
-export function ProgressBar({
-  value,
-  color = 'var(--accent)',
-  height = 6,
-  showLabel = false,
-  animated = true,
-}: ProgressBarProps) {
+export function ProgressBar({ value, max = 100, height = 8, className }: ProgressBarProps) {
   return (
-    <div className="flex items-center gap-2">
-      <div
-        className="flex-1 rounded-full overflow-hidden"
-        style={{ height: `${height}px`, backgroundColor: 'var(--bg-tertiary)' }}
-      >
-        <div
-          className={animated ? 'progress-bar-fill h-full rounded-full' : 'h-full rounded-full'}
-          style={{
-            width: `${Math.min(100, Math.max(0, value))}%`,
-            backgroundColor: color,
-          }}
-        />
-      </div>
-      {showLabel && (
-        <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--text-muted)', minWidth: '32px' }}>
-          {value}%
-        </span>
-      )}
-    </div>
+    <Progress
+      value={value}
+      max={max}
+      className={className}
+      style={{ height: `${height}px` } as React.CSSProperties}
+    />
   );
 }

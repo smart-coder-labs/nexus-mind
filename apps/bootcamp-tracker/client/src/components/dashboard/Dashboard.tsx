@@ -28,14 +28,14 @@ export function Dashboard() {
       <div className="surface rounded-xl p-5">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+            <h1 className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
               NexusMind Conceptual Bootcamp
             </h1>
-            <p className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+            <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
               12 topics · 120h · 4 weeks
             </p>
           </div>
-          <div className="text-3xl font-mono font-bold tabular-nums" style={{ color: 'var(--accent)' }}>
+          <div className="text-3xl font-mono font-bold tabular-nums" style={{ color: 'var(--color-accent-blue)' }}>
             {overallProgress}%
           </div>
         </div>
@@ -52,7 +52,7 @@ export function Dashboard() {
 
       {/* Filter bar */}
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-primary)' }}>
           {(['all', 'P0', 'P1', 'P2'] as Priority[]).map(p => (
             <button
               key={p}
@@ -61,8 +61,8 @@ export function Dashboard() {
                 priority === p ? 'shadow-sm' : ''
               }`}
               style={{
-                backgroundColor: priority === p ? 'var(--bg-tertiary)' : 'transparent',
-                color: priority === p ? 'var(--text-primary)' : 'var(--text-muted)',
+                backgroundColor: priority === p ? 'var(--color-bg-tertiary)' : 'transparent',
+                color: priority === p ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
               }}
             >
               {p === 'all' ? 'All' : p}
@@ -70,7 +70,7 @@ export function Dashboard() {
           ))}
         </div>
 
-        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ backgroundColor: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-primary)' }}>
           {(['all', 'pending', 'completed'] as StatusFilter[]).map(s => (
             <button
               key={s}
@@ -79,8 +79,8 @@ export function Dashboard() {
                 status === s ? 'shadow-sm' : ''
               }`}
               style={{
-                backgroundColor: status === s ? 'var(--bg-tertiary)' : 'transparent',
-                color: status === s ? 'var(--text-primary)' : 'var(--text-muted)',
+                backgroundColor: status === s ? 'var(--color-bg-tertiary)' : 'transparent',
+                color: status === s ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
               }}
             >
               {s}

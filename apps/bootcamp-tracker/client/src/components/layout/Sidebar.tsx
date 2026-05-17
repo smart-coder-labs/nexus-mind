@@ -13,8 +13,8 @@ export function Sidebar() {
     <aside
       className="w-56 shrink-0 h-screen sticky top-0 flex flex-col py-4 px-3 border-r"
       style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: 'var(--border)',
+        backgroundColor: 'var(--color-bg-secondary)',
+        borderColor: 'var(--color-border-primary)',
       }}
     >
       {/* Logo */}
@@ -22,10 +22,10 @@ export function Sidebar() {
         <div className="flex items-center gap-2">
           <span className="text-xl">🧠</span>
           <div>
-            <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            <div className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
               NexusMind
             </div>
-            <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
               Bootcamp Tracker
             </div>
           </div>
@@ -47,8 +47,8 @@ export function Sidebar() {
               }`
             }
             style={({ isActive }) => ({
-              backgroundColor: isActive ? 'rgba(88, 166, 255, 0.1)' : undefined,
-              color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+              backgroundColor: isActive ? 'var(--color-accent-blue-tint)' : undefined,
+              color: isActive ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
             })}
           >
             <span className="text-base">{item.icon}</span>
@@ -58,8 +58,8 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-2 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
-        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+      <div className="px-2 pt-4 border-t" style={{ borderColor: 'var(--color-border-primary)' }}>
+        <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
           120h · 4 weeks · 12 topics
         </div>
       </div>

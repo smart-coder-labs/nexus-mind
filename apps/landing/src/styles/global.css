@@ -1,8 +1,11 @@
-/* NexusMind Global Styles */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import './apple-ds.css';
 
-html {
-  scroll-behavior: smooth;
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes confetti-fall {
+  0% { opacity: 1; transform: translateY(0) rotate(0deg); }
+  100% { opacity: 0; transform: translateY(300px) rotate(720deg); }
 }

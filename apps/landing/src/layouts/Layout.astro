@@ -10,7 +10,7 @@ const { title = 'NexusMind — AI Control Plane', description = 'El control plan
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -19,14 +19,8 @@ const { title = 'NexusMind — AI Control Plane', description = 'El control plan
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <style>
-      body { margin: 0; font-family: 'Inter', sans-serif; }
-      ::-webkit-scrollbar { width: 6px; }
-      ::-webkit-scrollbar-track { background: #0a0a0f; }
-      ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
-    </style>
   </head>
-  <body class="bg-surface text-slate-200 overflow-x-hidden">
+  <body class="overflow-x-hidden">
     <slot />
   </body>
 </html>

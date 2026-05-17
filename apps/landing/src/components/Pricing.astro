@@ -2,68 +2,68 @@
 // Pricing tiers — updated for control plane positioning
 ---
 
-<section id="pricing" class="py-20 px-4 bg-surface-alt">
+<section id="pricing" class="py-20 px-4" style="background: var(--color-bg-secondary);">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14" data-reveal>
       <span class="text-xs font-semibold tracking-widest text-accent uppercase">Pricing</span>
       <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Planes simples. Sin costos de LLM.</h2>
-      <p class="text-slate-400 mt-2 text-sm">BYOM — tú traes tus keys de OpenAI, Anthropic o Google. Nosotros gobernamos.</p>
+      <p class="mt-2 text-sm" style="color: var(--color-text-secondary);">BYOM — tú traes tus keys de OpenAI, Anthropic o Google. Nosotros gobernamos.</p>
     </div>
 
     <div class="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
       <!-- Open Source -->
-      <div class="rounded-2xl p-7 flex flex-col" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);" data-reveal>
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Open Source</span>
+      <div class="ds-surface p-7 flex flex-col" data-reveal>
+        <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--color-text-secondary);">Open Source</span>
         <div class="mt-3">
           <span class="text-3xl font-extrabold text-white">$0</span>
         </div>
-        <p class="text-slate-400 text-sm mt-2">Core abierto. Para developers que quieren control sin costo.</p>
-        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Memory API (100MB/proyecto)</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Policy engine (hasta 3 políticas)</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Audit trail local</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> MCP plugin (Claude Code, Cline)</li>
-          <li class="flex items-center gap-2 text-slate-600"><span class="text-slate-600">✕</span> Sin admin console</li>
-          <li class="flex items-center gap-2 text-slate-600"><span class="text-slate-600">✕</span> Sin soporte oficial</li>
+        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Core abierto. Para developers que quieren control sin costo.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Memory API (100MB/proyecto)</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Policy engine (hasta 3 políticas)</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Audit trail local</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> MCP plugin (Claude Code, Cline)</li>
+          <li class="flex items-center gap-2" style="color: var(--color-text-tertiary);"><span style="color: var(--color-text-tertiary);">✕</span> Sin admin console</li>
+          <li class="flex items-center gap-2" style="color: var(--color-text-tertiary);"><span style="color: var(--color-text-tertiary);">✕</span> Sin soporte oficial</li>
         </ul>
         <a href="https://github.com/smart-coder-labs/nexus-mind" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">GitHub</a>
       </div>
 
       <!-- Team (featured) -->
-      <div class="rounded-2xl p-7 flex flex-col relative border-accent/20" style="background: rgba(255,255,255,0.07); backdrop-filter: blur(20px); border: 1px solid rgba(59,130,246,0.2);" data-reveal data-reveal-delay="150">
+      <div class="ds-surface-elevated p-7 flex flex-col relative" style="border-color: rgba(10,132,255,0.2);" data-reveal data-reveal-delay="150">
         <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-[10px] font-semibold px-3 py-1 rounded-full">Most Popular</div>
         <span class="text-xs font-semibold text-blue-300 uppercase tracking-wider">Team</span>
         <div class="mt-3">
           <span class="text-3xl font-extrabold text-white">$49</span>
-          <span class="text-slate-500 text-sm">/mes</span>
+          <span class="text-sm" style="color: var(--color-text-tertiary);">/mes</span>
         </div>
-        <p class="text-slate-400 text-sm mt-2">Para equipos que usan múltiples herramientas AI y necesitan control.</p>
-        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Todo Open Source +</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Memoria cross-tool ilimitada</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Policy engine completo (políticas ilimitadas)</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Audit trail 90d + admin console</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Plugins: Claude Code, Cursor, Copilot, OpenCode</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> SSO (Google, GitHub, Microsoft)</li>
+        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Para equipos que usan múltiples herramientas AI y necesitan control.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Todo Open Source +</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Memoria cross-tool ilimitada</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Policy engine completo (políticas ilimitadas)</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Audit trail 90d + admin console</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Plugins: Claude Code, Cursor, Copilot, OpenCode</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SSO (Google, GitHub, Microsoft)</li>
         </ul>
         <a href="#waitlist" class="mt-6 block w-full bg-accent hover:bg-blue-500 text-white text-center py-2.5 rounded-full text-sm font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 active:scale-[0.98]">Join Waitlist</a>
       </div>
 
       <!-- Enterprise -->
-      <div class="rounded-2xl p-7 flex flex-col" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);" data-reveal data-reveal-delay="300">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Enterprise</span>
+      <div class="ds-surface p-7 flex flex-col" data-reveal data-reveal-delay="300">
+        <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--color-text-secondary);">Enterprise</span>
         <div class="mt-3">
           <span class="text-3xl font-extrabold text-white">$499</span>
-          <span class="text-slate-500 text-sm">/mes</span>
+          <span class="text-sm" style="color: var(--color-text-tertiary);">/mes</span>
         </div>
-        <p class="text-slate-400 text-sm mt-2">Self-hosted. Tus datos nunca salen de tu infraestructura.</p>
-        <ul class="mt-5 space-y-2 text-sm text-slate-300 flex-1">
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Todo Team +</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Self-hosted (single binary / K8s)</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> SOC2 + audit trails inmutables</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Multi-agent orchestration</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> SLA 99.99% + soporte dedicado</li>
-          <li class="flex items-center gap-2"><span class="text-green-accent">✓</span> Onboarding asistido 48h</li>
+        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Self-hosted. Tus datos nunca salen de tu infraestructura.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Todo Team +</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Self-hosted (single binary / K8s)</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SOC2 + audit trails inmutables</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Multi-agent orchestration</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SLA 99.99% + soporte dedicado</li>
+          <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Onboarding asistido 48h</li>
         </ul>
         <a href="#waitlist" onclick="document.getElementById('waitlist')?.scrollIntoView({behavior:'smooth'});return false;" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">Contact Sales</a>
       </div>
