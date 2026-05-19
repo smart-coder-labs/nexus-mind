@@ -392,6 +392,100 @@ pub fn rotate_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<Stri
 
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
+/// Lists audit log entries for an org with optional filters.
+pub fn list_audit(
+    conn: &Connection,
+    org_id: &str,
+    user_id: Option<&str>,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<crate::models::types::AuditEntry>> {
+    let mut sql = String::from(
+        "SELECT id, org_id, user_id, timestamp, action, resource_type, resource_id, metadata
+         FROM audit_logs
+         WHERE org_id = ?1",
+    );
+    let mut param_idx = 2usize;
+    let mut extra_params: Vec<String> = Vec::new();
+
+    if let Some(u) = user_id {
+        sql.push_str(&format!(" AND user_id = ?{param_idx}"));
+        extra_params.push(u.to_string());
+        param_idx += 1;
+    }
+    if let Some(a) = action {
+        sql.push_str(&format!(" AND action = ?{param_idx}"));
+        extra_params.push(a.to_string());
+        param_idx += 1;
+    }
+    if let Some(rt) = resource_type {
+        sql.push_str(&format!(" AND resource_type = ?{param_idx}"));
+        extra_params.push(rt.to_string());
+        param_idx += 1;
+    }
+    if let Some(f) = from {
+        sql.push_str(&format!(" AND timestamp >= ?{param_idx}"));
+        extra_params.push(f.to_string());
+        param_idx += 1;
+    }
+    if let Some(t) = to {
+        sql.push_str(&format!(" AND timestamp <= ?{param_idx}"));
+        extra_params.push(t.to_string());
+        param_idx += 1;
+    }
+    sql.push_str(&format!(
+        " ORDER BY timestamp DESC LIMIT ?{param_idx} OFFSET ?{}",
+        param_idx + 1
+    ));
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let mut all_params: Vec<String> = vec![org_id.to_string()];
+    all_params.extend(extra_params);
+    all_params.push(limit.to_string());
+    all_params.push(offset.to_string());
+
+    let refs: Vec<&dyn rusqlite::ToSql> = all_params
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let rows = stmt.query_map(refs.as_slice(), |row| {
+        let meta_str: String = row.get(7)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            meta_str,
+        ))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, org_id, user_id, timestamp, action, resource_type, resource_id, meta_str) = row?;
+        let metadata: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Null);
+        entries.push(crate::models::types::AuditEntry {
+            id,
+            org_id,
+            user_id,
+            timestamp,
+            action,
+            resource_type,
+            resource_id,
+            metadata,
+        });
+    }
+    Ok(entries)
+}
+
 /// Writes an audit log entry.
 pub fn log_audit(
     conn: &Connection,
@@ -719,6 +813,61 @@ mod tests {
     }
 
     // ── Audit tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_audit_returns_entries_for_org() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
+
+        let entries = list_audit(&conn, &org.id, None, None, None, None, None, 50, 0).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn list_audit_scoped_to_org() {
+        let conn = setup();
+        let (org1, user1, _) = bootstrap(&conn, "Org1", "org1", "admin@org1.com", "Admin1").unwrap();
+        log_audit(&conn, &org1.id, &user1.id, "store", "memory", None, serde_json::json!({})).unwrap();
+
+        // manually create org2
+        let org2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org2', 'org2')",
+            [&org2_id],
+        ).unwrap();
+        let user2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, ?2, 'u2@org2.com', 'U2', 'member')",
+            [&user2_id, &org2_id],
+        ).unwrap();
+        log_audit(&conn, &org2_id, &user2_id, "store", "memory", None, serde_json::json!({})).unwrap();
+
+        let org1_entries = list_audit(&conn, &org1.id, None, None, None, None, None, 50, 0).unwrap();
+        assert_eq!(org1_entries.len(), 1, "org1 must not see org2 audit entries");
+
+        let org2_entries = list_audit(&conn, &org2_id, None, None, None, None, None, 50, 0).unwrap();
+        assert_eq!(org2_entries.len(), 1, "org2 must not see org1 audit entries");
+    }
+
+    #[test]
+    fn list_audit_filters_by_action() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+
+        let store_entries = list_audit(&conn, &org.id, None, Some("store"), None, None, None, 50, 0).unwrap();
+        assert_eq!(store_entries.len(), 2);
+        assert!(store_entries.iter().all(|e| e.action == "store"));
+
+        let search_entries = list_audit(&conn, &org.id, None, Some("search"), None, None, None, 50, 0).unwrap();
+        assert_eq!(search_entries.len(), 1);
+    }
 
     #[test]
     fn log_audit_creates_entry() {

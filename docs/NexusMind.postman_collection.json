@@ -54,7 +54,7 @@
               "name": "200 OK",
               "status": "OK",
               "code": 200,
-              "body": "{\"status\":\"ok\",\"version\":\"0.2.0\"}"
+              "body": "{\"status\":\"ok\",\"version\":\"0.2.0\",\"db\":\"ok\",\"uptime_secs\":123}"
             }
           ]
         }
@@ -333,6 +333,43 @@
             ],
             "description": "Revokes the user's current key and generates a new one. Returns `{ api_key }`. Admins can rotate any user's key."
           }
+        }
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {
+          "name": "GET /v1/audit",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/audit?action=store&limit=50&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "audit"],
+              "query": [
+                { "key": "action", "value": "store", "description": "Filter by action (optional): store, search, delete, invite, revoke" },
+                { "key": "user_id", "value": "", "description": "Filter by user_id (optional)", "disabled": true },
+                { "key": "resource_type", "value": "", "description": "Filter by resource_type (optional)", "disabled": true },
+                { "key": "from", "value": "", "description": "ISO datetime lower bound e.g. 2026-01-01T00:00:00 (optional)", "disabled": true },
+                { "key": "to", "value": "", "description": "ISO datetime upper bound (optional)", "disabled": true },
+                { "key": "limit", "value": "50" },
+                { "key": "offset", "value": "0" }
+              ]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Lists audit events for the org. Filters: user_id, action, resource_type, from (ISO datetime), to (ISO datetime), limit, offset."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  {\n    \"id\": \"...\",\n    \"org_id\": \"...\",\n    \"user_id\": \"...\",\n    \"timestamp\": \"2026-05-18T10:00:00Z\",\n    \"action\": \"store\",\n    \"resource_type\": \"memory\",\n    \"resource_id\": \"...\",\n    \"metadata\": {}\n  }\n]"
+            }
+          ]
         }
       ]
     },
