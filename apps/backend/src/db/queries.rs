@@ -404,6 +404,7 @@ pub fn rotate_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<Stri
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 /// Lists audit log entries for an org with optional filters.
+#[allow(clippy::too_many_arguments)]
 pub fn list_audit(
     conn: &Connection,
     org_id: &str,
