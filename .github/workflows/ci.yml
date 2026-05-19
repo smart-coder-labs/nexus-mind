@@ -100,6 +100,8 @@ jobs:
 
       - name: Seed demo data
         run: ./scripts/reset-demo.sh
+        env:
+          SKIP_BUILD: '1'
 
       - name: Start backend
         run: ./apps/backend/target/release/nexusmind &
