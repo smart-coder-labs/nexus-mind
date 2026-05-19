@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
+import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { cn } from '@/lib/utils'
 
 interface NavItem {
@@ -44,13 +45,18 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             to={href}
             onClick={onNavigate}
             className={cn(
-              'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20',
+              'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
               isActive
-                ? 'bg-white/8 text-white font-medium'
-                : 'text-white/40 hover:text-white/70 hover:bg-white/4 font-normal',
+                ? 'bg-surface-secondary text-text-primary font-medium'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 font-normal',
             )}
           >
-            <Icon className={cn('w-[15px] h-[15px] flex-shrink-0', isActive ? 'text-white' : 'text-white/35')} />
+            <Icon
+              className={cn(
+                'w-[15px] h-[15px] flex-shrink-0',
+                isActive ? 'text-accent-blue' : 'text-text-tertiary group-hover:text-text-secondary',
+              )}
+            />
             {label}
           </Link>
         )
@@ -73,8 +79,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="px-5 pt-6 pb-5">
-        <p className="text-[13px] font-semibold tracking-wide text-white">NexusMind</p>
-        <p className="text-[11px] text-white/30 mt-0.5 truncate">{session?.org.name}</p>
+        <p className="text-sm font-semibold text-text-primary">NexusMind</p>
+        <p className="text-xs text-text-tertiary mt-0.5 truncate">{session?.org.name}</p>
       </div>
 
       {/* Nav */}
@@ -82,13 +88,16 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <NavLinks onNavigate={onNavigate} />
       </div>
 
-      {/* Sign out */}
-      <div className="px-2 py-4">
+      {/* Bottom: theme toggle + sign out */}
+      <div className="px-2 pb-3 space-y-1">
+        <div className="px-3 py-1">
+          <ThemeToggle label="" allowSystem={false} />
+        </div>
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-white/30 hover:text-white/60 hover:bg-white/4 transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
+          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
         >
-          <LogOut className="w-[15px] h-[15px] flex-shrink-0" />
+          <LogOut className="w-[15px] h-[15px] flex-shrink-0 text-text-tertiary" />
           Sign out
         </button>
       </div>
@@ -100,9 +109,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   return (
-    <div className="min-h-screen bg-[#0c0c0e] flex">
+    <div className="min-h-screen bg-bg-secondary flex">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-white/5 bg-[#0c0c0e] z-30">
+      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-border-primary bg-bg-primary z-30">
         <SidebarContent />
       </aside>
       <div className="hidden lg:block w-52 flex-shrink-0" />
@@ -110,7 +119,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile overlay */}
       {drawerOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
           onClick={() => setDrawerOpen(false)}
           aria-hidden="true"
         />
@@ -119,14 +128,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile drawer */}
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-[#0c0c0e] border-r border-white/5 lg:hidden transition-transform duration-200',
+          'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-bg-primary border-r border-border-primary lg:hidden transition-transform duration-200',
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
         <div className="flex items-center justify-end px-4 py-4">
           <button
             onClick={() => setDrawerOpen(false)}
-            className="p-1 rounded-md text-white/30 hover:text-white/60 transition-colors"
+            className="p-1 rounded-md text-text-tertiary hover:text-text-secondary transition-colors"
             aria-label="Close menu"
           >
             <X className="w-4 h-4" />
@@ -138,15 +147,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mobile top bar */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-white/5">
+        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border-primary bg-bg-primary">
           <button
             onClick={() => setDrawerOpen(true)}
-            className="p-1.5 text-white/40 hover:text-white/70 transition-colors"
+            className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
             aria-label="Open menu"
           >
             <Menu className="w-4 h-4" />
           </button>
-          <p className="text-sm font-medium text-white/60">NexusMind</p>
+          <p className="text-sm font-medium text-text-primary">NexusMind</p>
         </header>
 
         <main className="flex-1 overflow-auto">
