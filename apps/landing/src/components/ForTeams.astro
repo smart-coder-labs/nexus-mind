@@ -1,0 +1,72 @@
+---
+// For Teams — Enterprise section
+---
+
+<section class="py-24 px-4" id="for-teams">
+  <div class="max-w-5xl mx-auto">
+
+    <!-- Header -->
+    <div class="text-center mb-16">
+      <span class="inline-block text-xs font-semibold tracking-widest uppercase mb-4"
+        style="color: var(--color-accent-blue);">
+        Enterprise
+      </span>
+      <h2 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-tight">
+        Your team's AI memory,<br />under control
+      </h2>
+      <p class="mt-4 text-lg max-w-2xl mx-auto" style="color: var(--color-text-secondary);">
+        NexusMind gives engineering teams a self-hosted, auditable memory layer for every
+        AI tool they use — without sending data to any third party.
+      </p>
+    </div>
+
+    <!-- 3-column features -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+      {[
+        {
+          icon: '👥',
+          title: 'Multi-user',
+          description: 'Every developer gets their own API key. Add, revoke, or rotate access in one click — no shared secrets.',
+        },
+        {
+          icon: '📋',
+          title: 'Full audit trail',
+          description: 'Every store, search, and delete is logged with user, timestamp, and metadata. Export to CSV for compliance.',
+        },
+        {
+          icon: '🛡️',
+          title: 'Admin panel included',
+          description: 'A web dashboard to browse memories, manage users, review activity, and export your data — ready out of the box.',
+        },
+      ].map(({ icon, title, description }) => (
+        <div class="rounded-2xl p-6 border" style="background: var(--color-surface-primary); border-color: var(--color-border-primary);">
+          <div class="text-3xl mb-4">{icon}</div>
+          <h3 class="text-base font-semibold text-white mb-2">{title}</h3>
+          <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">{description}</p>
+        </div>
+      ))}
+    </div>
+
+    <!-- Setup callout -->
+    <div class="rounded-2xl border p-8 flex flex-col md:flex-row items-center justify-between gap-8"
+      style="background: var(--color-surface-secondary); border-color: var(--color-border-primary);">
+      <div>
+        <p class="text-sm font-semibold text-white mb-1">Up and running in 2 commands</p>
+        <p class="text-sm" style="color: var(--color-text-tertiary);">
+          Self-hosted on your own infrastructure. No cloud dependency, no data leaves your servers.
+        </p>
+        <pre class="mt-4 text-sm font-mono rounded-lg px-4 py-3 text-left"
+          style="background: var(--color-bg-tertiary); color: var(--color-text-secondary);">docker compose up -d
+./scripts/reset-demo.sh</pre>
+      </div>
+      <a
+        href="mailto:hola@smartcoderlabs.com?subject=NexusMind%20Enterprise%20Demo"
+        class="shrink-0 inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white transition-opacity hover:opacity-80"
+        style="background: var(--color-accent-blue);"
+      >
+        Book a Demo
+      </a>
+    </div>
+
+  </div>
+</section>

@@ -535,14 +535,13 @@ echo ""
 echo "Open: http://localhost:3000"
 ```
 
-- [ ] `scripts/reset-demo.ps1` — equivalente para Windows
-- [ ] PR #14: "feat: demo reset script"
+- [x] `scripts/reset-demo.ps1` — equivalente para Windows
 
 ---
 
 ### Día 2 — Datos de Ejemplo Realistas
 
-- [ ] `src/bin/seed.rs` crea datos convincentes para la demo:
+- [x] `src/bin/seed.rs` crea datos convincentes para la demo:
 
 ```
 Acme Corp (5 usuarios):
@@ -562,14 +561,13 @@ Acme Corp (5 usuarios):
 ~30 audit events de los últimos 7 días
 ```
 
-- [ ] Las API keys demo son deterministas (generadas desde seed fijo) para que el script siempre produzca las mismas keys
-- [ ] PR #15: "feat: realistic demo seed data"
+- [x] Las API keys demo son deterministas (generadas desde seed fijo) para que el script siempre produzca las mismas keys
 
 ---
 
 ### Día 3 — Demo Script + Guía
 
-- [ ] `demo/DEMO_SCRIPT.md`:
+- [x] `demo/DEMO_SCRIPT.md`:
 
 ```markdown
 # NexusMind Enterprise Demo — Guía paso a paso
@@ -614,20 +612,15 @@ docker compose up -d
 "¿Preguntas? Podés tenerlo corriendo en tu infra esta semana."
 ```
 
-- [ ] PR #16: "docs: enterprise demo script"
-
 ---
 
 ### Día 4 — Landing Page Update
 
-- [ ] `apps/landing/` — agregar sección "For Teams":
+- [x] `apps/landing/src/components/ForTeams.astro` — sección "For Teams":
   - Headline: "Your team's AI memory, under control"
-  - 3 bullets: Multi-user, Audit trail, Admin panel
-  - CTA: "Book a Demo" → link a Calendly/email
-
-- [ ] Badge: "Built with Rust" en el footer
-- [ ] Screenshots del admin panel en la sección de features
-- [ ] PR #17: "feat: landing page enterprise section"
+  - 3 features: Multi-user, Full audit trail, Admin panel included
+  - CTA: "Book a Demo" → mailto enterprise
+- [x] Badge: "Built with Rust" en el footer
 
 ---
 
@@ -667,8 +660,8 @@ volumes:
   nexusmind_data:
 ```
 
-- [ ] `admin/Dockerfile` (nginx para servir el build de React)
-- [ ] `Makefile`:
+- [x] `admin/Dockerfile` (nginx para servir el build de React)
+- [x] `Makefile`:
 
 ```makefile
 .PHONY: dev build test reset-demo
@@ -692,7 +685,7 @@ demo:
 	@echo "Demo ready at http://localhost:3000"
 ```
 
-- [ ] PR #18: "chore: docker compose and Makefile for demo"
+- [x] `docker-compose.yml` already had healthcheck and named volume
 
 ---
 
