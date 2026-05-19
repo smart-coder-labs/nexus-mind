@@ -425,13 +425,13 @@ class NexusMindClient {
 
 ### Día 2 — Dashboard
 
-- [ ] `admin/src/pages/Dashboard.tsx`:
+- [x] `admin/src/pages/Dashboard.tsx`:
   - Cards: Total Memories, Active Users (24h), Searches Today, Top Tools
   - Activity timeline: últimas 20 acciones del audit log
   - Cada item muestra: avatar (iniciales), nombre, acción, tool, tiempo relativo
   - Refresh automático cada 30s con TanStack Query
 
-- [ ] Componentes compartidos:
+- [x] Componentes compartidos:
   - `StatCard` — número grande + label + trend icon
   - `ActivityItem` — avatar + texto + timestamp
   - `Badge` — para roles, tools, status
