@@ -92,16 +92,11 @@ jobs:
           cache: npm
           cache-dependency-path: apps/mcp/package-lock.json
 
-      - name: Build backend (release)
-        run: cargo build --release --manifest-path apps/backend/Cargo.toml
-
       - name: Build MCP server
         run: cd apps/mcp && npm ci && npm run build
 
-      - name: Seed demo data
+      - name: Seed demo data (builds release binaries)
         run: ./scripts/reset-demo.sh
-        env:
-          SKIP_BUILD: '1'
 
       - name: Start backend
         run: ./apps/backend/target/release/nexusmind &

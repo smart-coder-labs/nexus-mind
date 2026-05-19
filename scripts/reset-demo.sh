@@ -8,8 +8,8 @@ DB_PATH="$BACKEND_DIR/data/nexusmind.db"
 
 cd "$BACKEND_DIR"
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  echo "Building seed binary..."
-  cargo build --release --bin nexusmind-seed 2>&1
+  echo "Building release binaries..."
+  cargo build --release 2>&1
 fi
 
 echo "Resetting demo data..."
