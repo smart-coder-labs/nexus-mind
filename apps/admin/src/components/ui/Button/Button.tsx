@@ -92,7 +92,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         const hasTextChildren = children && !(typeof children === 'string' && children.trim() === '');
         const iconOnly = !hasTextChildren && (!!leftIcon || !!rightIcon);
 
-        if (process.env.NODE_ENV !== 'production' && iconOnly && !props['aria-label']) {
+        if (import.meta.env.DEV && iconOnly && !props['aria-label']) {
             console.warn('[Button] Icon-only button is missing an aria-label. Screen readers will not be able to describe this control.');
         }
 
