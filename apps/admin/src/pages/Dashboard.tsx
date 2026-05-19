@@ -2,10 +2,25 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
-import { StatisticDisplay } from '@/components/ui/StatisticDisplay/StatisticDisplay'
-import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
-import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { ActivityItem } from '../components/ActivityItem'
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="py-6 px-1">
+      <p className="text-3xl font-semibold tracking-tight text-white tabular-nums">{value}</p>
+      <p className="text-[11px] text-white/30 uppercase tracking-wide mt-2">{label}</p>
+    </div>
+  )
+}
+
+function StatSkeleton() {
+  return (
+    <div className="py-6 px-1 space-y-2">
+      <div className="h-8 w-20 rounded bg-white/5 animate-pulse" />
+      <div className="h-3 w-28 rounded bg-white/4 animate-pulse" />
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const { session } = useAuth()
@@ -42,86 +57,61 @@ export default function Dashboard() {
   const metrics = useMemo(() => {
     if (!stats) return []
     return [
-      {
-        id: 'total-memories',
-        label: 'Total Memories',
-        value: stats.total_memories.toLocaleString(),
-      },
-      {
-        id: 'active-users',
-        label: 'Active Users (24h)',
-        value: stats.active_users_24h.toLocaleString(),
-      },
-      {
-        id: 'searches-today',
-        label: 'Searches Today',
-        value: stats.searches_today.toLocaleString(),
-      },
-      {
-        id: 'top-tool',
-        label: 'Top Tool',
-        value: stats.top_tools[0]?.tool ?? '—',
-      },
+      { label: 'Total Memories',    value: stats.total_memories.toLocaleString() },
+      { label: 'Active Users (24h)', value: stats.active_users_24h.toLocaleString() },
+      { label: 'Searches Today',    value: stats.searches_today.toLocaleString() },
+      { label: 'Top Tool',          value: stats.top_tools[0]?.tool ?? '—' },
     ]
   }, [stats])
 
   return (
-    <div className="p-6 space-y-8 max-w-7xl mx-auto">
+    <div className="p-8 max-w-5xl mx-auto space-y-12">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-text-primary">Dashboard</h1>
-        <p className="text-text-secondary mt-1 text-sm">
-          {session?.org.name} — organization overview
-        </p>
+        <h1 className="text-lg font-semibold text-white">{session?.org.name}</h1>
+        <p className="text-[12px] text-white/30 mt-0.5">Organization overview</p>
       </div>
 
-      {/* Stat cards */}
-      <section aria-label="Organization statistics">
+      {/* Stats */}
+      <section>
         {statsError ? (
-          <div className="rounded-2xl border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
-            Failed to load statistics. Check your connection and try again.
-          </div>
-        ) : statsLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-32 rounded-2xl" />
-            ))}
-          </div>
+          <p className="text-[12px] text-red-400/70">Failed to load statistics.</p>
         ) : (
-          <StatisticDisplay
-            metrics={metrics}
-            columns={4}
-            variant="card"
-            size="md"
-          />
+          <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-white/5">
+            {statsLoading
+              ? Array.from({ length: 4 }).map((_, i) => <StatSkeleton key={i} />)
+              : metrics.map(m => <StatCard key={m.label} label={m.label} value={m.value} />)
+            }
+          </div>
         )}
       </section>
 
-      {/* Activity timeline */}
-      <section aria-label="Recent activity">
-        <h2 className="text-lg font-semibold text-text-primary mb-4">
-          Recent Activity
-        </h2>
-        <div className="bg-surface-primary border border-border-primary rounded-2xl px-6 divide-y divide-border-secondary">
-          {activityLoading ? (
-            Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="py-3">
-                <Skeleton className="h-6 w-full rounded-md" />
-              </div>
-            ))
-          ) : !activity || activity.length === 0 ? (
-            <div className="py-8">
-              <EmptyState title="No activity yet" description="Actions performed by your team will appear here." />
-            </div>
-          ) : (
-            activity.map((entry) => (
+      {/* Divider */}
+      <div className="border-t border-white/5" />
+
+      {/* Activity */}
+      <section>
+        <p className="text-[11px] text-white/30 uppercase tracking-wide mb-6">Recent Activity</p>
+
+        {activityLoading ? (
+          <div className="space-y-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-5 rounded bg-white/4 animate-pulse" />
+            ))}
+          </div>
+        ) : !activity || activity.length === 0 ? (
+          <p className="text-sm text-white/20">No activity yet.</p>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {activity.map(entry => (
               <ActivityItem
                 key={entry.id}
                 entry={entry}
                 userName={userMap.get(entry.user_id)}
               />
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   )

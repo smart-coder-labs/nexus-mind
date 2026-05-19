@@ -12,46 +12,46 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { cn } from '@/lib/utils'
-import { ThemeToggle } from '@/components/ui/ThemeToggle/ThemeToggle'
 
 interface NavItem {
   label: string
   href: string
-  icon: React.ReactNode
+  icon: React.ComponentType<{ className?: string }>
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: 'Dashboard', href: '/', icon: <LayoutDashboard className="w-4 h-4" /> },
-  { label: 'Users', href: '/users', icon: <Users className="w-4 h-4" /> },
-  { label: 'Memories', href: '/memories', icon: <Brain className="w-4 h-4" /> },
-  { label: 'Audit Log', href: '/audit', icon: <ScrollText className="w-4 h-4" /> },
-  { label: 'Settings', href: '/settings', icon: <Settings className="w-4 h-4" /> },
+  { label: 'Dashboard', href: '/',         icon: LayoutDashboard },
+  { label: 'Users',     href: '/users',    icon: Users },
+  { label: 'Memories',  href: '/memories', icon: Brain },
+  { label: 'Audit Log', href: '/audit',    icon: ScrollText },
+  { label: 'Settings',  href: '/settings', icon: Settings },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation()
 
   return (
-    <nav className="flex flex-col space-y-1 px-3">
-      {NAV_ITEMS.map((item) => {
+    <nav className="flex flex-col gap-0.5 px-2">
+      {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
         const isActive =
-          item.href === '/'
+          href === '/'
             ? location.pathname === '/'
-            : location.pathname.startsWith(item.href)
+            : location.pathname.startsWith(href)
+
         return (
           <Link
-            key={item.href}
-            to={item.href}
+            key={href}
+            to={href}
             onClick={onNavigate}
             className={cn(
-              'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue',
+              'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20',
               isActive
-                ? 'bg-surface-primary text-text-primary'
-                : 'text-text-secondary hover:bg-surface-primary/20',
+                ? 'bg-white/8 text-white font-medium'
+                : 'text-white/40 hover:text-white/70 hover:bg-white/4 font-normal',
             )}
           >
-            {item.icon}
-            {item.label}
+            <Icon className={cn('w-[15px] h-[15px] flex-shrink-0', isActive ? 'text-white' : 'text-white/35')} />
+            {label}
           </Link>
         )
       })}
@@ -70,33 +70,25 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface-secondary">
+    <div className="flex flex-col h-full">
       {/* Logo */}
-      <div className="px-6 py-5 border-b border-border-secondary">
-        <p className="text-lg font-bold text-text-primary">NexusMind</p>
-        <p className="text-xs text-text-tertiary mt-0.5 truncate">
-          {session?.org.name}
-        </p>
+      <div className="px-5 pt-6 pb-5">
+        <p className="text-[13px] font-semibold tracking-wide text-white">NexusMind</p>
+        <p className="text-[11px] text-white/30 mt-0.5 truncate">{session?.org.name}</p>
       </div>
 
       {/* Nav */}
-      <div className="flex-1 py-4 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto py-2">
         <NavLinks onNavigate={onNavigate} />
       </div>
 
-      {/* Theme toggle + Logout */}
-      <div className="px-3 py-4 border-t border-border-secondary space-y-2">
-        <ThemeToggle
-          label="Appearance"
-          allowSystem
-          storageKey="nexusmind_theme"
-          className="text-xs"
-        />
+      {/* Sign out */}
+      <div className="px-2 py-4">
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-text-secondary hover:bg-surface-primary/20 transition-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue"
+          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-white/30 hover:text-white/60 hover:bg-white/4 transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
         >
-          <LogOut className="w-4 h-4" />
+          <LogOut className="w-[15px] h-[15px] flex-shrink-0" />
           Sign out
         </button>
       </div>
@@ -108,18 +100,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   return (
-    <div className="min-h-screen bg-gray-950 flex">
-      {/* Desktop sidebar — fixed, full height */}
-      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-56 border-r border-border-secondary z-30">
+    <div className="min-h-screen bg-[#0c0c0e] flex">
+      {/* Desktop sidebar */}
+      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-white/5 bg-[#0c0c0e] z-30">
         <SidebarContent />
       </aside>
-      {/* Spacer so main content doesn't hide behind the fixed sidebar */}
-      <div className="hidden lg:block w-56 flex-shrink-0" />
+      <div className="hidden lg:block w-52 flex-shrink-0" />
 
-      {/* Mobile drawer overlay */}
+      {/* Mobile overlay */}
       {drawerOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm lg:hidden"
           onClick={() => setDrawerOpen(false)}
           aria-hidden="true"
         />
@@ -128,17 +119,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile drawer */}
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-56 flex flex-col lg:hidden transition-transform duration-300',
+          'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-[#0c0c0e] border-r border-white/5 lg:hidden transition-transform duration-200',
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
-        <div className="flex items-center justify-end px-4 py-3 bg-surface-secondary border-b border-border-secondary">
+        <div className="flex items-center justify-end px-4 py-4">
           <button
             onClick={() => setDrawerOpen(false)}
-            className="p-1 rounded-md text-text-secondary hover:text-text-primary transition-apple"
+            className="p-1 rounded-md text-white/30 hover:text-white/60 transition-colors"
             aria-label="Close menu"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
         <SidebarContent onNavigate={() => setDrawerOpen(false)} />
@@ -147,15 +138,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mobile top bar */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border-secondary bg-surface-secondary">
+        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-white/5">
           <button
             onClick={() => setDrawerOpen(true)}
-            className="p-1.5 rounded-md text-text-secondary hover:text-text-primary transition-apple"
+            className="p-1.5 text-white/40 hover:text-white/70 transition-colors"
             aria-label="Open menu"
           >
-            <Menu className="w-5 h-5" />
+            <Menu className="w-4 h-4" />
           </button>
-          <p className="text-sm font-semibold text-text-primary">NexusMind</p>
+          <p className="text-sm font-medium text-white/60">NexusMind</p>
         </header>
 
         <main className="flex-1 overflow-auto">
