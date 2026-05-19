@@ -11,13 +11,13 @@
 
 ### Día 1 — Project Scaffold + Modelo de Datos
 
-- [ ] Inicializar Rust project:
+- [x] Inicializar Rust project:
 
 ```bash
 cargo init --name nexusmind
 ```
 
-- [ ] `Cargo.toml` con dependencias:
+- [x] `Cargo.toml` con dependencias:
   - `tokio` (async runtime)
   - `axum` (HTTP framework)
   - `tower-http` (CORS, tracing middleware)
@@ -30,7 +30,7 @@ cargo init --name nexusmind
   - `anyhow` (error handling)
   - `chrono` (timestamps)
 
-- [ ] `rust-toolchain.toml`:
+- [x] `rust-toolchain.toml`:
 
 ```toml
 [toolchain]
@@ -38,7 +38,7 @@ channel = "1.85.0"
 targets = ["x86_64-unknown-linux-gnu"]
 ```
 
-- [ ] Estructura de directorios:
+- [x] Estructura de directorios:
 
 ```
 src/
@@ -67,7 +67,7 @@ src/
     └── types.rs
 ```
 
-- [ ] `src/config.rs`:
+- [x] `src/config.rs`:
 
 ```rust
 #[derive(Parser, Clone)]
@@ -83,7 +83,7 @@ pub struct Config {
 }
 ```
 
-- [ ] `src/main.rs` — entry point:
+- [x] `src/main.rs` — entry point:
 
 ```rust
 #[tokio::main]
@@ -101,9 +101,9 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-- [ ] `Dockerfile` multi-stage (rust:1.85-slim → debian:bookworm-slim)
-- [ ] `docker-compose.yml` básico (backend + admin en Semana 3)
-- [ ] Verificar compilación: `cargo build`
+- [x] `Dockerfile` multi-stage (rust:1.85-slim → debian:bookworm-slim)
+- [x] `docker-compose.yml` básico (backend + admin en Semana 3)
+- [x] Verificar compilación: `cargo build`
 - [ ] PR #1: "chore: scaffold Rust project with multi-tenant structure"
 
 ---
