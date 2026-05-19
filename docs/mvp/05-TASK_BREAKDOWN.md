@@ -104,13 +104,13 @@ async fn main() -> anyhow::Result<()> {
 - [x] `Dockerfile` multi-stage (rust:1.85-slim → debian:bookworm-slim)
 - [x] `docker-compose.yml` básico (backend + admin en Semana 3)
 - [x] Verificar compilación: `cargo build`
-- [ ] PR #1: "chore: scaffold Rust project with multi-tenant structure"
+- [x] PR #1: commit `5ad71f9` — "feat: scaffold Rust backend with multi-tenant structure (Day 1)"
 
 ---
 
 ### Día 2 — DB Layer Multi-Tenant
 
-- [ ] `src/db/connection.rs`:
+- [x] `src/db/connection.rs` — con tests: `connect_in_memory_succeeds`, `foreign_keys_are_enabled`:
 
 ```rust
 pub fn connect(path: &str) -> Result<Connection, rusqlite::Error> {
@@ -249,14 +249,15 @@ pub struct AuditEntry {
 }
 ```
 
-- [ ] Tests unitarios con SQLite in-memory
+- [x] `src/models/types.rs` — structs `Org`, `User`, `AuthContext`, `Memory`, `AuditEntry`, `ApiError` con tests de serialización roundtrip
+- [x] Tests unitarios con SQLite in-memory: `creates_all_tables`, `is_idempotent`, `users_requires_valid_org_fk`, `memories_org_scoped`
 - [ ] PR #2: "feat: multi-tenant SQLite schema and migrations"
 
 ---
 
 ### Día 3 — Auth con Org Scoping
 
-- [ ] `src/auth/api_keys.rs`:
+- [x] `src/auth/api_keys.rs` — `generate()` + `hash_key()` con tests: prefijo `nm_`, unicidad, hash determinístico, longitud sha256:
 
 ```rust
 pub fn generate_key() -> (String, String) {
