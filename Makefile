@@ -1,4 +1,4 @@
-.PHONY: dev build test reset-demo demo logs clean
+.PHONY: dev build test reset-demo demo logs clean mcp-build mcp-inspect mcp-test
 
 ## Start all services with Docker Compose
 dev:
@@ -33,3 +33,16 @@ logs:
 ## Stop and remove containers
 clean:
 	docker compose down
+
+## Build the MCP server
+mcp-build:
+	cd apps/mcp && npm install && npm run build
+
+## Inspect MCP tools interactively (requires NEXUSMIND_API_KEY)
+mcp-inspect: mcp-build
+	NEXUSMIND_API_KEY=$(NEXUSMIND_API_KEY) \
+	  npx @modelcontextprotocol/inspector node apps/mcp/dist/index.js
+
+## Run MCP smoke test (requires backend running + NEXUSMIND_API_KEY)
+mcp-test:
+	./scripts/test-mcp.sh

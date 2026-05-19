@@ -1,0 +1,26 @@
+{
+  "name": "nexusmind-mcp",
+  "version": "0.1.0",
+  "description": "NexusMind MCP server for Claude Code and other AI tools",
+  "type": "module",
+  "bin": {
+    "nexusmind-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.6.0",
+    "typescript": "^5.3.0"
+  }
+}
