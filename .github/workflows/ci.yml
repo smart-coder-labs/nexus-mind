@@ -102,7 +102,7 @@ jobs:
         run: ./scripts/reset-demo.sh
 
       - name: Start backend
-        run: cd apps/backend && cargo run &
+        run: ./apps/backend/target/release/nexusmind &
         env:
           RUST_LOG: info
 
@@ -112,6 +112,7 @@ jobs:
             curl -sf http://localhost:8080/v1/health && break
             sleep 1
           done
+          curl -sf http://localhost:8080/v1/health || (echo "Backend never became healthy" && exit 1)
 
       - name: MCP smoke test
         run: ./scripts/test-mcp.sh
