@@ -2,6 +2,7 @@
 name = "nexusmind"
 version = "0.2.0"
 edition = "2021"
+default-run = "nexusmind"
 
 [[bin]]
 name = "nexusmind"
@@ -27,3 +28,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

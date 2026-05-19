@@ -272,7 +272,7 @@ pub fn hash_key(key: &str) -> String {
 }
 ```
 
-- [ ] `src/db/queries.rs` — validación de key con org_id:
+- [x] `src/db/queries.rs` — validación de key con org_id:
 
 ```rust
 pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<AuthContext>>
@@ -280,7 +280,7 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
 // Actualiza last_used en api_keys
 ```
 
-- [ ] `src/api/middleware.rs` — auth middleware que inyecta `AuthContext` en extensions:
+- [x] `src/api/middleware.rs` — auth middleware que inyecta `AuthContext` en extensions:
 
 ```rust
 pub async fn auth_middleware(
@@ -298,7 +298,7 @@ pub async fn auth_middleware(
 }
 ```
 
-- [ ] Endpoint `POST /v1/bootstrap` — sin auth, solo corre si DB vacía → crea primera org + admin key
+- [x] Endpoint `POST /v1/bootstrap` — sin auth, solo corre si DB vacía → crea primera org + admin key
 - [ ] PR #3: "feat: API key auth with org scoping"
 
 ---
