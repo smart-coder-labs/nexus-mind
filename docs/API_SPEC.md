@@ -10,7 +10,7 @@
 ## 1. API Philosophy
 
 - **MCP (Model Context Protocol) primero** — Compatibilidad con el estándar emergente de Anthropic
-- **REST API paralela** — Para herramientas que no soporten MCP
+- **REST API principal** — Con Axum (Rust), para herramientas que no soporten MCP
 - **Sin dependencia de LLM** — La API funciona sin modelos. BYOM es responsabilidad del cliente.
 - **Rate limiting por API key** — Control de uso por herramienta/usuario
 
@@ -231,7 +231,7 @@ GET /v1/context/project/:project
   "active_agents": 3,
   "tools_connected": ["cursor", "claude-code", "copilot"],
   "last_active": "2026-05-10T19:00:00Z",
-  "summary": "Proyecto de migración a microservicios. Stack: Go + PostgreSQL + Redis."
+  "summary": "Proyecto de migración a microservicios. Stack: Rust + SQLite + Redis."
 }
 ```
 
@@ -279,7 +279,7 @@ mcp/
 from nexusmind import NexusMind
 
 nm = NexusMind(api_key="nm_key_123")
-nm.memory.store("El proyecto usa Go 1.22", project="acme", tags=["tech-stack"])
+nm.memory.store("El proyecto usa Rust 1.85 con Axum", project="acme", tags=["tech-stack"])
 results = nm.memory.search("¿Qué stack usa el proyecto?", project="acme")
 ```
 
@@ -289,22 +289,22 @@ import { NexusMind } from 'nexusmind-sdk';
 
 const nm = new NexusMind({ apiKey: 'nm_key_123' });
 await nm.memory.store({
-  content: 'El proyecto usa Go 1.22',
+  content: 'El proyecto usa Rust 1.85 con Axum',
   project: 'acme',
   tags: ['tech-stack']
 });
 ```
 
-### Go
-```go
-import "github.com/smart-coder-labs/nexus-mind/sdk/go"
+### Rust (post-MVP)
+```rust
+use nexusmind_sdk::NexusMind;
 
-nm := nexusmind.New("nm_key_123")
-nm.Memory.Store(ctx, MemoryEntry{
-  Content: "El proyecto usa Go 1.22",
-  Project: "acme",
-  Tags:    []string{"tech-stack"},
-})
+let nm = NexusMind::new("nm_key_123");
+nm.memory.store(MemoryEntry {
+    content: "El proyecto usa Rust 1.85 con Axum",
+    project: "acme",
+    tags: vec!["tech-stack"],
+}).await?;
 ```
 
 ---

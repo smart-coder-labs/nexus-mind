@@ -210,7 +210,7 @@ GET  /v1/context/project    ← Obtener contexto del proyecto
 ```
 
 **Acceptance Criteria**:
-- [ ] SDK en Python, TypeScript, Go
+- [ ] SDK en Python, TypeScript, Rust (post-MVP)
 - [ ] OpenAPI 3.0 spec completa
 - [ ] Rate limiting por API key
 - [ ] Plugins publicados para Claude Code, Cursor, Copilot

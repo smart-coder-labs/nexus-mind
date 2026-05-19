@@ -109,9 +109,9 @@ Request → Policy Gateway → [Auth Check] → [Data Rules] → [Model Policy] 
 ```
 
 **Implementación**:
-- Go (REST API) — mínimo overhead, alta concurrencia
+- Rust (Axum + Tokio) — performance determinista, sin GC, concurrencia real (ADR-001)
 - Políticas en YAML versionado (git-ops)
-- Evaluación <50ms por política
+- Evaluación <50μs por regla (sin GC pauses)
 - Caché de decisiones frecuentes
 
 **Ejemplo de política**:
@@ -187,7 +187,7 @@ Capa que permite a cualquier herramienta conectarse a NexusMind.
 **Protocolos soportados**:
 1. **REST API** — Genérica, cualquier herramienta puede llamarla
 2. **MCP (Model Context Protocol)** — Estándar Anthropic, compatible con Claude Desktop/Code
-3. **SDKs** — Python, TypeScript, Go para integración custom
+3. **SDKs** — Python, TypeScript, Rust (post-MVP) para integración custom
 
 **Plugins oficiales** (a desarrollar):
 - `nexusmind-mcp` — MCP server para Claude Desktop/Code
@@ -240,14 +240,14 @@ Capa que permite a cualquier herramienta conectarse a NexusMind.
 
 | Capa | Tecnología | Justificación |
 |---|---|---|
-| **Backend API** | Go 1.22+ | Baja latencia, concurrencia nativa |
+| **Backend API** | Rust (Axum + Tokio) | Performance determinista, sin GC, concurrencia real sobre SQLite (ADR-001) |
 | **Base de datos** | SQLite (WAL mode) | Sin dependencias externas, portable |
 | **Vectors** | sqlite-vss (MVP), pgvector (scale) | Embeddings sin infra adicional |
 | **Cache** | SQLite en memoria + Redis (scale) | Políticas en caché |
 | **Auth** | JWT + API Keys + SSO (SAML/OIDC) | Compatibilidad enterprise |
 | **Policy Engine** | Rego (OPA) / Custom | Políticas declarativas |
 | **MCP Server** | TypeScript | Compatibilidad con ecosistema Anthropic |
-| **SDKs** | Python, TypeScript, Go | Developer experience |
+| **SDKs** | Python, TypeScript, Rust (post-MVP) | Developer experience |
 | **Plugins (Cursor)** | TypeScript Extension API | Integración nativa |
 | **Plugins (Copilot)** | GitHub Extension API | Integración nativa |
 | **Deploy** | Docker + K8s | Portable, on-prem possible |

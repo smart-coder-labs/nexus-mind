@@ -753,11 +753,11 @@ El rol por defecto es configurable por empresa. Recomendado: **Viewer** (mínimo
 
 | Componente | Tecnología |
 |---|---|
-| **OIDC / SAML RP** | Go + zitadel/oidc + crewjam/saml |
-| **JWT** | golang-jwt (RS256 o Ed25519) |
+| **OIDC / SAML RP** | Rust (+ openidconnect crate + saml2 crate) |
+| **JWT** | jsonwebtoken crate (RS256 o Ed25519) |
 | **Session Store** | SQLite (MVP) → Redis (scale) |
-| **Policy Engine** | Rego (OPA) + Custom Go evaluator |
-| **SCIM Server** | Go + custom SCIM 2.0 implementation |
+| **Policy Engine** | Custom Rust engine (ABAC, <50μs por regla) |
+| **SCIM Server** | Rust (post-MVP) + custom SCIM 2.0 implementation |
 | **Device Fingerprint** | SHA256 de host+OS+tool+workspace |
 | **Rate Limiter** | Token bucket (en memoria, distribuido con Redis) |
 
