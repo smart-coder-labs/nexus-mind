@@ -710,7 +710,238 @@ demo:
 
 ---
 
-## Semana 4: Polish, CI, Release v0.2.0
+## Semana 4: Claude Code Integration (MCP Server)
+
+> **Goal**: que un developer pueda abrir Claude Code, y sin hacer nada especial, sus
+> conversaciones guarden y recuperen memoria desde NexusMind. Esto es el diferenciador
+> real del producto — la demo debe mostrar esto funcionando en vivo.
+
+### Día 1 — Bootstrap `apps/mcp/`
+
+- [ ] `apps/mcp/package.json`:
+
+```json
+{
+  "name": "nexusmind-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "nexusmind-mcp": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "tsx": "^4.6.0",
+    "@types/node": "^20.0.0"
+  }
+}
+```
+
+- [ ] `apps/mcp/src/index.ts` — servidor MCP stdio con 3 herramientas:
+
+```typescript
+// Auth via env vars:
+// NEXUSMIND_API_KEY=nm_demo_acme_sarah
+// NEXUSMIND_BASE_URL=http://localhost:8080  (default)
+
+const server = new McpServer({ name: 'nexusmind', version: '0.1.0' })
+
+server.tool('store_memory', {
+  description: 'Store a memory or decision for later retrieval by the team',
+  inputSchema: z.object({
+    content: z.string().describe('The memory content to store'),
+    project: z.string().optional().describe('Project name (defaults to current repo)'),
+    tool: z.string().optional().describe('Tool name (defaults to "claude-code")'),
+    tags: z.array(z.string()).optional().describe('Tags for categorization'),
+  }),
+})
+
+server.tool('search_memory', {
+  description: 'Search past memories and decisions stored by the team',
+  inputSchema: z.object({
+    query: z.string().describe('Full-text search query'),
+    limit: z.number().optional().describe('Max results (default 10)'),
+  }),
+})
+
+server.tool('list_memories', {
+  description: 'List recent memories, optionally filtered by project or tool',
+  inputSchema: z.object({
+    project: z.string().optional(),
+    tool: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+})
+```
+
+- [ ] `apps/mcp/tsconfig.json` — `target: ES2022`, `module: NodeNext`, `outDir: dist`
+- [ ] `apps/mcp/src/client.ts` — fetch wrapper que llama a la REST API con Bearer token
+
+---
+
+### Día 2 — Tool Implementation + Error Handling
+
+- [ ] `store_memory` handler:
+  - Llama a `POST /v1/memory/store` con `content`, `project`, `tool`, `tags`
+  - `tool` default: `"claude-code"`, `project` default: inferido del CWD si posible
+  - Respuesta: `"Memory stored (id: {id})"`
+
+- [ ] `search_memory` handler:
+  - Llama a `POST /v1/memory/search` con `{ query, limit }`
+  - Formatea resultados como lista legible: `[tool] project — content (user, date)`
+  - Si 0 resultados: `"No memories found for query: {query}"`
+
+- [ ] `list_memories` handler:
+  - Llama a `GET /v1/memory?tool=...&project=...&limit=...`
+  - Mismo formato que search
+
+- [ ] Error handling:
+  - Backend unreachable → mensaje claro: `"NexusMind backend not reachable at {base_url}. Is it running?"`
+  - 401 → `"Invalid API key. Set NEXUSMIND_API_KEY correctly."`
+  - 500 → re-throw con contexto
+
+- [ ] Test manual con `npx @modelcontextprotocol/inspector`:
+
+```bash
+NEXUSMIND_API_KEY=nm_demo_acme_sarah npx @modelcontextprotocol/inspector \
+  node apps/mcp/dist/index.js
+```
+
+---
+
+### Día 3 — Claude Code Config
+
+- [ ] `.mcp.json` en la raíz del repo:
+
+```json
+{
+  "mcpServers": {
+    "nexusmind": {
+      "command": "node",
+      "args": ["apps/mcp/dist/index.js"],
+      "env": {
+        "NEXUSMIND_API_KEY": "${NEXUSMIND_API_KEY}",
+        "NEXUSMIND_BASE_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
+```
+
+- [ ] `CLAUDE.md` en la raíz — instrucciones para Claude Code en este repo:
+
+```markdown
+## NexusMind MCP
+
+This repo includes a NexusMind MCP server. Claude Code will connect automatically.
+
+### Setup
+1. Start the backend: `cargo run --manifest-path apps/backend/Cargo.toml`
+2. Set your API key: `export NEXUSMIND_API_KEY=nm_demo_acme_sarah`
+3. Build the MCP server: `cd apps/mcp && npm install && npm run build`
+4. Claude Code picks up `.mcp.json` automatically.
+
+### Available tools
+- `store_memory` — save a decision or context for the team
+- `search_memory` — recall what the team has stored
+- `list_memories` — browse recent memories
+```
+
+- [ ] `Makefile` — agregar target `mcp`:
+
+```makefile
+mcp-build:
+    cd apps/mcp && npm install && npm run build
+
+mcp-inspect:
+    NEXUSMIND_API_KEY=$(NEXUSMIND_API_KEY) npx @modelcontextprotocol/inspector \
+      node apps/mcp/dist/index.js
+```
+
+---
+
+### Día 4 — Demo Real End-to-End
+
+Objetivo: demostrar el ciclo completo en vivo.
+
+- [ ] Script de demo `demo/MCP_DEMO.md`:
+
+```markdown
+# NexusMind + Claude Code — Live Demo
+
+## Setup
+```bash
+# Terminal 1 — backend
+cargo run --manifest-path apps/backend/Cargo.toml
+
+# Terminal 2 — seed demo data
+./scripts/reset-demo.sh
+
+# Terminal 3 — set key and open Claude Code in this repo
+export NEXUSMIND_API_KEY=nm_demo_acme_sarah
+code .   # VS Code with Claude Code extension
+```
+
+## Demo flow (5 min)
+
+1. En Claude Code: "Store a memory: we decided to use snake_case for all
+   API endpoints in this project"
+   → Claude llama a `store_memory` → "Memory stored (id: abc123)"
+
+2. En Claude Code (segunda sesión / otro usuario):
+   "Do we have any conventions about API naming?"
+   → Claude llama a `search_memory("API naming conventions")`
+   → Devuelve la memoria de Sarah Chen
+
+3. Abrir admin panel → Memory Browser → la memoria aparece con usuario, tool, fecha
+
+4. Audit Log → se ve el `store` y el `search` de Sarah Chen con timestamp
+
+**Resultado visual**: el admin panel muestra en tiempo real lo que Claude Code guardó.
+```
+
+- [ ] Probar el flow completo y anotar cualquier bug en `demo/MCP_DEMO.md`
+- [ ] Screenshot del admin panel después del demo flow
+
+---
+
+### Día 5 — Polish + `npx` publishable
+
+- [ ] `apps/mcp/package.json` — agregar `"files": ["dist"]` y `"publishConfig"` si aplica
+- [ ] `apps/mcp/README.md` — docs de instalación y configuración
+- [ ] Agregar `apps/mcp/` al `docker-compose.yml` como servicio opcional con `profiles: [mcp]`:
+
+```yaml
+  mcp:
+    build: ./apps/mcp
+    profiles: [mcp]
+    environment:
+      NEXUSMIND_API_KEY: ${NEXUSMIND_API_KEY}
+      NEXUSMIND_BASE_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+```
+
+- [ ] Actualizar `demo/DEMO_SCRIPT.md` con Escena 0: "Claude Code ya conectado, memorias ya fluyendo"
+- [ ] `scripts/test-mcp.sh` — smoke test del MCP server:
+
+```bash
+#!/usr/bin/env bash
+# Start backend, store 1 memory via MCP, search it, verify result
+```
+
+---
+
+## Semana 5: Polish, CI, Release v0.2.0
 
 ### Día 1 — README Enterprise
 
@@ -846,13 +1077,14 @@ git push --tags
 
 ## Estimación Total
 
-| Componente | Días | PRs | Prioridad |
-|---|---|---|---|
-| Rust backend multi-tenant | 7 | #1–#6 | P0 |
-| Admin panel React | 7 | #7–#13 | P0 |
-| Demo mode + Docker | 7 | #14–#19 | P0 |
-| CI/CD + README + Release | 7 | #20–#23 | P0 |
-| **Total** | **28** | **23 PRs** | |
+| Semana | Componente | Días | Prioridad |
+|--------|-----------|------|-----------|
+| 1 | Rust backend multi-tenant | 7 | P0 ✅ |
+| 2 | Admin panel React | 7 | P0 ✅ |
+| 3 | Demo mode + Docker | 7 | P0 ✅ |
+| 4 | Claude Code MCP integration | 5 | P0 |
+| 5 | CI/CD + README + Release v0.2.0 | 7 | P0 |
+| **Total** | | **33** | |
 
 ---
 
