@@ -2,6 +2,7 @@
 name = "nexusmind"
 version = "0.2.0"
 edition = "2021"
+default-run = "nexusmind"
 
 [[bin]]
 name = "nexusmind"
