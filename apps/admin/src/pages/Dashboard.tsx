@@ -27,6 +27,18 @@ export default function Dashboard() {
     refetchInterval: 30_000,
   })
 
+  const { data: users } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => client.listUsers(),
+    staleTime: 60_000,
+  })
+
+  const userMap = useMemo(() => {
+    const map = new Map<string, string>()
+    users?.forEach(u => map.set(u.id, u.name))
+    return map
+  }, [users])
+
   const metrics = useMemo(() => {
     if (!stats) return []
     return [
@@ -102,7 +114,11 @@ export default function Dashboard() {
             </div>
           ) : (
             activity.map((entry) => (
-              <ActivityItem key={entry.id} entry={entry} />
+              <ActivityItem
+                key={entry.id}
+                entry={entry}
+                userName={userMap.get(entry.user_id)}
+              />
             ))
           )}
         </div>
