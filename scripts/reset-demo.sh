@@ -6,9 +6,11 @@ REPO_DIR="$SCRIPT_DIR/.."
 BACKEND_DIR="$REPO_DIR/apps/backend"
 DB_PATH="$BACKEND_DIR/data/nexusmind.db"
 
-echo "Building seed binary..."
 cd "$BACKEND_DIR"
-cargo build --release --bin nexusmind-seed 2>&1
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  echo "Building release binaries..."
+  cargo build --release 2>&1
+fi
 
 echo "Resetting demo data..."
 mkdir -p "$BACKEND_DIR/data"

@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**', 'chore/**', 'docs/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: '1.85'
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/backend
+
+      - name: Build
+        run: cargo build --manifest-path apps/backend/Cargo.toml
+
+      - name: Test
+        run: cargo test --manifest-path apps/backend/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --manifest-path apps/backend/Cargo.toml -- -D warnings
+
+  admin:
+    name: Admin Panel (React)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/admin/package-lock.json
+
+      - name: Install deps
+        run: cd apps/admin && npm ci
+
+      - name: Build
+        run: cd apps/admin && npm run build
+
+  mcp:
+    name: MCP Server (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/mcp/package-lock.json
+
+      - name: Install deps + build
+        run: cd apps/mcp && npm ci && npm run build
+
+  e2e:
+    name: E2E Smoke Test
+    runs-on: ubuntu-latest
+    needs: [backend, mcp]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: '1.85'
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/backend
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/mcp/package-lock.json
+
+      - name: Build MCP server
+        run: cd apps/mcp && npm ci && npm run build
+
+      - name: Seed demo data (builds release binaries)
+        run: ./scripts/reset-demo.sh
+
+      - name: Start backend
+        run: cd apps/backend && ./target/release/nexusmind &
+        env:
+          RUST_LOG: info
+
+      - name: Wait for backend
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/v1/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:8080/v1/health || (echo "Backend never became healthy" && exit 1)
+
+      - name: MCP smoke test
+        run: ./scripts/test-mcp.sh
+        env:
+          NEXUSMIND_API_KEY: nm_demo_acme_sarah
