@@ -79,9 +79,9 @@ fn seed_org(
 ) -> anyhow::Result<()> {
     let slug = org_spec.slug;
 
-    // Bootstrap creates the first org + admin user with a random key.
-    // We replace the admin key with a deterministic one afterward.
-    let (org, admin_user, _random_key) = queries::bootstrap(
+    // create_org has no "only one org" guard — safe to call for all 3 demo orgs.
+    // We replace the generated key with a deterministic demo key afterward.
+    let (org, admin_user, _random_key) = queries::create_org(
         conn,
         org_spec.name,
         slug,
