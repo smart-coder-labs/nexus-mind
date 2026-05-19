@@ -48,22 +48,14 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
 /// Creates the first organization + admin user + admin API key.
 /// Returns (org, user, raw_api_key).
 /// Fails if any organization already exists.
-pub fn bootstrap(
+/// Creates an org + admin user + API key with no guard. Used by seed and bootstrap.
+pub fn create_org(
     conn: &Connection,
     org_name: &str,
     org_slug: &str,
     admin_email: &str,
     admin_name: &str,
 ) -> Result<(Org, User, String)> {
-    let existing: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM organizations",
-        [],
-        |r| r.get(0),
-    )?;
-    if existing > 0 {
-        anyhow::bail!("already_bootstrapped");
-    }
-
     let org_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -104,6 +96,25 @@ pub fn bootstrap(
     };
 
     Ok((org, user, raw_key))
+}
+
+/// Creates the first org. Fails with `already_bootstrapped` if any org exists.
+pub fn bootstrap(
+    conn: &Connection,
+    org_name: &str,
+    org_slug: &str,
+    admin_email: &str,
+    admin_name: &str,
+) -> Result<(Org, User, String)> {
+    let existing: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM organizations",
+        [],
+        |r| r.get(0),
+    )?;
+    if existing > 0 {
+        anyhow::bail!("already_bootstrapped");
+    }
+    create_org(conn, org_name, org_slug, admin_email, admin_name)
 }
 
 // ── Memory queries ────────────────────────────────────────────────────────────

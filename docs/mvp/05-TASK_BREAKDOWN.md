@@ -370,13 +370,13 @@ pub fn router(db: Connection, config: Config) -> Router {
 
 ### Días 6-7 — Seed Data + Tests
 
-- [ ] `scripts/seed.rs` (o Rust binary en `src/bin/seed.rs`) que crea:
+- [x] `scripts/seed.rs` (o Rust binary en `src/bin/seed.rs`) que crea:
   - 3 organizaciones: "Acme Corp", "TechStartup", "DevShop"
   - 5 usuarios por org con roles variados
   - ~60 memorias por org con tags y tools variados
   - 1 API key admin por org (hardcoded para demo)
 
-- [ ] Tests E2E en `tests/integration_test.rs`:
+- [x] Tests E2E en `tests/integration_test.rs`:
   - Bootstrap → crear org
   - Invite user → validar key
   - Store memory → verify org isolation
@@ -517,7 +517,7 @@ class NexusMindClient {
 
 ### Día 1 — Script Reset Demo
 
-- [ ] `scripts/reset-demo.sh`:
+- [x] `scripts/reset-demo.sh`:
 
 ```bash
 #!/bin/bash
