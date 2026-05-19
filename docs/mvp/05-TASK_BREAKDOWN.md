@@ -392,9 +392,9 @@ pub fn router(db: Connection, config: Config) -> Router {
 
 ### Día 1 — Scaffold + Login
 
-- [ ] `admin/package.json` (React 18, Vite, React Router v6, TanStack Query, Tailwind CSS v4)
-- [ ] `admin/vite.config.ts` — proxy `/api` → `http://localhost:8080`
-- [ ] `admin/src/api/client.ts` — TypeScript fetch wrapper:
+- [x] `admin/package.json` (React 18, Vite, React Router v6, TanStack Query, Tailwind CSS v4)
+- [x] `admin/vite.config.ts` — proxy `/api` → `http://localhost:8080`
+- [x] `admin/src/api/client.ts` — TypeScript fetch wrapper:
 
 ```typescript
 class NexusMindClient {
@@ -413,7 +413,7 @@ class NexusMindClient {
 }
 ```
 
-- [ ] `admin/src/pages/Login.tsx`:
+- [x] `admin/src/pages/Login.tsx`:
   - Input para API key
   - On submit: `GET /v1/admin/org` para validar key y detectar rol
   - Guarda `{ apiKey, org, user }` en localStorage

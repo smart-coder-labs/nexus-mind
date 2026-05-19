@@ -1,0 +1,232 @@
+{
+  "componentsDir": "./src/components/ui",
+  "framework": "vite",
+  "rsc": false,
+  "components": {
+    "Button": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:34.048Z",
+      "updatedAt": "2026-05-19T05:48:34.048Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:34.048Z"
+        }
+      ]
+    },
+    "Input": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:34.222Z",
+      "updatedAt": "2026-05-19T05:48:34.222Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:34.222Z"
+        }
+      ]
+    },
+    "Card": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:34.596Z",
+      "updatedAt": "2026-05-19T05:48:34.596Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:34.596Z"
+        }
+      ]
+    },
+    "Modal": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:34.746Z",
+      "updatedAt": "2026-05-19T05:48:34.746Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:34.746Z"
+        }
+      ]
+    },
+    "Badge": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:34.897Z",
+      "updatedAt": "2026-05-19T05:48:34.897Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:34.897Z"
+        }
+      ]
+    },
+    "Spinner": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.057Z",
+      "updatedAt": "2026-05-19T05:48:35.057Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.057Z"
+        }
+      ]
+    },
+    "Skeleton": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.225Z",
+      "updatedAt": "2026-05-19T05:48:35.225Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.225Z"
+        }
+      ]
+    },
+    "EmptyState": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.386Z",
+      "updatedAt": "2026-05-19T05:48:35.386Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.386Z"
+        }
+      ]
+    },
+    "Toast": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.550Z",
+      "updatedAt": "2026-05-19T05:48:35.550Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.550Z"
+        }
+      ]
+    },
+    "Select": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.729Z",
+      "updatedAt": "2026-05-19T05:48:35.729Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.729Z"
+        }
+      ]
+    },
+    "Sidebar": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:35.889Z",
+      "updatedAt": "2026-05-19T05:48:35.889Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:35.889Z"
+        }
+      ]
+    },
+    "ThemeToggle": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:36.051Z",
+      "updatedAt": "2026-05-19T05:48:36.051Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:36.051Z"
+        }
+      ]
+    },
+    "StatisticDisplay": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:36.489Z",
+      "updatedAt": "2026-05-19T05:48:36.489Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:36.489Z"
+        }
+      ]
+    },
+    "Table": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:36.639Z",
+      "updatedAt": "2026-05-19T05:48:36.639Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:36.639Z"
+        }
+      ]
+    },
+    "Switch": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:36.807Z",
+      "updatedAt": "2026-05-19T05:48:36.807Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:36.807Z"
+        }
+      ]
+    },
+    "Sparkline": {
+      "version": "1.0.3",
+      "status": "experimental",
+      "type": "folder",
+      "installedAt": "2026-05-19T05:48:36.959Z",
+      "updatedAt": "2026-05-19T05:48:36.959Z",
+      "history": [
+        {
+          "version": "1.0.3",
+          "action": "install",
+          "date": "2026-05-19T05:48:36.959Z"
+        }
+      ]
+    }
+  },
+  "globalCss": "./src/index.css"
+}

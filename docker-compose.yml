@@ -17,5 +17,15 @@ services:
       timeout: 5s
       retries: 3
 
+  admin:
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   nexusmind_data:
