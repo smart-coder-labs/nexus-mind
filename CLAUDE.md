@@ -5,8 +5,8 @@ This repo includes a NexusMind MCP server. Claude Code connects to it automatica
 ## Quick start
 
 ```bash
-# 1. Start the backend
-cargo run --manifest-path apps/backend/Cargo.toml
+# 1. Start the backend (must run from apps/backend for correct DB path)
+make backend   # or: cd apps/backend && cargo run
 
 # 2. Seed demo data (first time)
 ./scripts/reset-demo.sh

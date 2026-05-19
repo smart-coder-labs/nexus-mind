@@ -8,8 +8,8 @@
 ## Setup (before the demo)
 
 ```bash
-# Terminal 1 — start backend
-cargo run --manifest-path apps/backend/Cargo.toml
+# Terminal 1 — start backend (from apps/backend for correct DB path)
+make backend   # or: cd apps/backend && cargo run
 
 # Terminal 2 — seed + build MCP
 ./scripts/reset-demo.sh

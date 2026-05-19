@@ -1,4 +1,4 @@
-.PHONY: dev build test reset-demo demo logs clean mcp-build mcp-inspect mcp-test
+.PHONY: dev build backend test reset-demo demo logs clean mcp-build mcp-inspect mcp-test
 
 ## Start all services with Docker Compose
 dev:
@@ -8,6 +8,10 @@ dev:
 build:
 	cargo build --release --manifest-path apps/backend/Cargo.toml
 	cd apps/admin && npm run build
+
+## Run backend (from apps/backend so DB path resolves correctly)
+backend:
+	cd apps/backend && cargo run
 
 ## Run backend tests
 test:
