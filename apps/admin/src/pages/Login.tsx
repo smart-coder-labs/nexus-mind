@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { saveSession } from '../auth/session'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 
 export default function Login() {
   const [apiKey, setApiKey] = useState('')
@@ -39,31 +41,25 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleSubmit} className="bg-gray-900 rounded-2xl p-8 space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              API Key
-            </label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              placeholder="nm_..."
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              autoFocus
-            />
-          </div>
+          <Input
+            type="password"
+            label="API Key"
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder="nm_..."
+            error={error}
+            autoFocus
+          />
 
-          {error && (
-            <p className="text-red-400 text-sm">{error}</p>
-          )}
-
-          <button
+          <Button
             type="submit"
+            variant="primary"
+            fullWidth
             disabled={loading || !apiKey.trim()}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-lg py-3 transition-colors"
+            loading={loading}
           >
             {loading ? 'Verifying...' : 'Sign in'}
-          </button>
+          </Button>
         </form>
 
         <p className="text-center text-gray-600 text-sm mt-6">
