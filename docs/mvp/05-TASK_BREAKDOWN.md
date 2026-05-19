@@ -305,25 +305,25 @@ pub async fn auth_middleware(
 
 ### Día 4 — Memory API + Users API
 
-- [ ] `src/api/memory.rs`:
+- [x] `src/api/memory.rs`:
   - `POST /v1/memory/store` — valida input, usa `org_id` del AuthContext, log audit, 201
   - `POST /v1/memory/search` — FTS5 MATCH **filtrado por org_id** del AuthContext
   - `DELETE /v1/memory/:id` — verifica que la memoria pertenece a la org
   - `GET /v1/memory` — list con filtros (project, tool, user_id, tags, limit, offset), scoped por org
 
-- [ ] `src/api/users.rs`:
+- [x] `src/api/users.rs`:
   - `GET /v1/users` — lista miembros de la org (requiere rol admin)
   - `POST /v1/users/invite` — crea user con status=invited + genera API key
   - `DELETE /v1/users/:id` — suspende user + revoca todas sus keys (requiere admin)
   - `POST /v1/users/:id/rotate-key` — genera nueva key, revoca la anterior
 
-- [ ] `src/api/admin.rs`:
+- [x] `src/api/admin.rs`:
   - `GET /v1/admin/stats` — total memorias, usuarios activos 24h, búsquedas hoy, tools usadas
   - `GET /v1/admin/org` — info de la org
   - `PATCH /v1/admin/org` — update nombre de org (requiere admin)
 
-- [ ] Regla de oro: **todo query en `queries.rs` recibe `org_id` del AuthContext. Nunca cruza datos entre orgs.**
-- [ ] Tests de integración con SQLite in-memory
+- [x] Regla de oro: **todo query en `queries.rs` recibe `org_id` del AuthContext. Nunca cruza datos entre orgs.**
+- [x] Tests de integración con SQLite in-memory
 - [ ] PR #4: "feat: memory, users, and admin API endpoints"
 
 ---

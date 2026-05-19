@@ -57,6 +57,20 @@ pub struct ApiError {
     pub code: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ToolUsage {
+    pub tool: String,
+    pub count: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct OrgStats {
+    pub total_memories: i64,
+    pub active_users_24h: i64,
+    pub searches_today: i64,
+    pub top_tools: Vec<ToolUsage>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
