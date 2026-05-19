@@ -109,10 +109,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-gray-950 flex">
-      {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col w-56 border-r border-border-secondary flex-shrink-0">
+      {/* Desktop sidebar — fixed, full height */}
+      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-56 border-r border-border-secondary z-30">
         <SidebarContent />
       </aside>
+      {/* Spacer so main content doesn't hide behind the fixed sidebar */}
+      <div className="hidden lg:block w-56 flex-shrink-0" />
 
       {/* Mobile drawer overlay */}
       {drawerOpen && (
