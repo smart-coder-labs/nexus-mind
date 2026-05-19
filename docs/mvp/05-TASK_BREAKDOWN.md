@@ -330,14 +330,14 @@ pub async fn auth_middleware(
 
 ### Día 5 — Audit Trail + Health
 
-- [ ] `src/api/audit.rs`:
+- [x] `src/api/audit.rs`:
   - `GET /v1/audit` — lista eventos de la org con filtros (user_id, action, resource_type, from, to, limit, offset)
   - Todos los handlers de memory y users llaman a `log_audit` internamente
 
-- [ ] `src/api/health.rs`:
+- [x] `src/api/health.rs`:
   - `GET /v1/health` → `{ status: "ok", version: "0.2.0", db: "ok", uptime_secs: 123 }`
 
-- [ ] `src/api/router.rs` — Axum Router completo:
+- [x] `src/api/router.rs` — Axum Router completo:
 
 ```rust
 pub fn router(db: Connection, config: Config) -> Router {
@@ -363,7 +363,7 @@ pub fn router(db: Connection, config: Config) -> Router {
 }
 ```
 
-- [ ] Error handling consistente: todos los handlers retornan `Json<ApiError>` con `{ error: string, code: string }`
+- [x] Error handling consistente: todos los handlers retornan `Json<ApiError>` con `{ error: string, code: string }`
 - [ ] PR #5: "feat: audit trail, health, and full router"
 
 ---

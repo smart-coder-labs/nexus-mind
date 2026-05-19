@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, health, memory, middleware as auth_mw, users};
+use crate::api::{admin, audit, health, memory, middleware as auth_mw, users};
 use crate::config::Config;
 
 pub fn build(conn: Connection, _config: Config) -> Router {
@@ -22,6 +22,7 @@ pub fn build(conn: Connection, _config: Config) -> Router {
         .route("/v1/users/invite", post(users::invite))
         .route("/v1/users/:id", delete(users::remove))
         .route("/v1/users/:id/rotate-key", post(users::rotate_key))
+        .route("/v1/audit", get(audit::query))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
         .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth));
