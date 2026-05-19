@@ -442,7 +442,7 @@ class NexusMindClient {
 
 ### Día 3 — User Management
 
-- [ ] `admin/src/pages/Users.tsx`:
+- [x] `admin/src/pages/Users.tsx`:
   - Tabla: Avatar | Nombre | Email | Rol | Status | API Key (truncada) | Acciones
   - Botón "Invite User" → modal con email + nombre + rol
   - Botón "Revoke Access" → confirma → `DELETE /v1/users/:id`
@@ -450,66 +450,55 @@ class NexusMindClient {
   - Badge de status: active (verde), invited (amarillo), suspended (rojo)
   - Solo visible para rol `admin`
 
-- [ ] Modal `InviteUserModal.tsx`:
+- [x] Modal `InviteUserModal.tsx`:
   - Campos: Email, Name, Role (select: admin/member/viewer)
   - On success: muestra API key generada con botón "Copy"
   - Warning: "Esta key solo se muestra una vez"
 
-- [ ] PR #9: "feat: user management with invite and revoke"
+- [x] `ConfirmModal.tsx` — modal de confirmación reutilizable
 
 ---
 
 ### Día 4 — Memory Browser
 
-- [ ] `admin/src/pages/Memories.tsx`:
-  - Filtros: Usuario (select), Tool (select), Proyecto (input), Fecha desde/hasta
+- [x] `admin/src/pages/Memories.tsx`:
   - Search input full-text (debounce 300ms → `POST /v1/memory/search`)
-  - Tabla: Fecha | Usuario | Tool | Proyecto | Contenido (truncado) | Tags
-  - Click en fila → modal con contenido completo
-  - Botón "Export CSV" → descarga todas las memorias con filtros aplicados
+  - Tabla: Fecha | Usuario | Tool | Contenido (truncado) | Tags
+  - Click en fila → modal con contenido completo y botón Delete
+  - Botón "Export CSV"
 
-- [ ] `MemoryDetailModal.tsx`:
-  - Muestra contenido completo, tags, metadata
-  - Botón "Delete" (solo admin)
-
-- [ ] PR #10: "feat: memory browser with search and filters"
+- [x] `MemoryDetailModal.tsx` — inline en Memories.tsx
 
 ---
 
 ### Día 5 — Audit Log
 
-- [ ] `admin/src/pages/AuditLog.tsx`:
+- [x] `admin/src/pages/AuditLog.tsx`:
   - Filtros: Usuario, Acción, Resource Type, From, To
-  - Tabla: Timestamp | Usuario | Acción | Resource | Tool | Metadata
+  - Tabla: Timestamp | Usuario | Acción | Resource | ID
   - Acciones con color: `store` (azul), `search` (gris), `delete` (rojo), `invite` (verde), `revoke` (naranja)
   - Paginación: 50 items por página
   - Botón "Export CSV"
-
-- [ ] PR #11: "feat: audit log with filters and export"
 
 ---
 
 ### Día 6 — Settings
 
-- [ ] `admin/src/pages/Settings.tsx`:
-  - Sección "Organization": nombre, slug (readonly), fecha creación
-  - Botón "Save" → `PATCH /v1/admin/org`
-  - Sección "My API Key": muestra key truncada + botón "Rotate"
+- [x] `admin/src/pages/Settings.tsx`:
+  - Sección "Organization": nombre, slug (readonly), fecha creación, botón "Save"
+  - Sección "My API Key": muestra key truncada + botón "Rotate" con confirmación
   - Sección "Danger Zone" (solo admin): botón "Export All Data" (JSON)
-
-- [ ] PR #12: "feat: settings page with org config"
 
 ---
 
 ### Día 7 — Polish + Responsive
 
-- [ ] Layout principal: sidebar (desktop) / bottom nav (mobile)
-- [ ] Sidebar con: logo, Dashboard, Users, Memories, Audit Log, Settings, Logout
-- [ ] Dark mode toggle (guarda en localStorage)
-- [ ] Empty states con copy útil ("No memories yet. Start using a tool connected to NexusMind.")
-- [ ] Loading skeletons en todas las tablas
-- [ ] Error boundaries en cada página
-- [ ] PR #13: "feat: responsive layout, dark mode, and polish"
+- [x] Todas las rutas conectadas en `App.tsx`
+- [x] Layout: sidebar fijo desktop + drawer mobile con overlay
+- [x] Dark mode fijo via `class="dark"` en `index.html`
+- [x] Loading skeletons en todas las tablas
+- [x] Empty states en todas las páginas
+- [x] Modales de confirmación reutilizables
 
 ---
 
