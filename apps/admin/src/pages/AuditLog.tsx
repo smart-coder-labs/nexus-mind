@@ -122,8 +122,14 @@ export default function AuditLog() {
           <option value="">All resources</option>
           {['memory', 'user', 'org'].map(r => <option key={r} value={r}>{r}</option>)}
         </select>
-        <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
-        <input type="date" value={draft.to}   onChange={setField('to')}   className={inputCls} />
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] text-white/25 uppercase tracking-wide px-0.5">From</span>
+          <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] text-white/25 uppercase tracking-wide px-0.5">To</span>
+          <input type="date" value={draft.to}   onChange={setField('to')}   className={inputCls} />
+        </label>
         <button
           onClick={applyFilters}
           className="px-3 py-2 rounded-lg bg-white text-[#0c0c0e] text-sm font-medium hover:bg-white/90 transition-colors"

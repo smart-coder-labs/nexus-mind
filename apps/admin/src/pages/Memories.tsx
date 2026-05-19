@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -8,10 +8,10 @@ import { Search, X } from 'lucide-react'
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
-  useState(() => {
+  useEffect(() => {
     const t = setTimeout(() => setDebounced(value), delay)
     return () => clearTimeout(t)
-  })
+  }, [value, delay])
   return debounced
 }
 
