@@ -1,0 +1,404 @@
+{
+  "info": {
+    "name": "NexusMind API",
+    "description": "Enterprise memory control plane — all endpoints for the v0.2.0 MVP.\n\n**Setup:**\n1. Run `cargo run` in `apps/backend/`\n2. Call `POST /v1/bootstrap` to get your admin API key\n3. Set the `api_key` collection variable with the returned key\n\nAll protected routes use `Authorization: Bearer {{api_key}}`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "",
+      "description": "Paste the key returned by POST /v1/bootstrap here",
+      "type": "string"
+    },
+    {
+      "key": "memory_id",
+      "value": "",
+      "description": "Populated automatically by the store memory request",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "description": "Populated automatically by invite user request",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /v1/health",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/health",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "health"]
+            },
+            "description": "No auth required. Returns server status and version."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\":\"ok\",\"version\":\"0.2.0\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bootstrap",
+      "item": [
+        {
+          "name": "POST /v1/bootstrap",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('api_key', body.api_key);",
+                  "  console.log('API key saved:', body.api_key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/v1/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "bootstrap"]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"org_name\": \"Acme Corp\",\n  \"org_slug\": \"acme\",\n  \"admin_email\": \"admin@acme.com\",\n  \"admin_name\": \"Admin\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Creates the first org + admin user. Returns the admin API key — save it in the `api_key` collection variable.\n\n**Fails with 409** if any org already exists."
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"org\": { \"id\": \"...\", \"name\": \"Acme Corp\", \"slug\": \"acme\", \"created_at\": \"...\" },\n  \"user\": { \"id\": \"...\", \"email\": \"admin@acme.com\", \"role\": \"admin\", \"status\": \"active\", \"...\" },\n  \"api_key\": \"nm_...\"\n}"
+            },
+            {
+              "name": "409 Already bootstrapped",
+              "status": "Conflict",
+              "code": 409,
+              "body": "{\n  \"error\": \"Organization already exists\",\n  \"code\": \"already_bootstrapped\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Memory",
+      "item": [
+        {
+          "name": "POST /v1/memory/store",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('memory_id', body.id);",
+                  "  console.log('Memory ID saved:', body.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/v1/memory/store",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "memory", "store"]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tool\": \"claude-code\",\n  \"content\": \"Use snake_case for all API endpoints — team convention agreed on 2026-05-01\",\n  \"project\": \"nexusmind\",\n  \"tags\": [\"convention\", \"api\", \"naming\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Stores a memory scoped to the org derived from the API key. `org_id` is never in the body — it comes from auth."
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"id\": \"...\",\n  \"org_id\": \"...\",\n  \"user_id\": \"...\",\n  \"project\": \"nexusmind\",\n  \"tool\": \"claude-code\",\n  \"content\": \"Use snake_case...\",\n  \"tags\": [\"convention\", \"api\", \"naming\"],\n  \"created_at\": \"...\"\n}"
+            },
+            {
+              "name": "401 Unauthorized",
+              "status": "Unauthorized",
+              "code": 401,
+              "body": ""
+            }
+          ]
+        },
+        {
+          "name": "POST /v1/memory/search",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/v1/memory/search",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "memory", "search"]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"snake_case\",\n  \"limit\": 10\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Full-text search via SQLite FTS5. Results are scoped to the org of the API key."
+          }
+        },
+        {
+          "name": "GET /v1/memory",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/memory?tool=claude-code&project=nexusmind&limit=20&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "memory"],
+              "query": [
+                { "key": "tool", "value": "claude-code", "description": "Filter by tool (optional)" },
+                { "key": "project", "value": "nexusmind", "description": "Filter by project (optional)" },
+                { "key": "user_id", "value": "", "description": "Filter by user (optional, admin only)", "disabled": true },
+                { "key": "limit", "value": "20" },
+                { "key": "offset", "value": "0" }
+              ]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Lists memories for the org with optional filters."
+          }
+        },
+        {
+          "name": "DELETE /v1/memory/:id",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/v1/memory/{{memory_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "memory", "{{memory_id}}"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Deletes a memory. Returns 204 if deleted, 404 if not found or belongs to a different org."
+          },
+          "response": [
+            {
+              "name": "204 No Content",
+              "status": "No Content",
+              "code": 204,
+              "body": ""
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "body": "{\n  \"error\": \"Memory not found\",\n  \"code\": \"not_found\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "GET /v1/users",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/users",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Lists all users in the org. Requires `admin` role."
+          },
+          "response": [
+            {
+              "name": "403 Forbidden (non-admin)",
+              "status": "Forbidden",
+              "code": 403,
+              "body": "{\n  \"error\": \"Admin role required\",\n  \"code\": \"forbidden\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /v1/users/invite",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('user_id', body.user.id);",
+                  "  console.log('Invited user ID saved:', body.user.id);",
+                  "  console.log('Their API key:', body.api_key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/v1/users/invite",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "invite"]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"dev@acme.com\",\n  \"name\": \"Sarah Chen\",\n  \"role\": \"member\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Invites a new user to the org. Returns `{ user, api_key }` — the key is shown only once. Requires `admin` role."
+          }
+        },
+        {
+          "name": "DELETE /v1/users/:id",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/v1/users/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Suspends a user and revokes all their API keys. Returns 204. Requires `admin` role."
+          }
+        },
+        {
+          "name": "POST /v1/users/:id/rotate-key",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/v1/users/{{user_id}}/rotate-key",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "users", "{{user_id}}", "rotate-key"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Revokes the user's current key and generates a new one. Returns `{ api_key }`. Admins can rotate any user's key."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GET /v1/admin/stats",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/admin/stats",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "admin", "stats"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Returns org stats for the dashboard: total memories, active users in last 24h, searches today, top tools."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"total_memories\": 89,\n  \"active_users_24h\": 3,\n  \"searches_today\": 12,\n  \"top_tools\": [\n    { \"tool\": \"claude-code\", \"count\": 54 },\n    { \"tool\": \"cursor\", \"count\": 35 }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /v1/admin/org",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/admin/org",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "admin", "org"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "description": "Returns the org info for the authenticated user's organization."
+          }
+        },
+        {
+          "name": "PATCH /v1/admin/org",
+          "request": {
+            "method": "PATCH",
+            "url": {
+              "raw": "{{base_url}}/v1/admin/org",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "admin", "org"]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{api_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme Corp (updated)\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Updates the org name. Requires `admin` role."
+          }
+        }
+      ]
+    }
+  ]
+}
