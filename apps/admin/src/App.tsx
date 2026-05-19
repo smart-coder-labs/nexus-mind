@@ -2,6 +2,10 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
+import Users from './pages/Users'
+import Memories from './pages/Memories'
+import AuditLog from './pages/AuditLog'
+import Settings from './pages/Settings'
 import { Layout } from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -23,7 +27,11 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <Routes>
-              <Route path="/" element={<Dashboard />} />
+              <Route path="/"         element={<Dashboard />} />
+              <Route path="/users"    element={<Users />} />
+              <Route path="/memories" element={<Memories />} />
+              <Route path="/audit"    element={<AuditLog />} />
+              <Route path="/settings" element={<Settings />} />
             </Routes>
           </ProtectedRoute>
         }
