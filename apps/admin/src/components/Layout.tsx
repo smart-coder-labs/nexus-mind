@@ -11,7 +11,6 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
-import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { cn } from '@/lib/utils'
 
 interface NavItem {
@@ -88,11 +87,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <NavLinks onNavigate={onNavigate} />
       </div>
 
-      {/* Bottom: theme toggle + sign out */}
-      <div className="px-2 pb-3 space-y-1">
-        <div className="px-3 py-1">
-          <ThemeToggle label="" allowSystem={false} />
-        </div>
+      {/* Bottom: sign out */}
+      <div className="px-2 pb-3">
         <button
           onClick={handleLogout}
           className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"

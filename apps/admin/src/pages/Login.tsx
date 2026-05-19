@@ -5,7 +5,6 @@ import { createClient } from '../api/client'
 import { saveSession } from '../auth/session'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { ThemeToggle } from '@/components/ui/ThemeToggle'
 
 export default function Login() {
   const [apiKey, setApiKey] = useState('')
@@ -35,11 +34,6 @@ export default function Login() {
 
   return (
     <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
-      {/* Theme toggle top-right */}
-      <div className="fixed top-4 right-4">
-        <ThemeToggle label="" allowSystem={false} />
-      </div>
-
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-text-primary">NexusMind</h1>
