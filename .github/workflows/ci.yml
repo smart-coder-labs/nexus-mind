@@ -99,7 +99,7 @@ jobs:
         run: ./scripts/reset-demo.sh
 
       - name: Start backend
-        run: ./apps/backend/target/release/nexusmind &
+        run: cd apps/backend && ./target/release/nexusmind &
         env:
           RUST_LOG: info
 
