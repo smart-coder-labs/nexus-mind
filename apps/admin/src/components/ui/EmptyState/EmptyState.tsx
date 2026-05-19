@@ -30,7 +30,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               size: 48,
               strokeWidth: 1.5,
               className: 'w-12 h-12',
-            })
+            } as Record<string, unknown>)
           ) : (
             icon
           )}

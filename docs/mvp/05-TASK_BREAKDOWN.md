@@ -780,31 +780,17 @@ server.tool('list_memories', {
 })
 ```
 
-- [ ] `apps/mcp/tsconfig.json` — `target: ES2022`, `module: NodeNext`, `outDir: dist`
-- [ ] `apps/mcp/src/client.ts` — fetch wrapper que llama a la REST API con Bearer token
+- [x] `apps/mcp/tsconfig.json` — `target: ES2022`, `module: NodeNext`, `outDir: dist`
+- [x] `apps/mcp/src/client.ts` — fetch wrapper que llama a la REST API con Bearer token
 
 ---
 
 ### Día 2 — Tool Implementation + Error Handling
 
-- [ ] `store_memory` handler:
-  - Llama a `POST /v1/memory/store` con `content`, `project`, `tool`, `tags`
-  - `tool` default: `"claude-code"`, `project` default: inferido del CWD si posible
-  - Respuesta: `"Memory stored (id: {id})"`
-
-- [ ] `search_memory` handler:
-  - Llama a `POST /v1/memory/search` con `{ query, limit }`
-  - Formatea resultados como lista legible: `[tool] project — content (user, date)`
-  - Si 0 resultados: `"No memories found for query: {query}"`
-
-- [ ] `list_memories` handler:
-  - Llama a `GET /v1/memory?tool=...&project=...&limit=...`
-  - Mismo formato que search
-
-- [ ] Error handling:
-  - Backend unreachable → mensaje claro: `"NexusMind backend not reachable at {base_url}. Is it running?"`
-  - 401 → `"Invalid API key. Set NEXUSMIND_API_KEY correctly."`
-  - 500 → re-throw con contexto
+- [x] `store_memory` handler — `POST /v1/memory/store`, tool default `"claude-code"`, respuesta `"Memory stored (id: {id})"`
+- [x] `search_memory` handler — `POST /v1/memory/search`, formato legible por línea
+- [x] `list_memories` handler — `GET /v1/memory?tool=...&project=...&limit=...`
+- [x] Error handling — backend unreachable, 401 invalid key, 500 con contexto
 
 - [ ] Test manual con `npx @modelcontextprotocol/inspector`:
 
@@ -834,7 +820,7 @@ NEXUSMIND_API_KEY=nm_demo_acme_sarah npx @modelcontextprotocol/inspector \
 }
 ```
 
-- [ ] `CLAUDE.md` en la raíz — instrucciones para Claude Code en este repo:
+- [x] `CLAUDE.md` en la raíz — instrucciones para Claude Code en este repo:
 
 ```markdown
 ## NexusMind MCP
@@ -853,7 +839,7 @@ This repo includes a NexusMind MCP server. Claude Code will connect automaticall
 - `list_memories` — browse recent memories
 ```
 
-- [ ] `Makefile` — agregar target `mcp`:
+- [x] `Makefile` — targets `mcp-build`, `mcp-inspect`, `mcp-test`:
 
 ```makefile
 mcp-build:
@@ -870,7 +856,7 @@ mcp-inspect:
 
 Objetivo: demostrar el ciclo completo en vivo.
 
-- [ ] Script de demo `demo/MCP_DEMO.md`:
+- [x] Script de demo `demo/MCP_DEMO.md`:
 
 ```markdown
 # NexusMind + Claude Code — Live Demo
