@@ -1,52 +1,45 @@
-# ── Fly.io ────────────────────────────────────────────────────────────────────
+# ── GCP ───────────────────────────────────────────────────────────────────────
 
-variable "fly_api_token" {
-  description = "Fly.io API token (fly tokens create deploy)"
+variable "project_id" {
+  description = "GCP project ID"
   type        = string
-  sensitive   = true
 }
 
-variable "fly_app_name" {
-  description = "Fly app name — must be globally unique"
+variable "region" {
+  description = "GCP region — must be us-central1, us-east1, or us-west1 for free tier"
   type        = string
-  default     = "nexusmind-api"
+  default     = "us-central1"
 }
 
-variable "fly_region" {
-  description = "Primary Fly.io region"
+variable "zone" {
+  description = "GCP zone for the Compute Engine instance"
   type        = string
-  default     = "mad" # Madrid
+  default     = "us-central1-a"
 }
 
-variable "fly_volume_size_gb" {
-  description = "SQLite volume size in GB"
+# ── Compute Engine ────────────────────────────────────────────────────────────
+
+variable "instance_name" {
+  description = "Name of the backend VM"
+  type        = string
+  default     = "nexusmind-backend"
+}
+
+variable "data_disk_size_gb" {
+  description = "Persistent disk size for SQLite data (free tier includes 30GB HDD)"
   type        = number
-  default     = 1
+  default     = 10
 }
 
-# ── Cloudflare ────────────────────────────────────────────────────────────────
-
-variable "cloudflare_api_token" {
-  description = "Cloudflare API token with Pages:Edit permission"
-  type        = string
-  sensitive   = true
-}
-
-variable "cloudflare_account_id" {
-  description = "Cloudflare account ID (dash.cloudflare.com → right sidebar)"
+variable "ssh_public_key" {
+  description = "SSH public key to add to the VM (cat ~/.ssh/id_rsa.pub)"
   type        = string
 }
 
-variable "github_owner" {
-  description = "GitHub org or user that owns the repo"
+variable "ssh_user" {
+  description = "SSH username on the VM"
   type        = string
-  default     = "smart-coder-labs"
-}
-
-variable "github_repo" {
-  description = "GitHub repository name"
-  type        = string
-  default     = "nexus-mind"
+  default     = "nexusmind"
 }
 
 # ── App config ────────────────────────────────────────────────────────────────

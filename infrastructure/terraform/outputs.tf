@@ -1,24 +1,29 @@
+output "backend_ip" {
+  description = "Backend static external IP"
+  value       = google_compute_address.backend.address
+}
+
 output "backend_url" {
   description = "Backend API URL"
-  value       = "https://${fly_app.backend.name}.fly.dev"
+  value       = "http://${google_compute_address.backend.address}:8080"
 }
 
 output "admin_url" {
-  description = "Admin panel URL (Cloudflare Pages)"
-  value       = "https://nexusmind-admin.pages.dev"
+  description = "Admin panel URL (Firebase Hosting)"
+  value       = "https://${google_firebase_hosting_site.admin.site_id}.web.app"
 }
 
 output "landing_url" {
-  description = "Landing page URL (Cloudflare Pages)"
-  value       = "https://nexusmind-landing.pages.dev"
+  description = "Landing URL (Firebase Hosting)"
+  value       = "https://${google_firebase_hosting_site.landing.site_id}.web.app"
 }
 
-output "fly_app_name" {
-  description = "Fly app name — use with flyctl"
-  value       = fly_app.backend.name
+output "artifact_registry_url" {
+  description = "Docker image registry URL"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/nexusmind"
 }
 
-output "fly_volume_id" {
-  description = "SQLite volume ID"
-  value       = fly_volume.data.id
+output "ssh_command" {
+  description = "SSH into the backend VM"
+  value       = "ssh ${var.ssh_user}@${google_compute_address.backend.address}"
 }

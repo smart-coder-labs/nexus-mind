@@ -2,27 +2,42 @@ terraform {
   required_version = ">= 1.6"
 
   required_providers {
-    fly = {
-      source  = "fly-apps/fly"
-      version = "~> 0.0.23"
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 6.0"
     }
   }
 
-  # Uncomment to use Terraform Cloud for shared state
-  # backend "remote" {
-  #   organization = "your-org"
-  #   workspaces { name = "nexusmind" }
+  # Uncomment to store state in GCS (recommended for team use)
+  # backend "gcs" {
+  #   bucket = "nexusmind-tfstate"
+  #   prefix = "terraform/state"
   # }
 }
 
-provider "fly" {
-  fly_api_token = var.fly_api_token
+provider "google" {
+  project = var.project_id
+  region  = var.region
 }
 
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
+provider "google-beta" {
+  project = var.project_id
+  region  = var.region
+}
+
+# Enable required APIs
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "compute.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "firebase.googleapis.com",
+    "firebasehosting.googleapis.com",
+  ])
+
+  service            = each.key
+  disable_on_destroy = false
 }
