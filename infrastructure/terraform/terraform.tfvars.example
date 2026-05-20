@@ -1,0 +1,20 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars — it contains secrets.
+
+# Fly.io — get token with: fly tokens create deploy
+fly_api_token  = "fo1_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+fly_app_name   = "nexusmind-api"
+fly_region     = "mad"
+
+# Cloudflare — create token at: dash.cloudflare.com/profile/api-tokens
+# Required permissions: Account > Cloudflare Pages > Edit
+cloudflare_api_token  = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+cloudflare_account_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# GitHub repo (source for Cloudflare Pages builds)
+github_owner = "smart-coder-labs"
+github_repo  = "nexus-mind"
+
+# Supabase — for the landing waitlist (optional, leave empty to use localStorage fallback)
+supabase_url      = ""
+supabase_anon_key = ""

@@ -1,0 +1,52 @@
+# Fly.io app configuration for the NexusMind backend
+# Deploy with: flyctl deploy --config infrastructure/fly.toml
+# Or set FLY_CONFIG in CI
+
+app    = "nexusmind-api"
+primary_region = "mad"
+
+[build]
+  dockerfile = "apps/backend/Dockerfile"
+  # Build context is repo root so the Dockerfile path resolves correctly
+  build_target = ""
+
+[env]
+  DB_PATH  = "/data/nexusmind.db"
+  RUST_LOG = "info"
+  PORT     = "8080"
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = true
+  auto_start_machines  = true
+  min_machines_running = 0         # scale to zero when idle (free tier)
+  processes            = ["app"]
+
+  [http_service.concurrency]
+    type       = "requests"
+    hard_limit = 100
+    soft_limit = 80
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"
+
+[mounts]
+  source      = "nexusmind_data"
+  destination = "/data"
+
+[[services.tcp_checks]]
+  interval    = "10s"
+  timeout     = "5s"
+  grace_period = "10s"
+
+[checks]
+  [checks.health]
+    grace_period = "15s"
+    interval     = "10s"
+    method       = "GET"
+    path         = "/v1/health"
+    protocol     = "http"
+    timeout      = "5s"
+    type         = "http"
