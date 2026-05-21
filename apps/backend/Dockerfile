@@ -18,7 +18,6 @@ WORKDIR /app
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 
 RUN mkdir -p /data
-VOLUME ["/data"]
 
 EXPOSE 8080
 CMD ["/app/nexusmind"]
