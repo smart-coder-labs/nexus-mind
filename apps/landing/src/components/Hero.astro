@@ -1,6 +1,27 @@
 ---
 import HeroBadge from './react/HeroBadge.tsx';
 import CTAButtons from './react/CTAButtons.tsx';
+
+const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY || '';
+
+let heroCount = 0;
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/waitlist?select=*`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Prefer: 'count=exact',
+        Range: '0-0',
+      },
+    });
+    const range = res.headers.get('content-range') || '';
+    const total = parseInt(range.split('/')[1] ?? '0', 10);
+    if (!isNaN(total)) heroCount = total;
+  } catch (_) {}
+}
+const heroReserved = heroCount + 30;
 ---
 
 <section class="relative min-h-screen flex items-center overflow-hidden" style="background: var(--color-bg-primary);">
@@ -30,7 +51,7 @@ import CTAButtons from './react/CTAButtons.tsx';
     <div id="heroStats" class="mt-16 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm" style="color: var(--color-text-tertiary); opacity:0; transform: translateY(20px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.6s;">
       <span class="flex items-center gap-1.5">
         <span class="w-1.5 h-1.5 rounded-full" style="background: var(--color-status-success);"></span>
-        47+ enterprises on waitlist
+        {heroReserved}+ enterprises on waitlist
       </span>
       <span class="flex items-center gap-1.5">
         <span class="w-1.5 h-1.5 rounded-full" style="background: var(--color-status-success);"></span>
