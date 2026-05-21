@@ -8,7 +8,7 @@
 set -euo pipefail
 
 GITHUB_REPO="${1:?Usage: setup-wif.sh <owner/repo>  e.g. smart-coder-labs/nexus-mind}"
-PROJECT="nexusmind-497003"
+PROJECT="${2:-$(gcloud config get-value project 2>/dev/null)}"
 
 if [[ -z "$PROJECT" ]]; then
   echo "ERROR: no GCP project set. Run: gcloud config set project YOUR_PROJECT_ID" >&2
