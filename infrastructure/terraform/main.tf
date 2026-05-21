@@ -34,6 +34,9 @@ resource "google_project_service" "apis" {
   for_each = toset([
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
     "firebase.googleapis.com",
     "firebasehosting.googleapis.com",
   ])
