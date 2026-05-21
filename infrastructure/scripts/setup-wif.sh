@@ -8,7 +8,7 @@
 set -euo pipefail
 
 GITHUB_REPO="${1:?Usage: setup-wif.sh <owner/repo>  e.g. smart-coder-labs/nexus-mind}"
-PROJECT="${2:-$(gcloud config get-value project 2>/dev/null)}"
+PROJECT="nexusmind-497003"
 
 if [[ -z "$PROJECT" ]]; then
   echo "ERROR: no GCP project set. Run: gcloud config set project YOUR_PROJECT_ID" >&2
@@ -34,7 +34,11 @@ else
   gcloud iam service-accounts create "$SA_NAME" \
     --display-name "NexusMind CI" \
     --project "$PROJECT"
-  echo "==> Service account created"
+  echo "==> Service account created — waiting for propagation..."
+  for i in $(seq 1 20); do
+    gcloud iam service-accounts describe "$SA_EMAIL" --project "$PROJECT" &>/dev/null && break
+    sleep 3
+  done
 fi
 
 # ── IAM roles ─────────────────────────────────────────────────────────────────
