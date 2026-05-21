@@ -23,30 +23,30 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-[#161618] border border-white/8 rounded-xl w-full max-w-lg space-y-4 p-6">
+      <div className="bg-surface-primary border border-border-primary rounded-xl w-full max-w-lg space-y-4 p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] border border-white/10 rounded px-1.5 py-0.5 text-white/40">{memory.tool}</span>
+              <span className="text-[11px] border border-border-primary rounded px-1.5 py-0.5 text-text-tertiary">{memory.tool}</span>
               {memory.project && (
-                <span className="text-[11px] text-white/25">{memory.project}</span>
+                <span className="text-[11px] text-text-tertiary">{memory.project}</span>
               )}
             </div>
-            <p className="text-[11px] text-white/20">
+            <p className="text-[11px] text-text-quaternary">
               {new Date(memory.created_at).toLocaleString()}
             </p>
           </div>
-          <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors shrink-0">
+          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary transition-colors shrink-0">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <p className="text-sm text-white/70 leading-relaxed whitespace-pre-wrap">{memory.content}</p>
+        <p className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">{memory.content}</p>
 
         {memory.tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {memory.tags.map(tag => (
-              <span key={tag} className="text-[11px] bg-white/5 text-white/40 rounded px-2 py-0.5">
+              <span key={tag} className="text-[11px] bg-surface-secondary text-text-tertiary rounded px-2 py-0.5">
                 {tag}
               </span>
             ))}
@@ -57,7 +57,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
           <button
             onClick={onDelete}
             disabled={deleting}
-            className="text-xs text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-40"
+            className="text-xs text-status-error/60 hover:text-status-error transition-colors disabled:opacity-40"
           >
             {deleting ? 'Deleting…' : 'Delete memory'}
           </button>
@@ -138,13 +138,13 @@ export default function Memories() {
     <div className="p-8 max-w-5xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-white">Memories</h1>
-          <p className="text-[12px] text-white/30 mt-0.5">Browse and search stored memories</p>
+          <h1 className="text-lg font-semibold text-text-primary">Memories</h1>
+          <p className="text-[12px] text-text-tertiary mt-0.5">Browse and search stored memories</p>
         </div>
         <button
           onClick={handleExportCsv}
           disabled={!memories?.length}
-          className="text-xs text-white/30 hover:text-white/60 transition-colors disabled:opacity-30"
+          className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
         >
           Export CSV
         </button>
@@ -152,17 +152,17 @@ export default function Memories() {
 
       {/* Search */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-quaternary" />
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
           placeholder="Full-text search…"
-          className="w-full bg-transparent border border-white/8 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white placeholder:text-white/15 focus:outline-none focus:border-white/20 transition-colors"
+          className="w-full bg-transparent border border-border-primary rounded-lg pl-9 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
         />
         {query && (
           <button
             onClick={() => setQuery('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-white/20 hover:text-white/40 transition-colors"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-tertiary transition-colors"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -170,24 +170,24 @@ export default function Memories() {
       </div>
 
       {/* Table */}
-      <div className="border border-white/8 rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/5">
+            <tr className="border-b border-border-secondary">
               {['Date', 'User', 'Tool', 'Content', 'Tags'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">
+                <th key={h} className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">
                   {h}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
+          <tbody className="divide-y divide-border-secondary">
             {isLoading
               ? Array.from({ length: 5 }).map((_, i) => (
                 <tr key={i}>
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded bg-white/5 animate-pulse" />
+                      <div className="h-4 rounded bg-surface-secondary animate-pulse" />
                     </td>
                   ))}
                 </tr>
@@ -196,26 +196,26 @@ export default function Memories() {
                 <tr
                   key={mem.id}
                   onClick={() => setSelected(mem)}
-                  className="hover:bg-white/[0.02] transition-colors cursor-pointer"
+                  className="hover:bg-surface-secondary/40 transition-colors cursor-pointer"
                 >
-                  <td className="px-4 py-3 text-xs text-white/25 whitespace-nowrap">
+                  <td className="px-4 py-3 text-xs text-text-quaternary whitespace-nowrap">
                     {new Date(mem.created_at).toLocaleDateString()}
                   </td>
-                  <td className="px-4 py-3 text-xs text-white/50">
+                  <td className="px-4 py-3 text-xs text-text-secondary">
                     {userMap.get(mem.user_id) ?? '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-[11px] border border-white/10 rounded px-1.5 py-0.5 text-white/40">
+                    <span className="text-[11px] border border-border-primary rounded px-1.5 py-0.5 text-text-tertiary">
                       {mem.tool}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-xs text-white/60 max-w-xs truncate">
+                  <td className="px-4 py-3 text-xs text-text-secondary max-w-xs truncate">
                     {mem.content}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-1 flex-wrap">
                       {mem.tags.slice(0, 3).map(tag => (
-                        <span key={tag} className="text-[11px] bg-white/5 text-white/30 rounded px-1.5 py-0.5">
+                        <span key={tag} className="text-[11px] bg-surface-secondary text-text-tertiary rounded px-1.5 py-0.5">
                           {tag}
                         </span>
                       ))}
@@ -227,7 +227,7 @@ export default function Memories() {
           </tbody>
         </table>
         {!isLoading && (!memories || memories.length === 0) && (
-          <p className="text-center text-white/20 text-sm py-10">
+          <p className="text-center text-text-quaternary text-sm py-10">
             {isSearching ? 'No results found.' : 'No memories yet.'}
           </p>
         )}

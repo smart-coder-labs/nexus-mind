@@ -16,19 +16,19 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#161618] border border-white/8 rounded-xl p-6 w-full max-w-sm space-y-4">
+      <div className="bg-surface-primary border border-border-primary rounded-xl p-6 w-full max-w-sm space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-white font-medium">{title}</p>
-          <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors">
+          <p className="text-text-primary font-medium">{title}</p>
+          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-white/40">{description}</p>
+        <p className="text-sm text-text-secondary">{description}</p>
         <div className="flex gap-2">
           <button
             onClick={onClose}
             disabled={loading}
-            className="flex-1 py-2 rounded-lg border border-white/8 text-sm text-white/40 hover:text-white/60 hover:bg-white/5 transition-colors disabled:opacity-40"
+            className="flex-1 py-2 rounded-lg border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors disabled:opacity-40"
           >
             Cancel
           </button>
@@ -37,8 +37,8 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
             disabled={loading}
             className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${
               danger
-                ? 'bg-red-500/90 text-white hover:bg-red-500'
-                : 'bg-white text-[#0c0c0e] hover:bg-white/90'
+                ? 'bg-status-error text-white hover:opacity-90'
+                : 'bg-accent-blue hover:bg-accent-blue-hover text-white'
             }`}
           >
             {loading ? '…' : confirmLabel}

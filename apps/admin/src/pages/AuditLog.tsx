@@ -8,15 +8,15 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 const PAGE_SIZE = 50
 
 const ACTION_COLORS: Record<string, string> = {
-  store:  'text-blue-400/70',
-  search: 'text-white/40',
-  delete: 'text-red-400/70',
-  invite: 'text-green-400/70',
-  revoke: 'text-orange-400/70',
+  store:  'text-accent-blue',
+  search: 'text-text-tertiary',
+  delete: 'text-status-error',
+  invite: 'text-status-success',
+  revoke: 'text-status-warning',
 }
 
 function actionClass(action: string) {
-  return ACTION_COLORS[action] ?? 'text-white/40'
+  return ACTION_COLORS[action] ?? 'text-text-tertiary'
 }
 
 export default function AuditLog() {
@@ -87,20 +87,20 @@ export default function AuditLog() {
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
-  const inputCls = 'bg-transparent border border-white/8 rounded-lg px-3 py-2 text-sm text-white/70 placeholder:text-white/15 focus:outline-none focus:border-white/20 transition-colors'
-  const selectCls = 'bg-[#0c0c0e] border border-white/8 rounded-lg px-3 py-2 text-sm text-white/70 focus:outline-none focus:border-white/20 transition-colors'
+  const inputCls = 'bg-surface-primary border border-border-primary rounded-lg px-3 py-2 text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors'
+  const selectCls = 'bg-surface-primary border border-border-primary rounded-lg px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors'
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-white">Audit Log</h1>
-          <p className="text-[12px] text-white/30 mt-0.5">All actions performed in your organization</p>
+          <h1 className="text-lg font-semibold text-text-primary">Audit Log</h1>
+          <p className="text-[12px] text-text-tertiary mt-0.5">All actions performed in your organization</p>
         </div>
         <button
           onClick={handleExportCsv}
           disabled={!entries?.length}
-          className="text-xs text-white/30 hover:text-white/60 transition-colors disabled:opacity-30"
+          className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
         >
           Export CSV
         </button>
@@ -123,62 +123,62 @@ export default function AuditLog() {
           {['memory', 'user', 'org'].map(r => <option key={r} value={r}>{r}</option>)}
         </select>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-white/25 uppercase tracking-wide px-0.5">From</span>
+          <span className="text-[10px] text-text-tertiary uppercase tracking-wide px-0.5">From</span>
           <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-white/25 uppercase tracking-wide px-0.5">To</span>
+          <span className="text-[10px] text-text-tertiary uppercase tracking-wide px-0.5">To</span>
           <input type="date" value={draft.to}   onChange={setField('to')}   className={inputCls} />
         </label>
         <button
           onClick={applyFilters}
-          className="px-3 py-2 rounded-lg bg-white text-[#0c0c0e] text-sm font-medium hover:bg-white/90 transition-colors"
+          className="px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
         >
           Apply
         </button>
         {Object.values(filters).some(Boolean) && (
-          <button onClick={clearFilters} className="text-xs text-white/30 hover:text-white/60 transition-colors">
+          <button onClick={clearFilters} className="text-xs text-text-tertiary hover:text-text-secondary transition-colors">
             Clear
           </button>
         )}
       </div>
 
       {/* Table */}
-      <div className="border border-white/8 rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/5">
+            <tr className="border-b border-border-secondary">
               {['Timestamp', 'User', 'Action', 'Resource', 'ID'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">
+                <th key={h} className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">
                   {h}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
+          <tbody className="divide-y divide-border-secondary">
             {isLoading
               ? Array.from({ length: 8 }).map((_, i) => (
                 <tr key={i}>
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded bg-white/5 animate-pulse" />
+                      <div className="h-4 rounded bg-surface-secondary animate-pulse" />
                     </td>
                   ))}
                 </tr>
               ))
               : entries?.map(entry => (
-                <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors">
-                  <td className="px-4 py-3 text-xs text-white/25 whitespace-nowrap">
+                <tr key={entry.id} className="hover:bg-surface-secondary/40 transition-colors">
+                  <td className="px-4 py-3 text-xs text-text-quaternary whitespace-nowrap">
                     {new Date(entry.timestamp).toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-xs text-white/50">
+                  <td className="px-4 py-3 text-xs text-text-secondary">
                     {userMap.get(entry.user_id) ?? '—'}
                   </td>
                   <td className={`px-4 py-3 text-xs font-medium ${actionClass(entry.action)}`}>
                     {entry.action}
                   </td>
-                  <td className="px-4 py-3 text-xs text-white/40">{entry.resource_type}</td>
-                  <td className="px-4 py-3 text-xs text-white/20 font-mono truncate max-w-[120px]">
+                  <td className="px-4 py-3 text-xs text-text-tertiary">{entry.resource_type}</td>
+                  <td className="px-4 py-3 text-xs text-text-quaternary font-mono truncate max-w-[120px]">
                     {entry.resource_id ?? '—'}
                   </td>
                 </tr>
@@ -187,26 +187,26 @@ export default function AuditLog() {
           </tbody>
         </table>
         {!isLoading && (!entries || entries.length === 0) && (
-          <p className="text-center text-white/20 text-sm py-10">No audit entries found.</p>
+          <p className="text-center text-text-quaternary text-sm py-10">No audit entries found.</p>
         )}
       </div>
 
       {/* Pagination */}
       {(entries?.length === PAGE_SIZE || page > 0) && (
         <div className="flex items-center justify-between">
-          <p className="text-xs text-white/25">Page {page + 1}</p>
+          <p className="text-xs text-text-tertiary">Page {page + 1}</p>
           <div className="flex gap-2">
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="p-1.5 rounded text-white/30 hover:text-white/60 disabled:opacity-20 transition-colors"
+              className="p-1.5 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-secondary disabled:opacity-20 transition-colors"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
               onClick={() => setPage(p => p + 1)}
               disabled={!entries || entries.length < PAGE_SIZE}
-              className="p-1.5 rounded text-white/30 hover:text-white/60 disabled:opacity-20 transition-colors"
+              className="p-1.5 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-secondary disabled:opacity-20 transition-colors"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

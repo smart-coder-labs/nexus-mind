@@ -16,16 +16,16 @@ function statusDot(status: User['status']) {
   return (
     <span className="flex items-center gap-1.5">
       <span className={`w-1.5 h-1.5 rounded-full ${colors[status]}`} />
-      <span className="capitalize text-white/50">{status}</span>
+      <span className="capitalize text-text-tertiary">{status}</span>
     </span>
   )
 }
 
 function roleBadge(role: User['role']) {
   const styles: Record<User['role'], string> = {
-    admin:  'text-accent-blue border-accent-blue/30',
-    member: 'text-white/40 border-white/10',
-    viewer: 'text-white/30 border-white/10',
+    admin:  'text-accent-blue border-accent-blue/30 bg-accent-blue/5',
+    member: 'text-text-tertiary border-border-primary',
+    viewer: 'text-text-quaternary border-border-secondary',
   }
   return (
     <span className={`text-[11px] border rounded px-1.5 py-0.5 capitalize ${styles[role]}`}>
@@ -70,49 +70,49 @@ export default function Users() {
     <div className="p-8 max-w-5xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-white">Users</h1>
-          <p className="text-[12px] text-white/30 mt-0.5">Manage team members and API keys</p>
+          <h1 className="text-lg font-semibold text-text-primary">Users</h1>
+          <p className="text-[12px] text-text-tertiary mt-0.5">Manage team members and API keys</p>
         </div>
         <button
           onClick={() => setInviteOpen(true)}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white text-[#0c0c0e] text-sm font-medium hover:bg-white/90 transition-colors"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
         >
           <UserPlus className="w-4 h-4" />
           Invite user
         </button>
       </div>
 
-      <div className="border border-white/8 rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/5">
-              <th className="text-left px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">User</th>
-              <th className="text-left px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">Role</th>
-              <th className="text-left px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">Status</th>
-              <th className="text-right px-4 py-3 text-[11px] text-white/30 uppercase tracking-wide font-normal">Actions</th>
+            <tr className="border-b border-border-secondary">
+              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">User</th>
+              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Role</th>
+              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Status</th>
+              <th className="text-right px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
+          <tbody className="divide-y divide-border-secondary">
             {isLoading
               ? Array.from({ length: 4 }).map((_, i) => (
                 <tr key={i}>
                   {Array.from({ length: 4 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded bg-white/5 animate-pulse" />
+                      <div className="h-4 rounded bg-surface-secondary animate-pulse" />
                     </td>
                   ))}
                 </tr>
               ))
               : users?.map(user => (
-                <tr key={user.id} className="hover:bg-white/[0.02] transition-colors">
+                <tr key={user.id} className="hover:bg-surface-secondary/40 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-white/8 flex items-center justify-center text-xs font-medium text-white/60">
+                      <div className="w-7 h-7 rounded-full bg-surface-secondary flex items-center justify-center text-xs font-medium text-text-secondary">
                         {user.name[0].toUpperCase()}
                       </div>
                       <div>
-                        <p className="text-white/80 font-medium leading-tight">{user.name}</p>
-                        <p className="text-white/30 text-xs">{user.email}</p>
+                        <p className="text-text-secondary font-medium leading-tight">{user.name}</p>
+                        <p className="text-text-tertiary text-xs">{user.email}</p>
                       </div>
                     </div>
                   </td>
@@ -122,13 +122,13 @@ export default function Users() {
                     <div className="flex items-center justify-end gap-2">
                       <button
                         onClick={() => setRotateTarget(user)}
-                        className="text-xs text-white/30 hover:text-white/60 transition-colors px-2 py-1 rounded hover:bg-white/5"
+                        className="text-xs text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
                       >
                         Rotate key
                       </button>
                       <button
                         onClick={() => setRevokeTarget(user)}
-                        className="text-xs text-red-400/60 hover:text-red-400 transition-colors px-2 py-1 rounded hover:bg-red-400/5"
+                        className="text-xs text-status-error/60 hover:text-status-error transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
                       >
                         Revoke
                       </button>
@@ -140,7 +140,7 @@ export default function Users() {
           </tbody>
         </table>
         {!isLoading && users?.length === 0 && (
-          <p className="text-center text-white/20 text-sm py-10">No users yet.</p>
+          <p className="text-center text-text-quaternary text-sm py-10">No users yet.</p>
         )}
       </div>
 
@@ -176,21 +176,21 @@ export default function Users() {
       {/* New key reveal */}
       {newKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#161618] border border-white/8 rounded-xl p-6 w-full max-w-md space-y-4">
-            <p className="text-white font-medium">New API key generated</p>
-            <p className="text-xs text-white/40">Copy this key now — it won't be shown again.</p>
-            <div className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2">
-              <code className="flex-1 text-xs text-white/70 break-all">{newKey}</code>
+          <div className="bg-surface-primary border border-border-primary rounded-xl p-6 w-full max-w-md space-y-4">
+            <p className="text-text-primary font-medium">New API key generated</p>
+            <p className="text-xs text-text-quaternary">Copy this key now — it won't be shown again.</p>
+            <div className="flex items-center gap-2 bg-surface-secondary rounded-lg px-3 py-2">
+              <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
               <button
                 onClick={() => handleCopy(newKey)}
-                className="text-xs text-white/40 hover:text-white/70 transition-colors shrink-0"
+                className="text-xs text-text-tertiary hover:text-text-secondary transition-colors shrink-0"
               >
                 {copied ? 'Copied!' : 'Copy'}
               </button>
             </div>
             <button
               onClick={() => { setNewKey(null); setCopied(false) }}
-              className="w-full py-2 rounded-lg bg-white text-[#0c0c0e] text-sm font-medium hover:bg-white/90 transition-colors"
+              className="w-full py-2 rounded-lg bg-accent-blue text-white text-sm font-medium hover:bg-accent-blue-hover transition-colors"
             >
               Done
             </button>
