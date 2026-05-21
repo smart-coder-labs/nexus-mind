@@ -63,20 +63,27 @@ export default function WaitlistFormReact() {
         <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
           Tamaño del equipo
         </label>
-        <select
-          name="size"
-          className="w-full rounded-xl px-4 py-3 text-sm border focus:outline-none"
-          style={{
-            background: 'var(--color-bg-secondary)',
-            borderColor: 'var(--color-border-primary)',
-            color: 'var(--color-text-primary)',
-          }}
-        >
-          <option value="1-10">1-10 personas</option>
-          <option value="11-50">11-50 personas</option>
-          <option value="51-200" defaultValue="51-200">51-200 personas</option>
-          <option value="200+">200+ personas</option>
-        </select>
+        <div className="relative">
+          <select
+            name="size"
+            className="w-full rounded-xl px-4 py-3 text-sm border focus:outline-none appearance-none cursor-pointer"
+            style={{
+              background: 'var(--color-bg-secondary)',
+              borderColor: 'var(--color-border-primary)',
+              color: 'var(--color-text-primary)',
+            }}
+          >
+            <option value="1-10">1-10 personas</option>
+            <option value="11-50">11-50 personas</option>
+            <option value="51-200">51-200 personas</option>
+            <option value="200+">200+ personas</option>
+          </select>
+          <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center" style={{ color: 'var(--color-text-secondary)' }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+        </div>
       </div>
       <div>
         <p className="text-sm font-medium mb-2" style={{ color: 'var(--color-text-secondary)' }}>
