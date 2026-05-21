@@ -193,6 +193,26 @@ Documentado en: ROADMAP.md M3, PRD.md §3.5
 
 **Bloqueante**: GitHub Copilot Extensions API sigue en beta cerrada a mayo 2026. Requiere acceso.
 
+### Session Capture (inspirado en Lore/Tanagram)
+
+**Contexto**: Lore (lore.tanagram.ai) resuelve el problema de compartir sesiones de Claude Code como artefactos post-sesión (URLs compartibles con el thread completo). NexusMind lo resuelve diferente: captura el contexto *durante* la sesión y lo hace disponible para toda la herramienta en tiempo real.
+
+La oportunidad es ofrecer un comando `/nexus` dentro de Claude Code que capture el hilo razonado de la sesión — no solo memorias sueltas sino las decisiones tomadas durante la sesión — y las guarde como un bloque estructurado de memoria.
+
+**Diferencial frente a Lore**: Lore guarda el replay de la sesión (artefacto pasivo). NexusMind guarda el *conocimiento destilado* de la sesión como memoria activa que el equipo puede consultar desde cualquier herramienta en la próxima sesión.
+
+| Tarea | Detalle |
+|---|---|
+| ❌ MCP tool `capture_session` | Captura el contexto actual de la sesión y lo guarda como memoria estructurada |
+| ❌ `/nexus` skill para Claude Code | Comando que el developer ejecuta al cerrar una sesión — guarda decisiones, convenciones y hallazgos en un solo paso |
+| ❌ Session summary schema | Estructura fija: `goal`, `decisions`, `conventions`, `open_questions`, `files_touched` |
+| ❌ Admin panel: Sessions view | Lista de sesiones capturadas por usuario, por herramienta, por proyecto — con búsqueda |
+| ❌ Cross-tool session replay | La sesión capturada desde Claude Code es consultable desde Cursor en la siguiente sesión |
+
+**Estimación**: ~1.5 semanas. El MCP server ya existe — es añadir el tool + schema + UI.
+
+---
+
 ### Multi-agent Orchestration
 
 Documentado en: PRD.md §3.4 (P1), ROADMAP.md M5
