@@ -114,5 +114,6 @@ export class NexusMindClient {
 }
 
 export function createClient(apiKey: string): NexusMindClient {
-  return new NexusMindClient('', apiKey)
+  const baseUrl = import.meta.env.VITE_API_URL ?? ''
+  return new NexusMindClient(baseUrl, apiKey)
 }

@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars — it contains secrets.
+
+# GCP project ID (gcloud config get-value project)
+project_id = "your-gcp-project-id"
+
+# Free-tier regions: us-central1 | us-east1 | us-west1
+region = "us-central1"
+zone   = "us-central1-a"
+
+# SSH public key to access the VM (cat ~/.ssh/id_rsa.pub)
+ssh_public_key = "ssh-rsa AAAA..."
+ssh_user       = "nexusmind"
+
+# Supabase waitlist (optional — leave empty to use localStorage fallback)
+supabase_url      = ""
+supabase_anon_key = ""
