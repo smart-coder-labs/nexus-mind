@@ -3,6 +3,16 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
+fn unauthorized() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ApiError {
+            error: "Valid superuser key required".to_string(),
+            code: "unauthorized".to_string(),
+        }),
+    )
+}
+
 use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, Org, OrgStats},
@@ -44,26 +54,30 @@ pub struct UpdateOrgInput {
 }
 
 #[derive(Deserialize)]
-pub struct BootstrapInput {
+pub struct CreateOrgInput {
     pub org_name: String,
     pub org_slug: String,
     pub admin_email: String,
     pub admin_name: String,
 }
 
-pub async fn bootstrap(
+pub async fn create_org(
     State(db): State<Arc<Mutex<Connection>>>,
-    Json(input): Json<BootstrapInput>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<CreateOrgInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
-    let conn = db.lock().map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database lock error".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        )
-    })?;
+    let expected = superuser_key.ok_or_else(unauthorized)?;
+    let provided = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(unauthorized)?;
+    if provided != expected {
+        return Err(unauthorized());
+    }
+
+    let conn = db.lock().map_err(|_| lock_err())?;
 
     match queries::bootstrap(
         &conn,
@@ -87,13 +101,7 @@ pub async fn bootstrap(
                 code: "already_bootstrapped".to_string(),
             }),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-                code: "internal_error".to_string(),
-            }),
-        )),
+        Err(e) => Err(db_err(e)),
     }
 }
 
@@ -165,10 +173,18 @@ mod tests {
     }
 
     fn app(db: Arc<Mutex<Connection>>) -> Router {
-        Router::new()
+        use axum::routing::post;
+        let superuser_key: Option<String> = Some("test-superuser-key".to_string());
+
+        let protected = Router::new()
             .route("/v1/admin/stats", get(stats))
             .route("/v1/admin/org", get(get_org).patch(update_org))
-            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth))
+            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth));
+
+        Router::new()
+            .route("/v1/orgs", post(create_org))
+            .merge(protected)
+            .layer(Extension(superuser_key))
             .with_state(db)
     }
 
@@ -265,5 +281,82 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn create_org_returns_201_with_valid_superuser_key() {
+        let db = make_db();
+        let body = serde_json::json!({
+            "org_name": "New Corp",
+            "org_slug": "new-corp",
+            "admin_email": "admin@new.com",
+            "admin_name": "Admin"
+        });
+
+        let resp = app(db)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/orgs")
+                    .header("Authorization", "Bearer test-superuser-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn create_org_returns_401_with_wrong_key() {
+        let db = make_db();
+        let body = serde_json::json!({
+            "org_name": "New Corp",
+            "org_slug": "new-corp",
+            "admin_email": "admin@new.com",
+            "admin_name": "Admin"
+        });
+
+        let resp = app(db)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/orgs")
+                    .header("Authorization", "Bearer wrong-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn create_org_returns_401_without_auth_header() {
+        let db = make_db();
+        let body = serde_json::json!({
+            "org_name": "New Corp",
+            "org_slug": "new-corp",
+            "admin_email": "admin@new.com",
+            "admin_name": "Admin"
+        });
+
+        let resp = app(db)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/orgs")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

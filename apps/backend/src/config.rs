@@ -14,4 +14,7 @@ pub struct Config {
 
     #[arg(long, env = "CORS_ORIGINS", default_value = "*")]
     pub cors_origins: String,
+
+    #[arg(long, env = "SUPERUSER_KEY")]
+    pub superuser_key: Option<String>,
 }
