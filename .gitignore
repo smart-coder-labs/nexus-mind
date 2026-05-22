@@ -11,3 +11,5 @@ dist/
 tmpapps/mcp/
 plugin/
 .claude-plugin/
+
+tmp
