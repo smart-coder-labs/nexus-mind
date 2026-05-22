@@ -1,25 +1,14 @@
-const BASE_URL = process.env.NEXUSMIND_BASE_URL
+const BASE_URL = process.env.NEXUSMIND_BASE_URL ?? ''
 const API_KEY  = process.env.NEXUSMIND_API_KEY  ?? ''
-
-if (!BASE_URL) {
-  process.stderr.write(
-    '[nexusmind-mcp] Error: NEXUSMIND_BASE_URL is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup\n'
-  )
-  process.exit(1)
-}
-
-if (!API_KEY) {
-  process.stderr.write(
-    '[nexusmind-mcp] Error: NEXUSMIND_API_KEY is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup\n'
-  )
-  process.exit(1)
-}
 
 interface ApiError extends Error {
   status: number
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!BASE_URL) throw new Error('NEXUSMIND_BASE_URL is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup')
+  if (!API_KEY)  throw new Error('NEXUSMIND_API_KEY is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup')
+
   let res: Response
   try {
     res = await fetch(`${BASE_URL}${path}`, {
