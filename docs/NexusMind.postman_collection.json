@@ -70,6 +70,29 @@
       "name": "Organizations",
       "item": [
         {
+          "name": "GET /v1/orgs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/v1/orgs",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "orgs"]
+            },
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{superuser_key}}" }
+            ],
+            "description": "Lists all organizations. Requires superuser key."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  { \"id\": \"...\", \"name\": \"Acme Corp\", \"slug\": \"acme\", \"created_at\": \"...\" }\n]"
+            }
+          ]
+        },
+        {
           "name": "POST /v1/orgs",
           "event": [
             {

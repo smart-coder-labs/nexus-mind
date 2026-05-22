@@ -98,6 +98,24 @@ pub fn create_org(
     Ok((org, user, raw_key))
 }
 
+/// Lists all organizations ordered by creation date.
+pub fn list_orgs(conn: &Connection) -> Result<Vec<Org>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, slug, created_at FROM organizations ORDER BY created_at ASC",
+    )?;
+    let orgs = stmt
+        .query_map([], |row| {
+            Ok(Org {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                slug: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(orgs)
+}
+
 /// Creates the first org. Fails with `already_bootstrapped` if any org exists.
 pub fn bootstrap(
     conn: &Connection,

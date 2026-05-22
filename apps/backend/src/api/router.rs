@@ -29,7 +29,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
 
     Router::new()
         .route("/v1/health", get(health::handler))
-        .route("/v1/orgs", post(admin::create_org))
+        .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
         .merge(protected)
         .layer(Extension(config.superuser_key))
         .layer(CorsLayer::permissive())

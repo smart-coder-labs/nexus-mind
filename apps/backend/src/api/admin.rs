@@ -79,7 +79,7 @@ pub async fn create_org(
 
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    match queries::bootstrap(
+    match queries::create_org(
         &conn,
         &input.org_name,
         &input.org_slug,
@@ -94,15 +94,35 @@ pub async fn create_org(
             });
             Ok((StatusCode::CREATED, Json(body)))
         }
-        Err(e) if e.to_string().contains("already_bootstrapped") => Err((
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => Err((
             StatusCode::CONFLICT,
             Json(ApiError {
-                error: "Organization already exists".to_string(),
-                code: "already_bootstrapped".to_string(),
+                error: "Organization slug already exists".to_string(),
+                code: "slug_conflict".to_string(),
             }),
         )),
         Err(e) => Err(db_err(e)),
     }
+}
+
+pub async fn list_orgs(
+    State(db): State<Arc<Mutex<Connection>>>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<Org>>, (StatusCode, Json<ApiError>)> {
+    let expected = superuser_key.ok_or_else(unauthorized)?;
+    let provided = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(unauthorized)?;
+    if provided != expected {
+        return Err(unauthorized());
+    }
+
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let orgs = queries::list_orgs(&conn).map_err(db_err)?;
+    Ok(Json(orgs))
 }
 
 pub async fn stats(
