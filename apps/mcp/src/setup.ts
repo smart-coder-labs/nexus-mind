@@ -48,16 +48,14 @@ function writeSettings(settings: Record<string, unknown>) {
 console.log(`\n${c.bold}NexusMind — Claude Code Setup${c.reset}`)
 console.log('────────────────────────────────\n')
 
-// 1. Collect config
+// 1. Collect config — only ask for API key
 const rl = readline.createInterface({ input, output })
 
-const apiKey = process.env.NEXUSMIND_API_KEY
-  ?? await rl.question('NexusMind API key: ')
-
-const baseUrl: string = process.env.NEXUSMIND_BASE_URL
-  ?? await rl.question(`Backend URL [${DEFAULT_BASE_URL}]: `).then(v => v.trim() || DEFAULT_BASE_URL)
-
+let apiKey = process.env.NEXUSMIND_API_KEY ?? ''
+if (!apiKey) apiKey = await rl.question('NexusMind API key: ')
 rl.close()
+
+const baseUrl: string = process.env.NEXUSMIND_BASE_URL ?? DEFAULT_BASE_URL
 
 if (!apiKey.trim()) {
   warn('No API key provided — you can set NEXUSMIND_API_KEY later and re-run setup.')
