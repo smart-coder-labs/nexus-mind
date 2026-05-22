@@ -142,7 +142,6 @@ pub fn bootstrap(
 // ── Memory queries ────────────────────────────────────────────────────────────
 
 /// Stores a new memory entry for a user within an org.
-#[deprecated(note = "Use upsert_memory instead")]
 pub fn store_memory(
     conn: &Connection,
     org_id: &str,
