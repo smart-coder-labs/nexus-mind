@@ -14,9 +14,12 @@ import { stdin as input, stdout as output } from 'node:process'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = join(__dirname, '..', 'plugin')
 const CLAUDE_DIR = join(homedir(), '.claude')
-const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')  // hooks live here
+const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')  // hooks + plugins live here
 const CLAUDE_JSON_PATH = join(homedir(), '.claude.json')  // user MCPs live here
 const DEFAULT_BASE_URL = ''
+const GITHUB_REPO = 'smart-coder-labs/nexus-mind'
+const MARKETPLACE_NAME = 'nexusmind'
+const PLUGIN_KEY = `${MARKETPLACE_NAME}@${MARKETPLACE_NAME}`
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -114,6 +117,23 @@ if (existsSync(hooksPath)) {
   warn(`Hooks not found at ${hooksPath} — skipping hooks installation.`)
 }
 
+// 4. Register plugin in enabledPlugins + extraKnownMarketplaces
+const pluginSettings = readJson(SETTINGS_PATH)
+const enabledPlugins = (pluginSettings.enabledPlugins as Record<string, boolean>) ?? {}
+const extraMarketplaces = (pluginSettings.extraKnownMarketplaces as Record<string, unknown>) ?? {}
+
+enabledPlugins[PLUGIN_KEY] = true
+extraMarketplaces[MARKETPLACE_NAME] = {
+  source: {
+    repo: GITHUB_REPO,
+    source: 'github',
+  },
+}
+pluginSettings.enabledPlugins = enabledPlugins
+pluginSettings.extraKnownMarketplaces = extraMarketplaces
+writeJson(SETTINGS_PATH, pluginSettings)
+info(`Plugin registered in ${SETTINGS_PATH}`)
+
 // 6. Persist env vars to shell rc files
 function appendEnvVar(rcFile: string, name: string, value: string) {
   if (!existsSync(rcFile)) return
@@ -139,4 +159,7 @@ console.log(`\n${c.bold}${c.green}Done!${c.reset}\n`)
 console.log('Next steps:')
 console.log('  1. Restart your shell or run: source ~/.zshrc')
 console.log('  2. Open Claude Code — NexusMind connects automatically')
-console.log('  3. store_memory, search_memory, list_memories are now available\n')
+console.log('  3. store_memory, search_memory, list_memories are now available')
+console.log('')
+console.log(`${c.yellow}Note:${c.reset} Run this command WITHOUT sudo. If npx fails with permission errors, run:`)
+console.log('  sudo chown -R $(whoami) ~/.npm\n')

@@ -5,7 +5,7 @@
       "args": ["-y", "@smart-coder-labs/nexusmind-mcp"],
       "env": {
         "NEXUSMIND_API_KEY": "${NEXUSMIND_API_KEY}",
-        "NEXUSMIND_BASE_URL": "${NEXUSMIND_BASE_URL:-https://nexusmind-backend.fly.dev}"
+        "NEXUSMIND_BASE_URL": "${NEXUSMIND_BASE_URL}"
       }
     }
   }

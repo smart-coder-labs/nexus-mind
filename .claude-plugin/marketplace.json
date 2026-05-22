@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "nexusmind",
+  "description": "Team memory for AI coding agents. Decisions, bugs, and conventions — shared across the whole team, persisted across sessions.",
+  "owner": {
+    "name": "Smart Coder Labs",
+    "email": "cesarbyte4bit@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "nexusmind",
+      "description": "Shared team memory via MCP + lifecycle hooks. Claude stores and retrieves decisions, bugs, and conventions automatically.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Smart Coder Labs"
+      },
+      "source": "./plugin/claude-code",
+      "category": "productivity",
+      "homepage": "https://nexusmind.smartcoderlabs.com"
+    }
+  ]
+}
