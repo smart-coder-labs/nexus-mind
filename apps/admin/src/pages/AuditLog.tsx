@@ -88,7 +88,16 @@ export default function AuditLog() {
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
   const inputCls = 'bg-surface-primary border border-border-primary rounded-lg px-3 py-2 text-sm text-text-secondary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors'
-  const selectCls = 'bg-surface-primary border border-border-primary rounded-lg px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors'
+  const selectCls = 'appearance-none bg-surface-secondary border border-border-primary rounded-lg pl-3 pr-8 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors cursor-pointer'
+
+  const SelectWrapper = ({ children }: { children: React.ReactNode }) => (
+    <div className="relative">
+      {children}
+      <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+      </svg>
+    </div>
+  )
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
@@ -108,20 +117,26 @@ export default function AuditLog() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-end">
-        <select value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
-          <option value="">All users</option>
-          {users?.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
-        <select value={draft.action} onChange={setField('action')} className={selectCls}>
-          <option value="">All actions</option>
-          {['store', 'search', 'delete', 'invite', 'revoke'].map(a => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
-        <select value={draft.resource_type} onChange={setField('resource_type')} className={selectCls}>
-          <option value="">All resources</option>
-          {['memory', 'user', 'org'].map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
+        <SelectWrapper>
+          <select value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
+            <option value="">All users</option>
+            {users?.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </SelectWrapper>
+        <SelectWrapper>
+          <select value={draft.action} onChange={setField('action')} className={selectCls}>
+            <option value="">All actions</option>
+            {['store', 'search', 'delete', 'invite', 'revoke'].map(a => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </SelectWrapper>
+        <SelectWrapper>
+          <select value={draft.resource_type} onChange={setField('resource_type')} className={selectCls}>
+            <option value="">All resources</option>
+            {['memory', 'user', 'org'].map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </SelectWrapper>
         <label className="flex flex-col gap-1">
           <span className="text-[10px] text-text-tertiary uppercase tracking-wide px-0.5">From</span>
           <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
