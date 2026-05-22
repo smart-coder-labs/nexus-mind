@@ -1,6 +1,6 @@
 {
   "name": "@smart-coder-labs/nexusmind-mcp",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "NexusMind MCP server for Claude Code — team memory that persists across sessions",
   "type": "module",
   "bin": {
@@ -14,8 +14,7 @@
     "setup": "node dist/setup.js"
   },
   "files": [
-    "dist",
-    "plugin"
+    "dist"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
