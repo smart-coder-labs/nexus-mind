@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "NexusMind API",
-    "description": "Enterprise memory control plane — all endpoints for the v0.2.0 MVP.\n\n**Setup:**\n1. Run `cargo run` in `apps/backend/`\n2. Call `POST /v1/bootstrap` to get your admin API key\n3. Set the `api_key` collection variable with the returned key\n\nAll protected routes use `Authorization: Bearer {{api_key}}`.",
+    "description": "Enterprise memory control plane — all endpoints for the v0.2.0 MVP.\n\n**Setup:**\n1. Run `cargo run` in `apps/backend/`\n2. Set `SUPERUSER_KEY` env var on the server\n3. Call `POST /v1/orgs` with `Authorization: Bearer {{superuser_key}}` to create an org and get an admin API key\n4. Set the `api_key` collection variable with the returned key\n\nAll protected routes use `Authorization: Bearer {{api_key}}`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "version": {
       "major": 1,
@@ -16,9 +16,15 @@
       "type": "string"
     },
     {
+      "key": "superuser_key",
+      "value": "",
+      "description": "SUPERUSER_KEY env var value — required to create orgs via POST /v1/orgs",
+      "type": "string"
+    },
+    {
       "key": "api_key",
       "value": "",
-      "description": "Paste the key returned by POST /v1/bootstrap here",
+      "description": "Paste the key returned by POST /v1/orgs here",
       "type": "string"
     },
     {
@@ -61,10 +67,10 @@
       ]
     },
     {
-      "name": "Bootstrap",
+      "name": "Organizations",
       "item": [
         {
-          "name": "POST /v1/bootstrap",
+          "name": "POST /v1/orgs",
           "event": [
             {
               "listen": "test",
@@ -83,19 +89,20 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{base_url}}/v1/bootstrap",
+              "raw": "{{base_url}}/v1/orgs",
               "host": ["{{base_url}}"],
-              "path": ["v1", "bootstrap"]
+              "path": ["v1", "orgs"]
             },
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{superuser_key}}" }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"org_name\": \"Acme Corp\",\n  \"org_slug\": \"acme\",\n  \"admin_email\": \"admin@acme.com\",\n  \"admin_name\": \"Admin\"\n}",
               "options": { "raw": { "language": "json" } }
             },
-            "description": "Creates the first org + admin user. Returns the admin API key — save it in the `api_key` collection variable.\n\n**Fails with 409** if any org already exists."
+            "description": "Creates a new org + admin user. Requires `Authorization: Bearer {{superuser_key}}` (the `SUPERUSER_KEY` env var set on the server).\n\nReturns the admin API key — saved automatically in the `api_key` collection variable.\n\n**Fails with 409** if the org slug already exists.\n**Fails with 401** if the superuser key is missing or wrong."
           },
           "response": [
             {
@@ -105,7 +112,13 @@
               "body": "{\n  \"org\": { \"id\": \"...\", \"name\": \"Acme Corp\", \"slug\": \"acme\", \"created_at\": \"...\" },\n  \"user\": { \"id\": \"...\", \"email\": \"admin@acme.com\", \"role\": \"admin\", \"status\": \"active\", \"...\" },\n  \"api_key\": \"nm_...\"\n}"
             },
             {
-              "name": "409 Already bootstrapped",
+              "name": "401 Unauthorized",
+              "status": "Unauthorized",
+              "code": 401,
+              "body": "{\n  \"error\": \"Valid superuser key required\",\n  \"code\": \"unauthorized\"\n}"
+            },
+            {
+              "name": "409 Conflict",
               "status": "Conflict",
               "code": 409,
               "body": "{\n  \"error\": \"Organization already exists\",\n  \"code\": \"already_bootstrapped\"\n}"
