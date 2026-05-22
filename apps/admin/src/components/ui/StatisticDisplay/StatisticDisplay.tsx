@@ -98,19 +98,19 @@ const variantClasses: Record<StatisticVariant, string> = {
     soft: "bg-surface-secondary/70 border border-border-secondary/60 rounded-2xl",
     bordered: "bg-surface-primary border border-border-tertiary rounded-2xl",
     minimal: "rounded-xl",
-    glass: "bg-white/5 border border-white/10 backdrop-blur-xl rounded-2xl",
+    glass: "bg-accent-blue/5 border border-accent-blue/10 backdrop-blur-xl rounded-2xl",
 };
 
 const accentTokens: Record<StatisticAccent, { color: string; fillColor: string; text: string; chip: string; }> = {
     blue: {
-        color: '#2563eb',
-        fillColor: 'rgba(37,99,235,0.12)',
+        color: '#22d3ee',
+        fillColor: 'rgba(34,211,238,0.12)',
         text: 'text-accent-blue',
         chip: 'bg-accent-blue/10 text-accent-blue',
     },
     green: {
-        color: '#16a34a',
-        fillColor: 'rgba(22,163,74,0.12)',
+        color: '#4ade80',
+        fillColor: 'rgba(74,222,128,0.12)',
         text: 'text-status-success',
         chip: 'bg-status-success/10 text-status-success',
     },

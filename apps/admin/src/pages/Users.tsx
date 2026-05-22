@@ -9,9 +9,9 @@ import { UserPlus } from 'lucide-react'
 
 function statusDot(status: User['status']) {
   const colors: Record<User['status'], string> = {
-    active:    'bg-green-500',
-    invited:   'bg-yellow-500',
-    suspended: 'bg-red-500',
+    active:    'bg-status-success',
+    invited:   'bg-status-warning',
+    suspended: 'bg-status-error',
   }
   return (
     <span className="flex items-center gap-1.5">

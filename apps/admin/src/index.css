@@ -4,6 +4,7 @@
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
 
 @import "tailwindcss";
 @variant dark (&:where(.dark, .dark *));
@@ -14,87 +15,53 @@
    ======================================== */
 
 :root {
-  /* Background */
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f5f5f7;
-  --color-bg-tertiary: #e8e8ed;
-  --color-bg-elevated: #ffffff;
+  /* Background — NexusMind dark theme (always dark) */
+  --color-bg-primary: #050810;
+  --color-bg-secondary: #0b0f1a;
+  --color-bg-tertiary: #111827;
+  --color-bg-elevated: #0d1117;
 
   /* Surface */
-  --color-surface-primary: #ffffff;
-  --color-surface-secondary: #f5f5f7;
-  --color-surface-glass: rgba(255, 255, 255, 0.72);
-  --color-surface-glass-dark: rgba(255, 255, 255, 0.85);
+  --color-surface-primary: #0d1117;
+  --color-surface-secondary: #111827;
+  --color-surface-glass: rgba(5, 8, 16, 0.72);
+  --color-surface-glass-dark: rgba(5, 8, 16, 0.85);
 
   /* Text */
-  --color-text-primary: #1d1d1f;
-  --color-text-secondary: #6e6e73;
-  --color-text-tertiary: #86868b;
-  --color-text-quaternary: #a1a1a6;
-  --color-text-inverse: #ffffff;
+  --color-text-primary: #f0f9ff;
+  --color-text-secondary: #94a3b8;
+  --color-text-tertiary: #64748b;
+  --color-text-quaternary: #475569;
+  --color-text-inverse: #050810;
 
   /* Border */
-  --color-border-primary: rgba(0, 0, 0, 0.08);
-  --color-border-secondary: rgba(0, 0, 0, 0.04);
-  --color-border-focus: rgba(0, 125, 250, 0.4);
+  --color-border-primary: rgba(34, 211, 238, 0.12);
+  --color-border-secondary: rgba(34, 211, 238, 0.06);
+  --color-border-focus: rgba(34, 211, 238, 0.5);
 
-  /* Accent */
-  --color-accent-blue: #007aff;
-  --color-accent-blue-hover: #0051d5;
-  --color-accent-blue-active: #004fc4;
-  --color-accent-blue-tint: rgba(0, 122, 255, 0.1);
+  /* Accent — cyan primary, green secondary */
+  --color-accent-blue: #22d3ee;
+  --color-accent-blue-hover: #06b6d4;
+  --color-accent-blue-active: #0891b2;
+  --color-accent-blue-tint: rgba(34, 211, 238, 0.12);
 
   /* Status */
-  --color-status-success: #34c759;
-  --color-status-warning: #ff9500;
-  --color-status-error: #ff3b30;
-  --color-status-info: #5ac8fa;
+  --color-status-success: #4ade80;
+  --color-status-warning: #f59e0b;
+  --color-status-error: #f87171;
+  --color-status-info: #22d3ee;
 
   /* Shadows */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.16), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.64), 0 4px 16px rgba(0, 0, 0, 0.48);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.72), 0 8px 24px rgba(0, 0, 0, 0.56);
 }
 
 
 .dark {
-  --color-bg-primary: #000000;
-  --color-bg-secondary: #1c1c1e;
-  --color-bg-tertiary: #2c2c2e;
-  --color-bg-elevated: #1c1c1e;
-
-  --color-surface-primary: #1c1c1e;
-  --color-surface-secondary: #2c2c2e;
-  --color-surface-glass: rgba(28, 28, 30, 0.72);
-  --color-surface-glass-dark: rgba(28, 28, 30, 0.85);
-
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #98989d;
-  --color-text-tertiary: #6e6e73;
-  --color-text-quaternary: #48484a;
-  --color-text-inverse: #000000;
-
-  --color-border-primary: rgba(255, 255, 255, 0.12);
-  --color-border-secondary: rgba(255, 255, 255, 0.06);
-  --color-border-focus: rgba(10, 132, 255, 0.6);
-
-  --color-accent-blue: #0a84ff;
-  --color-accent-blue-hover: #409cff;
-  --color-accent-blue-active: #5eb0ff;
-  --color-accent-blue-tint: rgba(10, 132, 255, 0.15);
-
-  --color-status-success: #32d74b;
-  --color-status-warning: #ff9f0a;
-  --color-status-error: #ff453a;
-  --color-status-info: #64d2ff;
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.24);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.40), 0 2px 8px rgba(0, 0, 0, 0.32);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.48), 0 4px 16px rgba(0, 0, 0, 0.40);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.56), 0 8px 24px rgba(0, 0, 0, 0.48);
+  /* Dark mode inherits :root — no overrides needed */
 }
 
 @theme {
@@ -142,8 +109,8 @@
   --shadow-xl: var(--shadow-xl);
 
   /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
-  --font-mono: "SF Mono", "Monaco", "Cascadia Code", monospace;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Monaco", "Cascadia Code", monospace;
 
   /* Motion */
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
@@ -168,7 +135,7 @@
   body {
     background-color: var(--color-bg-primary);
     color: var(--color-text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    font-family: "Geist", -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
     font-size: 15px;
     line-height: 1.5;
     letter-spacing: -0.01em;

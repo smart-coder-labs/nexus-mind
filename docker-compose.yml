@@ -12,7 +12,7 @@ services:
     volumes:
       - nexusmind_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/v1/health || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /v1/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
       interval: 10s
       timeout: 5s
       retries: 3
