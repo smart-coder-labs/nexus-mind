@@ -1,9 +1,13 @@
 use anyhow::Result;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::api_keys;
-use crate::models::types::{AuthContext, Memory, Org, OrgStats, ToolUsage, User};
+use crate::models::types::{
+    AuthContext, CreateSessionRequest, Memory, Org, OrgStats, PatchSessionRequest,
+    Session, StoreMemoryRequest, ToolUsage, User,
+};
 
 /// Looks up an API key by its SHA-256 hash.
 /// Returns AuthContext if the key exists, is not revoked, and the user is active.
@@ -138,6 +142,7 @@ pub fn bootstrap(
 // ── Memory queries ────────────────────────────────────────────────────────────
 
 /// Stores a new memory entry for a user within an org.
+#[deprecated(note = "Use upsert_memory instead")]
 pub fn store_memory(
     conn: &Connection,
     org_id: &str,
@@ -166,6 +171,13 @@ pub fn store_memory(
         content: content.to_string(),
         tags: tags.to_vec(),
         created_at: now,
+        title: None,
+        memory_type: None,
+        scope: "project".to_string(),
+        topic_key: None,
+        session_id: None,
+        revision_count: 1,
+        normalized_hash: None,
     })
 }
 
@@ -177,7 +189,8 @@ pub fn search_memories(
     limit: i64,
 ) -> Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at
+        "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
+                m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
          WHERE memories_fts MATCH ?1 AND m.org_id = ?2
@@ -196,12 +209,20 @@ pub fn search_memories(
             row.get::<_, String>(5)?,
             tags_str,
             row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10).unwrap_or(Some("project".to_string())),
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<String>>(14)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at) = row?;
+        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -212,6 +233,13 @@ pub fn search_memories(
             content,
             tags,
             created_at,
+            title,
+            memory_type,
+            scope: scope.unwrap_or_else(|| "project".to_string()),
+            topic_key,
+            session_id,
+            revision_count: revision_count.unwrap_or(1),
+            normalized_hash,
         });
     }
     Ok(memories)
@@ -224,11 +252,14 @@ pub fn list_memories(
     user_id: Option<&str>,
     tool: Option<&str>,
     project: Option<&str>,
+    type_filter: Option<&str>,
+    scope_filter: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Memory>> {
     let mut sql = String::from(
-        "SELECT id, org_id, user_id, project, tool, content, tags, created_at
+        "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash
          FROM memories
          WHERE org_id = ?1",
     );
@@ -248,6 +279,16 @@ pub fn list_memories(
     if let Some(p) = project {
         sql.push_str(&format!(" AND project = ?{param_idx}"));
         extra_params.push(p.to_string());
+        param_idx += 1;
+    }
+    if let Some(ty) = type_filter {
+        sql.push_str(&format!(" AND type = ?{param_idx}"));
+        extra_params.push(ty.to_string());
+        param_idx += 1;
+    }
+    if let Some(sc) = scope_filter {
+        sql.push_str(&format!(" AND scope = ?{param_idx}"));
+        extra_params.push(sc.to_string());
         param_idx += 1;
     }
     sql.push_str(&format!(
@@ -279,12 +320,20 @@ pub fn list_memories(
             row.get::<_, String>(5)?,
             tags_str,
             row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<String>>(14)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at) = row?;
+        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -295,6 +344,13 @@ pub fn list_memories(
             content,
             tags,
             created_at,
+            title,
+            memory_type,
+            scope: scope.unwrap_or_else(|| "project".to_string()),
+            topic_key,
+            session_id,
+            revision_count: revision_count.unwrap_or(1),
+            normalized_hash,
         });
     }
     Ok(memories)
@@ -621,6 +677,223 @@ pub fn get_stats(conn: &Connection, org_id: &str) -> Result<OrgStats> {
     })
 }
 
+// ── v2 Memory upsert ──────────────────────────────────────────────────────────
+
+/// Computes SHA-256 of `content.trim().to_lowercase()` — pure function, no side effects.
+pub fn compute_normalized_hash(content: &str) -> String {
+    let normalized = content.trim().to_lowercase();
+    let hash = Sha256::digest(normalized.as_bytes());
+    hex::encode(hash)
+}
+
+/// Stores a memory with upsert semantics when `topic_key` is provided.
+/// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
+///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
+///   If not found, INSERT with `revision_count = 1`.
+/// - Without `topic_key`: always INSERT.
+pub fn upsert_memory(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    req: &StoreMemoryRequest,
+) -> Result<Memory> {
+    let project = req.project.as_deref().unwrap_or("default");
+    let tags_json = serde_json::to_string(req.tags.as_deref().unwrap_or(&[]))?;
+    let scope = req.scope.as_deref().unwrap_or("project");
+    let normalized_hash = compute_normalized_hash(&req.content);
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    if let Some(topic_key) = &req.topic_key {
+        // Try to find existing row for this (org_id, topic_key)
+        let existing = conn.query_row(
+            "SELECT id, revision_count, created_at FROM memories WHERE org_id = ?1 AND topic_key = ?2",
+            rusqlite::params![org_id, topic_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+        );
+
+        match existing {
+            Ok((existing_id, revision_count, created_at)) => {
+                // UPDATE the existing row
+                let new_revision = revision_count + 1;
+                conn.execute(
+                    "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7
+                     WHERE id = ?8",
+                    rusqlite::params![
+                        req.content, req.title, req.memory_type, scope,
+                        normalized_hash, new_revision, tags_json, existing_id
+                    ],
+                )?;
+                let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
+                return Ok(Memory {
+                    id: existing_id,
+                    org_id: org_id.to_string(),
+                    user_id: user_id.to_string(),
+                    project: project.to_string(),
+                    tool: req.tool.clone(),
+                    content: req.content.clone(),
+                    tags,
+                    created_at,
+                    title: req.title.clone(),
+                    memory_type: req.memory_type.clone(),
+                    scope: scope.to_string(),
+                    topic_key: Some(topic_key.clone()),
+                    session_id: req.session_id.clone(),
+                    revision_count: new_revision,
+                    normalized_hash: Some(normalized_hash),
+                });
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // Fall through to INSERT below
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // INSERT new row
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at,
+                               title, type, scope, topic_key, session_id, revision_count, normalized_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14)",
+        rusqlite::params![
+            id, org_id, user_id, project, req.tool, req.content, tags_json, now,
+            req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash
+        ],
+    )?;
+
+    let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
+    Ok(Memory {
+        id,
+        org_id: org_id.to_string(),
+        user_id: user_id.to_string(),
+        project: project.to_string(),
+        tool: req.tool.clone(),
+        content: req.content.clone(),
+        tags,
+        created_at: now,
+        title: req.title.clone(),
+        memory_type: req.memory_type.clone(),
+        scope: scope.to_string(),
+        topic_key: req.topic_key.clone(),
+        session_id: req.session_id.clone(),
+        revision_count: 1,
+        normalized_hash: Some(normalized_hash),
+    })
+}
+
+// ── v2 Session CRUD ───────────────────────────────────────────────────────────
+
+/// Creates a session and returns the new Session.
+pub fn create_session(
+    conn: &Connection,
+    org_id: &str,
+    req: &CreateSessionRequest,
+) -> Result<Session> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let directory = req.directory.as_deref().unwrap_or("");
+
+    conn.execute(
+        "INSERT INTO sessions (id, org_id, project, directory, started_at, summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, org_id, req.project, directory, now, req.summary],
+    )?;
+
+    Ok(Session {
+        id,
+        org_id: org_id.to_string(),
+        project: req.project.clone(),
+        directory: directory.to_string(),
+        started_at: now,
+        ended_at: None,
+        summary: req.summary.clone(),
+    })
+}
+
+/// Updates `ended_at` and/or `summary` on a session.
+/// Returns `None` if the session does not exist for the given org (→ HTTP 404).
+pub fn patch_session(
+    conn: &Connection,
+    org_id: &str,
+    session_id: &str,
+    req: &PatchSessionRequest,
+) -> Result<Option<Session>> {
+    if req.ended_at.is_none() && req.summary.is_none() {
+        // Nothing to update — fetch and return existing session
+        return get_session(conn, org_id, session_id);
+    }
+
+    let mut set_clauses: Vec<String> = Vec::new();
+    let mut params: Vec<String> = Vec::new();
+    let mut param_idx = 1usize;
+
+    if let Some(ended_at) = &req.ended_at {
+        set_clauses.push(format!("ended_at = ?{param_idx}"));
+        params.push(ended_at.clone());
+        param_idx += 1;
+    }
+    if let Some(summary) = &req.summary {
+        set_clauses.push(format!("summary = ?{param_idx}"));
+        params.push(summary.clone());
+        param_idx += 1;
+    }
+
+    params.push(org_id.to_string());
+    params.push(session_id.to_string());
+
+    let sql = format!(
+        "UPDATE sessions SET {} WHERE org_id = ?{} AND id = ?{}",
+        set_clauses.join(", "),
+        param_idx,
+        param_idx + 1
+    );
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let affected = conn.execute(&sql, refs.as_slice())?;
+
+    if affected == 0 {
+        return Ok(None);
+    }
+
+    get_session(conn, org_id, session_id)
+}
+
+/// Fetches a session by id, scoped to org. Returns None if not found.
+pub fn get_session(conn: &Connection, org_id: &str, session_id: &str) -> Result<Option<Session>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, project, directory, started_at, ended_at, summary
+         FROM sessions WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![session_id, org_id],
+        |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                project: row.get(2)?,
+                directory: row.get(3)?,
+                started_at: row.get(4)?,
+                ended_at: row.get(5)?,
+                summary: row.get(6)?,
+            })
+        },
+    );
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Validates that a session_id belongs to the given org.
+pub fn validate_session_ownership(conn: &Connection, org_id: &str, session_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![session_id, org_id],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,15 +1040,15 @@ mod tests {
         store_memory(&conn, &org.id, &user.id, "proj-a", "cursor", "mem 3", &[]).unwrap();
 
         // filter by tool
-        let cursor_mems = list_memories(&conn, &org.id, None, Some("cursor"), None, 10, 0).unwrap();
+        let cursor_mems = list_memories(&conn, &org.id, None, Some("cursor"), None, None, None, 10, 0).unwrap();
         assert_eq!(cursor_mems.len(), 2);
 
         // filter by project
-        let proj_a = list_memories(&conn, &org.id, None, None, Some("proj-a"), 10, 0).unwrap();
+        let proj_a = list_memories(&conn, &org.id, None, None, Some("proj-a"), None, None, 10, 0).unwrap();
         assert_eq!(proj_a.len(), 2);
 
         // filter by both
-        let filtered = list_memories(&conn, &org.id, None, Some("cursor"), Some("proj-a"), 10, 0).unwrap();
+        let filtered = list_memories(&conn, &org.id, None, Some("cursor"), Some("proj-a"), None, None, 10, 0).unwrap();
         assert_eq!(filtered.len(), 1);
     }
 
@@ -789,7 +1062,7 @@ mod tests {
         assert!(!deleted, "delete with wrong org must return false");
 
         // original should still exist
-        let still_there = list_memories(&conn, &org.id, None, None, None, 10, 0).unwrap();
+        let still_there = list_memories(&conn, &org.id, None, None, None, None, None, 10, 0).unwrap();
         assert_eq!(still_there.len(), 1);
     }
 
@@ -933,5 +1206,401 @@ mod tests {
         assert!(!stats.top_tools.is_empty());
         let tool_names: Vec<&str> = stats.top_tools.iter().map(|t| t.tool.as_str()).collect();
         assert!(tool_names.contains(&"claude"));
+    }
+
+    // ── v2 upsert tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_memory_first_call_inserts_with_revision_1() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "initial content".into(),
+            tags: None,
+            title: Some("Test Memory".into()),
+            memory_type: Some("decision".into()),
+            scope: None,
+            topic_key: Some("arch/auth-model".into()),
+            session_id: None,
+        };
+
+        let mem = upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+        assert_eq!(mem.revision_count, 1);
+        assert_eq!(mem.topic_key.as_deref(), Some("arch/auth-model"));
+        assert!(mem.normalized_hash.is_some(), "hash must be computed");
+    }
+
+    #[test]
+    fn upsert_memory_second_call_updates_revision_count() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req1 = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "first content".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some("arch/auth-model".into()),
+            session_id: None,
+        };
+        let mem1 = upsert_memory(&conn, &org.id, &user.id, &req1).unwrap();
+        assert_eq!(mem1.revision_count, 1);
+
+        let req2 = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "updated content".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some("arch/auth-model".into()),
+            session_id: None,
+        };
+        let mem2 = upsert_memory(&conn, &org.id, &user.id, &req2).unwrap();
+        assert_eq!(mem2.revision_count, 2, "second store must increment revision_count");
+        assert_eq!(mem2.id, mem1.id, "upsert must reuse existing row id");
+        assert_eq!(mem2.content, "updated content");
+
+        // Verify only one row exists
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE org_id = ?1", [&org.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "upsert must not create duplicate rows");
+    }
+
+    #[test]
+    fn upsert_memory_topic_key_is_org_scoped() {
+        let conn = setup();
+        let (org1, user1, _) = bootstrap(&conn, "Org1", "org1", "a@org1.com", "Admin1").unwrap();
+
+        // Create org2 directly
+        let org2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org2', 'org2')",
+            [&org2_id],
+        ).unwrap();
+        let user2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, ?2, 'u2@org2.com', 'U2', 'member')",
+            [&user2_id, &org2_id],
+        ).unwrap();
+
+        let req = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "org1 content".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some("shared-key".into()),
+            session_id: None,
+        };
+
+        let req2 = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "org2 content".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: Some("shared-key".into()),
+            session_id: None,
+        };
+
+        let mem1 = upsert_memory(&conn, &org1.id, &user1.id, &req).unwrap();
+        let mem2 = upsert_memory(&conn, &org2_id, &user2_id, &req2).unwrap();
+
+        assert_ne!(mem1.id, mem2.id, "different orgs must get different rows for same topic_key");
+        assert_eq!(mem1.revision_count, 1);
+        assert_eq!(mem2.revision_count, 1);
+    }
+
+    #[test]
+    fn upsert_memory_no_topic_key_always_inserts() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "same content".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+
+        upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+        upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE org_id = ?1", [&org.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "no topic_key must always insert new rows");
+    }
+
+    #[test]
+    fn normalized_hash_same_for_equivalent_content() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req_a = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "  Hello World  ".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+        let req_b = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "hello world".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+
+        let mem_a = upsert_memory(&conn, &org.id, &user.id, &req_a).unwrap();
+        let mem_b = upsert_memory(&conn, &org.id, &user.id, &req_b).unwrap();
+        assert_eq!(
+            mem_a.normalized_hash, mem_b.normalized_hash,
+            "whitespace/case variants must produce same hash"
+        );
+    }
+
+    // ── v2 session tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn create_session_returns_session_with_id() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req = crate::models::types::CreateSessionRequest {
+            project: "nexusmind".into(),
+            directory: Some("/home/user".into()),
+            summary: None,
+        };
+        let session = create_session(&conn, &org.id, &req).unwrap();
+        assert!(!session.id.is_empty());
+        assert_eq!(session.project, "nexusmind");
+        assert_eq!(session.org_id, org.id);
+        assert_eq!(session.directory, "/home/user");
+        assert!(session.ended_at.is_none());
+    }
+
+    #[test]
+    fn patch_session_persists_ended_at_and_summary() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let create_req = crate::models::types::CreateSessionRequest {
+            project: "proj".into(),
+            directory: None,
+            summary: None,
+        };
+        let session = create_session(&conn, &org.id, &create_req).unwrap();
+
+        let patch_req = crate::models::types::PatchSessionRequest {
+            ended_at: Some("2026-01-01T01:00:00Z".into()),
+            summary: Some("Session complete".into()),
+        };
+        let updated = patch_session(&conn, &org.id, &session.id, &patch_req).unwrap();
+        assert!(updated.is_some(), "patch_session must return the updated session");
+        let updated = updated.unwrap();
+        assert_eq!(updated.ended_at.as_deref(), Some("2026-01-01T01:00:00Z"));
+        assert_eq!(updated.summary.as_deref(), Some("Session complete"));
+    }
+
+    #[test]
+    fn patch_session_wrong_org_returns_none() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let create_req = crate::models::types::CreateSessionRequest {
+            project: "proj".into(),
+            directory: None,
+            summary: None,
+        };
+        let session = create_session(&conn, &org.id, &create_req).unwrap();
+
+        let patch_req = crate::models::types::PatchSessionRequest {
+            ended_at: Some("2026-01-01T01:00:00Z".into()),
+            summary: None,
+        };
+        let result = patch_session(&conn, "wrong-org", &session.id, &patch_req).unwrap();
+        assert!(result.is_none(), "wrong org must return None (404)");
+    }
+
+    // ── v2 list filter tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn list_memories_filter_by_type() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req_bugfix = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "fixed null pointer".into(),
+            tags: None,
+            title: None,
+            memory_type: Some("bugfix".into()),
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+        let req_decision = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "use hexagonal arch".into(),
+            tags: None,
+            title: None,
+            memory_type: Some("decision".into()),
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+
+        upsert_memory(&conn, &org.id, &user.id, &req_bugfix).unwrap();
+        upsert_memory(&conn, &org.id, &user.id, &req_decision).unwrap();
+
+        let bugfix_mems = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), None, 10, 0).unwrap();
+        assert_eq!(bugfix_mems.len(), 1);
+        assert_eq!(bugfix_mems[0].memory_type.as_deref(), Some("bugfix"));
+    }
+
+    #[test]
+    fn list_memories_filter_by_scope() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let req_personal = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "personal preference".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: Some("personal".into()),
+            topic_key: None,
+            session_id: None,
+        };
+        let req_project = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()),
+            tool: "claude".into(),
+            content: "project convention".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: Some("project".into()),
+            topic_key: None,
+            session_id: None,
+        };
+
+        upsert_memory(&conn, &org.id, &user.id, &req_personal).unwrap();
+        upsert_memory(&conn, &org.id, &user.id, &req_project).unwrap();
+
+        let personal_mems = list_memories(&conn, &org.id, None, None, None, None, Some("personal"), 10, 0).unwrap();
+        assert_eq!(personal_mems.len(), 1);
+        assert_eq!(personal_mems[0].scope, "personal");
+
+        let combined = list_memories(&conn, &org.id, None, None, None, None, Some("project"), 10, 0).unwrap();
+        assert_eq!(combined.len(), 1);
+    }
+
+    #[test]
+    fn list_memories_combined_type_scope_filter() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // bugfix+project
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "c1".into(),
+            tags: None, title: None, memory_type: Some("bugfix".into()),
+            scope: Some("project".into()), topic_key: None, session_id: None,
+        }).unwrap();
+        // bugfix+personal
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "c2".into(),
+            tags: None, title: None, memory_type: Some("bugfix".into()),
+            scope: Some("personal".into()), topic_key: None, session_id: None,
+        }).unwrap();
+        // decision+project
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "c3".into(),
+            tags: None, title: None, memory_type: Some("decision".into()),
+            scope: Some("project".into()), topic_key: None, session_id: None,
+        }).unwrap();
+
+        let results = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), Some("project"), 10, 0).unwrap();
+        assert_eq!(results.len(), 1, "combined filter must return only bugfix+project memories");
+    }
+
+    #[test]
+    fn list_memories_unknown_type_returns_empty() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "content".into(),
+            tags: None, title: None, memory_type: Some("bugfix".into()),
+            scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+
+        let results = list_memories(&conn, &org.id, None, None, None, Some("config"), None, 10, 0).unwrap();
+        assert!(results.is_empty(), "unknown type filter must return empty list");
+    }
+
+    // ── v2 FTS search tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn search_memories_matches_on_title() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(),
+            content: "unrelated content".into(),
+            tags: None, title: Some("JWT auth middleware".into()),
+            memory_type: None, scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+
+        let results = search_memories(&conn, &org.id, "JWT", 10).unwrap();
+        assert_eq!(results.len(), 1, "FTS must match on title");
+        assert_eq!(results[0].title.as_deref(), Some("JWT auth middleware"));
+    }
+
+    #[test]
+    fn search_memories_matches_on_type() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(),
+            content: "unrelated".into(),
+            tags: None, title: Some("Unrelated title".into()),
+            memory_type: Some("bugfix".into()), scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+
+        let results = search_memories(&conn, &org.id, "bugfix", 10).unwrap();
+        assert_eq!(results.len(), 1, "FTS must match on type column");
     }
 }

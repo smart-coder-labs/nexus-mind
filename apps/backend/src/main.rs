@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let conn = db::connection::connect(&config.db_path)?;
-    db::migrations::run(&conn)?;
+    db::migrations::run_all(&conn)?;
 
     let app = api::router::build(conn, config.clone());
 

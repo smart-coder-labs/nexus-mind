@@ -9,16 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, Memory},
+    models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest},
 };
-
-#[derive(Deserialize)]
-pub struct StoreInput {
-    pub project: Option<String>,
-    pub tool: String,
-    pub content: String,
-    pub tags: Option<Vec<String>>,
-}
 
 #[derive(Deserialize)]
 pub struct SearchInput {
@@ -31,6 +23,9 @@ pub struct ListParams {
     pub user_id: Option<String>,
     pub tool: Option<String>,
     pub project: Option<String>,
+    #[serde(rename = "type")]
+    pub type_filter: Option<String>,
+    pub scope: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -58,23 +53,28 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 pub async fn store(
     State(db): State<Arc<Mutex<Connection>>>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<StoreInput>,
+    Json(input): Json<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let project = input.project.as_deref().unwrap_or("default");
-    let tags = input.tags.as_deref().unwrap_or(&[]);
+    // Validate session_id if provided
+    if let Some(ref sid) = input.session_id {
+        let valid = queries::validate_session_ownership(&conn, &auth.org_id, sid)
+            .map_err(db_err)?;
+        if !valid {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: format!("session_id '{}' not found for this org", sid),
+                    code: "invalid_session_id".to_string(),
+                }),
+            ));
+        }
+    }
 
-    let memory = queries::store_memory(
-        &conn,
-        &auth.org_id,
-        &auth.user_id,
-        project,
-        &input.tool,
-        &input.content,
-        tags,
-    )
-    .map_err(db_err)?;
+    let is_upsert = input.topic_key.is_some();
+    let memory = queries::upsert_memory(&conn, &auth.org_id, &auth.user_id, &input)
+        .map_err(db_err)?;
 
     let _ = queries::log_audit(
         &conn,
@@ -86,7 +86,14 @@ pub async fn store(
         serde_json::json!({ "tool": memory.tool, "project": memory.project }),
     );
 
-    Ok((StatusCode::CREATED, Json(memory)))
+    // 201 for new insert, 200 for upsert update
+    let status = if is_upsert && memory.revision_count > 1 {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    Ok((status, Json(memory)))
 }
 
 pub async fn search(
@@ -129,6 +136,8 @@ pub async fn list(
         params.user_id.as_deref(),
         params.tool.as_deref(),
         params.project.as_deref(),
+        params.type_filter.as_deref(),
+        params.scope.as_deref(),
         limit,
         offset,
     )
