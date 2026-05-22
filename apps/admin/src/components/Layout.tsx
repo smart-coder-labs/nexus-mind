@@ -44,9 +44,9 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             to={href}
             onClick={onNavigate}
             className={cn(
-              'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
+              'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
               isActive
-                ? 'bg-surface-secondary text-text-primary font-medium'
+                ? 'bg-surface-secondary text-text-primary font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-accent-blue before:rounded-full'
                 : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 font-normal',
             )}
           >
@@ -78,9 +78,18 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="px-5 pt-6 pb-5">
-        <p className="text-sm font-semibold text-text-primary">NexusMind</p>
-        <p className="text-xs text-text-tertiary mt-0.5 truncate">{session?.org.name}</p>
+        <div className="flex items-center gap-2">
+          <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
+          <p className="text-sm font-semibold text-text-primary">NexusMind</p>
+        </div>
+        {session?.org.name && (
+          <span className="mt-2 inline-block bg-surface-secondary rounded-full px-2 py-0.5 text-[11px] text-text-tertiary truncate max-w-full">
+            {session.org.name}
+          </span>
+        )}
       </div>
+
+      <div className="border-b border-border-secondary mx-3" />
 
       {/* Nav */}
       <div className="flex-1 overflow-y-auto py-2">
@@ -91,7 +100,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="px-2 pb-3">
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
+          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-status-error hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
         >
           <LogOut className="w-[15px] h-[15px] flex-shrink-0 text-text-tertiary" />
           Sign out
@@ -103,6 +112,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const { session } = useAuth()
 
   return (
     <div className="min-h-screen bg-bg-secondary flex">
@@ -151,7 +161,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <Menu className="w-4 h-4" />
           </button>
-          <p className="text-sm font-medium text-text-primary">NexusMind</p>
+          <div className="flex items-center gap-2">
+            <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
+            <p className="text-sm font-medium text-text-primary">NexusMind</p>
+          </div>
+          {session?.org.name && (
+            <span className="ml-1 text-[11px] text-text-tertiary truncate">{session.org.name}</span>
+          )}
         </header>
 
         <main className="flex-1 overflow-auto">

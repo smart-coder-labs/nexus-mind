@@ -49,7 +49,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: pages deploy apps/admin/dist --project-name=nexusmind-admin
+          command: pages deploy apps/admin/dist --project-name=nexusmind-admin --branch=main
 
   landing:
     name: Deploy landing to Cloudflare Pages
@@ -77,4 +77,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: pages deploy apps/landing/dist --project-name=nexusmind-landing
+          command: pages deploy apps/landing/dist --project-name=nexusmind-landing --branch=main
