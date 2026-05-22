@@ -1,7 +1,7 @@
 use axum::{
     middleware,
     routing::{delete, get, post},
-    Router,
+    Extension, Router,
 };
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use crate::api::{admin, audit, health, memory, middleware as auth_mw, users};
 use crate::config::Config;
 
-pub fn build(conn: Connection, _config: Config) -> Router {
+pub fn build(conn: Connection, config: Config) -> Router {
     let db = Arc::new(Mutex::new(conn));
 
     let protected = Router::new()
@@ -29,8 +29,9 @@ pub fn build(conn: Connection, _config: Config) -> Router {
 
     Router::new()
         .route("/v1/health", get(health::handler))
-        .route("/v1/bootstrap", post(admin::bootstrap))
+        .route("/v1/orgs", post(admin::create_org))
         .merge(protected)
+        .layer(Extension(config.superuser_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(db)
