@@ -111,7 +111,7 @@ if 'mcpServers' not in d:
     d['mcpServers'] = {}
 d['mcpServers']['nexusmind'] = {
     'command': 'npx',
-    'args': ['-y', 'nexusmind-mcp'],
+    'args': ['-y', '@smart-coder-labs/nexusmind-mcp'],
     'env': {
         'NEXUSMIND_API_KEY': '\${NEXUSMIND_API_KEY}',
         'NEXUSMIND_BASE_URL': '\${NEXUSMIND_BASE_URL:-${NEXUSMIND_BASE_URL}}'

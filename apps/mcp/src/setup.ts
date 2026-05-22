@@ -70,7 +70,7 @@ const settings = readSettings()
 const mcpServers = (settings.mcpServers as Record<string, unknown>) ?? {}
 mcpServers['nexusmind'] = {
   command: 'npx',
-  args: ['-y', 'nexusmind-mcp'],
+  args: ['-y', '@smart-coder-labs/nexusmind-mcp'],
   env: {
     NEXUSMIND_API_KEY: '${NEXUSMIND_API_KEY}',
     NEXUSMIND_BASE_URL: baseUrl,
