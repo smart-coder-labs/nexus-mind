@@ -56,7 +56,7 @@ let apiKey = process.env.NEXUSMIND_API_KEY ?? ''
 if (!apiKey) apiKey = await rl.question('NexusMind API key: ')
 
 let baseUrl: string = process.env.NEXUSMIND_BASE_URL ?? ''
-if (!baseUrl) baseUrl = await rl.question('NexusMind backend URL (e.g. https://nexusmind-backend.fly.dev): ')
+if (!baseUrl) baseUrl = await rl.question('NexusMind backend URL (e.g. http://localhost:8080): ')
 rl.close()
 
 if (!baseUrl) {
