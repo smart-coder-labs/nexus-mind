@@ -99,11 +99,11 @@ fn store_memory_org_isolation() {
     queries::store_memory(&conn, &org1.id, &user1.id, "proj", "claude-code", "org1 secret content", &tags).unwrap();
 
     // Org2 must see nothing.
-    let org2_memories = queries::list_memories(&conn, &org2_id, None, None, None, 10, 0).unwrap();
+    let org2_memories = queries::list_memories(&conn, &org2_id, None, None, None, None, None, 10, 0).unwrap();
     assert!(org2_memories.is_empty(), "org2 must not see org1 memories");
 
     // Org1 must see its own memory.
-    let org1_memories = queries::list_memories(&conn, &org1.id, None, None, None, 10, 0).unwrap();
+    let org1_memories = queries::list_memories(&conn, &org1.id, None, None, None, None, None, 10, 0).unwrap();
     assert_eq!(org1_memories.len(), 1);
     assert_eq!(org1_memories[0].content, "org1 secret content");
 
@@ -192,4 +192,139 @@ fn rotate_key_invalidates_old_key() {
     let new_ctx = queries::validate_api_key(&conn, &new_hash).unwrap();
     assert!(new_ctx.is_some(), "new key must be valid after rotation");
     assert_eq!(new_ctx.unwrap().user_id, admin.id);
+}
+
+// ── Schema v2 integration tests ───────────────────────────────────────────────
+
+/// 4.1 — Legacy request (only content + tool) succeeds, scope defaults to "project", type is null.
+#[test]
+fn legacy_request_succeeds_with_defaults() {
+    let conn = setup();
+    let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let req = nexusmind::models::types::StoreMemoryRequest {
+        project: None,
+        tool: "claude".into(),
+        content: "legacy content".into(),
+        tags: None,
+        title: None,
+        memory_type: None,
+        scope: None,
+        topic_key: None,
+        session_id: None,
+    };
+    let mem = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+
+    assert_eq!(mem.scope, "project", "legacy request must default scope to 'project'");
+    assert!(mem.memory_type.is_none(), "legacy request must have null type");
+    assert_eq!(mem.revision_count, 1);
+    assert!(mem.normalized_hash.is_some(), "hash must be computed even for legacy requests");
+}
+
+/// 4.2 — Full v2 request: all new fields present, all persisted and returned.
+#[test]
+fn full_v2_request_persists_all_fields() {
+    let conn = setup();
+    let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let req = nexusmind::models::types::StoreMemoryRequest {
+        project: Some("nexusmind".into()),
+        tool: "claude".into(),
+        content: "v2 content".into(),
+        tags: Some(vec!["rust".into()]),
+        title: Some("V2 Memory".into()),
+        memory_type: Some("architecture".into()),
+        scope: Some("personal".into()),
+        topic_key: Some("arch/v2-test".into()),
+        session_id: None,
+    };
+    let mem = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+
+    assert_eq!(mem.title.as_deref(), Some("V2 Memory"));
+    assert_eq!(mem.memory_type.as_deref(), Some("architecture"));
+    assert_eq!(mem.scope, "personal");
+    assert_eq!(mem.topic_key.as_deref(), Some("arch/v2-test"));
+    assert_eq!(mem.revision_count, 1);
+    assert!(mem.normalized_hash.is_some());
+}
+
+/// 4.3 — Upsert on topic_key: second store returns updated content, revision_count = 2.
+#[test]
+fn upsert_on_topic_key_increments_revision() {
+    let conn = setup();
+    let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let req1 = nexusmind::models::types::StoreMemoryRequest {
+        project: Some("proj".into()),
+        tool: "claude".into(),
+        content: "first version".into(),
+        tags: None,
+        title: None,
+        memory_type: None,
+        scope: None,
+        topic_key: Some("topic/test".into()),
+        session_id: None,
+    };
+    let mem1 = queries::upsert_memory(&conn, &org.id, &user.id, &req1).unwrap();
+    assert_eq!(mem1.revision_count, 1);
+
+    let req2 = nexusmind::models::types::StoreMemoryRequest {
+        project: Some("proj".into()),
+        tool: "claude".into(),
+        content: "second version".into(),
+        tags: None,
+        title: None,
+        memory_type: None,
+        scope: None,
+        topic_key: Some("topic/test".into()),
+        session_id: None,
+    };
+    let mem2 = queries::upsert_memory(&conn, &org.id, &user.id, &req2).unwrap();
+    assert_eq!(mem2.revision_count, 2, "second store must increment revision_count to 2");
+    assert_eq!(mem2.content, "second version");
+    assert_eq!(mem2.id, mem1.id, "upsert must reuse the same row");
+}
+
+/// 4.4 — Migration idempotency: run migrations twice, no error, schema unchanged.
+#[test]
+fn migration_idempotency() {
+    let conn = connection::connect(":memory:").unwrap();
+    migrations::run_all(&conn).unwrap();
+    // Run again — must not fail
+    let result = migrations::run_all(&conn);
+    assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
+
+    // Verify user_version stays at 2
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 2);
+}
+
+/// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
+#[test]
+fn fts_backfill_after_migration() {
+    // Start with a v1-only DB
+    let conn = connection::connect(":memory:").unwrap();
+    migrations::run_v1(&conn).unwrap();
+
+    // Insert a memory before v2 migration runs
+    conn.execute(
+        "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'a@b.com', 'A', 'admin')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'pre-migration authentication content')",
+        [],
+    ).unwrap();
+
+    // Now run v2 migration (backfill must include the pre-existing row)
+    migrations::run_v2(&conn).unwrap();
+
+    // The pre-existing row must be searchable
+    let results = queries::search_memories(&conn, "org1", "authentication", 10).unwrap();
+    assert_eq!(results.len(), 1, "pre-existing rows must be indexed after FTS backfill");
+    assert!(results[0].content.contains("authentication"));
 }

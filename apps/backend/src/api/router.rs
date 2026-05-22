@@ -1,13 +1,13 @@
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Extension, Router,
 };
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, health, memory, middleware as auth_mw, users};
+use crate::api::{admin, audit, health, memory, middleware as auth_mw, sessions, users};
 use crate::config::Config;
 
 pub fn build(conn: Connection, config: Config) -> Router {
@@ -18,6 +18,8 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/:id", delete(memory::delete))
         .route("/v1/memory", get(memory::list))
+        .route("/v1/sessions", post(sessions::create_session_handler))
+        .route("/v1/sessions/:id", patch(sessions::patch_session_handler))
         .route("/v1/users", get(users::list))
         .route("/v1/users/invite", post(users::invite))
         .route("/v1/users/:id", delete(users::remove))
