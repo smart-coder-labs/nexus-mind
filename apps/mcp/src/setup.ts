@@ -14,7 +14,8 @@ import { stdin as input, stdout as output } from 'node:process'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = join(__dirname, '..', 'plugin')
 const CLAUDE_DIR = join(homedir(), '.claude')
-const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')
+const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')  // hooks live here
+const CLAUDE_JSON_PATH = join(homedir(), '.claude.json')  // user MCPs live here
 const DEFAULT_BASE_URL = ''
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -33,14 +34,14 @@ const success = (msg: string) => console.log(`${c.green}[nexusmind]${c.reset} ${
 const warn    = (msg: string) => console.log(`${c.yellow}[nexusmind] WARNING:${c.reset} ${msg}`)
 const err     = (msg: string) => console.error(`${c.red}[nexusmind] ERROR:${c.reset} ${msg}`)
 
-function readSettings(): Record<string, unknown> {
-  if (!existsSync(SETTINGS_PATH)) return {}
-  try { return JSON.parse(readFileSync(SETTINGS_PATH, 'utf8')) } catch { return {} }
+function readJson(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {}
+  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return {} }
 }
 
-function writeSettings(settings: Record<string, unknown>) {
-  mkdirSync(CLAUDE_DIR, { recursive: true })
-  writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n')
+function writeJson(path: string, data: Record<string, unknown>) {
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -67,24 +68,24 @@ if (!apiKey.trim()) {
   warn('No API key provided — you can set NEXUSMIND_API_KEY later and re-run setup.')
 }
 
-// 2. Read current settings
-const settings = readSettings()
-
-// 3. Merge MCP server
-const mcpServers = (settings.mcpServers as Record<string, unknown>) ?? {}
+// 2. Write MCP server to ~/.claude.json (user MCPs)
+const claudeJson = readJson(CLAUDE_JSON_PATH)
+const mcpServers = (claudeJson.mcpServers as Record<string, unknown>) ?? {}
 mcpServers['nexusmind'] = {
   command: 'npx',
   args: ['-y', '@smart-coder-labs/nexusmind-mcp'],
   env: {
-    NEXUSMIND_API_KEY: '${NEXUSMIND_API_KEY}',
+    NEXUSMIND_API_KEY: apiKey.trim(),
     NEXUSMIND_BASE_URL: baseUrl,
   },
 }
-settings.mcpServers = mcpServers
-info('MCP server entry added.')
+claudeJson.mcpServers = mcpServers
+writeJson(CLAUDE_JSON_PATH, claudeJson)
+info(`MCP server entry written to ${CLAUDE_JSON_PATH}`)
 
-// 4. Merge hooks
+// 3. Merge hooks into ~/.claude/settings.json
 const hooksPath = join(PLUGIN_DIR, 'hooks', 'hooks.json')
+const settings = readJson(SETTINGS_PATH)
 if (existsSync(hooksPath)) {
   const pluginHooks = JSON.parse(readFileSync(hooksPath, 'utf8')) as {
     hooks: Record<string, unknown[]>
@@ -94,11 +95,9 @@ if (existsSync(hooksPath)) {
   for (const [event, entries] of Object.entries(pluginHooks.hooks)) {
     if (!existing[event]) existing[event] = []
     for (const entry of entries as Array<{ hooks?: Array<{ command?: string }>, command?: string }>) {
-      // Resolve ${CLAUDE_PLUGIN_ROOT} to actual plugin dir
       const resolved = JSON.parse(
         JSON.stringify(entry).replaceAll('${CLAUDE_PLUGIN_ROOT}', PLUGIN_DIR)
       )
-      // Dedup by command
       const existingCmds = (existing[event] as Array<{ command?: string, hooks?: Array<{ command?: string }> }>)
         .flatMap(e => [e.command, ...(e.hooks ?? []).map(h => h.command)])
         .filter(Boolean)
@@ -109,14 +108,11 @@ if (existsSync(hooksPath)) {
     }
   }
   settings.hooks = existing
-  info('Hooks merged.')
+  writeJson(SETTINGS_PATH, settings)
+  info(`Hooks written to ${SETTINGS_PATH}`)
 } else {
   warn(`Hooks not found at ${hooksPath} — skipping hooks installation.`)
 }
-
-// 5. Write settings
-writeSettings(settings)
-success(`Settings written to ${SETTINGS_PATH}`)
 
 // 6. Persist env vars to shell rc files
 function appendEnvVar(rcFile: string, name: string, value: string) {
