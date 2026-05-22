@@ -17,7 +17,7 @@ const CLAUDE_DIR = join(homedir(), '.claude')
 const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')  // hooks + plugins live here
 const CLAUDE_JSON_PATH = join(homedir(), '.claude.json')  // user MCPs live here
 const DEFAULT_BASE_URL = ''
-const GITHUB_REPO = 'smart-coder-labs/nexus-mind'
+const GITHUB_REPO = 'smart-coder-labs/nexusmind-claude-plugin'
 const MARKETPLACE_NAME = 'nexusmind'
 const PLUGIN_KEY = `${MARKETPLACE_NAME}@${MARKETPLACE_NAME}`
 
