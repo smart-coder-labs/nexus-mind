@@ -1,7 +1,6 @@
 ---
 const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY || '';
-const OFFSET = 30;
 const TOTAL = 100;
 
 let count = 0;
@@ -21,7 +20,7 @@ if (SUPABASE_URL && SUPABASE_ANON_KEY) {
   } catch (_) {}
 }
 
-const reserved = count + OFFSET;
+const reserved = count;
 const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
 ---
 
