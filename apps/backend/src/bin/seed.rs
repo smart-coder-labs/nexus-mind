@@ -3,6 +3,7 @@ use std::path::Path;
 
 use nexusmind::auth::api_keys;
 use nexusmind::db::{connection, migrations, queries};
+use nexusmind::models::types::StoreMemoryRequest;
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -125,7 +126,17 @@ fn seed_org(
     for (i, &(tool, project, content, tags)) in MEMORIES.iter().enumerate() {
         let user_id = &non_viewer_user_ids[i % non_viewer_user_ids.len()];
         let tag_strings: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
-        queries::store_memory(conn, &org.id, user_id, project, tool, content, &tag_strings)?;
+        queries::upsert_memory(conn, &org.id, user_id, &StoreMemoryRequest {
+            project: Some(project.to_string()),
+            tool: tool.to_string(),
+            content: content.to_string(),
+            tags: Some(tag_strings.clone()),
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        })?;
     }
 
     // Log audit events across users.

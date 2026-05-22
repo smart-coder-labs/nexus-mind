@@ -246,6 +246,7 @@ pub fn search_memories(
 }
 
 /// Lists memories for an org with optional filters.
+#[allow(clippy::too_many_arguments)]
 pub fn list_memories(
     conn: &Connection,
     org_id: &str,
