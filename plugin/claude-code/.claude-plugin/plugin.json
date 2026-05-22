@@ -1,0 +1,9 @@
+{
+  "name": "nexusmind",
+  "description": "Team memory for AI coding agents. Store decisions, bugs, and conventions — shared across the whole team.",
+  "version": "0.1.0",
+  "author": { "name": "NexusMind" },
+  "homepage": "https://nexusmind.smartcoderlabs.com",
+  "repository": "https://github.com/smart-coder-labs/nexus-mind",
+  "license": "MIT"
+}
