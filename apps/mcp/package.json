@@ -4,8 +4,8 @@
   "description": "NexusMind MCP server for Claude Code — team memory that persists across sessions",
   "type": "module",
   "bin": {
-    "nexusmind-mcp": "./dist/index.js",
-    "nexusmind-setup": "./dist/setup.js"
+    "nexusmind-mcp": "dist/index.js",
+    "nexusmind-setup": "dist/setup.js"
   },
   "scripts": {
     "build": "tsc",
