@@ -15,6 +15,27 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced
 }
 
+const TYPE_STYLES: Record<string, string> = {
+  decision:     'text-blue-400 bg-blue-400/10 border-blue-400/20',
+  bugfix:       'text-red-400 bg-red-400/10 border-red-400/20',
+  discovery:    'text-purple-400 bg-purple-400/10 border-purple-400/20',
+  convention:   'text-green-400 bg-green-400/10 border-green-400/20',
+  architecture: 'text-indigo-400 bg-indigo-400/10 border-indigo-400/20',
+  config:       'text-yellow-400 bg-yellow-400/10 border-yellow-400/20',
+  preference:   'text-pink-400 bg-pink-400/10 border-pink-400/20',
+  pattern:      'text-teal-400 bg-teal-400/10 border-teal-400/20',
+}
+
+function TypeBadge({ type }: { type?: string }) {
+  if (!type) return null
+  const cls = TYPE_STYLES[type] ?? 'text-text-tertiary bg-surface-secondary border-border-primary'
+  return (
+    <span className={`text-[11px] border rounded px-1.5 py-0.5 ${cls}`}>
+      {type}
+    </span>
+  )
+}
+
 function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
   memory: Memory
   onClose: () => void
@@ -25,11 +46,21 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-surface-primary border border-border-primary rounded-xl w-full max-w-lg space-y-4 p-6">
         <div className="flex items-start justify-between gap-4">
-          <div className="space-y-0.5">
+          <div className="space-y-1">
+            {memory.title && (
+              <p className="text-sm font-medium text-text-primary">{memory.title}</p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] border border-border-primary rounded px-1.5 py-0.5 text-text-tertiary">{memory.tool}</span>
               {memory.project && (
                 <span className="text-[11px] text-text-tertiary">{memory.project}</span>
+              )}
+              <TypeBadge type={memory.type} />
+              {memory.scope && memory.scope !== 'project' && (
+                <span className="text-[11px] text-text-quaternary">{memory.scope}</span>
+              )}
+              {memory.revision_count != null && memory.revision_count > 1 && (
+                <span className="text-[11px] text-text-quaternary">rev {memory.revision_count}</span>
               )}
             </div>
             <p className="text-[11px] text-text-quaternary">
@@ -116,14 +147,18 @@ export default function Memories() {
   const handleExportCsv = useCallback(() => {
     if (!memories) return
     const rows = [
-      ['id', 'user', 'tool', 'project', 'content', 'tags', 'created_at'],
+      ['id', 'user', 'tool', 'type', 'scope', 'title', 'project', 'content', 'tags', 'revision_count', 'created_at'],
       ...memories.map(m => [
         m.id,
         userMap.get(m.user_id) ?? m.user_id,
         m.tool,
+        m.type ?? '',
+        m.scope ?? '',
+        m.title ? `"${m.title.replace(/"/g, '""')}"` : '',
         m.project,
         `"${m.content.replace(/"/g, '""')}"`,
         m.tags.join(';'),
+        String(m.revision_count ?? 1),
         m.created_at,
       ]),
     ]
@@ -174,7 +209,7 @@ export default function Memories() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary">
-              {['Date', 'User', 'Tool', 'Content', 'Tags'].map(h => (
+              {['Date', 'User', 'Tool', 'Type', 'Content', 'Tags'].map(h => (
                 <th key={h} className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">
                   {h}
                 </th>
@@ -185,7 +220,7 @@ export default function Memories() {
             {isLoading
               ? Array.from({ length: 5 }).map((_, i) => (
                 <tr key={i}>
-                  {Array.from({ length: 5 }).map((_, j) => (
+                  {Array.from({ length: 6 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
                       <div className="h-4 rounded bg-surface-secondary animate-pulse" />
                     </td>
@@ -205,12 +240,23 @@ export default function Memories() {
                     {userMap.get(mem.user_id) ?? '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-[11px] border border-border-primary rounded px-1.5 py-0.5 text-text-tertiary">
-                      {mem.tool}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[11px] border border-border-primary rounded px-1.5 py-0.5 text-text-tertiary w-fit">
+                        {mem.tool}
+                      </span>
+                      {mem.revision_count != null && mem.revision_count > 1 && (
+                        <span className="text-[10px] text-text-quaternary">rev {mem.revision_count}</span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-4 py-3 text-xs text-text-secondary max-w-xs truncate">
-                    {mem.content}
+                  <td className="px-4 py-3">
+                    <TypeBadge type={mem.type} />
+                  </td>
+                  <td className="px-4 py-3 max-w-xs">
+                    {mem.title && (
+                      <p className="text-xs font-medium text-text-primary truncate">{mem.title}</p>
+                    )}
+                    <p className="text-xs text-text-tertiary truncate">{mem.content}</p>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-1 flex-wrap">

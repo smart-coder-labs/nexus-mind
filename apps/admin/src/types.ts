@@ -30,6 +30,14 @@ export interface Memory {
   content: string
   tags: string[]
   created_at: string
+  // v2 fields
+  title?: string
+  type?: string
+  scope?: string
+  topic_key?: string
+  session_id?: string
+  revision_count?: number
+  normalized_hash?: string
 }
 
 export interface AuditEntry {
