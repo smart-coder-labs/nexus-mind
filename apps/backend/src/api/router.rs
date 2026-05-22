@@ -7,11 +7,31 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, health, memory, middleware as auth_mw, sessions, users};
+use crate::api::{admin, audit, auth, health, memory, middleware as auth_mw, sessions, users};
 use crate::config::Config;
+use crate::email::EmailConfig;
 
 pub fn build(conn: Connection, config: Config) -> Router {
     let db = Arc::new(Mutex::new(conn));
+
+    let email_config: Option<Arc<EmailConfig>> = match (
+        config.smtp_username.clone(),
+        config.smtp_password.clone(),
+        config.smtp_from.clone(),
+    ) {
+        (Some(username), Some(password), Some(from)) => Some(Arc::new(EmailConfig {
+            smtp_host: config.smtp_host.clone(),
+            smtp_port: config.smtp_port,
+            smtp_username: username,
+            smtp_password: password,
+            smtp_from: from,
+            app_base_url: config.app_base_url.clone(),
+        })),
+        _ => {
+            tracing::warn!("SMTP not configured (SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM required). Emails will not be sent.");
+            None
+        }
+    };
 
     let protected = Router::new()
         .route("/v1/memory/store", post(memory::store))
@@ -32,7 +52,11 @@ pub fn build(conn: Connection, config: Config) -> Router {
     Router::new()
         .route("/v1/health", get(health::handler))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
+        .route("/v1/admin/auth/login", post(auth::login))
+        .route("/v1/admin/auth/set-password", post(auth::set_password))
+        .route("/v1/admin/auth/request-reset", post(auth::request_reset))
         .merge(protected)
+        .layer(Extension(email_config))
         .layer(Extension(config.superuser_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

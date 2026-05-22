@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
+import SetPassword from './pages/SetPassword'
 import Dashboard from './pages/Dashboard'
 import Users from './pages/Users'
 import Memories from './pages/Memories'
@@ -18,6 +19,7 @@ function AppRoutes() {
   const { session } = useAuth()
   return (
     <Routes>
+      <Route path="/set-password" element={<SetPassword />} />
       <Route
         path="/login"
         element={session ? <Navigate to="/" replace /> : <Login />}

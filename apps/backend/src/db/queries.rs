@@ -894,6 +894,146 @@ pub fn validate_session_ownership(conn: &Connection, org_id: &str, session_id: &
     Ok(count > 0)
 }
 
+// ── Auth: password + reset tokens ─────────────────────────────────────────────
+
+/// Finds the first admin user with the given email (across all orgs) and returns
+/// their record + password_hash. Used for email/password login.
+pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(User, Option<String>)>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, email, name, role, status, created_at, password_hash
+         FROM users WHERE email = ?1 AND role = 'admin' AND status = 'active'
+         ORDER BY created_at ASC LIMIT 1",
+        [email],
+        |row| {
+            Ok((
+                User {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    email: row.get(2)?,
+                    name: row.get(3)?,
+                    role: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                },
+                row.get::<_, Option<String>>(7)?,
+            ))
+        },
+    );
+
+    match result {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Fetches a user by ID.
+pub fn get_user_by_id(conn: &Connection, user_id: &str) -> Result<Option<User>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, email, name, role, status, created_at FROM users WHERE id = ?1",
+        [user_id],
+        |row| {
+            Ok(User {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                email: row.get(2)?,
+                name: row.get(3)?,
+                role: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    );
+    match result {
+        Ok(u) => Ok(Some(u)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Sets the password_hash for a user.
+pub fn set_user_password(conn: &Connection, user_id: &str, password_hash: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+        [password_hash, user_id],
+    )?;
+    Ok(())
+}
+
+/// Creates a password reset token. Returns (raw_token, token_id).
+/// Expires in 24 hours. Any previous unused tokens for this user are invalidated.
+pub fn create_password_reset_token(conn: &Connection, user_id: &str) -> Result<(String, String)> {
+    // Revoke prior tokens for this user
+    conn.execute(
+        "UPDATE password_reset_tokens SET used = 1 WHERE user_id = ?1 AND used = 0",
+        [user_id],
+    )?;
+
+    let token_id = Uuid::new_v4().to_string();
+    let raw_bytes: [u8; 32] = rand::random();
+    let raw_token = hex::encode(raw_bytes);
+    let token_hash = hex::encode(sha2::Sha256::digest(raw_token.as_bytes()));
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(24))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, used, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+        rusqlite::params![token_id, user_id, token_hash, expires_at, now],
+    )?;
+
+    Ok((raw_token, token_id))
+}
+
+/// Validates a reset token and returns the user_id if valid (not used, not expired).
+/// Marks the token as used on success.
+pub fn validate_and_consume_reset_token(conn: &Connection, raw_token: &str) -> Result<Option<String>> {
+    let token_hash = hex::encode(sha2::Sha256::digest(raw_token.as_bytes()));
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let result = conn.query_row(
+        "SELECT id, user_id FROM password_reset_tokens
+         WHERE token_hash = ?1 AND used = 0 AND expires_at > ?2",
+        rusqlite::params![token_hash, now],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    );
+
+    match result {
+        Ok((token_id, user_id)) => {
+            conn.execute(
+                "UPDATE password_reset_tokens SET used = 1 WHERE id = ?1",
+                [&token_id],
+            )?;
+            Ok(Some(user_id))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Creates a "web-session" API key for the user, revoking any previous ones.
+/// Returns the raw API key.
+pub fn create_web_session_key(conn: &Connection, user_id: &str, org_id: &str) -> Result<String> {
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE user_id = ?1 AND label = 'web-session'",
+        [user_id],
+    )?;
+
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'web-session', ?5)",
+        rusqlite::params![key_id, user_id, org_id, key_hash, now],
+    )?;
+
+    Ok(raw_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

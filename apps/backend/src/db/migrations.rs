@@ -5,6 +5,7 @@ use rusqlite::Connection;
 pub fn run_all(conn: &Connection) -> Result<()> {
     run_v1(conn)?;
     run_v2(conn)?;
+    run_v3(conn)?;
     Ok(())
 }
 
@@ -185,6 +186,33 @@ pub fn run_v2(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v3: adds password_hash to users + password_reset_tokens table.
+pub fn run_v3(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 3 {
+        return Ok(());
+    }
+
+    let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN password_hash TEXT");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id          TEXT PRIMARY KEY,
+            user_id     TEXT NOT NULL REFERENCES users(id),
+            token_hash  TEXT NOT NULL UNIQUE,
+            expires_at  TEXT NOT NULL,
+            used        INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        PRAGMA user_version = 3;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,10 +311,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_2() {
+    fn run_all_sets_user_version_to_3() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 2, "user_version must be 2 after run_all");
+        assert_eq!(get_user_version(&conn), 3, "user_version must be 3 after run_all");
     }
 
     #[test]

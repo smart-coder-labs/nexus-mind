@@ -117,3 +117,23 @@ export function createClient(apiKey: string): NexusMindClient {
   const baseUrl = import.meta.env.VITE_API_URL ?? ''
   return new NexusMindClient(baseUrl, apiKey)
 }
+
+export async function loginWithEmail(
+  email: string,
+  password: string,
+): Promise<{ api_key: string; org: Org; user: User }> {
+  const baseUrl = import.meta.env.VITE_API_URL ?? ''
+  const res = await fetch(`${baseUrl}/v1/admin/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw Object.assign(new Error(body.error ?? res.statusText), {
+      code: body.code,
+      status: res.status,
+    })
+  }
+  return res.json()
+}

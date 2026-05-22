@@ -43,10 +43,10 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
   deleting: boolean
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-surface-primary border border-border-primary rounded-xl w-full max-w-lg space-y-4 p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
+    <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-black/60 p-6">
+      <div className="bg-surface-primary border border-border-primary rounded-xl w-full max-w-4xl flex flex-col max-h-full">
+        <div className="flex items-start justify-between gap-4 p-6 pb-4 shrink-0">
+          <div className="space-y-1 min-w-0">
             {memory.title && (
               <p className="text-sm font-medium text-text-primary">{memory.title}</p>
             )}
@@ -72,19 +72,21 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
           </button>
         </div>
 
-        <p className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">{memory.content}</p>
+        <div className="overflow-y-auto flex-1 px-6 pb-2">
+          <p className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">{memory.content}</p>
 
-        {memory.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {memory.tags.map(tag => (
-              <span key={tag} className="text-[11px] bg-surface-secondary text-text-tertiary rounded px-2 py-0.5">
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
+          {memory.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-4">
+              {memory.tags.map(tag => (
+                <span key={tag} className="text-[11px] bg-surface-secondary text-text-tertiary rounded px-2 py-0.5">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
-        <div className="flex justify-end pt-1">
+        <div className="flex justify-end p-6 pt-4 shrink-0 border-t border-border-primary">
           <button
             onClick={onDelete}
             disabled={deleting}

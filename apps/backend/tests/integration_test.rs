@@ -294,9 +294,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version stays at 2
+    // Verify user_version stays at 3
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.

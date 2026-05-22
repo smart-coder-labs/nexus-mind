@@ -5,4 +5,5 @@ pub mod memory;
 pub mod audit;
 pub mod users;
 pub mod admin;
+pub mod auth;
 pub mod sessions;

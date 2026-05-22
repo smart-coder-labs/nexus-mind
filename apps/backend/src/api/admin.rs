@@ -3,6 +3,8 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
+use crate::email::{send_password_setup, EmailConfig};
+
 fn unauthorized() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::UNAUTHORIZED,
@@ -64,6 +66,7 @@ pub struct CreateOrgInput {
 pub async fn create_org(
     State(db): State<Arc<Mutex<Connection>>>,
     Extension(superuser_key): Extension<Option<String>>,
+    Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateOrgInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
@@ -77,32 +80,60 @@ pub async fn create_org(
         return Err(unauthorized());
     }
 
-    let conn = db.lock().map_err(|_| lock_err())?;
+    let (org, user, api_key, raw_token) = {
+        let conn = db.lock().map_err(|_| lock_err())?;
+        let (org, user, api_key) = queries::create_org(
+            &conn,
+            &input.org_name,
+            &input.org_slug,
+            &input.admin_email,
+            &input.admin_name,
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ApiError {
+                        error: "Organization slug already exists".to_string(),
+                        code: "slug_conflict".to_string(),
+                    }),
+                )
+            } else {
+                db_err(e)
+            }
+        })?;
 
-    match queries::create_org(
-        &conn,
-        &input.org_name,
-        &input.org_slug,
-        &input.admin_email,
-        &input.admin_name,
-    ) {
-        Ok((org, user, api_key)) => {
-            let body = serde_json::json!({
-                "org": org,
-                "user": user,
-                "api_key": api_key,
-            });
-            Ok((StatusCode::CREATED, Json(body)))
-        }
-        Err(e) if e.to_string().contains("UNIQUE constraint failed") => Err((
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "Organization slug already exists".to_string(),
-                code: "slug_conflict".to_string(),
-            }),
-        )),
-        Err(e) => Err(db_err(e)),
+        let (raw_token, _) = queries::create_password_reset_token(&conn, &user.id)
+            .map_err(db_err)?;
+
+        (org, user, api_key, raw_token)
+    };
+
+    // Send setup email asynchronously — non-fatal if SMTP is not configured
+    if let Some(cfg) = email_config {
+        let cfg = cfg.clone();
+        let name = user.name.clone();
+        let email = user.email.clone();
+        let token = raw_token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_password_setup(&cfg, &email, &name, &token).await {
+                tracing::warn!("Failed to send org setup email to {email}: {e}");
+            }
+        });
+    } else {
+        tracing::warn!(
+            "SMTP not configured — password setup token for {} (not sent): {}",
+            user.email,
+            raw_token
+        );
     }
+
+    let body = serde_json::json!({
+        "org": org,
+        "user": user,
+        "api_key": api_key,
+    });
+    Ok((StatusCode::CREATED, Json(body)))
 }
 
 pub async fn list_orgs(
@@ -195,6 +226,7 @@ mod tests {
     fn app(db: Arc<Mutex<Connection>>) -> Router {
         use axum::routing::post;
         let superuser_key: Option<String> = Some("test-superuser-key".to_string());
+        let email_config: Option<Arc<EmailConfig>> = None;
 
         let protected = Router::new()
             .route("/v1/admin/stats", get(stats))
@@ -204,6 +236,7 @@ mod tests {
         Router::new()
             .route("/v1/orgs", post(create_org))
             .merge(protected)
+            .layer(Extension(email_config))
             .layer(Extension(superuser_key))
             .with_state(db)
     }

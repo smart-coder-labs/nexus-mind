@@ -28,6 +28,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
+bcrypt = "0.15"
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

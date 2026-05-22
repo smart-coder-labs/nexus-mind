@@ -17,4 +17,22 @@ pub struct Config {
 
     #[arg(long, env = "SUPERUSER_KEY")]
     pub superuser_key: Option<String>,
+
+    #[arg(long, env = "SMTP_HOST", default_value = "smtp.gmail.com")]
+    pub smtp_host: String,
+
+    #[arg(long, env = "SMTP_PORT", default_value_t = 587)]
+    pub smtp_port: u16,
+
+    #[arg(long, env = "SMTP_USERNAME")]
+    pub smtp_username: Option<String>,
+
+    #[arg(long, env = "SMTP_PASSWORD")]
+    pub smtp_password: Option<String>,
+
+    #[arg(long, env = "SMTP_FROM")]
+    pub smtp_from: Option<String>,
+
+    #[arg(long, env = "APP_BASE_URL", default_value = "http://localhost:5173")]
+    pub app_base_url: String,
 }
