@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = join(__dirname, '..', 'plugin')
 const CLAUDE_DIR = join(homedir(), '.claude')
 const SETTINGS_PATH = join(CLAUDE_DIR, 'settings.json')
-const DEFAULT_BASE_URL = 'https://nexusmind-backend.fly.dev'
+const DEFAULT_BASE_URL = ''
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,9 +53,15 @@ const rl = readline.createInterface({ input, output })
 
 let apiKey = process.env.NEXUSMIND_API_KEY ?? ''
 if (!apiKey) apiKey = await rl.question('NexusMind API key: ')
+
+let baseUrl: string = process.env.NEXUSMIND_BASE_URL ?? ''
+if (!baseUrl) baseUrl = await rl.question('NexusMind backend URL (e.g. https://nexusmind-backend.fly.dev): ')
 rl.close()
 
-const baseUrl: string = process.env.NEXUSMIND_BASE_URL ?? DEFAULT_BASE_URL
+if (!baseUrl) {
+  err('Backend URL is required.')
+  process.exit(1)
+}
 
 if (!apiKey.trim()) {
   warn('No API key provided — you can set NEXUSMIND_API_KEY later and re-run setup.')

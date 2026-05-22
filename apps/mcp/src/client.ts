@@ -1,11 +1,18 @@
-const BASE_URL = process.env.NEXUSMIND_BASE_URL ?? 'http://localhost:8080'
+const BASE_URL = process.env.NEXUSMIND_BASE_URL
 const API_KEY  = process.env.NEXUSMIND_API_KEY  ?? ''
+
+if (!BASE_URL) {
+  process.stderr.write(
+    '[nexusmind-mcp] Error: NEXUSMIND_BASE_URL is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup\n'
+  )
+  process.exit(1)
+}
 
 if (!API_KEY) {
   process.stderr.write(
-    '[nexusmind-mcp] Warning: NEXUSMIND_API_KEY is not set. ' +
-    'Set it to your NexusMind API key.\n'
+    '[nexusmind-mcp] Error: NEXUSMIND_API_KEY is not set. Run: npx @smart-coder-labs/nexusmind-mcp setup\n'
   )
+  process.exit(1)
 }
 
 interface ApiError extends Error {
