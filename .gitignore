@@ -12,4 +12,4 @@ tmpapps/mcp/
 plugin/
 .claude-plugin/
 
-tmp
+tmp.mcp.json
