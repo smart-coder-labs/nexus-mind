@@ -4,6 +4,7 @@ use lettre::{
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
+use lettre::transport::smtp::client::TlsParameters;
 
 #[derive(Clone, Debug)]
 pub struct EmailConfig {
@@ -37,9 +38,12 @@ pub async fn send_password_setup(config: &EmailConfig, to_email: &str, to_name: 
 
     let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
 
-    let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
-        .context("failed to connect to SMTP host")?
+    let tls = TlsParameters::new(config.smtp_host.clone())
+        .context("failed to build TLS parameters")?;
+
+    let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
         .port(config.smtp_port)
+        .tls(lettre::transport::smtp::client::Tls::Required(tls))
         .credentials(creds)
         .build();
 
