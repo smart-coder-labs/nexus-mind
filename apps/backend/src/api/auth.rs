@@ -7,7 +7,7 @@ use crate::{
     auth::password::verify_password,
     db::queries,
     email::{send_password_setup, EmailConfig},
-    models::types::ApiError,
+    models::types::{ApiError, AuthContext},
 };
 
 fn internal_err(msg: &str) -> (StatusCode, Json<ApiError>) {
@@ -151,4 +151,43 @@ pub async fn request_reset(
     }
 
     Ok(Json(serde_json::json!({ "message": "If that email exists, a reset link has been sent." })))
+}
+
+// ── POST /v1/admin/auth/change-password ───────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ChangePasswordInput {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+pub async fn change_password(
+    State(db): State<Arc<Mutex<Connection>>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<ChangePasswordInput>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    if input.new_password.len() < 8 {
+        return Err(bad_request("New password must be at least 8 characters", "password_too_short"));
+    }
+
+    let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
+
+    let current_hash = queries::get_user_password_hash(&conn, &auth.user_id)
+        .map_err(|_| internal_err("db error"))?
+        .ok_or_else(|| bad_request("No password set. Use the setup link sent to your email.", "no_password"))?;
+
+    let valid = verify_password(&input.current_password, &current_hash)
+        .map_err(|_| internal_err("password verification error"))?;
+
+    if !valid {
+        return Err(unauth("Current password is incorrect"));
+    }
+
+    let new_hash = crate::auth::password::hash_password(&input.new_password)
+        .map_err(|_| internal_err("password hashing error"))?;
+
+    queries::set_user_password(&conn, &auth.user_id, &new_hash)
+        .map_err(|_| internal_err("db error"))?;
+
+    Ok(Json(serde_json::json!({ "message": "Password updated successfully" })))
 }

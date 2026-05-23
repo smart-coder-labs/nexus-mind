@@ -106,6 +106,10 @@ export class NexusMindClient {
     return this.request(`/v1/memory/${id}`, { method: 'DELETE' })
   }
 
+  changePassword(data: { current_password: string; new_password: string }): Promise<{ message: string }> {
+    return this.request('/v1/admin/auth/change-password', { method: 'POST', body: JSON.stringify(data) })
+  }
+
   getAuditLog(filters: AuditFilters = {}): Promise<AuditEntry[]> {
     const params = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))

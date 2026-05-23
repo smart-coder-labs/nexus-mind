@@ -35,6 +35,33 @@ export default function Settings() {
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordSaved, setPasswordSaved] = useState(false)
+
+  const changePasswordMut = useMutation({
+    mutationFn: () => client.changePassword({ current_password: currentPassword, new_password: newPassword }),
+    onSuccess: () => {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordError('')
+      setPasswordSaved(true)
+      setTimeout(() => setPasswordSaved(false), 2000)
+    },
+    onError: (err: Error) => setPasswordError(err.message),
+  })
+
+  const handleChangePassword = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (newPassword !== confirmPassword) { setPasswordError('Passwords do not match.'); return }
+    if (newPassword.length < 8) { setPasswordError('New password must be at least 8 characters.'); return }
+    setPasswordError('')
+    changePasswordMut.mutate()
+  }
+
   const rotateMut = useMutation({
     mutationFn: () => client.rotateKey(session!.user.id),
     onSuccess: (data) => { setRotateConfirm(false); setNewKey(data.api_key) },
@@ -98,6 +125,55 @@ export default function Settings() {
               <p className="text-xs text-status-error/70">Failed to save.</p>
             )}
           </div>
+        </div>
+      </section>
+
+      {/* Password */}
+      <section className="space-y-4">
+        <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Password</p>
+        <div className="border border-border-primary rounded-xl p-5">
+          <form onSubmit={handleChangePassword} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs text-text-tertiary">Current password</label>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+                className={inputCls}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-text-tertiary">New password</label>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                className={inputCls}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs text-text-tertiary">Confirm new password</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+                className={inputCls}
+              />
+            </div>
+            {passwordError && <p className="text-xs text-status-error/70">{passwordError}</p>}
+            <div className="flex items-center gap-3">
+              <button
+                type="submit"
+                disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
+                className="px-4 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+              >
+                {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
+              </button>
+            </div>
+          </form>
         </div>
       </section>
 

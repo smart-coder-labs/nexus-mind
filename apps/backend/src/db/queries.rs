@@ -894,6 +894,20 @@ pub fn validate_session_ownership(conn: &Connection, org_id: &str, session_id: &
     Ok(count > 0)
 }
 
+/// Returns the password_hash for a user by ID.
+pub fn get_user_password_hash(conn: &Connection, user_id: &str) -> Result<Option<String>> {
+    let result = conn.query_row(
+        "SELECT password_hash FROM users WHERE id = ?1",
+        [user_id],
+        |row| row.get::<_, Option<String>>(0),
+    );
+    match result {
+        Ok(hash) => Ok(hash),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 // ── Auth: password + reset tokens ─────────────────────────────────────────────
 
 /// Finds the first admin user with the given email (across all orgs) and returns

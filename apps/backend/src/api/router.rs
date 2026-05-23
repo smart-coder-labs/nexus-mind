@@ -47,6 +47,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/audit", get(audit::query))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
+        .route("/v1/admin/auth/change-password", post(auth::change_password))
         .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth));
 
     Router::new()
