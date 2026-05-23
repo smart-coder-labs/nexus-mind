@@ -151,9 +151,7 @@ export default function Login() {
           )}
         </div>
 
-        <p className="text-center text-text-tertiary text-sm mt-6">
-          Run <code className="text-text-secondary">./scripts/reset-demo.sh</code> to get a demo key.
-        </p>
+
       </div>
     </div>
   )
