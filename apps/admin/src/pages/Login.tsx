@@ -21,6 +21,7 @@ export default function Login() {
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSent, setForgotSent] = useState(false)
   const [forgotLoading, setForgotLoading] = useState(false)
+  const [forgotError, setForgotError] = useState('')
 
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -52,12 +53,18 @@ export default function Login() {
     e.preventDefault()
     if (!forgotEmail.trim()) return
     setForgotLoading(true)
+    setForgotError('')
     try {
-      await fetch(`${BASE_URL}/v1/admin/auth/request-reset`, {
+      const res = await fetch(`${BASE_URL}/v1/admin/auth/request-reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail.trim() }),
       })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Request failed' }))
+        setForgotError(body.error ?? 'Request failed')
+        return
+      }
       setForgotSent(true)
     } finally {
       setForgotLoading(false)
@@ -180,6 +187,7 @@ export default function Login() {
                     value={forgotEmail}
                     onChange={e => setForgotEmail(e.target.value)}
                     placeholder="admin@company.com"
+                    error={forgotError}
                     autoFocus
                     autoComplete="email"
                   />

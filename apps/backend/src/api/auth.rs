@@ -127,10 +127,9 @@ pub async fn request_reset(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
-    // Always return OK to avoid email enumeration
-    let Ok(Some((user, _))) = queries::find_admin_by_email(&conn, &input.email) else {
-        return Ok(Json(serde_json::json!({ "message": "If that email exists, a reset link has been sent." })));
-    };
+    let (user, _) = queries::find_admin_by_email(&conn, &input.email)
+        .map_err(|_| internal_err("db error"))?
+        .ok_or_else(|| bad_request("No account found with that email address.", "email_not_found"))?;
 
     let (raw_token, _) = queries::create_password_reset_token(&conn, &user.id)
         .map_err(|_| internal_err("db error"))?;
@@ -150,7 +149,7 @@ pub async fn request_reset(
         tracing::warn!("SMTP not configured — reset token for {} (not sent): {}", user.email, raw_token);
     }
 
-    Ok(Json(serde_json::json!({ "message": "If that email exists, a reset link has been sent." })))
+    Ok(Json(serde_json::json!({ "message": "Reset link sent. Check your email." })))
 }
 
 // ── POST /v1/admin/auth/change-password ───────────────────────────────────────
