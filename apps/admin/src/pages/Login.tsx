@@ -6,7 +6,9 @@ import { saveSession } from '../auth/session'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 
-type Mode = 'email' | 'apikey'
+type Mode = 'email' | 'apikey' | 'forgot'
+
+const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 export default function Login() {
   const [mode, setMode] = useState<Mode>('email')
@@ -15,6 +17,10 @@ export default function Login() {
   const [password, setPassword] = useState('')
 
   const [apiKey, setApiKey] = useState('')
+
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotSent, setForgotSent] = useState(false)
+  const [forgotLoading, setForgotLoading] = useState(false)
 
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -39,6 +45,22 @@ export default function Login() {
         : 'Invalid email or password.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!forgotEmail.trim()) return
+    setForgotLoading(true)
+    try {
+      await fetch(`${BASE_URL}/v1/admin/auth/request-reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail.trim() }),
+      })
+      setForgotSent(true)
+    } finally {
+      setForgotLoading(false)
     }
   }
 
@@ -107,15 +129,26 @@ export default function Login() {
                 autoFocus
                 autoComplete="email"
               />
-              <Input
-                type="password"
-                label="Password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                error={error}
-                autoComplete="current-password"
-              />
+              <div className="space-y-1">
+                <Input
+                  type="password"
+                  label="Password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  error={error}
+                  autoComplete="current-password"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => { setMode('forgot'); setForgotEmail(email); setError('') }}
+                    className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              </div>
               <Button
                 type="submit"
                 variant="primary"
@@ -126,6 +159,49 @@ export default function Login() {
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>
             </form>
+          ) : mode === 'forgot' ? (
+            <div className="space-y-4">
+              {forgotSent ? (
+                <div className="text-center space-y-3 py-2">
+                  <p className="text-sm text-text-primary font-medium">Check your email</p>
+                  <p className="text-xs text-text-tertiary">If that address exists, a reset link has been sent.</p>
+                  <button
+                    onClick={() => { setMode('email'); setForgotSent(false) }}
+                    className="text-xs text-accent-blue hover:underline transition-colors"
+                  >
+                    Back to sign in
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleForgotSubmit} className="space-y-4">
+                  <Input
+                    type="email"
+                    label="Email"
+                    value={forgotEmail}
+                    onChange={e => setForgotEmail(e.target.value)}
+                    placeholder="admin@company.com"
+                    autoFocus
+                    autoComplete="email"
+                  />
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    fullWidth
+                    disabled={forgotLoading || !forgotEmail.trim()}
+                    loading={forgotLoading}
+                  >
+                    {forgotLoading ? 'Sending…' : 'Send reset link'}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('email')}
+                    className="w-full text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+                  >
+                    Back to sign in
+                  </button>
+                </form>
+              )}
+            </div>
           ) : (
             <form onSubmit={handleApiKeySubmit} className="space-y-4">
               <Input
