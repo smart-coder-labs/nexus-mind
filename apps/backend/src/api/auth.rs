@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     auth::password::verify_password,
     db::queries,
-    email::{send_password_setup, EmailConfig},
+    email::{send_password_reset, EmailConfig},
     models::types::{ApiError, AuthContext},
 };
 
@@ -141,7 +141,7 @@ pub async fn request_reset(
         let name = user.name.clone();
         let email = user.email.clone();
         tokio::spawn(async move {
-            if let Err(e) = send_password_setup(&cfg, &email, &name, &raw_token).await {
+            if let Err(e) = send_password_reset(&cfg, &email, &name, &raw_token).await {
                 tracing::warn!("Failed to send password reset email: {e}");
             }
         });
