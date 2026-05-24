@@ -61,9 +61,9 @@ Documentado en: ROADMAP.md M2, 03-SCOPE_CHANGELOG.md, PRD.md §3.5
 
 | Tarea | Detalle |
 |---|---|
-| ❌ MCP server Cursor-compatible | Cursor soporta MCP desde v0.45 — mismo protocolo, mismo servidor, diferente config |
-| ❌ `cursor_rules` context injection | Al hacer search, devolver resultado como rule para el contexto de Cursor |
-| ❌ `apps/cursor/` docs + config | Guía de instalación + `.cursor/mcp.json` de ejemplo |
+| ✅ MCP server Cursor-compatible | Mismo servidor stdio, Cursor v0.45+ lo soporta nativamente |
+| ✅ `cursor_rules` context injection | Tool `get_context` — fetches memorias agrupadas por tipo, formato listo para `.cursor/rules/` o notepad |
+| ✅ `docs/CURSOR_PLUGIN.md` | Setup guide + `.cursor/mcp.json` de ejemplo (npx y local binary) |
 | ❌ Demo: Cursor → admin panel | Equivalente al MCP_DEMO.md para Cursor |
 
 **Estimación**: ~1 semana. El servidor MCP ya existe — es config + docs + testing con Cursor real.
