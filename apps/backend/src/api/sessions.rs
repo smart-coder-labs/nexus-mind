@@ -3,12 +3,11 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
 
 use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, CreateSessionRequest, PatchSessionRequest, Session},
+    store::sqlite::SqliteStore,
 };
 
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
@@ -37,10 +36,11 @@ pub struct CreateSessionResponse {
 }
 
 pub async fn create_session_handler(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let session = queries::create_session(&conn, &auth.org_id, &input).map_err(db_err)?;
@@ -49,11 +49,12 @@ pub async fn create_session_handler(
 }
 
 pub async fn patch_session_handler(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(input): Json<PatchSessionRequest>,
 ) -> Result<Json<Session>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let result = queries::patch_session(&conn, &auth.org_id, &session_id, &input)
@@ -86,39 +87,41 @@ mod tests {
     use crate::{
         api::middleware as auth_mw,
         db::{connection::connect, migrations, queries as q},
+        store::sqlite::SqliteStore,
     };
 
-    fn make_db() -> Arc<Mutex<Connection>> {
+    fn make_store() -> SqliteStore {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
-        Arc::new(Mutex::new(conn))
+        SqliteStore::new(conn)
     }
 
-    fn app(db: Arc<Mutex<Connection>>) -> Router {
+    fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/sessions", post(create_session_handler))
             .route("/v1/sessions/:id", patch(patch_session_handler))
-            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth))
-            .with_state(db)
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .with_state(store)
     }
 
-    fn setup_with_key() -> (Arc<Mutex<Connection>>, String) {
-        let db = make_db();
+    fn setup_with_key() -> (SqliteStore, String) {
+        let store = make_store();
         let raw_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
             let (_, _, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
-        (db, raw_key)
+        (store, raw_key)
     }
 
     #[tokio::test]
     async fn create_session_returns_201_with_id() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
         let body = serde_json::json!({ "project": "nexusmind" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -141,10 +144,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_missing_project_returns_422() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
         let body = serde_json::json!({ "directory": "/tmp" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -162,11 +165,11 @@ mod tests {
 
     #[tokio::test]
     async fn patch_session_returns_200_with_updated_fields() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
 
         // First create a session
         let create_body = serde_json::json!({ "project": "nexusmind" });
-        let create_resp = app(db.clone())
+        let create_resp = app(store.clone())
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -187,7 +190,7 @@ mod tests {
             "ended_at": "2026-01-01T01:00:00Z",
             "summary": "Session complete"
         });
-        let patch_resp = app(db)
+        let patch_resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("PATCH")
@@ -209,10 +212,10 @@ mod tests {
 
     #[tokio::test]
     async fn patch_session_wrong_id_returns_404() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
         let patch_body = serde_json::json!({ "summary": "Done" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("PATCH")
@@ -230,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_unauthenticated_returns_401() {
-        let db = make_db();
+        let db = make_store();
         let body = serde_json::json!({ "project": "nexusmind" });
 
         let resp = app(db)

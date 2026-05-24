@@ -1,7 +1,6 @@
 use axum::{extract::State, http::StatusCode, Extension, Json};
-use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::email::{send_password_setup, EmailConfig};
 
@@ -18,6 +17,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, Org, OrgStats},
+    store::sqlite::SqliteStore,
 };
 
 fn lock_err() -> (StatusCode, Json<ApiError>) {
@@ -64,7 +64,7 @@ pub struct CreateOrgInput {
 }
 
 pub async fn create_org(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(superuser_key): Extension<Option<String>>,
     Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
     headers: axum::http::HeaderMap,
@@ -81,6 +81,7 @@ pub async fn create_org(
     }
 
     let (org, user, api_key, raw_token) = {
+        let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         let (org, user, api_key) = queries::create_org(
             &conn,
@@ -137,7 +138,7 @@ pub async fn create_org(
 }
 
 pub async fn list_orgs(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(superuser_key): Extension<Option<String>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<Org>>, (StatusCode, Json<ApiError>)> {
@@ -151,27 +152,30 @@ pub async fn list_orgs(
         return Err(unauthorized());
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let orgs = queries::list_orgs(&conn).map_err(db_err)?;
     Ok(Json(orgs))
 }
 
 pub async fn stats(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<OrgStats>, (StatusCode, Json<ApiError>)> {
     if auth.role != "admin" {
         return Err(forbidden());
     }
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let s = queries::get_stats(&conn, &auth.org_id).map_err(db_err)?;
     Ok(Json(s))
 }
 
 pub async fn get_org(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let org = queries::get_org(&conn, &auth.org_id)
         .map_err(db_err)?
@@ -188,13 +192,14 @@ pub async fn get_org(
 }
 
 pub async fn update_org(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<UpdateOrgInput>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
     if auth.role != "admin" {
         return Err(forbidden());
     }
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let org = queries::update_org_name(&conn, &auth.org_id, &input.name).map_err(db_err)?;
     Ok(Json(org))
@@ -215,15 +220,16 @@ mod tests {
     use crate::{
         api::middleware as auth_mw,
         db::{connection::connect, migrations, queries as q},
+        store::sqlite::SqliteStore,
     };
 
-    fn make_db() -> Arc<Mutex<Connection>> {
+    fn make_store() -> SqliteStore {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
-        Arc::new(Mutex::new(conn))
+        SqliteStore::new(conn)
     }
 
-    fn app(db: Arc<Mutex<Connection>>) -> Router {
+    fn app(store: SqliteStore) -> Router {
         use axum::routing::post;
         let superuser_key: Option<String> = Some("test-superuser-key".to_string());
         let email_config: Option<Arc<EmailConfig>> = None;
@@ -231,32 +237,33 @@ mod tests {
         let protected = Router::new()
             .route("/v1/admin/stats", get(stats))
             .route("/v1/admin/org", get(get_org).patch(update_org))
-            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth));
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
         Router::new()
             .route("/v1/orgs", post(create_org))
             .merge(protected)
             .layer(Extension(email_config))
             .layer(Extension(superuser_key))
-            .with_state(db)
+            .with_state(store)
     }
 
-    fn setup_with_admin_key() -> (Arc<Mutex<Connection>>, String) {
-        let db = make_db();
+    fn setup_with_admin_key() -> (SqliteStore, String) {
+        let store = make_store();
         let raw_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
             let (_, _, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
-        (db, raw_key)
+        (store, raw_key)
     }
 
     #[tokio::test]
     async fn stats_returns_200_for_admin() {
-        let (db, key) = setup_with_admin_key();
+        let (store, key) = setup_with_admin_key();
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .uri("/v1/admin/stats")
@@ -272,8 +279,9 @@ mod tests {
 
     #[tokio::test]
     async fn stats_returns_403_for_member() {
-        let (db, _admin_key) = setup_with_admin_key();
+        let (store, _admin_key) = setup_with_admin_key();
         let member_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
             let org: String = conn
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
@@ -283,7 +291,7 @@ mod tests {
             key
         };
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .uri("/v1/admin/stats")
@@ -299,9 +307,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_org_returns_200() {
-        let (db, key) = setup_with_admin_key();
+        let (store, key) = setup_with_admin_key();
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .uri("/v1/admin/org")
@@ -317,10 +325,10 @@ mod tests {
 
     #[tokio::test]
     async fn update_org_returns_200_for_admin() {
-        let (db, key) = setup_with_admin_key();
+        let (store, key) = setup_with_admin_key();
         let body = serde_json::json!({ "name": "Acme Updated" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("PATCH")
@@ -338,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_org_returns_201_with_valid_superuser_key() {
-        let db = make_db();
+        let db = make_store();
         let body = serde_json::json!({
             "org_name": "New Corp",
             "org_slug": "new-corp",
@@ -364,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_org_returns_401_with_wrong_key() {
-        let db = make_db();
+        let db = make_store();
         let body = serde_json::json!({
             "org_name": "New Corp",
             "org_slug": "new-corp",
@@ -390,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_org_returns_401_without_auth_header() {
-        let db = make_db();
+        let db = make_store();
         let body = serde_json::json!({
             "org_name": "New Corp",
             "org_slug": "new-corp",

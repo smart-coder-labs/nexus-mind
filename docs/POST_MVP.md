@@ -74,8 +74,8 @@ Documentado en: ADR-002 §6.3
 
 | Tarea | Detalle |
 |---|---|
-| ❌ `trait MemoryStore` en Rust | Interface: `store()`, `search()`, `list()`, `delete()`, `get()` |
-| ❌ `SqliteStore` impl | Mueve las queries actuales detrás del trait |
+| ✅ `trait MemoryStore` en Rust | `store/mod.rs` — `store()`, `search()`, `list()`, `get()`, `delete()`, `validate_session()` |
+| ✅ `SqliteStore` impl | `store/sqlite.rs` — queries detrás del trait, audit logging interno, expone `conn()` para handlers no-memory |
 | ❌ Feature flag `postgres` | Compilación opcional con `deadpool-postgres` |
 | ❌ Migration guide | SQLite → Postgres para cuando el cliente supera ~50 usuarios activos |
 

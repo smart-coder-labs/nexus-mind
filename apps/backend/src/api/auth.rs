@@ -1,13 +1,13 @@
 use axum::{extract::State, http::StatusCode, Extension, Json};
-use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::{
     auth::password::verify_password,
     db::queries,
     email::{send_password_reset, EmailConfig},
     models::types::{ApiError, AuthContext},
+    store::sqlite::SqliteStore,
 };
 
 fn internal_err(msg: &str) -> (StatusCode, Json<ApiError>) {
@@ -49,9 +49,10 @@ pub struct LoginInput {
 }
 
 pub async fn login(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Json(input): Json<LoginInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
     let (user, password_hash_opt) = queries::find_admin_by_email(&conn, &input.email)
@@ -91,13 +92,14 @@ pub struct SetPasswordInput {
 }
 
 pub async fn set_password(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Json(input): Json<SetPasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if input.password.len() < 8 {
         return Err(bad_request("Password must be at least 8 characters", "password_too_short"));
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
     let user_id = queries::validate_and_consume_reset_token(&conn, &input.token)
@@ -121,10 +123,11 @@ pub struct RequestResetInput {
 }
 
 pub async fn request_reset(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
     Json(input): Json<RequestResetInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
     let (user, _) = queries::find_admin_by_email(&conn, &input.email)
@@ -161,7 +164,7 @@ pub struct ChangePasswordInput {
 }
 
 pub async fn change_password(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<ChangePasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
@@ -169,6 +172,7 @@ pub async fn change_password(
         return Err(bad_request("New password must be at least 8 characters", "password_too_short"));
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
     let current_hash = queries::get_user_password_hash(&conn, &auth.user_id)

@@ -3,13 +3,12 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
 
 use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, User},
+    store::sqlite::SqliteStore,
 };
 
 #[derive(Deserialize)]
@@ -55,20 +54,21 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
 }
 
 pub async fn list(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<User>>, (StatusCode, Json<ApiError>)> {
     if auth.role != "admin" {
         return Err(forbidden());
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let users = queries::list_users(&conn, &auth.org_id).map_err(db_err)?;
     Ok(Json(users))
 }
 
 pub async fn invite(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<InviteInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
@@ -76,6 +76,7 @@ pub async fn invite(
         return Err(forbidden());
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let role = input.role.as_deref().unwrap_or("member");
 
@@ -100,7 +101,7 @@ pub async fn invite(
 }
 
 pub async fn remove(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
@@ -108,6 +109,7 @@ pub async fn remove(
         return Err(forbidden());
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let suspended = queries::suspend_user(&conn, &auth.org_id, &user_id).map_err(db_err)?;
 
@@ -135,7 +137,7 @@ pub async fn remove(
 }
 
 pub async fn rotate_key(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
@@ -144,6 +146,7 @@ pub async fn rotate_key(
         return Err(forbidden());
     }
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let new_key = queries::rotate_key(&conn, &auth.org_id, &user_id).map_err(db_err)?;
 
@@ -175,40 +178,43 @@ mod tests {
     use crate::{
         api::middleware as auth_mw,
         db::{connection::connect, migrations, queries as q},
+        store::sqlite::SqliteStore,
     };
 
-    fn make_db() -> Arc<Mutex<Connection>> {
+    fn make_store() -> SqliteStore {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
-        Arc::new(Mutex::new(conn))
+        SqliteStore::new(conn)
     }
 
-    fn app(db: Arc<Mutex<Connection>>) -> Router {
+    fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/users", get(list))
             .route("/v1/users/invite", post(invite))
             .route("/v1/users/:id", delete(remove))
             .route("/v1/users/:id/rotate-key", post(rotate_key))
-            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth))
-            .with_state(db)
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .with_state(store)
     }
 
-    fn setup_with_admin_key() -> (Arc<Mutex<Connection>>, String) {
-        let db = make_db();
+    fn setup_with_admin_key() -> (SqliteStore, String) {
+        let store = make_store();
         let raw_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
             let (_, _, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
-        (db, raw_key)
+        (store, raw_key)
     }
 
     #[tokio::test]
     async fn list_users_requires_admin() {
-        let (db, _admin_key) = setup_with_admin_key();
+        let (store, _admin_key) = setup_with_admin_key();
         // Create a member user and use their key
         let member_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
             let org: String = conn
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
@@ -218,7 +224,7 @@ mod tests {
             key
         };
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .uri("/v1/users")
@@ -234,9 +240,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_users_returns_200_for_admin() {
-        let (db, admin_key) = setup_with_admin_key();
+        let (store, admin_key) = setup_with_admin_key();
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .uri("/v1/users")
@@ -252,10 +258,10 @@ mod tests {
 
     #[tokio::test]
     async fn invite_user_returns_201() {
-        let (db, admin_key) = setup_with_admin_key();
+        let (store, admin_key) = setup_with_admin_key();
         let body = serde_json::json!({ "email": "new@acme.com", "name": "New User" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -273,9 +279,9 @@ mod tests {
 
     #[tokio::test]
     async fn remove_user_not_found_returns_404() {
-        let (db, admin_key) = setup_with_admin_key();
+        let (store, admin_key) = setup_with_admin_key();
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("DELETE")

@@ -4,15 +4,16 @@ use axum::{
     Extension, Router,
 };
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{admin, audit, auth, health, memory, middleware as auth_mw, sessions, users};
 use crate::config::Config;
 use crate::email::EmailConfig;
+use crate::store::sqlite::SqliteStore;
 
 pub fn build(conn: Connection, config: Config) -> Router {
-    let db = Arc::new(Mutex::new(conn));
+    let store = SqliteStore::new(conn);
 
     let email_config: Option<Arc<EmailConfig>> = match (
         config.smtp_username.clone(),
@@ -48,7 +49,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
         .route("/v1/admin/auth/change-password", post(auth::change_password))
-        .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth));
+        .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
     Router::new()
         .route("/v1/health", get(health::handler))
@@ -61,5 +62,5 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .layer(Extension(config.superuser_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(db)
+        .with_state(store)
 }

@@ -3,13 +3,11 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
 
 use crate::{
-    db::queries,
     models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest},
+    store::{sqlite::SqliteStore, MemoryFilters, MemoryStore},
 };
 
 #[derive(Deserialize)]
@@ -30,63 +28,34 @@ pub struct ListParams {
     pub offset: Option<i64>,
 }
 
-fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+    let msg = e.to_string();
+    if msg.starts_with("invalid_session_id:") {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: msg.replacen("invalid_session_id:", "session_id '", 1) + "' not found for this org",
+                code: "invalid_session_id".to_string(),
+            }),
+        );
+    }
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ApiError {
-            error: e.to_string(),
-            code: "internal_error".to_string(),
-        }),
-    )
-}
-
-fn lock_err() -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: "Database lock error".to_string(),
+            error: msg,
             code: "internal_error".to_string(),
         }),
     )
 }
 
 pub async fn store(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
-    let conn = db.lock().map_err(|_| lock_err())?;
-
-    // Validate session_id if provided
-    if let Some(ref sid) = input.session_id {
-        let valid = queries::validate_session_ownership(&conn, &auth.org_id, sid)
-            .map_err(db_err)?;
-        if !valid {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiError {
-                    error: format!("session_id '{}' not found for this org", sid),
-                    code: "invalid_session_id".to_string(),
-                }),
-            ));
-        }
-    }
-
     let is_upsert = input.topic_key.is_some();
-    let memory = queries::upsert_memory(&conn, &auth.org_id, &auth.user_id, &input)
-        .map_err(db_err)?;
+    let memory = store.store(&auth.org_id, &auth.user_id, &input).map_err(store_err)?;
 
-    let _ = queries::log_audit(
-        &conn,
-        &auth.org_id,
-        &auth.user_id,
-        "store",
-        "memory",
-        Some(&memory.id),
-        serde_json::json!({ "tool": memory.tool, "project": memory.project }),
-    );
-
-    // 201 for new insert, 200 for upsert update
     let status = if is_upsert && memory.revision_count > 1 {
         StatusCode::OK
     } else {
@@ -97,74 +66,45 @@ pub async fn store(
 }
 
 pub async fn search(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<SearchInput>,
 ) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
-    let conn = db.lock().map_err(|_| lock_err())?;
-
     let limit = input.limit.unwrap_or(20);
-    let memories = queries::search_memories(&conn, &auth.org_id, &input.query, limit)
-        .map_err(db_err)?;
-
-    let _ = queries::log_audit(
-        &conn,
-        &auth.org_id,
-        &auth.user_id,
-        "search",
-        "memory",
-        None,
-        serde_json::json!({ "query": input.query, "results": memories.len() }),
-    );
-
+    let memories = store
+        .search(&auth.org_id, &auth.user_id, &input.query, limit)
+        .map_err(store_err)?;
     Ok(Json(memories))
 }
 
 pub async fn list(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
-    let conn = db.lock().map_err(|_| lock_err())?;
-
-    let limit = params.limit.unwrap_or(50);
-    let offset = params.offset.unwrap_or(0);
-
-    let memories = queries::list_memories(
-        &conn,
-        &auth.org_id,
-        params.user_id.as_deref(),
-        params.tool.as_deref(),
-        params.project.as_deref(),
-        params.type_filter.as_deref(),
-        params.scope.as_deref(),
-        limit,
-        offset,
-    )
-    .map_err(db_err)?;
-
+    let filters = MemoryFilters {
+        user_id: params.user_id.as_deref(),
+        tool: params.tool.as_deref(),
+        project: params.project.as_deref(),
+        memory_type: params.type_filter.as_deref(),
+        scope: params.scope.as_deref(),
+        limit: params.limit.unwrap_or(50),
+        offset: params.offset.unwrap_or(0),
+    };
+    let memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
     Ok(Json(memories))
 }
 
 pub async fn delete(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let conn = db.lock().map_err(|_| lock_err())?;
-
-    let deleted = queries::delete_memory(&conn, &auth.org_id, &id).map_err(db_err)?;
+    let deleted = store
+        .delete(&auth.org_id, &auth.user_id, &id)
+        .map_err(store_err)?;
 
     if deleted {
-        let _ = queries::log_audit(
-            &conn,
-            &auth.org_id,
-            &auth.user_id,
-            "delete",
-            "memory",
-            Some(&id),
-            serde_json::json!({}),
-        );
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((
@@ -191,42 +131,44 @@ mod tests {
 
     use crate::{
         api::middleware as auth_mw,
-        db::{connection::connect, migrations, queries as q},
+        db::{connection::connect, migrations},
+        db::queries as q,
+        store::sqlite::SqliteStore,
     };
 
-    fn make_db() -> Arc<Mutex<Connection>> {
+    fn make_store() -> SqliteStore {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
-        Arc::new(Mutex::new(conn))
+        SqliteStore::new(conn)
     }
 
-    fn app(db: Arc<Mutex<Connection>>) -> Router {
+    fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/memory/store", post(store))
+            .route("/v1/memory/store", post(super::store))
             .route("/v1/memory/search", post(search))
-            .route("/v1/memory/:id", delete(crate::api::memory::delete))
+            .route("/v1/memory/:id", delete(super::delete))
             .route("/v1/memory", get(list))
-            .layer(middleware::from_fn_with_state(db.clone(), auth_mw::auth))
-            .with_state(db)
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .with_state(store)
     }
 
-    fn setup_with_key() -> (Arc<Mutex<Connection>>, String) {
-        let db = make_db();
+    fn setup_with_key() -> (SqliteStore, String) {
+        let store = make_store();
         let raw_key = {
+            let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) =
-                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (_, _, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
-        (db, raw_key)
+        (store, raw_key)
     }
 
     #[tokio::test]
     async fn store_memory_returns_201() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
         let body = serde_json::json!({ "tool": "claude", "content": "use snake_case" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -244,10 +186,10 @@ mod tests {
 
     #[tokio::test]
     async fn store_memory_unauthenticated_returns_401() {
-        let db = make_db();
+        let store = make_store();
         let body = serde_json::json!({ "tool": "claude", "content": "test" });
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -264,9 +206,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_memory_not_found_returns_404() {
-        let (db, key) = setup_with_key();
+        let (store, key) = setup_with_key();
 
-        let resp = app(db)
+        let resp = app(store)
             .oneshot(
                 Request::builder()
                     .method("DELETE")

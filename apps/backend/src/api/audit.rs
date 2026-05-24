@@ -3,13 +3,12 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
 
 use crate::{
     db::queries,
     models::types::{ApiError, AuditEntry, AuthContext},
+    store::sqlite::SqliteStore,
 };
 
 #[derive(Deserialize)]
@@ -44,13 +43,14 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 }
 
 pub async fn query(
-    State(db): State<Arc<Mutex<Connection>>>,
+    State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Vec<AuditEntry>>, (StatusCode, Json<ApiError>)> {
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0).max(0);
 
+    let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let entries = queries::list_audit(
@@ -75,7 +75,7 @@ mod tests {
     use crate::db::{connection::connect, migrations};
     use crate::db::queries::{bootstrap, log_audit};
 
-    fn setup() -> Connection {
+    fn setup() -> rusqlite::Connection {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
         conn
