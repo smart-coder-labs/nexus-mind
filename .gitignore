@@ -13,3 +13,7 @@ plugin/
 .claude-plugin/
 
 tmp.mcp.json
+
+tmp/
+
+.fastembed_cache/

@@ -2,46 +2,13 @@
 
 This repo includes a NexusMind MCP server. Claude Code connects to it automatically via `.mcp.json`.
 
-## NexusMind Memory — MANDATORY PROTOCOL
+## NexusMind Memory
 
-NexusMind is the **sole memory layer** for this project. This protocol is always active.
+Tools: `store_memory` · `search_memory` · `list_memories`  
+Always pass `tool="claude-code"` and the relevant `project` (`"nexusmind-backend"`, `"nexusmind-admin"`, `"nexusmind"`, etc).
 
-**CRITICAL — memory tool priority:**
-- This project → `store_memory` / `search_memory` / `list_memories` (NexusMind MCP)
-- Personal/cross-project → engram or other tools
-- **Never use engram for project context. Never use NexusMind for personal context.**
-
-### PROACTIVE SAVE — do NOT wait to be asked
-
-Call `store_memory` IMMEDIATELY after ANY of these:
-- Architecture or design decision made
-- Bug fixed (include root cause and what broke)
-- Convention documented or established
-- Tool or library choice made with reasoning
-- Non-obvious discovery, gotcha, or edge case found
-- Pattern established (naming, structure, approach)
-- User confirms your recommendation ("dale", "go with that", "sí")
-- User rejects an approach ("no, better X", "siempre hacé X")
-- Feature implemented with a non-obvious approach
-- Any config or environment change
-
-**Self-check after EVERY task**: "Did I make a decision, fix a bug, learn something non-obvious, or establish a convention? If yes → store_memory NOW."
-
-Always pass `tool="claude-code"` and set `project` to the relevant sub-project
-(e.g. `"nexusmind-backend"`, `"nexusmind-admin"`, `"nexusmind-landing"`, `"nexusmind"`).
-
-### SEARCH MEMORY on session start and when relevant
-
-On the first message of each session, call `search_memory` with keywords from the user's message.
-Also search before starting work on anything that might have been done before.
-
-### SESSION CLOSE — before saying "done"
-
-Call `store_memory` with a session summary:
-- What was accomplished
-- Key decisions made
-- Next steps
-- Files changed
+**Save** after any decision, bug fix, convention, or non-obvious discovery.  
+**Search** before starting work on something that might have been done before.
 
 ---
 
