@@ -121,7 +121,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
   deleting: boolean
 }) {
   return (
-    <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-black/70 p-6">
+    <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-[#050810] p-6">
       <div className="bg-bg-secondary border border-border-primary rounded-2xl w-full max-w-3xl flex flex-col max-h-full shadow-xl">
 
         {/* Header */}
@@ -195,6 +195,7 @@ export default function Memories() {
   const client = useMemo(() => createClient(session!.apiKey), [session])
 
   const [query, setQuery] = useState('')
+  const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
   const debouncedQuery = useDebounce(query, 300)
 
@@ -219,8 +220,8 @@ export default function Memories() {
   })
 
   const { data: searchData, isLoading: searchLoading } = useQuery({
-    queryKey: ['memories', 'search', debouncedQuery],
-    queryFn: () => client.searchMemories(debouncedQuery),
+    queryKey: ['memories', 'search', debouncedQuery, mode],
+    queryFn: () => client.searchMemories(debouncedQuery, 20, mode),
     enabled: isSearching,
   })
 
@@ -286,22 +287,39 @@ export default function Memories() {
       </div>
 
       {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-quaternary" />
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Search memories…"
-          className="w-full bg-surface-primary border border-border-primary rounded-xl pl-10 pr-4 py-3 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
-        />
-        {query && (
-          <button
-            onClick={() => setQuery('')}
-            className="absolute right-3.5 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-tertiary transition-colors"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-quaternary" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search memories…"
+            className="w-full bg-surface-primary border border-border-primary rounded-xl pl-10 pr-4 py-3 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              className="absolute right-3.5 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-tertiary transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        <div className="flex items-center bg-surface-primary border border-border-primary rounded-xl px-1 gap-0.5">
+          {(['keyword', 'hybrid'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                mode === m
+                  ? 'bg-accent-blue/15 text-accent-blue'
+                  : 'text-text-quaternary hover:text-text-tertiary'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Table */}

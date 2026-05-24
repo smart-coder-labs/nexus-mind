@@ -95,10 +95,10 @@ export class NexusMindClient {
     return this.request(`/v1/memory?${params}`)
   }
 
-  searchMemories(query: string, limit = 20): Promise<Memory[]> {
+  searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
     return this.request('/v1/memory/search', {
       method: 'POST',
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, limit, mode }),
     })
   }
 
