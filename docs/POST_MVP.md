@@ -47,13 +47,13 @@ Documentado en: PRD.md §3.1, ADR-001 §1.1 R2, ADR-002 §2.1, 03-SCOPE_CHANGELO
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Embeddings pipeline | Candle + ONNX — modelo open (e5-small o nomic-embed) corriendo local, sin llamadas externas |
-| ❌ `sqlite-vec` extension | Almacén de vectores sobre SQLite — evita segunda DB |
-| ❌ Hybrid search | FTS5 (texto exacto) + vector (semántico) fusionados con Reciprocal Rank Fusion |
-| ❌ `POST /v1/memory/search` upgrade | Añadir `mode: "semantic" | "keyword" | "hybrid"` al request |
-| ❌ Warm-up del modelo | Cargar el modelo ONNX en startup, no en cada request |
+| 🚧 Embeddings pipeline | Candle + ONNX — modelo open (e5-small o nomic-embed) corriendo local, sin llamadas externas |
+| 🚧 `sqlite-vec` extension | Almacén de vectores sobre SQLite — evita segunda DB |
+| 🚧 Hybrid search | FTS5 (texto exacto) + vector (semántico) fusionados con Reciprocal Rank Fusion |
+| 🚧 `POST /v1/memory/search` upgrade | Añadir `mode: "semantic" \| "keyword" \| "hybrid"` al request |
+| 🚧 Warm-up del modelo | Cargar el modelo ONNX en startup, no en cada request |
 
-**Estimación**: ~2 semanas. Bloqueante: elegir modelo (e5-small corre en 512MB RAM).
+**Decisión tomada**: modelo `nomic-embed-text-v1.5` vía ONNX local — mejor calidad que e5-small, mismo footprint (~274MB), sin llamadas externas.
 
 ### Plugin Cursor
 
