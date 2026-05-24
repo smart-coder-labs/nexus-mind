@@ -1,20 +1,18 @@
+// Session is now managed server-side via HttpOnly cookie.
+// These stubs exist to avoid breaking any remaining import sites
+// during the migration. They are no-ops.
+
 import type { AuthSession } from '../types'
 
-const KEY = 'nexusmind_session'
-
-export function saveSession(session: AuthSession): void {
-  localStorage.setItem(KEY, JSON.stringify(session))
+export function saveSession(_session: AuthSession): void {
+  // no-op: session identity lives in the HttpOnly cookie set by the server
 }
 
 export function loadSession(): AuthSession | null {
-  try {
-    const raw = localStorage.getItem(KEY)
-    return raw ? (JSON.parse(raw) as AuthSession) : null
-  } catch {
-    return null
-  }
+  // no-op: boot via GET /v1/admin/auth/me instead
+  return null
 }
 
 export function clearSession(): void {
-  localStorage.removeItem(KEY)
+  // no-op: logout is handled server-side via POST /v1/admin/auth/logout
 }

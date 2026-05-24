@@ -1,9 +1,10 @@
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
+use tower_cookies::{Cookie, Cookies};
 
 use crate::{
-    auth::password::verify_password,
+    auth::{api_keys, password::verify_password},
     db::queries,
     email::{send_password_reset, EmailConfig},
     models::types::{ApiError, AuthContext},
@@ -40,29 +41,76 @@ fn bad_request(msg: &str, code: &str) -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn set_session_cookie(cookies: &Cookies, raw_key: String) {
+    let cookie_secure = std::env::var("COOKIE_SECURE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let mut cookie = Cookie::new("nexusmind_session", raw_key);
+    cookie.set_http_only(true);
+    cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
+    cookie.set_path("/");
+    if cookie_secure {
+        cookie.set_secure(true);
+    }
+    cookies.add(cookie);
+}
+
 // ── POST /v1/admin/auth/login ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct LoginInput {
-    pub email: String,
-    pub password: String,
+    pub email: Option<String>,
+    pub password: Option<String>,
+    pub api_key: Option<String>,
 }
 
 pub async fn login(
+    cookies: Cookies,
     State(store): State<SqliteStore>,
     Json(input): Json<LoginInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
-    let (user, password_hash_opt) = queries::find_admin_by_email(&conn, &input.email)
+    // ── API key path ──────────────────────────────────────────────────────────
+    if let Some(ref raw_api_key) = input.api_key {
+        let hash = crate::auth::api_keys::hash_key(raw_api_key);
+        let auth_ctx = queries::validate_api_key(&conn, &hash)
+            .map_err(|_| internal_err("db error"))?
+            .ok_or_else(|| unauth("Invalid API key"))?;
+
+        let org = queries::get_org(&conn, &auth_ctx.org_id)
+            .map_err(|_| internal_err("db error"))?
+            .ok_or_else(|| internal_err("org not found"))?;
+
+        let user = queries::get_user_by_id(&conn, &auth_ctx.user_id)
+            .map_err(|_| internal_err("db error"))?
+            .ok_or_else(|| internal_err("user not found"))?;
+
+        let raw_key = queries::create_web_session_key(&conn, &auth_ctx.user_id, &auth_ctx.org_id)
+            .map_err(|_| internal_err("failed to create session"))?;
+
+        set_session_cookie(&cookies, raw_key);
+
+        return Ok(Json(serde_json::json!({
+            "org": org,
+            "user": user,
+        })));
+    }
+
+    // ── Email + password path ─────────────────────────────────────────────────
+    let email = input.email.as_deref().unwrap_or("");
+    let password = input.password.as_deref().unwrap_or("");
+
+    let (user, password_hash_opt) = queries::find_admin_by_email(&conn, email)
         .map_err(|_| internal_err("db error"))?
         .ok_or_else(|| unauth("Invalid email or password"))?;
 
     let password_hash = password_hash_opt
         .ok_or_else(|| unauth("Password not set. Check your email for a setup link."))?;
 
-    let valid = verify_password(&input.password, &password_hash)
+    let valid = verify_password(password, &password_hash)
         .map_err(|_| internal_err("password verification error"))?;
 
     if !valid {
@@ -76,11 +124,60 @@ pub async fn login(
     let raw_key = queries::create_web_session_key(&conn, &user.id, &user.org_id)
         .map_err(|_| internal_err("failed to create session"))?;
 
+    set_session_cookie(&cookies, raw_key);
+
     Ok(Json(serde_json::json!({
-        "api_key": raw_key,
         "org": org,
         "user": user,
     })))
+}
+
+// ── GET /v1/admin/auth/me ─────────────────────────────────────────────────────
+
+pub async fn me(
+    Extension(auth): Extension<AuthContext>,
+    State(store): State<SqliteStore>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
+
+    let org = queries::get_org(&conn, &auth.org_id)
+        .map_err(|_| internal_err("db error"))?
+        .ok_or_else(|| internal_err("org not found"))?;
+
+    let user = queries::get_user_by_id(&conn, &auth.user_id)
+        .map_err(|_| internal_err("db error"))?
+        .ok_or_else(|| internal_err("user not found"))?;
+
+    Ok(Json(serde_json::json!({
+        "org": org,
+        "user": user,
+    })))
+}
+
+// ── POST /v1/admin/auth/logout ────────────────────────────────────────────────
+
+pub async fn logout(
+    cookies: Cookies,
+    State(store): State<SqliteStore>,
+) -> StatusCode {
+    if let Some(cookie) = cookies.get("nexusmind_session") {
+        let token = cookie.value().to_string();
+        drop(cookie);
+        let hash = api_keys::hash_key(&token);
+        let db = store.conn();
+        let _ = db.lock().map(|conn| queries::revoke_key_by_hash(&conn, &hash));
+    }
+
+    // Clear the cookie by setting Max-Age=0
+    let mut removal = Cookie::new("nexusmind_session", "");
+    removal.set_path("/");
+    removal.set_max_age(tower_cookies::cookie::time::Duration::ZERO);
+    removal.set_http_only(true);
+    removal.set_same_site(tower_cookies::cookie::SameSite::Lax);
+    cookies.add(removal);
+
+    StatusCode::NO_CONTENT
 }
 
 // ── POST /v1/admin/auth/set-password ─────────────────────────────────────────

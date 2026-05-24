@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import type { NexusMindClient } from '../api/client'
+import type { CustomRole } from '../types'
 
 interface Props {
   open: boolean
   client: NexusMindClient
   onClose: () => void
   onSuccess: () => void
+  roles?: CustomRole[]
 }
 
-export function InviteUserModal({ open, client, onClose, onSuccess }: Props) {
+export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Props) {
   const [form, setForm] = useState({ email: '', name: '', role: 'member' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -110,6 +112,11 @@ export function InviteUserModal({ open, client, onClose, onSuccess }: Props) {
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
                 <option value="viewer">Viewer</option>
+                {roles?.map(r => (
+                  <option key={r.id} value={r.name}>
+                    {r.display_name}
+                  </option>
+                ))}
               </select>
             </div>
 

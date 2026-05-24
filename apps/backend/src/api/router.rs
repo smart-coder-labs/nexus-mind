@@ -5,6 +5,7 @@ use axum::{
 };
 use rusqlite::Connection;
 use std::sync::Arc;
+use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{admin, audit, auth, health, memory, middleware as auth_mw, sessions, users};
@@ -65,11 +66,33 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/users/invite", post(users::invite))
         .route("/v1/users/:id", delete(users::remove))
         .route("/v1/users/:id/rotate-key", post(users::rotate_key))
+        .route("/v1/users/:id/role", patch(users::update_role))
+        .route("/v1/roles", get(admin::list_roles_api).post(admin::create_role_api))
+        .route("/v1/roles/:id", delete(admin::delete_role_api))
         .route("/v1/audit", get(audit::query))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
         .route("/v1/admin/auth/change-password", post(auth::change_password))
+        .route("/v1/admin/auth/me", get(auth::me))
         .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
+
+    let cors = CorsLayer::new()
+        .allow_origin(
+            config.admin_origin
+                .parse::<axum::http::HeaderValue>()
+                .expect("invalid ADMIN_ORIGIN"),
+        )
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .allow_credentials(true);
 
     Router::new()
         .route("/v1/health", get(health::handler))
@@ -77,10 +100,12 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/auth/login", post(auth::login))
         .route("/v1/admin/auth/set-password", post(auth::set_password))
         .route("/v1/admin/auth/request-reset", post(auth::request_reset))
+        .route("/v1/admin/auth/logout", post(auth::logout))
         .merge(protected)
         .layer(Extension(email_config))
         .layer(Extension(config.superuser_key))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
+        .layer(CookieManagerLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(store)
 }

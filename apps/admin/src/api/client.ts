@@ -1,25 +1,24 @@
 import type {
   Org,
   User,
+  AuthSession,
   Memory,
   AuditEntry,
   OrgStats,
   MemoryFilters,
   AuditFilters,
+  CustomRole,
 } from '../types'
 
 export class NexusMindClient {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey: string,
-  ) {}
+  constructor(private readonly baseUrl: string) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
         ...init?.headers,
       },
     })
@@ -35,26 +34,13 @@ export class NexusMindClient {
     return res.json()
   }
 
-  // Auth (no Bearer needed for this one)
-  async validateKey(): Promise<{ org: Org; user: User }> {
-    const res = await fetch(`${this.baseUrl}/v1/admin/org`, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
-    })
-    if (!res.ok) throw new Error('Invalid API key')
-    const org: Org = await res.json()
-    // Derive a minimal user from org context (role is admin if key validates)
-    return {
-      org,
-      user: {
-        id: '',
-        org_id: org.id,
-        email: '',
-        name: 'Admin',
-        role: 'admin',
-        status: 'active',
-        created_at: '',
-      },
-    }
+  // Auth
+  getMe(): Promise<AuthSession> {
+    return this.request('/v1/admin/auth/me')
+  }
+
+  logout(): Promise<void> {
+    return this.request('/v1/admin/auth/logout', { method: 'POST' })
   }
 
   getStats(): Promise<OrgStats> {
@@ -89,6 +75,33 @@ export class NexusMindClient {
     return this.request(`/v1/users/${userId}/rotate-key`, { method: 'POST' })
   }
 
+  updateUserRole(userId: string, role: string): Promise<void> {
+    return this.request(`/v1/users/${userId}/role`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    })
+  }
+
+  listRoles(): Promise<CustomRole[]> {
+    return this.request('/v1/roles')
+  }
+
+  createRole(data: {
+    name: string
+    display_name: string
+    permissions: string[]
+    description?: string
+  }): Promise<CustomRole> {
+    return this.request('/v1/roles', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  deleteRole(id: string): Promise<void> {
+    return this.request(`/v1/roles/${id}`, { method: 'DELETE' })
+  }
+
   listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {
     const params = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))
@@ -117,20 +130,70 @@ export class NexusMindClient {
   }
 }
 
-export function createClient(apiKey: string): NexusMindClient {
+export function createClient(): NexusMindClient {
   const baseUrl = import.meta.env.VITE_API_URL ?? ''
-  return new NexusMindClient(baseUrl, apiKey)
+  return new NexusMindClient(baseUrl)
+}
+
+export async function listOrgs(superuserKey: string): Promise<Org[]> {
+  const baseUrl = import.meta.env.VITE_API_URL ?? ''
+  const res = await fetch(`${baseUrl}/v1/orgs`, {
+    headers: { Authorization: `Bearer ${superuserKey}` },
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw Object.assign(new Error(body.error ?? res.statusText), { code: body.code, status: res.status })
+  }
+  return res.json()
+}
+
+export async function createOrg(
+  superuserKey: string,
+  data: { org_name: string; org_slug: string; admin_email: string; admin_name: string },
+): Promise<{ org: Org; user: User; api_key: string }> {
+  const baseUrl = import.meta.env.VITE_API_URL ?? ''
+  const res = await fetch(`${baseUrl}/v1/orgs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${superuserKey}` },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw Object.assign(new Error(body.error ?? res.statusText), { code: body.code, status: res.status })
+  }
+  return res.json()
 }
 
 export async function loginWithEmail(
   email: string,
   password: string,
-): Promise<{ api_key: string; org: Org; user: User }> {
+): Promise<{ org: Org; user: User }> {
   const baseUrl = import.meta.env.VITE_API_URL ?? ''
   const res = await fetch(`${baseUrl}/v1/admin/auth/login`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw Object.assign(new Error(body.error ?? res.statusText), {
+      code: body.code,
+      status: res.status,
+    })
+  }
+  return res.json()
+}
+
+export async function loginWithApiKey(
+  apiKey: string,
+): Promise<{ org: Org; user: User }> {
+  const baseUrl = import.meta.env.VITE_API_URL ?? ''
+  const res = await fetch(`${baseUrl}/v1/admin/auth/login`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))

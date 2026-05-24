@@ -7,6 +7,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v2(conn)?;
     run_v3(conn)?;
     run_v4(conn)?;
+    run_v5(conn)?;
     Ok(())
 }
 
@@ -235,6 +236,53 @@ pub fn run_v4(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v5: adds roles table for custom RBAC.
+pub fn run_v5(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 5 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS roles (
+                id           TEXT PRIMARY KEY,
+                org_id       TEXT REFERENCES organizations(id) ON DELETE CASCADE,
+                name         TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                description  TEXT,
+                extends_json TEXT NOT NULL DEFAULT '[]',
+                permissions  TEXT NOT NULL DEFAULT '[]',
+                color        TEXT,
+                icon         TEXT,
+                version      INTEGER NOT NULL DEFAULT 1,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                is_template  INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(org_id, name)
+            );
+
+            PRAGMA user_version = 5;
+            ",
+        )?;
+    }
+
+    let count: i32 = conn.query_row("SELECT COUNT(*) FROM roles WHERE is_template = 1", [], |r| r.get(0))?;
+    if count == 0 {
+        conn.execute_batch(
+            "
+            INSERT INTO roles (id, org_id, name, display_name, description, extends_json, permissions, version, enabled, is_template)
+            VALUES 
+            ('tmpl_security_officer', NULL, 'security-officer', 'Security Officer', 'Allows viewing audit logs and settings.', '[]', '[\"audit:read\", \"settings:write\"]', 1, 1, 1),
+            ('tmpl_dev_senior', NULL, 'dev-senior', 'Developer Senior', 'Senior developer with full memory management.', '[]', '[\"memory:read\", \"memory:write\", \"memory:delete\", \"memory:search\"]', 1, 1, 1),
+            ('tmpl_dev_junior', NULL, 'dev-junior', 'Junior Developer', 'Junior developer with search and read access.', '[]', '[\"memory:read\", \"memory:search\"]', 1, 1, 1),
+            ('tmpl_auditor', NULL, 'auditor', 'Auditor', 'Auditor with access to audit trails.', '[]', '[\"audit:read\"]', 1, 1, 1)
+            ON CONFLICT(id) DO NOTHING;
+            "
+        )?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +316,7 @@ mod tests {
         assert!(table_exists(&conn, "api_keys"), "missing: api_keys");
         assert!(table_exists(&conn, "memories"), "missing: memories");
         assert!(table_exists(&conn, "audit_logs"), "missing: audit_logs");
+        assert!(table_exists(&conn, "roles"), "missing: roles");
     }
 
     #[test]
@@ -333,10 +382,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_4() {
+    fn run_all_sets_user_version_to_5() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 4, "user_version must be 4 after run_all");
+        assert_eq!(get_user_version(&conn), 5, "user_version must be 5 after run_all");
     }
 
     #[test]

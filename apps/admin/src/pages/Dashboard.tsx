@@ -11,26 +11,31 @@ export default function Dashboard() {
   const { session } = useAuth()
 
   const client = useMemo(
-    () => createClient(session!.apiKey),
+    () => createClient(),
     [session],
   )
+
+  const isAdmin = session?.user.role === 'admin'
 
   const { data: stats, isLoading: statsLoading, isError: statsError } = useQuery({
     queryKey: ['stats'],
     queryFn: () => client.getStats(),
     refetchInterval: 30_000,
+    enabled: isAdmin,
   })
 
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: ['audit', 'recent'],
     queryFn: () => client.getAuditLog({ limit: 20 }),
     refetchInterval: 30_000,
+    enabled: isAdmin,
   })
 
   const { data: users } = useQuery({
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
     staleTime: 60_000,
+    enabled: isAdmin,
   })
 
   const userMap = useMemo(() => {
@@ -75,54 +80,69 @@ export default function Dashboard() {
       </div>
 
       {/* Stat cards */}
-      <section aria-label="Organization statistics">
-        {statsError ? (
-          <div className="rounded-2xl border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
-            Failed to load statistics. Check your connection and try again.
-          </div>
-        ) : statsLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-32 rounded-2xl" />
-            ))}
-          </div>
-        ) : (
-          <StatisticDisplay
-            metrics={metrics}
-            columns={4}
-            variant="card"
-            size="md"
-          />
-        )}
-      </section>
-
-      {/* Activity timeline */}
-      <section aria-label="Recent activity">
-        <h2 className="text-lg font-semibold text-text-primary mb-4">
-          Recent Activity
-        </h2>
-        <div className="bg-surface-primary border border-border-primary rounded-2xl px-6 divide-y divide-border-secondary">
-          {activityLoading ? (
-            Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="py-3">
-                <Skeleton className="h-6 w-full rounded-md" />
-              </div>
-            ))
-          ) : !activity || activity.length === 0 ? (
-            <div className="py-8">
-              <EmptyState title="No activity yet" description="Actions performed by your team will appear here." />
+      {isAdmin && (
+        <section aria-label="Organization statistics">
+          {statsError ? (
+            <div className="rounded-2xl border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
+              Failed to load statistics. Check your connection and try again.
+            </div>
+          ) : statsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-32 rounded-2xl" />
+              ))}
             </div>
           ) : (
-            activity.map((entry) => (
-              <ActivityItem
-                key={entry.id}
-                entry={entry}
-                userName={userMap.get(entry.user_id)}
-              />
-            ))
+            <StatisticDisplay
+              metrics={metrics}
+              columns={4}
+              variant="card"
+              size="md"
+            />
           )}
+        </section>
+      )}
+
+      {/* Activity timeline */}
+      {isAdmin && (
+        <section aria-label="Recent activity">
+          <h2 className="text-lg font-semibold text-text-primary mb-4">
+            Recent Activity
+          </h2>
+          <div className="bg-surface-primary border border-border-primary rounded-2xl px-6 divide-y divide-border-secondary">
+            {activityLoading ? (
+              Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="py-3">
+                  <Skeleton className="h-6 w-full rounded-md" />
+                </div>
+              ))
+            ) : !activity || activity.length === 0 ? (
+              <div className="py-8">
+                <EmptyState title="No activity yet" description="Actions performed by your team will appear here." />
+              </div>
+            ) : (
+              activity.map((entry) => (
+                <ActivityItem
+                  key={entry.id}
+                  entry={entry}
+                  userName={userMap.get(entry.user_id)}
+                />
+              ))
+            )}
+          </div>
+        </section>
+      )}
+
+      {!isAdmin && (
+        <div className="border border-border-primary bg-surface-primary rounded-2xl p-6 max-w-xl">
+          <p className="text-sm text-text-secondary leading-relaxed">
+            Welcome to <strong>{session?.org.name}</strong> on NexusMind.
+          </p>
+          <p className="text-xs text-text-tertiary mt-2">
+            Use the navigation sidebar to browse, search, and manage your team's shared AI memories.
+          </p>
         </div>
-      </section>
+      )}
     </div>
   )
 }

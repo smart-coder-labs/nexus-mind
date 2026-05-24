@@ -1,6 +1,7 @@
 pub mod router;
 pub mod middleware;
 pub mod health;
+pub mod helpers;
 pub mod memory;
 pub mod audit;
 pub mod users;

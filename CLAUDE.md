@@ -4,8 +4,32 @@ This repo includes a NexusMind MCP server. Claude Code connects to it automatica
 
 ## NexusMind Memory
 
-Tools: `store_memory` · `search_memory` · `list_memories`  
-Always pass `tool="claude-code"` and the relevant `project` (`"nexusmind-backend"`, `"nexusmind-admin"`, `"nexusmind"`, etc).
+Call these tools DIRECTLY — no ToolSearch needed. Use the full MCP tool name.
+
+### `mcp__nexusmind__store_memory`
+```
+content   (required) Full memory content
+title     (optional) Short searchable title
+type      (optional) architecture | bugfix | decision | discovery | config | pattern | feedback | preference | project | session_summary | feature | refactoring | manual
+topic_key (optional) Stable key to upsert (same key updates existing memory)
+project   (optional) e.g. "nexusmind-backend", "nexusmind-admin", "nexusmind"
+tool      (optional) defaults to "claude-code"
+tags      (optional) array of strings
+scope     (optional) "project" (default) | "personal"
+```
+
+### `mcp__nexusmind__search_memory`
+```
+query  (required) Search text
+limit  (optional) Max results, default 10
+```
+
+### `mcp__nexusmind__list_memories`
+```
+project (optional) Filter by project
+type    (optional) Filter by type
+limit   (optional) Max results, default 20
+```
 
 **Save** after any decision, bug fix, convention, or non-obvious discovery.  
 **Search** before starting work on something that might have been done before.
@@ -38,9 +62,9 @@ Full setup guide: [docs/RUNNING.md](docs/RUNNING.md)
 
 | Tool | When to use |
 |------|-------------|
-| `store_memory` | Save a decision, bug fix, convention, discovery |
-| `search_memory` | Look up past decisions or context |
-| `list_memories` | Browse recent memories |
+| `mcp__nexusmind__store_memory` | Save a decision, bug fix, convention, discovery |
+| `mcp__nexusmind__search_memory` | Look up past decisions or context |
+| `mcp__nexusmind__list_memories` | Browse recent memories |
 
 ## Demo keys (after reset-demo.sh)
 

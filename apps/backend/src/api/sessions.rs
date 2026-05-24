@@ -101,6 +101,7 @@ mod tests {
             .route("/v1/sessions", post(create_session_handler))
             .route("/v1/sessions/:id", patch(patch_session_handler))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
     }
 

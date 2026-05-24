@@ -21,14 +21,15 @@ function statusDot(status: User['status']) {
   )
 }
 
-function roleBadge(role: User['role']) {
-  const styles: Record<User['role'], string> = {
+function roleBadge(role: string) {
+  const styles: Record<string, string> = {
     admin:  'text-accent-blue border-accent-blue/30 bg-accent-blue/5',
     member: 'text-text-tertiary border-border-primary',
     viewer: 'text-text-quaternary border-border-secondary',
   }
+  const cls = styles[role] || 'text-status-success border-status-success/30 bg-status-success/5'
   return (
-    <span className={`text-[11px] border rounded px-1.5 py-0.5 capitalize ${styles[role]}`}>
+    <span className={`text-[11px] border rounded px-1.5 py-0.5 capitalize ${cls}`}>
       {role}
     </span>
   )
@@ -37,7 +38,7 @@ function roleBadge(role: User['role']) {
 export default function Users() {
   const { session } = useAuth()
   const qc = useQueryClient()
-  const client = useMemo(() => createClient(session!.apiKey), [session])
+  const client = useMemo(() => createClient(), [session])
 
   const [inviteOpen, setInviteOpen] = useState(false)
   const [revokeTarget, setRevokeTarget] = useState<User | null>(null)
@@ -48,6 +49,17 @@ export default function Users() {
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
+  })
+
+  const { data: roles } = useQuery({
+    queryKey: ['roles'],
+    queryFn: () => client.listRoles(),
+    enabled: session?.user.role === 'admin',
+  })
+
+  const updateRoleMut = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) => client.updateUserRole(userId, role),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }) },
   })
 
   const revokeMut = useMutation({
@@ -73,13 +85,15 @@ export default function Users() {
           <h1 className="text-lg font-semibold text-text-primary">Users</h1>
           <p className="text-[12px] text-text-tertiary mt-0.5">Manage team members and API keys</p>
         </div>
-        <button
-          onClick={() => setInviteOpen(true)}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
-        >
-          <UserPlus className="w-4 h-4" />
-          Invite user
-        </button>
+        {session?.user.role === 'admin' && (
+          <button
+            onClick={() => setInviteOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+          >
+            <UserPlus className="w-4 h-4" />
+            Invite user
+          </button>
+        )}
       </div>
 
       <div className="border border-border-primary rounded-xl overflow-hidden">
@@ -116,22 +130,47 @@ export default function Users() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3">{roleBadge(user.role)}</td>
+                  <td className="px-4 py-3">
+                    {session?.user.role === 'admin' ? (
+                      <select
+                        value={user.role}
+                        onChange={e => updateRoleMut.mutate({ userId: user.id, role: e.target.value })}
+                        disabled={updateRoleMut.isPending}
+                        className="bg-transparent border border-border-primary rounded px-2 py-0.5 text-xs text-text-secondary focus:outline-none focus:border-border-focus"
+                      >
+                        <option value="admin">Admin</option>
+                        <option value="member">Member</option>
+                        <option value="viewer">Viewer</option>
+                        {roles?.map(r => (
+                          <option key={r.id} value={r.name}>
+                            {r.display_name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      roleBadge(user.role)
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-xs">{statusDot(user.status)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
-                      <button
-                        onClick={() => setRotateTarget(user)}
-                        className="text-xs text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
-                      >
-                        Rotate key
-                      </button>
-                      <button
-                        onClick={() => setRevokeTarget(user)}
-                        className="text-xs text-status-error/60 hover:text-status-error transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
-                      >
-                        Revoke
-                      </button>
+                      {/* Rotate own key: visible to all roles. Rotate other's key: admin only */}
+                      {(session?.user.role === 'admin' || user.id === session?.user.id) && (
+                        <button
+                          onClick={() => setRotateTarget(user)}
+                          className="text-xs text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
+                        >
+                          Rotate key
+                        </button>
+                      )}
+                      {session?.user.role === 'admin' && (
+                        <button
+                          onClick={() => setRevokeTarget(user)}
+                          className="text-xs text-status-error/60 hover:text-status-error transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
+                        >
+                          Revoke
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -150,6 +189,7 @@ export default function Users() {
         client={client}
         onClose={() => setInviteOpen(false)}
         onSuccess={() => qc.invalidateQueries({ queryKey: ['users'] })}
+        roles={roles}
       />
 
       <ConfirmModal

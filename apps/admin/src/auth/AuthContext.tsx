@@ -1,9 +1,10 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
 import type { AuthSession } from '../types'
-import { loadSession, clearSession } from './session'
+import { createClient } from '../api/client'
 
 interface AuthContextValue {
   session: AuthSession | null
+  loading: boolean
   setSession: (s: AuthSession | null) => void
   logout: () => void
 }
@@ -11,19 +12,29 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSessionState] = useState<AuthSession | null>(loadSession)
+  const [session, setSessionState] = useState<AuthSession | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const client = createClient()
+    client.getMe()
+      .then(data => setSessionState(data))
+      .catch(() => setSessionState(null))
+      .finally(() => setLoading(false))
+  }, [])
 
   const setSession = (s: AuthSession | null) => {
     setSessionState(s)
   }
 
   const logout = () => {
-    clearSession()
+    const client = createClient()
+    client.logout().catch(() => {/* ignore errors on logout */})
     setSessionState(null)
   }
 
   return (
-    <AuthContext.Provider value={{ session, setSession, logout }}>
+    <AuthContext.Provider value={{ session, loading, setSession, logout }}>
       {children}
     </AuthContext.Provider>
   )

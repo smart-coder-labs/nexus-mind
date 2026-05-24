@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { createClient, loginWithEmail } from '../api/client'
-import { saveSession } from '../auth/session'
+import { createClient, loginWithEmail, loginWithApiKey } from '../api/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 
@@ -34,9 +33,10 @@ export default function Login() {
     setLoading(true)
     setError('')
     try {
-      const { api_key, org, user } = await loginWithEmail(email.trim(), password)
-      const session = { apiKey: api_key, org, user }
-      saveSession(session)
+      // Login sets the HttpOnly cookie server-side; response has { org, user }
+      await loginWithEmail(email.trim(), password)
+      // Re-hydrate session from /me (cookie is now set)
+      const session = await createClient().getMe()
       setSession(session)
       navigate('/')
     } catch (err: unknown) {
@@ -77,10 +77,7 @@ export default function Login() {
     setLoading(true)
     setError('')
     try {
-      const client = createClient(apiKey.trim())
-      const { org, user } = await client.validateKey()
-      const session = { apiKey: apiKey.trim(), org, user }
-      saveSession(session)
+      const session = await loginWithApiKey(apiKey.trim())
       setSession(session)
       navigate('/')
     } catch {

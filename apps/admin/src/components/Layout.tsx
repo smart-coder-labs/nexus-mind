@@ -9,6 +9,8 @@ import {
   LogOut,
   Menu,
   X,
+  Building2,
+  Shield,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { cn } from '@/lib/utils'
@@ -20,19 +22,29 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: 'Dashboard', href: '/',         icon: LayoutDashboard },
-  { label: 'Users',     href: '/users',    icon: Users },
-  { label: 'Memories',  href: '/memories', icon: Brain },
-  { label: 'Audit Log', href: '/audit',    icon: ScrollText },
-  { label: 'Settings',  href: '/settings', icon: Settings },
+  { label: 'Dashboard',     href: '/',         icon: LayoutDashboard },
+  { label: 'Organizations', href: '/orgs',     icon: Building2 },
+  { label: 'Users',         href: '/users',    icon: Users },
+  { label: 'Roles',         href: '/roles',    icon: Shield },
+  { label: 'Memories',      href: '/memories', icon: Brain },
+  { label: 'Audit Log',     href: '/audit',    icon: ScrollText },
+  { label: 'Settings',      href: '/settings', icon: Settings },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation()
+  const { session } = useAuth()
+
+  const visibleItems = NAV_ITEMS.filter(item => {
+    if (item.href === '/users' || item.href === '/audit' || item.href === '/orgs' || item.href === '/roles') {
+      return session?.user.role === 'admin'
+    }
+    return true
+  })
 
   return (
     <nav className="flex flex-col gap-0.5 px-2">
-      {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+      {visibleItems.map(({ href, label, icon: Icon }) => {
         const isActive =
           href === '/'
             ? location.pathname === '/'

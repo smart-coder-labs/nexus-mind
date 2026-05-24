@@ -81,6 +81,19 @@ Documentado en: ADR-002 §6.3
 
 **Estimación**: ~1 semana. Sin esto, el path a Postgres es una reescritura.
 
+### Autenticación desde el Servidor (HTTP-only Cookies)
+
+**Contexto**: Para mitigar riesgos de seguridad (como XSS) y evitar que el frontend tenga acceso a los tokens de sesión, la autenticación del panel de administración debe realizarse mediante cookies HTTP-only controladas por el servidor.
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Middleware de Cookies en Axum | Leer y validar cookies de sesión firmadas en el backend Rust utilizando `axum-extra` (`SignedCookieJar`). |
+| ❌ Configuración de Seguridad en Cookies | Emitir cookies con `httpOnly: true`, `secure: true` (en producción), `sameSite: "Lax"`, `path: "/"`, y firmadas criptográficamente con una clave secreta. |
+| ❌ Adaptación del Admin Panel | Modificar el cliente para eliminar el uso de `Authorization: Bearer` y permitir que el navegador envíe automáticamente las cookies en cada request (`credentials: "include"`). |
+| ❌ Endpoint de Logout Seguro | Limpiar las cookies de sesión en el cliente emitiendo un header `Set-Cookie` con fecha de expiración pasada y coincidencia exacta de atributos (`path`, `domain`). |
+
+**Estimación**: ~1 semana. Requiere ajustes coordinados entre el backend en Rust y el cliente de React/Frontend.
+
 ---
 
 ## v0.4.0 — Auth Hardening (Semanas 5-8 post-MVP)
@@ -93,10 +106,10 @@ Documentado en: AUTH_SPEC.md (v1.1 completo), PRD.md, ROADMAP.md M4-M5
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Roles granulares | `admin`, `member`, `viewer` — ya existe en DB pero no se enforce en API |
-| ❌ Permissions catalog | `memory:write`, `memory:read`, `memory:delete`, `user:invite`, `user:revoke`, `audit:read`, `settings:write` |
-| ❌ Middleware de roles | Cada endpoint verifica el rol del API key — no solo que pertenezca a la org |
-| ❌ Custom roles (YAML) | Admin puede definir roles custom con subsets de permisos — AUTH_SPEC.md §4.3 |
+| ✅ Roles granulares | `admin`, `member`, `viewer` — ya existe en DB pero no se enforce en API |
+| ✅ Permissions catalog | `memory:write`, `memory:read`, `memory:delete`, `user:invite`, `user:revoke`, `audit:read`, `settings:write` |
+| ✅ Middleware de roles | Cada endpoint verifica el rol del API key — no solo que pertenezca a la org |
+| ✅ Custom roles | Admin puede definir roles custom con subsets de permissions and assign them to users |
 | ❌ Per-project role overrides | Un usuario puede ser `viewer` en la org pero `admin` en un proyecto — AUTH_SPEC.md §4.5 |
 
 ### Memory isolation levels

@@ -120,6 +120,11 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
   onDelete: () => void
   deleting: boolean
 }) {
+  const { session } = useAuth()
+  const canDelete =
+    session?.user.role === 'admin' ||
+    (session?.user.role === 'member' && memory.user_id === session.user.id)
+
   return (
     <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-[#050810] p-6">
       <div className="bg-bg-secondary border border-border-primary rounded-2xl w-full max-w-3xl flex flex-col max-h-full shadow-xl">
@@ -173,15 +178,17 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end px-6 py-4 shrink-0 border-t border-border-secondary">
-          <button
-            onClick={onDelete}
-            disabled={deleting}
-            className="text-xs text-status-error/50 hover:text-status-error transition-colors disabled:opacity-40"
-          >
-            {deleting ? 'Deleting…' : 'Delete memory'}
-          </button>
-        </div>
+        {canDelete && (
+          <div className="flex justify-end px-6 py-4 shrink-0 border-t border-border-secondary">
+            <button
+              onClick={onDelete}
+              disabled={deleting}
+              className="text-xs text-status-error/50 hover:text-status-error transition-colors disabled:opacity-40"
+            >
+              {deleting ? 'Deleting…' : 'Delete memory'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -192,7 +199,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
 export default function Memories() {
   const { session } = useAuth()
   const qc = useQueryClient()
-  const client = useMemo(() => createClient(session!.apiKey), [session])
+  const client = useMemo(() => createClient(), [session])
 
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')

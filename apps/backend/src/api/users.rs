@@ -9,7 +9,13 @@ use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, User},
     store::sqlite::SqliteStore,
+    api::helpers::require_permission,
 };
+
+#[derive(Deserialize)]
+pub struct UpdateUserRoleInput {
+    pub role: String,
+}
 
 #[derive(Deserialize)]
 pub struct InviteInput {
@@ -57,7 +63,7 @@ pub async fn list(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<User>>, (StatusCode, Json<ApiError>)> {
-    if auth.role != "admin" {
+    if !auth.role.is_admin() {
         return Err(forbidden());
     }
 
@@ -72,12 +78,10 @@ pub async fn invite(
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<InviteInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
-    if auth.role != "admin" {
-        return Err(forbidden());
-    }
-
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, "user:invite")?;
+
     let role = input.role.as_deref().unwrap_or("member");
 
     let (user, api_key) =
@@ -105,12 +109,10 @@ pub async fn remove(
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if auth.role != "admin" {
-        return Err(forbidden());
-    }
-
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, "user:revoke")?;
+
     let suspended = queries::suspend_user(&conn, &auth.org_id, &user_id).map_err(db_err)?;
 
     if !suspended {
@@ -142,7 +144,7 @@ pub async fn rotate_key(
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     // Any role can rotate their own key; admin can rotate any key.
-    if auth.role != "admin" && auth.user_id != user_id {
+    if !auth.role.is_admin() && auth.user_id != user_id {
         return Err(forbidden());
     }
 
@@ -161,6 +163,45 @@ pub async fn rotate_key(
     );
 
     Ok(Json(serde_json::json!({ "api_key": new_key })))
+}
+
+pub async fn update_role(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(user_id): Path<String>,
+    Json(input): Json<UpdateUserRoleInput>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    
+    let updated = queries::update_user_role(&conn, &auth.org_id, &user_id, &input.role)
+        .map_err(db_err)?;
+
+    if !updated {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User or role not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "update_role",
+        "user",
+        Some(&user_id),
+        serde_json::json!({ "new_role": input.role }),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -194,6 +235,7 @@ mod tests {
             .route("/v1/users/:id", delete(remove))
             .route("/v1/users/:id/rotate-key", post(rotate_key))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
     }
 

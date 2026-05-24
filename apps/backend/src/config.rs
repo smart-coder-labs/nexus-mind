@@ -35,4 +35,10 @@ pub struct Config {
 
     #[arg(long, env = "APP_BASE_URL", default_value = "http://localhost:5173")]
     pub app_base_url: String,
+
+    #[arg(long, env = "ADMIN_ORIGIN", default_value = "http://localhost:3000")]
+    pub admin_origin: String,
+
+    #[arg(long, env = "COOKIE_SECURE", default_value_t = false)]
+    pub cookie_secure: bool,
 }

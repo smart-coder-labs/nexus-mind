@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nexusmind": {
+      "command": "node",
+      "args": ["/Volumes/Realtek/work-environment/personal/smartcoder/apps/nexusmind-mcp/dist/index.js"],
+      "env": {
+        "NEXUSMIND_API_KEY": "nm_46563d0070fb671d107c7a9f600dbc990fc5123dc448858f87f03037a78f148a",
+        "NEXUSMIND_BASE_URL": "http://localhost:8080"
+      }
+    }
+  }
+}

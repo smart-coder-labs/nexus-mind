@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, Extension, Json};
+use axum::{extract::State, extract::Path, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, Org, OrgStats},
+    models::types::{ApiError, AuthContext, Org, OrgStats, CustomRole},
     store::sqlite::SqliteStore,
 };
 
@@ -162,7 +162,7 @@ pub async fn stats(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<OrgStats>, (StatusCode, Json<ApiError>)> {
-    if auth.role != "admin" {
+    if !auth.role.is_admin() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -196,13 +196,117 @@ pub async fn update_org(
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<UpdateOrgInput>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
-    if auth.role != "admin" {
+    if !auth.role.is_admin() {
         return Err(forbidden());
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let org = queries::update_org_name(&conn, &auth.org_id, &input.name).map_err(db_err)?;
     Ok(Json(org))
+}
+
+#[derive(Deserialize)]
+pub struct CreateRoleInput {
+    pub name: String,
+    pub display_name: String,
+    pub permissions: Vec<String>,
+    pub description: Option<String>,
+}
+
+pub async fn list_roles_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<CustomRole>>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let roles = queries::list_roles(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(roles))
+}
+
+pub async fn create_role_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<CreateRoleInput>,
+) -> Result<(StatusCode, Json<CustomRole>), (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let role = queries::create_role(
+        &conn,
+        &auth.org_id,
+        &input.name,
+        &input.display_name,
+        &input.permissions,
+        input.description.as_deref(),
+    )
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE constraint failed") {
+            (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "Role name already exists".to_string(),
+                    code: "role_conflict".to_string(),
+                }),
+            )
+        } else {
+            db_err(e)
+        }
+    })?;
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "create",
+        "role",
+        Some(&role.id),
+        serde_json::json!({ "name": role.name, "permissions": role.permissions }),
+    );
+
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+pub async fn delete_role_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(role_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let deleted = queries::delete_role(&conn, &auth.org_id, &role_id).map_err(db_err)?;
+
+    if !deleted {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Role not found or cannot be deleted".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "delete",
+        "role",
+        Some(&role_id),
+        serde_json::json!({}),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -244,6 +348,7 @@ mod tests {
             .merge(protected)
             .layer(Extension(email_config))
             .layer(Extension(superuser_key))
+            .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
     }
 

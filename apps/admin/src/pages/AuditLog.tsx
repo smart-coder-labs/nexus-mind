@@ -21,7 +21,7 @@ function actionClass(action: string) {
 
 export default function AuditLog() {
   const { session } = useAuth()
-  const client = useMemo(() => createClient(session!.apiKey), [session])
+  const client = useMemo(() => createClient(), [session])
 
   const [page, setPage] = useState(0)
   const [filters, setFilters] = useState<Omit<AuditFilters, 'limit' | 'offset'>>({})

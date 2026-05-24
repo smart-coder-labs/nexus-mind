@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::auth::api_keys;
 use crate::models::types::{
-    AuthContext, CreateSessionRequest, Memory, Org, OrgStats, PatchSessionRequest,
-    Session, StoreMemoryRequest, ToolUsage, User,
+    AuthContext, CreateSessionRequest, CustomRole, Memory, Org, OrgStats, PatchSessionRequest,
+    Session, StoreMemoryRequest, ToolUsage, User, UserRole,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -30,10 +30,14 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
     );
 
     match result {
-        Ok((org_id, user_id, role, status)) => {
+        Ok((org_id, user_id, role_str, status)) => {
             if status != "active" {
                 return Ok(None);
             }
+            let role = match role_str.parse::<UserRole>() {
+                Ok(r) => r,
+                Err(_) => return Ok(None),
+            };
             conn.execute(
                 "UPDATE api_keys SET last_used = datetime('now') WHERE key_hash = ?1",
                 [key_hash],
@@ -384,6 +388,20 @@ pub fn list_memories(
         });
     }
     Ok(memories)
+}
+
+/// Returns the user_id of the memory owner, scoped to org. Returns None if not found.
+pub fn get_memory_owner(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<String>> {
+    let result = conn.query_row(
+        "SELECT user_id FROM memories WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![memory_id, org_id],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(user_id) => Ok(Some(user_id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Deletes a memory by ID, scoped to the org. Returns true if deleted, false if not found.
@@ -1164,6 +1182,15 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
     Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
 }
 
+/// Revokes a specific API key by its SHA-256 hash.
+pub fn revoke_key_by_hash(conn: &Connection, key_hash: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE key_hash = ?1",
+        [key_hash],
+    )?;
+    Ok(())
+}
+
 /// Creates a "web-session" API key for the user, revoking any previous ones.
 /// Returns the raw API key.
 pub fn create_web_session_key(conn: &Connection, user_id: &str, org_id: &str) -> Result<String> {
@@ -1185,16 +1212,231 @@ pub fn create_web_session_key(conn: &Connection, user_id: &str, org_id: &str) ->
     Ok(raw_key)
 }
 
+/// Lists all roles belonging to an organization or global templates.
+pub fn list_roles(conn: &Connection, org_id: &str) -> Result<Vec<CustomRole>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, display_name, description, extends_json, permissions, color, icon, version, enabled, is_template, created_at, updated_at
+         FROM roles
+         WHERE org_id = ?1 OR org_id IS NULL OR is_template = 1"
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        let extends_json: String = row.get(5)?;
+        let permissions_json: String = row.get(6)?;
+        let extends = serde_json::from_str(&extends_json).unwrap_or_default();
+        let permissions = serde_json::from_str(&permissions_json).unwrap_or_default();
+
+        Ok(CustomRole {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            display_name: row.get(3)?,
+            description: row.get(4)?,
+            extends,
+            permissions,
+            color: row.get(7)?,
+            icon: row.get(8)?,
+            version: row.get(9)?,
+            enabled: row.get::<_, i64>(10)? != 0,
+            is_template: row.get::<_, i64>(11)? != 0,
+            created_at: row.get(12)?,
+            updated_at: row.get(13)?,
+        })
+    })?;
+
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// Creates a new custom role within an organization.
+pub fn create_role(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    display_name: &str,
+    permissions: &[String],
+    description: Option<&str>,
+) -> Result<CustomRole> {
+    let id = Uuid::new_v4().to_string();
+    let extends_json = "[]";
+    let permissions_json = serde_json::to_string(permissions)?;
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO roles (id, org_id, name, display_name, description, extends_json, permissions, version, enabled, is_template, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1, 0, ?8, ?8)",
+        rusqlite::params![
+            id,
+            org_id,
+            name,
+            display_name,
+            description,
+            extends_json,
+            permissions_json,
+            now
+        ],
+    )?;
+
+    Ok(CustomRole {
+        id,
+        org_id: Some(org_id.to_string()),
+        name: name.to_string(),
+        display_name: display_name.to_string(),
+        description: description.map(|s| s.to_string()),
+        extends: vec![],
+        permissions: permissions.to_vec(),
+        color: None,
+        icon: None,
+        version: 1,
+        enabled: true,
+        is_template: false,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
+/// Deletes a custom role from an organization. Only non-template roles can be deleted.
+pub fn delete_role(conn: &Connection, org_id: &str, role_id: &str) -> Result<bool> {
+    let count = conn.execute(
+        "DELETE FROM roles WHERE id = ?1 AND org_id = ?2 AND is_template = 0",
+        [role_id, org_id],
+    )?;
+    Ok(count > 0)
+}
+
+/// Updates the role of a user in an organization.
+pub fn update_user_role(conn: &Connection, org_id: &str, user_id: &str, new_role: &str) -> Result<bool> {
+    if new_role != "admin" && new_role != "member" && new_role != "viewer" {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
+            [new_role, org_id],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            return Ok(false);
+        }
+    }
+
+    let count = conn.execute(
+        "UPDATE users SET role = ?1 WHERE id = ?2 AND org_id = ?3",
+        [new_role, user_id, org_id],
+    )?;
+    Ok(count > 0)
+}
+
+/// Resolves the permissions associated with a standard or custom role.
+pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) -> Result<Vec<String>> {
+    if role_name == "admin" {
+        return Ok(vec![
+            "memory:read".to_string(),
+            "memory:write".to_string(),
+            "memory:delete".to_string(),
+            "memory:search".to_string(),
+            "user:invite".to_string(),
+            "user:revoke".to_string(),
+            "audit:read".to_string(),
+            "settings:write".to_string(),
+        ]);
+    } else if role_name == "member" {
+        return Ok(vec![
+            "memory:read".to_string(),
+            "memory:write".to_string(),
+            "memory:delete".to_string(),
+            "memory:search".to_string(),
+        ]);
+    } else if role_name == "viewer" {
+        return Ok(vec![
+            "memory:read".to_string(),
+            "memory:search".to_string(),
+        ]);
+    }
+
+    let result = conn.query_row(
+        "SELECT permissions FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
+        [role_name, org_id],
+        |row| row.get::<_, String>(0),
+    );
+
+    match result {
+        Ok(json_str) => {
+            let permissions: Vec<String> = serde_json::from_str(&json_str).unwrap_or_default();
+            Ok(permissions)
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(vec![]),
+        Err(e) => Err(e.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::connection::connect;
+    use crate::models::types::Role;
     use crate::db::migrations;
 
     fn setup() -> Connection {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn get_memory_owner_returns_user_id_when_found() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let mem = store_memory(&conn, &org.id, &user.id, "proj", "claude", "content", &[]).unwrap();
+
+        let owner = get_memory_owner(&conn, &org.id, &mem.id).unwrap();
+        assert_eq!(owner, Some(user.id));
+    }
+
+    #[test]
+    fn get_memory_owner_returns_none_when_not_found() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let owner = get_memory_owner(&conn, &org.id, "nonexistent-id").unwrap();
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn get_memory_owner_returns_none_wrong_org() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let mem = store_memory(&conn, &org.id, &user.id, "proj", "claude", "content", &[]).unwrap();
+
+        // Correct memory ID but wrong org → None (org scoped)
+        let owner = get_memory_owner(&conn, "wrong-org", &mem.id).unwrap();
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn validate_api_key_allows_custom_role_string() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Insert a user with an invalid role directly
+        let user_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, 'bad@acme.com', 'Bad', 'superuser', 'active', datetime('now'))",
+            rusqlite::params![user_id, org.id],
+        ).unwrap();
+
+        let key_id = uuid::Uuid::new_v4().to_string();
+        let (raw_key, key_hash) = crate::auth::api_keys::generate();
+        conn.execute(
+            "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+            rusqlite::params![key_id, user_id, org.id, key_hash],
+        ).unwrap();
+
+        // Key is structurally valid and role is custom — must return context with Custom(superuser)
+        let result = validate_api_key(&conn, &api_keys::hash_key(&raw_key)).unwrap();
+        assert!(result.is_some(), "custom role string must cause validate_api_key to return Some");
+        assert_eq!(result.unwrap().role, UserRole::Custom("superuser".to_string()));
     }
 
     #[test]
@@ -1228,7 +1470,7 @@ mod tests {
         let ctx = validate_api_key(&conn, &hash).unwrap().expect("should return context");
         assert_eq!(ctx.org_id, org.id);
         assert_eq!(ctx.user_id, user.id);
-        assert_eq!(ctx.role, "admin");
+        assert_eq!(ctx.role, UserRole::Standard(Role::Admin));
     }
 
     #[test]

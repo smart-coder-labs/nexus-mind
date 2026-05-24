@@ -10,13 +10,29 @@ export interface User {
   org_id: string
   email: string
   name: string
-  role: 'admin' | 'member' | 'viewer'
+  role: string
   status: 'active' | 'invited' | 'suspended'
   created_at: string
 }
 
+export interface CustomRole {
+  id: string
+  org_id: string | null
+  name: string
+  display_name: string
+  description: string | null
+  extends: string[]
+  permissions: string[]
+  color: string | null
+  icon: string | null
+  version: number
+  enabled: boolean
+  is_template: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface AuthSession {
-  apiKey: string
   org: Org
   user: User
 }

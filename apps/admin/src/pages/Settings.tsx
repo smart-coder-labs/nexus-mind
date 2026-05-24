@@ -2,12 +2,11 @@ import { useMemo, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
-import { saveSession } from '../auth/session'
 
 export default function Settings() {
   const { session, setSession } = useAuth()
   const qc = useQueryClient()
-  const client = useMemo(() => createClient(session!.apiKey), [session])
+  const client = useMemo(() => createClient(), [session])
 
   const { data: org } = useQuery({
     queryKey: ['org'],
@@ -25,7 +24,6 @@ export default function Settings() {
       qc.invalidateQueries({ queryKey: ['org'] })
       const newSession = { ...session!, org: updated }
       setSession(newSession)
-      saveSession(newSession)
       setOrgSaved(true)
       setTimeout(() => setOrgSaved(false), 2000)
     },
@@ -98,7 +96,8 @@ export default function Settings() {
             <input
               value={orgName}
               onChange={e => setOrgName(e.target.value)}
-              className={inputCls}
+              readOnly={session?.user.role !== 'admin'}
+              className={`${inputCls} ${session?.user.role !== 'admin' ? 'opacity-50 cursor-not-allowed' : ''}`}
             />
           </div>
           <div className="space-y-1.5">
@@ -113,18 +112,20 @@ export default function Settings() {
               className={`${inputCls} opacity-50 cursor-not-allowed`}
             />
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => updateOrgMut.mutate(orgName)}
-              disabled={updateOrgMut.isPending || orgName === org?.name}
-              className="px-4 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
-            >
-              {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
-            </button>
-            {updateOrgMut.isError && (
-              <p className="text-xs text-status-error/70">Failed to save.</p>
-            )}
-          </div>
+          {session?.user.role === 'admin' && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => updateOrgMut.mutate(orgName)}
+                disabled={updateOrgMut.isPending || orgName === org?.name}
+                className="px-4 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+              >
+                {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
+              </button>
+              {updateOrgMut.isError && (
+                <p className="text-xs text-status-error/70">Failed to save.</p>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -183,7 +184,7 @@ export default function Settings() {
         <div className="border border-border-primary rounded-xl p-5 space-y-4">
           <div className="flex items-center gap-3 bg-surface-secondary rounded-lg px-3 py-2">
             <code className="flex-1 text-xs text-text-tertiary truncate">
-              {session?.apiKey.slice(0, 12)}••••••••••••••••
+              Session managed via secure HttpOnly cookie
             </code>
           </div>
 

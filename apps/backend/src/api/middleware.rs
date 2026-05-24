@@ -7,21 +7,27 @@ use axum::{
 };
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
+use tower_cookies::Cookies;
 
 use crate::{auth::api_keys, db::queries};
 
 pub async fn auth(
+    cookies: Cookies,
     State(db): State<Arc<Mutex<Connection>>>,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let token = req
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|s| s.to_string())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Cookie-first extraction, Bearer fallback
+    let token = if let Some(cookie) = cookies.get("nexusmind_session") {
+        cookie.value().to_string()
+    } else {
+        req.headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|s| s.to_string())
+            .ok_or(StatusCode::UNAUTHORIZED)?
+    };
 
     let hash = api_keys::hash_key(&token);
 
@@ -61,6 +67,7 @@ mod tests {
         Router::new()
             .route("/protected", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(db.clone(), auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(db)
     }
 

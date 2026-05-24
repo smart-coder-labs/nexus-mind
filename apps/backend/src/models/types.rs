@@ -1,4 +1,95 @@
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use std::fmt;
+
+// ── Role enum ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Admin,
+    Member,
+    Viewer,
+}
+
+impl Role {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Role::Admin  => 2,
+            Role::Member => 1,
+            Role::Viewer => 0,
+        }
+    }
+}
+
+impl FromStr for Role {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "admin"  => Ok(Role::Admin),
+            "member" => Ok(Role::Member),
+            "viewer" => Ok(Role::Viewer),
+            other    => Err(format!("unknown role: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Role::Admin  => "admin",
+            Role::Member => "member",
+            Role::Viewer => "viewer",
+        };
+        write!(f, "{s}")
+    }
+}
+
+// ── UserRole enum ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UserRole {
+    Standard(Role),
+    Custom(String),
+}
+
+impl UserRole {
+    pub fn is_admin(&self) -> bool {
+        matches!(self, UserRole::Standard(Role::Admin))
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            UserRole::Standard(r) => match r {
+                Role::Admin => "admin",
+                Role::Member => "member",
+                Role::Viewer => "viewer",
+            },
+            UserRole::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl FromStr for UserRole {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(UserRole::Standard(Role::Admin)),
+            "member" => Ok(UserRole::Standard(Role::Member)),
+            "viewer" => Ok(UserRole::Standard(Role::Viewer)),
+            custom => Ok(UserRole::Custom(custom.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for UserRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 fn default_scope() -> String {
     "project".to_string()
@@ -23,12 +114,30 @@ pub struct User {
     pub created_at: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CustomRole {
+    pub id: String,
+    pub org_id: Option<String>,
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub extends: Vec<String>,
+    pub permissions: Vec<String>,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+    pub version: i64,
+    pub enabled: bool,
+    pub is_template: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Injected by auth middleware into every authenticated request.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AuthContext {
     pub org_id: String,
     pub user_id: String,
-    pub role: String,
+    pub role: UserRole,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -156,10 +265,42 @@ mod tests {
         let ctx = AuthContext {
             org_id: "org1".into(),
             user_id: "u1".into(),
-            role: "admin".into(),
+            role: UserRole::Standard(Role::Admin),
         };
         assert_eq!(ctx.org_id, "org1");
-        assert_eq!(ctx.role, "admin");
+        assert_eq!(ctx.role, UserRole::Standard(Role::Admin));
+    }
+
+    // ── Role tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn role_from_str_valid_values() {
+        assert_eq!("admin".parse::<Role>().unwrap(), Role::Admin);
+        assert_eq!("member".parse::<Role>().unwrap(), Role::Member);
+        assert_eq!("viewer".parse::<Role>().unwrap(), Role::Viewer);
+    }
+
+    #[test]
+    fn role_from_str_unknown_returns_err() {
+        assert!("superuser".parse::<Role>().is_err());
+        assert!("".parse::<Role>().is_err());
+        assert!("Admin".parse::<Role>().is_err(), "case-sensitive: uppercase must fail");
+    }
+
+    #[test]
+    fn role_display() {
+        assert_eq!(Role::Admin.to_string(), "admin");
+        assert_eq!(Role::Member.to_string(), "member");
+        assert_eq!(Role::Viewer.to_string(), "viewer");
+    }
+
+    #[test]
+    fn role_as_u8_ordering() {
+        assert!(Role::Admin.as_u8() > Role::Member.as_u8());
+        assert!(Role::Member.as_u8() > Role::Viewer.as_u8());
+        assert_eq!(Role::Admin.as_u8(), 2);
+        assert_eq!(Role::Member.as_u8(), 1);
+        assert_eq!(Role::Viewer.as_u8(), 0);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use nexusmind::auth::api_keys;
 use nexusmind::db::{connection, migrations, queries};
+use nexusmind::models::types::{Role, UserRole};
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -62,7 +63,7 @@ fn bootstrap_creates_org_and_returns_key() {
     let ctx = ctx.unwrap();
     assert_eq!(ctx.org_id, org.id);
     assert_eq!(ctx.user_id, user.id);
-    assert_eq!(ctx.role, "admin");
+    assert_eq!(ctx.role, UserRole::Standard(Role::Admin));
 }
 
 #[test]
@@ -80,7 +81,7 @@ fn invite_user_key_works_immediately() {
     let ctx = ctx.unwrap();
     assert_eq!(ctx.org_id, org.id, "org_id must match");
     assert_eq!(ctx.user_id, member.id, "user_id must match");
-    assert_eq!(ctx.role, "member");
+    assert_eq!(ctx.role, UserRole::Standard(Role::Member));
 }
 
 #[test]
@@ -294,9 +295,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version stays at 4
+    // Verify user_version stays at 5
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
@@ -327,4 +328,43 @@ fn fts_backfill_after_migration() {
     let results = queries::search_memories(&conn, "org1", "authentication", 10).unwrap();
     assert_eq!(results.len(), 1, "pre-existing rows must be indexed after FTS backfill");
     assert!(results[0].content.contains("authentication"));
+}
+
+#[test]
+fn custom_roles_and_assignment() {
+    let conn = setup();
+    let (org, _user, _) = queries::bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // 1. Check template roles exist
+    let roles = queries::list_roles(&conn, &org.id).unwrap();
+    assert!(roles.iter().any(|r| r.name == "security-officer" && r.is_template));
+    assert!(roles.iter().any(|r| r.name == "dev-senior" && r.is_template));
+
+    // 2. Create custom role
+    let custom = queries::create_role(
+        &conn,
+        &org.id,
+        "custom-editor",
+        "Custom Editor",
+        &["memory:read".to_string(), "memory:write".to_string()],
+        Some("Allows editing memories"),
+    ).unwrap();
+    assert_eq!(custom.name, "custom-editor");
+    assert!(!custom.is_template);
+
+    // 3. Resolve permissions
+    let perms = queries::get_role_permissions(&conn, &org.id, "custom-editor").unwrap();
+    assert_eq!(perms.len(), 2);
+    assert!(perms.contains(&"memory:read".to_string()));
+    assert!(perms.contains(&"memory:write".to_string()));
+
+    // 4. Update user role to custom-editor
+    let (invited_user, _) = queries::invite_user(&conn, &org.id, "dev@acme.com", "Dev", "member").unwrap();
+    let updated = queries::update_user_role(&conn, &org.id, &invited_user.id, "custom-editor").unwrap();
+    assert!(updated);
+
+    // Fetch user to confirm role
+    let users = queries::list_users(&conn, &org.id).unwrap();
+    let updated_user = users.iter().find(|u| u.id == invited_user.id).unwrap();
+    assert_eq!(updated_user.role, "custom-editor");
 }
