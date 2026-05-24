@@ -14,15 +14,20 @@ use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
 pub fn build(conn: Connection, config: Config) -> Router {
-    let embed = match EmbedService::init() {
-        Ok(svc) => {
-            tracing::info!("Embedding service initialized (nomic-embed-text-v1.5)");
-            Some(svc)
+    let embed = if std::env::var("NEXUSMIND_EMBED_ENABLED").as_deref() == Ok("true") {
+        match EmbedService::init() {
+            Ok(svc) => {
+                tracing::info!("Embedding service initialized (nomic-embed-text-v1.5)");
+                Some(svc)
+            }
+            Err(e) => {
+                tracing::warn!("Embedding service unavailable — semantic search disabled: {e}");
+                None
+            }
         }
-        Err(e) => {
-            tracing::warn!("Embedding service unavailable — semantic search disabled: {e}");
-            None
-        }
+    } else {
+        tracing::info!("Embedding service disabled (set NEXUSMIND_EMBED_ENABLED=true to enable)");
+        None
     };
 
     let store = match embed {
