@@ -6,6 +6,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v1(conn)?;
     run_v2(conn)?;
     run_v3(conn)?;
+    run_v4(conn)?;
     Ok(())
 }
 
@@ -213,6 +214,27 @@ pub fn run_v3(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v4: adds memory_embeddings table for vector search.
+pub fn run_v4(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 4 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS memory_embeddings (
+            memory_id  TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+            embedding  BLOB NOT NULL
+        );
+
+        PRAGMA user_version = 4;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,10 +333,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_3() {
+    fn run_all_sets_user_version_to_4() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 3, "user_version must be 3 after run_all");
+        assert_eq!(get_user_version(&conn), 4, "user_version must be 4 after run_all");
     }
 
     #[test]

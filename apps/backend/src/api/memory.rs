@@ -7,13 +7,15 @@ use serde::Deserialize;
 
 use crate::{
     models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest},
-    store::{sqlite::SqliteStore, MemoryFilters, MemoryStore},
+    store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
 };
 
 #[derive(Deserialize)]
 pub struct SearchInput {
     pub query: String,
     pub limit: Option<i64>,
+    /// Search mode: "keyword" (default), "semantic", or "hybrid".
+    pub mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,8 +73,9 @@ pub async fn search(
     Json(input): Json<SearchInput>,
 ) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
     let limit = input.limit.unwrap_or(20);
+    let mode = SearchMode::from_str(input.mode.as_deref().unwrap_or("keyword"));
     let memories = store
-        .search(&auth.org_id, &auth.user_id, &input.query, limit)
+        .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
         .map_err(store_err)?;
     Ok(Json(memories))
 }

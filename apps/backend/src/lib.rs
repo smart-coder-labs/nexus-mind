@@ -2,6 +2,7 @@ pub mod auth;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod embed;
 pub mod email;
 pub mod models;
 pub mod store;

@@ -180,6 +180,31 @@ pub fn store_memory(
     })
 }
 
+/// Sanitize a user query for FTS5 MATCH.
+///
+/// FTS5 treats many characters as operators (+, -, *, :, ^, ", (, )).
+/// We wrap each whitespace-separated token in double quotes so they are
+/// treated as literal phrase terms. Empty tokens are skipped.
+/// Returns None if the sanitized result is empty (caller should skip FTS).
+pub fn sanitize_fts_query(query: &str) -> Option<String> {
+    // FTS5 special chars that cause parse errors even inside quoted phrases:
+    // < > + - * : ^ " ( )
+    // Strategy: split on whitespace, then further split each token on non-alphanumeric
+    // boundaries, keep only alphanumeric+underscore sub-tokens, wrap each in "...".
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .flat_map(|w| {
+            // Split on any char that is not alphanumeric or underscore
+            w.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|t| !t.is_empty())
+                .map(|t| format!("\"{t}\""))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    if terms.is_empty() { None } else { Some(terms.join(" ")) }
+}
+
 /// Full-text search over memories, scoped to the org.
 pub fn search_memories(
     conn: &Connection,
@@ -187,6 +212,11 @@ pub fn search_memories(
     query: &str,
     limit: i64,
 ) -> Result<Vec<Memory>> {
+    let fts_query = match sanitize_fts_query(query) {
+        Some(q) => q,
+        None => return Ok(Vec::new()),
+    };
+
     let mut stmt = conn.prepare(
         "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
                 m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash
@@ -197,7 +227,7 @@ pub fn search_memories(
          LIMIT ?3",
     )?;
 
-    let rows = stmt.query_map(rusqlite::params![query, org_id, limit], |row| {
+    let rows = stmt.query_map(rusqlite::params![fts_query, org_id, limit], |row| {
         let tags_str: String = row.get(6)?;
         Ok((
             row.get::<_, String>(0)?,
@@ -1025,6 +1055,113 @@ pub fn validate_and_consume_reset_token(conn: &Connection, raw_token: &str) -> R
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+// ── Embedding queries ─────────────────────────────────────────────────────────
+
+/// Insert or replace the embedding BLOB for a memory.
+pub fn store_embedding(conn: &Connection, memory_id: &str, embedding: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding) VALUES (?1, ?2)",
+        rusqlite::params![memory_id, embedding],
+    )?;
+    Ok(())
+}
+
+/// Load all (memory_id, embedding_blob) pairs for an org.
+/// Used for in-process cosine KNN during semantic search.
+pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT me.memory_id, me.embedding
+         FROM memory_embeddings me
+         JOIN memories m ON m.id = me.memory_id
+         WHERE m.org_id = ?1",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut pairs = Vec::new();
+    for r in rows {
+        pairs.push(r?);
+    }
+    Ok(pairs)
+}
+
+/// Fetch memories by a list of IDs, preserving the order of `ids`.
+/// Scoped to `org_id` for safety.
+pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> Result<Vec<Memory>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build "?,?,?" placeholder
+    let placeholders: String = ids.iter().enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let sql = format!(
+        "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash
+         FROM memories
+         WHERE org_id = ?1 AND id IN ({placeholders})"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&org_id as &dyn rusqlite::ToSql];
+    for id in ids.iter() {
+        params.push(id as &dyn rusqlite::ToSql);
+    }
+
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        let tags_str: String = row.get(6)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            tags_str,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<String>>(14)?,
+        ))
+    })?;
+
+    // Build id→memory map, then restore order
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
+        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        map.insert(id.clone(), Memory {
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags,
+            created_at,
+            title,
+            memory_type,
+            scope: scope.unwrap_or_else(|| "project".to_string()),
+            topic_key,
+            session_id,
+            revision_count: revision_count.unwrap_or(1),
+            normalized_hash,
+        });
+    }
+
+    // Return in caller-specified order
+    Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
 }
 
 /// Creates a "web-session" API key for the user, revoking any previous ones.

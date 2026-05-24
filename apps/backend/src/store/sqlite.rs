@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     db::queries,
+    embed::{self, EmbedService},
     models::types::{Memory, StoreMemoryRequest},
-    store::{MemoryFilters, MemoryStore},
+    store::{MemoryFilters, MemoryStore, SearchMode},
 };
 
 /// SQLite-backed memory store.
@@ -13,16 +14,26 @@ use crate::{
 /// Wraps an `Arc<Mutex<Connection>>` so it is cheap to clone (Axum requires `Clone` on state).
 /// Non-memory handlers that still call `queries::*` directly can access the raw connection
 /// via [`SqliteStore::conn`].
+///
+/// Pass an `EmbedService` via [`SqliteStore::with_embed`] to enable semantic / hybrid search.
 #[derive(Clone)]
 pub struct SqliteStore {
-    db: Arc<Mutex<Connection>>,
+    db:    Arc<Mutex<Connection>>,
+    embed: Option<Arc<EmbedService>>,
 }
 
 impl SqliteStore {
     pub fn new(conn: Connection) -> Self {
         SqliteStore {
-            db: Arc::new(Mutex::new(conn)),
+            db:    Arc::new(Mutex::new(conn)),
+            embed: None,
         }
+    }
+
+    /// Attach an embedding service, enabling semantic and hybrid search.
+    pub fn with_embed(mut self, svc: EmbedService) -> Self {
+        self.embed = Some(Arc::new(svc));
+        self
     }
 
     /// Returns a clone of the inner `Arc<Mutex<Connection>>` for handlers that use raw queries.
@@ -56,14 +67,42 @@ impl MemoryStore for SqliteStore {
             serde_json::json!({ "tool": memory.tool, "project": memory.project }),
         );
 
+        // Embed the content and persist the vector (best-effort — never fail the store call).
+        if let Some(ref svc) = self.embed {
+            match svc.embed_one(&memory.content) {
+                Ok(vec) => {
+                    let blob = embed::serialize(&vec);
+                    if let Err(e) = queries::store_embedding(&conn, &memory.id, &blob) {
+                        tracing::warn!("Failed to save embedding for memory {}: {e}", memory.id);
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to embed memory {}: {e}", memory.id),
+            }
+        }
+
         Ok(memory)
     }
 
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>> {
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>> {
+        // Resolve effective mode: downgrade to Keyword if no embed service.
+        let effective_mode = match mode {
+            SearchMode::Semantic | SearchMode::Hybrid if self.embed.is_none() => {
+                tracing::debug!("No embed service — falling back to Keyword search");
+                SearchMode::Keyword
+            }
+            m => m,
+        };
+
+        let memories = match effective_mode {
+            SearchMode::Keyword => {
+                let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                queries::search_memories(&conn, org_id, query, limit)?
+            }
+            SearchMode::Semantic => self.search_semantic(org_id, query, limit)?,
+            SearchMode::Hybrid   => self.search_hybrid(org_id, query, limit)?,
+        };
+
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-
-        let memories = queries::search_memories(&conn, org_id, query, limit)?;
-
         let _ = queries::log_audit(
             &conn,
             org_id,
@@ -71,7 +110,7 @@ impl MemoryStore for SqliteStore {
             "search",
             "memory",
             None,
-            serde_json::json!({ "query": query, "results": memories.len() }),
+            serde_json::json!({ "query": query, "mode": format!("{effective_mode:?}"), "results": memories.len() }),
         );
 
         Ok(memories)
@@ -173,6 +212,91 @@ impl MemoryStore for SqliteStore {
     }
 }
 
+// ── Private search helpers ────────────────────────────────────────────────────
+
+impl SqliteStore {
+    /// Pure semantic search: embed the query, cosine-rank all org embeddings, return top-K.
+    fn search_semantic(&self, org_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>> {
+        let svc = self.embed.as_ref().expect("caller verified embed is Some");
+        let q_vec = svc.embed_one(query)?;
+
+        let pairs = {
+            let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            queries::get_embeddings_for_org(&conn, org_id)?
+        };
+
+        let mut scored: Vec<(String, f32)> = pairs
+            .into_iter()
+            .map(|(id, blob)| {
+                let v = embed::deserialize(&blob);
+                let score = embed::cosine(&q_vec, &v);
+                (id, score)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit as usize);
+
+        let ids: Vec<String> = scored.into_iter().map(|(id, _)| id).collect();
+        let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        queries::get_memories_by_ids(&conn, org_id, &ids)
+    }
+
+    /// Hybrid search: merge FTS5 ranks and cosine ranks via Reciprocal Rank Fusion (k=60).
+    fn search_hybrid(&self, org_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>> {
+        let svc = self.embed.as_ref().expect("caller verified embed is Some");
+        let q_vec = svc.embed_one(query)?;
+
+        // Fetch more candidates than needed before merging
+        let fetch_n = (limit * 3).max(30);
+
+        // FTS5 results (rank = position in result list, 1-based)
+        let fts_ids: Vec<String> = {
+            let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            queries::search_memories(&conn, org_id, query, fetch_n)?
+                .into_iter()
+                .map(|m| m.id)
+                .collect()
+        };
+
+        // Semantic KNN results
+        let pairs = {
+            let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            queries::get_embeddings_for_org(&conn, org_id)?
+        };
+
+        let mut sem_scored: Vec<(String, f32)> = pairs
+            .into_iter()
+            .map(|(id, blob)| {
+                let v = embed::deserialize(&blob);
+                (id, embed::cosine(&q_vec, &v))
+            })
+            .collect();
+        sem_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        sem_scored.truncate(fetch_n as usize);
+        let sem_ids: Vec<String> = sem_scored.into_iter().map(|(id, _)| id).collect();
+
+        // RRF merge: score(id) = Σ 1 / (60 + rank_i + 1)  for each list that contains id
+        let k = 60.0_f64;
+        let mut rrf: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+
+        for (rank, id) in fts_ids.iter().enumerate() {
+            *rrf.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+        }
+        for (rank, id) in sem_ids.iter().enumerate() {
+            *rrf.entry(id.clone()).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+        }
+
+        let mut ranked: Vec<(String, f64)> = rrf.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(limit as usize);
+
+        let ids: Vec<String> = ranked.into_iter().map(|(id, _)| id).collect();
+        let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        queries::get_memories_by_ids(&conn, org_id, &ids)
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -180,6 +304,7 @@ mod tests {
     use super::*;
     use crate::db::{connection::connect, migrations};
     use crate::models::types::StoreMemoryRequest;
+    use crate::store::SearchMode;
 
     fn make_store() -> (SqliteStore, String, String) {
         let conn = connect(":memory:").unwrap();
@@ -220,7 +345,7 @@ mod tests {
         let (store, org_id, user_id) = make_store();
         store.store(&org_id, &user_id, &req("use snake_case")).unwrap();
         store.store(&org_id, &user_id, &req("unrelated content")).unwrap();
-        let results = store.search(&org_id, &user_id, "snake_case", 10).unwrap();
+        let results = store.search(&org_id, &user_id, "snake_case", 10, SearchMode::Keyword).unwrap();
         assert_eq!(results.len(), 1);
     }
 

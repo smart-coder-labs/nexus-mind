@@ -10,10 +10,25 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use crate::api::{admin, audit, auth, health, memory, middleware as auth_mw, sessions, users};
 use crate::config::Config;
 use crate::email::EmailConfig;
+use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
 pub fn build(conn: Connection, config: Config) -> Router {
-    let store = SqliteStore::new(conn);
+    let embed = match EmbedService::init() {
+        Ok(svc) => {
+            tracing::info!("Embedding service initialized (nomic-embed-text-v1.5)");
+            Some(svc)
+        }
+        Err(e) => {
+            tracing::warn!("Embedding service unavailable — semantic search disabled: {e}");
+            None
+        }
+    };
+
+    let store = match embed {
+        Some(svc) => SqliteStore::new(conn).with_embed(svc),
+        None      => SqliteStore::new(conn),
+    };
 
     let email_config: Option<Arc<EmailConfig>> = match (
         config.smtp_username.clone(),

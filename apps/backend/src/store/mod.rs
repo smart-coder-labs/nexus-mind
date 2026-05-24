@@ -15,6 +15,28 @@ pub struct MemoryFilters<'a> {
     pub offset:      i64,
 }
 
+/// Controls how the `search` method retrieves memories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    /// Full-text search only (FTS5). Default, always available.
+    Keyword,
+    /// Embedding-based cosine KNN only. Falls back to `Keyword` when no embed service.
+    Semantic,
+    /// Hybrid: FTS5 + cosine KNN merged via Reciprocal Rank Fusion (k=60).
+    /// Falls back to `Keyword` when no embed service.
+    Hybrid,
+}
+
+impl SearchMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "semantic" => SearchMode::Semantic,
+            "hybrid"   => SearchMode::Hybrid,
+            _          => SearchMode::Keyword,
+        }
+    }
+}
+
 /// Backend-agnostic memory storage interface.
 ///
 /// `SqliteStore` is the current implementation. A future `PostgresStore` will implement the
@@ -24,9 +46,10 @@ pub trait MemoryStore: Send + Sync {
     /// Implementations should write an audit event after a successful write.
     fn store(&self, org_id: &str, user_id: &str, req: &StoreMemoryRequest) -> Result<Memory>;
 
-    /// Full-text (and, in future, semantic) search over memories scoped to the org.
+    /// Search memories using the given mode. Implementations that lack an embed service
+    /// should silently fall back to `Keyword` for `Semantic` and `Hybrid` modes.
     /// Implementations should write a `search` audit event.
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>>;
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>>;
 
     /// List memories with optional filters.
     fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<Vec<Memory>>;
