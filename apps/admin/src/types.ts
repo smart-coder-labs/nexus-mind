@@ -54,6 +54,25 @@ export interface Memory {
   session_id?: string
   revision_count?: number
   normalized_hash?: string
+  project_id?: string
+}
+
+export interface Project {
+  id: string
+  org_id: string
+  name: string
+  description: string | null
+  created_at: string
+}
+
+export interface ProjectMember {
+  id: string
+  project_id: string
+  user_id: string
+  email: string
+  name: string
+  role: string
+  created_at: string
 }
 
 export interface AuditEntry {

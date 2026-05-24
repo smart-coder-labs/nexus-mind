@@ -4,17 +4,29 @@ use rusqlite::Connection;
 
 use crate::models::types::{ApiError, AuthContext};
 
-/// Returns `Ok(())` if `auth.role` has the required `permission`. Otherwise `Err(403)`.
+/// Returns `Ok(())` if `auth.role` (or project-level override) has the required `permission`. Otherwise `Err(403)`.
 pub fn require_permission(
     conn: &Connection,
     auth: &AuthContext,
+    project: Option<&str>,
     permission: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     if auth.role.is_admin() {
         return Ok(());
     }
 
-    let permissions = crate::db::queries::get_role_permissions(conn, &auth.org_id, auth.role.as_str())
+    let effective_role = if let Some(p_name) = project {
+        match crate::db::queries::get_project_member_role(conn, &auth.org_id, p_name, &auth.user_id) {
+            Ok(Some(role_str)) => {
+                role_str.parse::<crate::models::types::UserRole>().unwrap_or_else(|_| auth.role.clone())
+            }
+            _ => auth.role.clone(),
+        }
+    } else {
+        auth.role.clone()
+    };
+
+    let permissions = crate::db::queries::get_role_permissions(conn, &auth.org_id, effective_role.as_str())
         .map_err(|_| (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
@@ -68,31 +80,31 @@ mod tests {
     fn admin_has_all_permissions() {
         let conn = setup_db();
         let auth = make_auth(Role::Admin);
-        assert!(require_permission(&conn, &auth, "memory:read").is_ok());
-        assert!(require_permission(&conn, &auth, "user:invite").is_ok());
-        assert!(require_permission(&conn, &auth, "nonexistent:permission").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
+        assert!(require_permission(&conn, &auth, None, "user:invite").is_ok());
+        assert!(require_permission(&conn, &auth, None, "nonexistent:permission").is_ok());
     }
 
     #[test]
     fn member_permissions() {
         let conn = setup_db();
         let auth = make_auth(Role::Member);
-        assert!(require_permission(&conn, &auth, "memory:read").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:write").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:delete").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:search").is_ok());
-        assert!(require_permission(&conn, &auth, "user:invite").is_err());
-        assert!(require_permission(&conn, &auth, "audit:read").is_err());
+        assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:write").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:delete").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:search").is_ok());
+        assert!(require_permission(&conn, &auth, None, "user:invite").is_err());
+        assert!(require_permission(&conn, &auth, None, "audit:read").is_err());
     }
 
     #[test]
     fn viewer_permissions() {
         let conn = setup_db();
         let auth = make_auth(Role::Viewer);
-        assert!(require_permission(&conn, &auth, "memory:read").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:search").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:write").is_err());
-        assert!(require_permission(&conn, &auth, "user:invite").is_err());
+        assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:search").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:write").is_err());
+        assert!(require_permission(&conn, &auth, None, "user:invite").is_err());
     }
 
     #[test]
@@ -113,8 +125,38 @@ mod tests {
         ).unwrap();
 
         let auth = make_custom_auth("custom-operator");
-        assert!(require_permission(&conn, &auth, "memory:read").is_ok());
-        assert!(require_permission(&conn, &auth, "user:invite").is_ok());
-        assert!(require_permission(&conn, &auth, "memory:write").is_err());
+        assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
+        assert!(require_permission(&conn, &auth, None, "user:invite").is_ok());
+        assert!(require_permission(&conn, &auth, None, "memory:write").is_err());
+    }
+
+    #[test]
+    fn project_role_override_permissions() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev', 'viewer')",
+            [],
+        ).unwrap();
+        
+        // Add a project
+        let p_id = crate::db::queries::get_or_create_project(&conn, "org1", "payments").unwrap();
+
+        // Check that Dev (viewer globally) fails memory:write in project "payments"
+        let auth = make_auth(Role::Viewer);
+        assert!(require_permission(&conn, &auth, Some("payments"), "memory:write").is_err());
+
+        // Now override Dev's role to dev-senior in "payments" project
+        // Note: dev-senior template has memory:write permission
+        crate::db::queries::upsert_project_member(&conn, &p_id, "u1", "dev-senior").unwrap();
+
+        // Check that Dev now succeeds memory:write in project "payments"
+        assert!(require_permission(&conn, &auth, Some("payments"), "memory:write").is_ok());
+
+        // But still fails memory:write in another project "other-project"
+        assert!(require_permission(&conn, &auth, Some("other-project"), "memory:write").is_err());
     }
 }

@@ -110,7 +110,7 @@ Documentado en: AUTH_SPEC.md (v1.1 completo), PRD.md, ROADMAP.md M4-M5
 | ✅ Permissions catalog | `memory:write`, `memory:read`, `memory:delete`, `user:invite`, `user:revoke`, `audit:read`, `settings:write` |
 | ✅ Middleware de roles | Cada endpoint verifica el rol del API key — no solo que pertenezca a la org |
 | ✅ Custom roles | Admin puede definir roles custom con subsets de permissions and assign them to users |
-| ❌ Per-project role overrides | Un usuario puede ser `viewer` en la org pero `admin` en un proyecto — AUTH_SPEC.md §4.5 |
+| ✅ Per-project role overrides | Un usuario puede ser `viewer` en la org pero `admin` en un proyecto — AUTH_SPEC.md §4.5 |
 
 ### Memory isolation levels
 

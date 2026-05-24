@@ -7,8 +7,8 @@ import Users from './pages/Users'
 import Memories from './pages/Memories'
 import AuditLog from './pages/AuditLog'
 import Settings from './pages/Settings'
-import Orgs from './pages/Orgs'
 import Roles from './pages/Roles'
+import Projects from './pages/Projects'
 import { Layout } from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -42,9 +42,9 @@ function AppRoutes() {
           <ProtectedRoute>
             <Routes>
               <Route path="/"         element={<Dashboard />} />
-              <Route path="/orgs"     element={<Orgs />} />
               <Route path="/users"    element={<AdminRoute><Users /></AdminRoute>} />
               <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
+              <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
               <Route path="/memories" element={<Memories />} />
               <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
               <Route path="/settings" element={<Settings />} />

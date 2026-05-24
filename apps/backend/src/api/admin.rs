@@ -16,7 +16,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, Org, OrgStats, CustomRole},
+    models::types::{ApiError, AuthContext, Org, OrgStats, CustomRole, Project, ProjectMember},
     store::sqlite::SqliteStore,
 };
 
@@ -307,6 +307,230 @@ pub async fn delete_role_api(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct CreateProjectInput {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertProjectMemberInput {
+    pub user_id: String,
+    pub role: String,
+}
+
+pub async fn list_projects_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<Project>>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let projects = queries::list_projects(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(projects))
+}
+
+pub async fn create_project_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<CreateProjectInput>,
+) -> Result<(StatusCode, Json<Project>), (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let project = queries::create_project(&conn, &auth.org_id, &input.name, input.description.as_deref())
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ApiError {
+                        error: "Project name already exists in this organization".to_string(),
+                        code: "project_conflict".to_string(),
+                    }),
+                )
+            } else {
+                db_err(e)
+            }
+        })?;
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+pub async fn delete_project_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let deleted = queries::delete_project(&conn, &auth.org_id, &id).map_err(db_err)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+pub async fn list_project_members_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<ProjectMember>>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    
+    // Security check: ensure the project belongs to the user's org!
+    let project_belongs = conn.query_row(
+        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![project_id, auth.org_id],
+        |row| row.get::<_, i32>(0),
+    ).map_err(|_| lock_err())? > 0;
+
+    if !project_belongs {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let members = queries::list_project_members(&conn, &auth.org_id, &project_id).map_err(db_err)?;
+    Ok(Json(members))
+}
+
+pub async fn upsert_project_member_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(project_id): Path<String>,
+    Json(input): Json<UpsertProjectMemberInput>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    // Security check: ensure the project belongs to the user's org!
+    let project_belongs = conn.query_row(
+        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![project_id, auth.org_id],
+        |row| row.get::<_, i32>(0),
+    ).map_err(|_| lock_err())? > 0;
+
+    if !project_belongs {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    // Security check: ensure the user to add belongs to the user's org!
+    let user_belongs = conn.query_row(
+        "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![input.user_id, auth.org_id],
+        |row| row.get::<_, i32>(0),
+    ).map_err(|_| lock_err())? > 0;
+
+    if !user_belongs {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "User not found in this organization".to_string(),
+                code: "user_not_found".to_string(),
+            }),
+        ));
+    }
+
+    // Validate the role name (should be standard role or custom role)
+    let role_valid = match input.role.parse::<crate::models::types::Role>() {
+        Ok(_) => true,
+        Err(_) => {
+            // Verify custom role exists
+            let role_exists = conn.query_row(
+                "SELECT count(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
+                [&input.role, &auth.org_id],
+                |row| row.get::<_, i32>(0),
+            ).unwrap_or(0) > 0;
+            role_exists
+        }
+    };
+
+    if !role_valid {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: format!("Role '{}' is not valid", input.role),
+                code: "invalid_role".to_string(),
+            }),
+        ));
+    }
+
+    queries::upsert_project_member(&conn, &project_id, &input.user_id, &input.role).map_err(db_err)?;
+    Ok(StatusCode::OK)
+}
+
+pub async fn delete_project_member_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path((project_id, user_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    // Security check: ensure the project belongs to the user's org!
+    let project_belongs = conn.query_row(
+        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![project_id, auth.org_id],
+        |row| row.get::<_, i32>(0),
+    ).map_err(|_| lock_err())? > 0;
+
+    if !project_belongs {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let deleted = queries::delete_project_member(&conn, &project_id, &user_id).map_err(db_err)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project membership not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
 }
 
 #[cfg(test)]

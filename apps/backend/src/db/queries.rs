@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::api_keys;
 use crate::models::types::{
     AuthContext, CreateSessionRequest, CustomRole, Memory, Org, OrgStats, PatchSessionRequest,
-    Session, StoreMemoryRequest, ToolUsage, User, UserRole,
+    Session, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -155,14 +155,15 @@ pub fn store_memory(
     content: &str,
     tags: &[String],
 ) -> Result<Memory> {
+    let project_id = get_or_create_project(conn, org_id, project)?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let tags_json = serde_json::to_string(tags)?;
 
     conn.execute(
-        "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![id, org_id, user_id, project, tool, content, tags_json, now],
+        "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, project_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![id, org_id, user_id, project, tool, content, tags_json, now, &project_id],
     )?;
 
     Ok(Memory {
@@ -181,6 +182,7 @@ pub fn store_memory(
         session_id: None,
         revision_count: 1,
         normalized_hash: None,
+        project_id: Some(project_id),
     })
 }
 
@@ -223,7 +225,7 @@ pub fn search_memories(
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
-                m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash
+                m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash, m.project_id
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
          WHERE memories_fts MATCH ?1 AND m.org_id = ?2
@@ -249,13 +251,14 @@ pub fn search_memories(
             row.get::<_, Option<String>>(12)?,
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
+            row.get::<_, Option<String>>(15)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -273,6 +276,7 @@ pub fn search_memories(
             session_id,
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
+            project_id,
         });
     }
     Ok(memories)
@@ -293,7 +297,7 @@ pub fn list_memories(
 ) -> Result<Vec<Memory>> {
     let mut sql = String::from(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
          FROM memories
          WHERE org_id = ?1",
     );
@@ -361,13 +365,14 @@ pub fn list_memories(
             row.get::<_, Option<String>>(12)?,
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
+            row.get::<_, Option<String>>(15)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -385,6 +390,7 @@ pub fn list_memories(
             session_id,
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
+            project_id,
         });
     }
     Ok(memories)
@@ -746,6 +752,7 @@ pub fn upsert_memory(
     req: &StoreMemoryRequest,
 ) -> Result<Memory> {
     let project = req.project.as_deref().unwrap_or("default");
+    let project_id = get_or_create_project(conn, org_id, project)?;
     let tags_json = serde_json::to_string(req.tags.as_deref().unwrap_or(&[]))?;
     let scope = req.scope.as_deref().unwrap_or("project");
     let normalized_hash = compute_normalized_hash(&req.content);
@@ -765,11 +772,11 @@ pub fn upsert_memory(
                 let new_revision = revision_count + 1;
                 conn.execute(
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7
-                     WHERE id = ?8",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
+                     WHERE id = ?9",
                     rusqlite::params![
                         req.content, req.title, req.memory_type, scope,
-                        normalized_hash, new_revision, tags_json, existing_id
+                        normalized_hash, new_revision, tags_json, &project_id, existing_id
                     ],
                 )?;
                 let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
@@ -789,6 +796,7 @@ pub fn upsert_memory(
                     session_id: req.session_id.clone(),
                     revision_count: new_revision,
                     normalized_hash: Some(normalized_hash),
+                    project_id: Some(project_id),
                 });
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -802,11 +810,11 @@ pub fn upsert_memory(
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at,
-                               title, type, scope, topic_key, session_id, revision_count, normalized_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14)",
+                               title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15)",
         rusqlite::params![
             id, org_id, user_id, project, req.tool, req.content, tags_json, now,
-            req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash
+            req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash, &project_id
         ],
     )?;
 
@@ -827,6 +835,7 @@ pub fn upsert_memory(
         session_id: req.session_id.clone(),
         revision_count: 1,
         normalized_hash: Some(normalized_hash),
+        project_id: Some(project_id),
     })
 }
 
@@ -1120,7 +1129,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
 
     let sql = format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
          FROM memories
          WHERE org_id = ?1 AND id IN ({placeholders})"
     );
@@ -1150,6 +1159,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
             row.get::<_, Option<String>>(12)?,
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
+            row.get::<_, Option<String>>(15)?,
         ))
     })?;
 
@@ -1157,7 +1167,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
     let mut map = std::collections::HashMap::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         map.insert(id.clone(), Memory {
             id,
@@ -1175,6 +1185,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
             session_id,
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
+            project_id,
         });
     }
 
@@ -1365,6 +1376,150 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             Ok(permissions)
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(vec![]),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn get_or_create_project(conn: &Connection, org_id: &str, project_name: &str) -> Result<String> {
+    let result = conn.query_row(
+        "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, project_name],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(id) => Ok(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name, description) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, org_id, project_name, None::<String>],
+            )?;
+            Ok(id)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, description, created_at FROM projects WHERE org_id = ?1 ORDER BY name ASC",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(Project {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    let mut projects = Vec::new();
+    for row in rows {
+        projects.push(row?);
+    }
+    Ok(projects)
+}
+
+pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>) -> Result<Project> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO projects (id, org_id, name, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, org_id, name, description, now],
+    )?;
+    Ok(Project {
+        id,
+        org_id: org_id.to_string(),
+        name: name.to_string(),
+        description: description.map(String::from),
+        created_at: now,
+    })
+}
+
+pub fn delete_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM projects WHERE id = ?1 AND org_id = ?2",
+        [id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+pub fn list_project_members(conn: &Connection, _org_id: &str, project_id: &str) -> Result<Vec<ProjectMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT pm.id, pm.project_id, pm.user_id, u.email, u.name, pm.role, pm.created_at
+         FROM project_members pm
+         JOIN users u ON u.id = pm.user_id
+         WHERE pm.project_id = ?1",
+    )?;
+    let rows = stmt.query_map([project_id], |row| {
+        Ok(ProjectMember {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            user_id: row.get(2)?,
+            email: row.get(3)?,
+            name: row.get(4)?,
+            role: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    let mut members = Vec::new();
+    for row in rows {
+        members.push(row?);
+    }
+    Ok(members)
+}
+
+pub fn upsert_project_member(conn: &Connection, project_id: &str, user_id: &str, role: &str) -> Result<()> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role",
+        rusqlite::params![id, project_id, user_id, role, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_project_member(conn: &Connection, project_id: &str, user_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+        [project_id, user_id],
+    )?;
+    Ok(affected > 0)
+}
+
+pub fn get_project_member_role(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+    user_id: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT pm.role 
+         FROM project_members pm
+         JOIN projects p ON p.id = pm.project_id
+         WHERE p.org_id = ?1 AND p.name = ?2 AND pm.user_id = ?3",
+    )?;
+    let result = stmt.query_row(rusqlite::params![org_id, project_name, user_id], |row| {
+        row.get::<_, String>(0)
+    });
+    match result {
+        Ok(role) => Ok(Some(role)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn get_memory_owner_and_project(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<(String, String)>> {
+    let result = conn.query_row(
+        "SELECT user_id, project FROM memories WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![memory_id, org_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    );
+    match result {
+        Ok(val) => Ok(Some(val)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }

@@ -80,7 +80,7 @@ pub async fn invite(
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, "user:invite")?;
+    require_permission(&conn, &auth, None, "user:invite")?;
 
     let role = input.role.as_deref().unwrap_or("member");
 
@@ -111,7 +111,7 @@ pub async fn remove(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, "user:revoke")?;
+    require_permission(&conn, &auth, None, "user:revoke")?;
 
     let suspended = queries::suspend_user(&conn, &auth.org_id, &user_id).map_err(db_err)?;
 

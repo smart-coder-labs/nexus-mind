@@ -8,6 +8,8 @@ import type {
   MemoryFilters,
   AuditFilters,
   CustomRole,
+  Project,
+  ProjectMember,
 } from '../types'
 
 export class NexusMindClient {
@@ -100,6 +102,36 @@ export class NexusMindClient {
 
   deleteRole(id: string): Promise<void> {
     return this.request(`/v1/roles/${id}`, { method: 'DELETE' })
+  }
+
+  listProjects(): Promise<Project[]> {
+    return this.request('/v1/projects')
+  }
+
+  createProject(data: { name: string; description?: string }): Promise<Project> {
+    return this.request('/v1/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  deleteProject(id: string): Promise<void> {
+    return this.request(`/v1/projects/${id}`, { method: 'DELETE' })
+  }
+
+  listProjectMembers(projectId: string): Promise<ProjectMember[]> {
+    return this.request(`/v1/projects/${projectId}/members`)
+  }
+
+  upsertProjectMember(projectId: string, userId: string, role: string): Promise<void> {
+    return this.request(`/v1/projects/${projectId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, role }),
+    })
+  }
+
+  deleteProjectMember(projectId: string, userId: string): Promise<void> {
+    return this.request(`/v1/projects/${projectId}/members/${userId}`, { method: 'DELETE' })
   }
 
   listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {

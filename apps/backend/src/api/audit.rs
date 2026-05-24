@@ -50,7 +50,7 @@ pub async fn query(
 ) -> Result<Json<Vec<AuditEntry>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &ctx, "audit:read")?;
+    require_permission(&conn, &ctx, None, "audit:read")?;
 
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0).max(0);

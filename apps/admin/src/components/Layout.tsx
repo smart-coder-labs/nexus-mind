@@ -9,8 +9,8 @@ import {
   LogOut,
   Menu,
   X,
-  Building2,
   Shield,
+  FolderGit,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { cn } from '@/lib/utils'
@@ -22,13 +22,13 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: 'Dashboard',     href: '/',         icon: LayoutDashboard },
-  { label: 'Organizations', href: '/orgs',     icon: Building2 },
-  { label: 'Users',         href: '/users',    icon: Users },
-  { label: 'Roles',         href: '/roles',    icon: Shield },
-  { label: 'Memories',      href: '/memories', icon: Brain },
-  { label: 'Audit Log',     href: '/audit',    icon: ScrollText },
-  { label: 'Settings',      href: '/settings', icon: Settings },
+  { label: 'Dashboard',  href: '/',         icon: LayoutDashboard },
+  { label: 'Users',      href: '/users',    icon: Users },
+  { label: 'Roles',      href: '/roles',    icon: Shield },
+  { label: 'Projects',   href: '/projects', icon: FolderGit },
+  { label: 'Memories',   href: '/memories', icon: Brain },
+  { label: 'Audit Log',  href: '/audit',    icon: ScrollText },
+  { label: 'Settings',   href: '/settings', icon: Settings },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
@@ -36,7 +36,12 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const { session } = useAuth()
 
   const visibleItems = NAV_ITEMS.filter(item => {
-    if (item.href === '/users' || item.href === '/audit' || item.href === '/orgs' || item.href === '/roles') {
+    if (
+      item.href === '/users' ||
+      item.href === '/audit' ||
+      item.href === '/roles' ||
+      item.href === '/projects'
+    ) {
       return session?.user.role === 'admin'
     }
     return true

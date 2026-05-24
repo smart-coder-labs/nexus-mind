@@ -295,9 +295,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version stays at 5
+    // Verify user_version stays at 6
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
@@ -323,6 +323,10 @@ fn fts_backfill_after_migration() {
 
     // Now run v2 migration (backfill must include the pre-existing row)
     migrations::run_v2(&conn).unwrap();
+    migrations::run_v3(&conn).unwrap();
+    migrations::run_v4(&conn).unwrap();
+    migrations::run_v5(&conn).unwrap();
+    migrations::run_v6(&conn).unwrap();
 
     // The pre-existing row must be searchable
     let results = queries::search_memories(&conn, "org1", "authentication", 10).unwrap();
@@ -367,4 +371,52 @@ fn custom_roles_and_assignment() {
     let users = queries::list_users(&conn, &org.id).unwrap();
     let updated_user = users.iter().find(|u| u.id == invited_user.id).unwrap();
     assert_eq!(updated_user.role, "custom-editor");
+}
+
+#[test]
+fn project_role_overrides_integration() {
+    let conn = setup();
+    let (org, _admin, _) = queries::bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // 1. Create a project
+    let p_id = queries::get_or_create_project(&conn, &org.id, "payments").unwrap();
+    assert!(!p_id.is_empty());
+
+    // Verify it is in list_projects
+    let projects = queries::list_projects(&conn, &org.id).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].name, "payments");
+
+    // 2. Invite a viewer user
+    let (dev, dev_key) = queries::invite_user(&conn, &org.id, "dev@acme.com", "Dev", "viewer").unwrap();
+    let dev_hash = api_keys::hash_key(&dev_key);
+    let dev_ctx = queries::validate_api_key(&conn, &dev_hash).unwrap().unwrap();
+    assert_eq!(dev_ctx.role, UserRole::Standard(Role::Viewer));
+
+    // 3. Dev attempts to store memory in "payments" project -> should fail permissions check
+    assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_err());
+
+    // 4. Override Dev's role in project "payments" to "dev-senior"
+    queries::upsert_project_member(&conn, &p_id, &dev.id, "dev-senior").unwrap();
+
+    // Verify member list
+    let members = queries::list_project_members(&conn, &org.id, &p_id).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].user_id, dev.id);
+    assert_eq!(members[0].role, "dev-senior");
+
+    // 5. Dev attempts to store memory in "payments" project -> should now SUCCEED permissions check
+    assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_ok());
+
+    // But still fails in "other-project"
+    assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("other-project"), "memory:write").is_err());
+
+    // 6. Detach / Remove override
+    let deleted = queries::delete_project_member(&conn, &p_id, &dev.id).unwrap();
+    assert!(deleted);
+    let members_after = queries::list_project_members(&conn, &org.id, &p_id).unwrap();
+    assert!(members_after.is_empty());
+
+    // Dev fails permissions check again
+    assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_err());
 }

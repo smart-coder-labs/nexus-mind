@@ -66,7 +66,8 @@ pub async fn store(
                 code: "internal_error".to_string(),
             }),
         ))?;
-        require_permission(&conn, &auth, "memory:write")?;
+        let project = input.project.as_deref().unwrap_or("default");
+        require_permission(&conn, &auth, Some(project), "memory:write")?;
     }
 
     let is_upsert = input.topic_key.is_some();
@@ -95,7 +96,7 @@ pub async fn search(
                 code: "internal_error".to_string(),
             }),
         ))?;
-        require_permission(&conn, &auth, "memory:search")?;
+        require_permission(&conn, &auth, None, "memory:search")?;
     }
 
     let limit = input.limit.unwrap_or(20);
@@ -120,7 +121,7 @@ pub async fn list(
                 code: "internal_error".to_string(),
             }),
         ))?;
-        require_permission(&conn, &auth, "memory:read")?;
+        require_permission(&conn, &auth, params.project.as_deref(), "memory:read")?;
     }
 
     let filters = MemoryFilters {
@@ -144,12 +145,10 @@ pub async fn delete(
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
-        require_permission(&conn, &auth, "memory:delete")?;
+        // Fetch owner and project to enforce project overrides and ownership
+        let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
-        // Fetch owner to enforce ownership rule for non-admins
-        let owner = db_queries::get_memory_owner(&conn, &auth.org_id, &id).map_err(store_err)?;
-
-        match owner {
+        match details {
             None => return Err((
                 StatusCode::NOT_FOUND,
                 Json(ApiError {
@@ -157,16 +156,25 @@ pub async fn delete(
                     code: "not_found".to_string(),
                 }),
             )),
-            Some(ref owner_id) if *owner_id != auth.user_id && !auth.role.is_admin() => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(ApiError {
-                        error: "Insufficient permissions".to_string(),
-                        code: "forbidden".to_string(),
-                    }),
-                ));
+            Some((ref owner_id, ref project_name)) => {
+                require_permission(&conn, &auth, Some(project_name), "memory:delete")?;
+
+                if *owner_id != auth.user_id && !auth.role.is_admin() {
+                    let is_project_admin = match db_queries::get_project_member_role(&conn, &auth.org_id, project_name, &auth.user_id) {
+                        Ok(Some(role_str)) => role_str == "admin",
+                        _ => false,
+                    };
+                    if !is_project_admin {
+                        return Err((
+                            StatusCode::FORBIDDEN,
+                            Json(ApiError {
+                                error: "Insufficient permissions".to_string(),
+                                code: "forbidden".to_string(),
+                            }),
+                        ));
+                    }
+                }
             }
-            _ => {} // ownership confirmed or admin
         }
     }
 

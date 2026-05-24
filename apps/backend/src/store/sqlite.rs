@@ -135,7 +135,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let result = conn.query_row(
             "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                    title, type, scope, topic_key, session_id, revision_count, normalized_hash
+                    title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
              FROM memories WHERE id = ?1 AND org_id = ?2",
             rusqlite::params![memory_id, org_id],
             |row| {
@@ -156,13 +156,14 @@ impl MemoryStore for SqliteStore {
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<i64>>(13)?,
                     row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<String>>(15)?,
                 ))
             },
         );
 
         match result {
             Ok((id, org_id, user_id, project, tool, content, tags_str, created_at,
-                title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash)) => {
+                title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)) => {
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
                 Ok(Some(Memory {
                     id,
@@ -180,6 +181,7 @@ impl MemoryStore for SqliteStore {
                     session_id,
                     revision_count: revision_count.unwrap_or(1),
                     normalized_hash,
+                    project_id,
                 }))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

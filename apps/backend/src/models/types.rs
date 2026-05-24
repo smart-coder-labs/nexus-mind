@@ -161,6 +161,7 @@ pub struct Memory {
     #[serde(default = "default_revision_count")]
     pub revision_count: i64,
     pub normalized_hash: Option<String>,
+    pub project_id: Option<String>,
 }
 
 fn default_revision_count() -> i64 {
@@ -242,6 +243,26 @@ pub struct OrgStats {
     pub top_tools: Vec<ToolUsage>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Project {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProjectMember {
+    pub id: String,
+    pub project_id: String,
+    pub user_id: String,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub created_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +342,7 @@ mod tests {
             session_id: None,
             revision_count: 1,
             normalized_hash: None,
+            project_id: None,
         };
         assert!(m.tags.is_empty());
         assert_eq!(m.scope, "project");
@@ -397,6 +419,7 @@ mod tests {
             session_id: None,
             revision_count: 2,
             normalized_hash: Some("abc123".into()),
+            project_id: Some("proj_1".into()),
         };
         let json_val: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(json_val["title"], "My title");
