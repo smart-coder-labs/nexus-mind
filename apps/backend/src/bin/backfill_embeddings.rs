@@ -1,9 +1,9 @@
-/// Backfill embeddings for all memories that don't have one yet.
-///
-/// Usage:
-///   cargo run --bin backfill_embeddings -- --db-path ./data/nexusmind.db
-///
-/// Safe to re-run: skips memories that already have an embedding.
+//! Backfill embeddings for all memories that don't have one yet.
+//!
+//! Usage:
+//!   cargo run --bin backfill_embeddings -- --db-path ./data/nexusmind.db
+//!
+//! Safe to re-run: skips memories that already have an embedding.
 
 use clap::Parser;
 use nexusmind::{

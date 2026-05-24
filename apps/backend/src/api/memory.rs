@@ -73,7 +73,7 @@ pub async fn search(
     Json(input): Json<SearchInput>,
 ) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
     let limit = input.limit.unwrap_or(20);
-    let mode = SearchMode::from_str(input.mode.as_deref().unwrap_or("keyword"));
+    let mode = input.mode.as_deref().unwrap_or("keyword").parse::<SearchMode>().unwrap_or(SearchMode::Keyword);
     let memories = store
         .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
         .map_err(store_err)?;

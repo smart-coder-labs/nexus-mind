@@ -27,13 +27,15 @@ pub enum SearchMode {
     Hybrid,
 }
 
-impl SearchMode {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for SearchMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "semantic" => SearchMode::Semantic,
             "hybrid"   => SearchMode::Hybrid,
             _          => SearchMode::Keyword,
-        }
+        })
     }
 }
 
