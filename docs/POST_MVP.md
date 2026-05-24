@@ -96,6 +96,108 @@ Documentado en: ADR-002 §6.3
 
 ---
 
+## v0.3.5 — Backoffice Interno (Semanas 3-5 post-MVP)
+
+**Foco**: Panel de operación interna para gestionar clientes (orgs), facturación y soporte. Este panel NO es visible para los clientes — es exclusivo del equipo de NexusMind. El admin panel (`/apps/admin`) es para clientes; este backoffice es para nosotros.
+
+**Decisión de arquitectura**: App separada (`apps/backoffice`) — misma API de backend, autenticación con rol especial `superadmin` que no existe en el flujo de cliente. Puede compartir tipos y cliente API con el admin panel, pero NO comparte rutas ni layout.
+
+### Backend — API para Superadmin
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Rol `superadmin` | Nuevo rol en DB — no asignable desde el admin panel de cliente — solo creado via seed/migration |
+| ❌ Middleware `require_superadmin` | Guard separado del `require_permission` de cliente — bloquea cualquier request sin rol superadmin |
+| ❌ `GET /internal/orgs` | Lista todas las orgs con stats: usuarios activos, memorias almacenadas, última actividad, plan |
+| ❌ `POST /internal/orgs` | Crear org desde backoffice — equivalente al seed pero via API |
+| ❌ `PATCH /internal/orgs/:id` | Editar nombre, plan, límites, estado (active/suspended/trial) |
+| ❌ `DELETE /internal/orgs/:id` | Soft-delete de org + cascade a users/memories/audit |
+| ❌ `GET /internal/orgs/:id/stats` | Uso detallado: memorias por usuario, distribución de herramientas, actividad últimos 30 días |
+| ❌ `POST /internal/orgs/:id/impersonate` | Genera token temporal de admin para entrar como cliente a su panel — para soporte |
+| ❌ `GET /internal/users` | Lista todos los usuarios cross-org con filtros (rol, org, estado, última actividad) |
+| ❌ `POST /internal/users/:id/suspend` | Suspender usuario sin borrar sus datos |
+| ❌ `GET /internal/audit` | Audit log global cross-org — para investigación de incidentes |
+| ❌ `GET /internal/metrics` | Métricas agregadas del sistema: orgs totales, usuarios, memorias, RPM, latencia p95 |
+| ❌ Prefijo `/internal/*` en router | Rutas internas bajo prefijo dedicado — nunca expuestas en la doc pública del API |
+
+### Backoffice App (React + Vite)
+
+**Stack**: Mismo stack que admin panel (React, Vite, Tailwind/CSS, lucide-react). App independiente en `apps/backoffice/`.
+
+#### Autenticación
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Login de superadmin | Pantalla de login propia — no comparte la del admin panel — credentials de backoffice |
+| ❌ AuthContext de superadmin | Contexto separado que sabe distinguir el rol `superadmin` |
+| ❌ Guard de rutas | Todas las rutas del backoffice requieren rol `superadmin` — redirect a login si no |
+
+#### Dashboard Global
+
+| Tarea | Detalle |
+|---|---|
+| ❌ KPIs del negocio | Orgs activas, usuarios totales, memorias almacenadas, crecimiento semanal |
+| ❌ Gráficos de actividad | Nuevas orgs por semana, memorias creadas por día, RPM por hora |
+| ❌ Orgs con mayor actividad | Top 5 orgs por uso en últimas 24h / 7 días / 30 días |
+| ❌ Alertas del sistema | Orgs cerca del límite de su plan, errores de autenticación repetidos, latencia alta |
+
+#### Gestión de Organizaciones
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Lista de orgs con búsqueda y filtros | Filtrar por plan, estado (active/trial/suspended), actividad reciente |
+| ❌ Detalle de org | Stats completos: usuarios, memorias, proyectos, último acceso, uso acumulado |
+| ❌ Crear org | Formulario: nombre, plan, límites de usuarios/memorias, admin inicial |
+| ❌ Editar org | Cambiar nombre, plan, límites, estado — con confirmación para cambios destructivos |
+| ❌ Suspender / reactivar org | Bloquea acceso a todos sus usuarios sin borrar datos |
+| ❌ Borrar org | Soft-delete con warning explícito — muestra cuántas memorias/usuarios se van a perder |
+| ❌ Impersonar admin de org | Botón "Entrar como cliente" — genera token temporal, abre admin panel del cliente en nueva pestaña |
+| ❌ Ver proyectos de la org | Lista de proyectos con miembros y memorias asociadas |
+| ❌ Ver audit log de la org | Filtrado al scope de esa org — útil para soporte |
+
+#### Gestión de Usuarios (cross-org)
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Lista global de usuarios | Búsqueda por email/nombre, filtros por org/rol/estado |
+| ❌ Detalle de usuario | Org a la que pertenece, rol, última actividad, memorias creadas, API keys activas |
+| ❌ Suspender / reactivar usuario | Individual, sin afectar al resto de la org |
+| ❌ Reasignar usuario a otra org | Para migraciones o reorganizaciones |
+| ❌ Ver API keys del usuario | Lista de keys con última utilización — sin mostrar el valor completo |
+
+#### Monitoreo y Métricas
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Dashboard de salud del sistema | Latencia p50/p95/p99, tasa de errores, uso de CPU/memoria del proceso |
+| ❌ Audit log global | Todos los eventos de todas las orgs — con búsqueda por tipo de acción, usuario, org, fecha |
+| ❌ Exportar audit global | JSONL export para análisis externo o auditoría forense |
+| ❌ Alertas configurables | Umbrales: si latencia p95 > Xms, si org supera Y memorias, etc. |
+
+#### Configuración del Sistema
+
+| Tarea | Detalle |
+|---|---|
+| ❌ Gestión de planes | Definir y editar planes (nombre, límites de usuarios/memorias, features habilitadas) |
+| ❌ Feature flags globales | Activar/desactivar features por plan o por org específica |
+| ❌ Configuración de email | SMTP settings, plantillas de invite y notificación |
+| ❌ Superadmins | Lista de cuentas con rol superadmin — agregar/revocar |
+
+### Infraestructura del Backoffice
+
+| Tarea | Detalle |
+|---|---|
+| ❌ `apps/backoffice/` scaffold | Vite + React + TypeScript — misma estructura que admin panel |
+| ❌ `apps/backoffice/src/api/client.ts` | Cliente HTTP para rutas `/internal/*` |
+| ❌ Docker Compose: servicio `backoffice` | Puerto separado (e.g. `:5175`) — no expuesto públicamente en producción |
+| ❌ CI: build del backoffice | Job en GitHub Actions — igual que el admin panel |
+| ❌ `docs/BACKOFFICE.md` | Guía de setup, credenciales de superadmin, cómo crear la primera cuenta |
+
+**Estimación total**: ~3 semanas. Backend (1 sem) + App (1.5 sem) + Infra + Docs (0.5 sem).  
+**Nota**: Sin esto, operar el negocio requiere acceso directo a la DB — no es viable para soporte real.
+
+---
+
 ## v0.4.0 — Auth Hardening (Semanas 5-8 post-MVP)
 
 **Foco**: Lo que los enterprise buyers piden en el primer call.
@@ -347,12 +449,13 @@ Documentado en: ROADMAP.md M13-M24
 ## Resumen de prioridades
 
 ```
-v0.3 (Sem 1-4)   Vector search + Cursor plugin + Store trait
-v0.4 (Sem 5-8)   RBAC + memory isolation + OIDC/SSO + MFA
-v0.5 (Sem 9-12)  Policy engine + audit trail inmutable
-v0.6 (Sem 13-18) Copilot + multi-agent + SDKs + CLI
-v1.0 (Sem 19-28) Billing + SOC2 + Postgres + on-prem
-v2.0 (Año 2)     Platform + marketplace + analytics + ISO 27001
+v0.3   (Sem 1-4)   Vector search + Cursor plugin + Store trait
+v0.3.5 (Sem 3-5)   Backoffice interno (orgs, users, metrics, superadmin)
+v0.4   (Sem 5-8)   RBAC + memory isolation + OIDC/SSO + MFA
+v0.5   (Sem 9-12)  Policy engine + audit trail inmutable
+v0.6   (Sem 13-18) Copilot + multi-agent + SDKs + CLI
+v1.0   (Sem 19-28) Billing + SOC2 + Postgres + on-prem
+v2.0   (Año 2)     Platform + marketplace + analytics + ISO 27001
 ```
 
 ---

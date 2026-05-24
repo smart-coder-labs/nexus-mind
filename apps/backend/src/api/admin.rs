@@ -16,7 +16,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, Org, OrgStats, CustomRole, Project, ProjectMember},
+    models::types::{ApiError, AuthContext, Org, OrgStats, User, CustomRole, Project, ProjectMember},
     store::sqlite::SqliteStore,
 };
 
@@ -156,6 +156,28 @@ pub async fn list_orgs(
     let conn = db.lock().map_err(|_| lock_err())?;
     let orgs = queries::list_orgs(&conn).map_err(db_err)?;
     Ok(Json(orgs))
+}
+
+pub async fn list_org_users(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<Vec<User>>, (StatusCode, Json<ApiError>)> {
+    let expected = superuser_key.ok_or_else(unauthorized)?;
+    let provided = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(unauthorized)?;
+    if provided != expected {
+        return Err(unauthorized());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let users = queries::list_users(&conn, &org_id).map_err(db_err)?;
+    Ok(Json(users))
 }
 
 pub async fn stats(

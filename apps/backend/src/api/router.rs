@@ -101,6 +101,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
     Router::new()
         .route("/v1/health", get(health::handler))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
+        .route("/v1/orgs/:id/users", get(admin::list_org_users))
         .route("/v1/admin/auth/login", post(auth::login))
         .route("/v1/admin/auth/set-password", post(auth::set_password))
         .route("/v1/admin/auth/request-reset", post(auth::request_reset))

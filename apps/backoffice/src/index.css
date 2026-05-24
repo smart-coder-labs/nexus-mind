@@ -1,0 +1,191 @@
+/**
+ * NexusMind Backoffice — Design System
+ * Superadmin-only panel. Amber accent to distinguish from client admin panel.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
+
+@import "tailwindcss";
+@variant dark (&:where(.dark, .dark *));
+
+
+/* ========================================
+   CSS VARIABLES
+   ======================================== */
+
+:root {
+  /* Background */
+  --color-bg-primary: #060509;
+  --color-bg-secondary: #0d0a12;
+  --color-bg-tertiary: #13101a;
+  --color-bg-elevated: #100e16;
+
+  /* Surface */
+  --color-surface-primary: #100e16;
+  --color-surface-secondary: #13101a;
+  --color-surface-glass: rgba(6, 5, 9, 0.72);
+  --color-surface-glass-dark: rgba(6, 5, 9, 0.85);
+
+  /* Text */
+  --color-text-primary: #faf5ff;
+  --color-text-secondary: #a78bfa;
+  --color-text-tertiary: #7c3aed;
+  --color-text-quaternary: #6d28d9;
+  --color-text-inverse: #060509;
+
+  /* Border */
+  --color-border-primary: rgba(167, 139, 250, 0.12);
+  --color-border-secondary: rgba(167, 139, 250, 0.06);
+  --color-border-focus: rgba(167, 139, 250, 0.5);
+
+  /* Accent — amber/violet for internal ops distinction */
+  --color-accent-blue: #f59e0b;
+  --color-accent-blue-hover: #d97706;
+  --color-accent-blue-active: #b45309;
+  --color-accent-blue-tint: rgba(245, 158, 11, 0.12);
+
+  /* Secondary accent */
+  --color-accent-violet: #a78bfa;
+  --color-accent-violet-tint: rgba(167, 139, 250, 0.12);
+
+  /* Status */
+  --color-status-success: #4ade80;
+  --color-status-warning: #f59e0b;
+  --color-status-error: #f87171;
+  --color-status-info: #a78bfa;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.75), 0 4px 16px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.8), 0 8px 24px rgba(0, 0, 0, 0.65);
+}
+
+.dark {
+  /* Dark mode inherits :root */
+}
+
+@theme {
+  --color-background-primary: var(--color-bg-primary);
+  --color-background-secondary: var(--color-bg-secondary);
+  --color-background-tertiary: var(--color-bg-tertiary);
+  --color-background-elevated: var(--color-bg-elevated);
+
+  --color-surface-primary: var(--color-surface-primary);
+  --color-surface-secondary: var(--color-surface-secondary);
+  --color-surface-glass: var(--color-surface-glass);
+  --color-surface-glass-dark: var(--color-surface-glass-dark);
+
+  --color-text-primary: var(--color-text-primary);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-text-tertiary: var(--color-text-tertiary);
+  --color-text-quaternary: var(--color-text-quaternary);
+  --color-text-inverse: var(--color-text-inverse);
+
+  --color-border-primary: var(--color-border-primary);
+  --color-border-secondary: var(--color-border-secondary);
+  --color-border-focus: var(--color-border-focus);
+
+  --color-accent-blue: var(--color-accent-blue);
+  --color-accent-blue-hover: var(--color-accent-blue-hover);
+  --color-accent-blue-active: var(--color-accent-blue-active);
+  --color-accent-blue-tint: var(--color-accent-blue-tint);
+
+  --color-accent-violet: var(--color-accent-violet);
+  --color-accent-violet-tint: var(--color-accent-violet-tint);
+
+  --color-status-success: var(--color-status-success);
+  --color-status-warning: var(--color-status-warning);
+  --color-status-error: var(--color-status-error);
+  --color-status-info: var(--color-status-info);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Monaco", monospace;
+
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+
+/* ========================================
+   BASE STYLES
+   ======================================== */
+
+@layer base {
+  * {
+    border-color: var(--color-border-primary);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-family: "Geist", -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    letter-spacing: -0.01em;
+  }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(167, 139, 250, 0.15); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.25); }
+
+  button, [role="button"] { cursor: pointer; }
+}
+
+
+/* ========================================
+   UTILITIES
+   ======================================== */
+
+@layer utilities {
+  .glass {
+    background: var(--color-surface-glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+
+/* ========================================
+   ANIMATIONS
+   ======================================== */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in  { animation: fadeIn  220ms cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-slide-up { animation: slideUp 220ms cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-scale-in { animation: scaleIn 220ms cubic-bezier(0.16, 1, 0.3, 1); }
