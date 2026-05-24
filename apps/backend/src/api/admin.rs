@@ -489,16 +489,13 @@ pub async fn upsert_project_member_api(
     let role_valid = match input.role.parse::<crate::models::types::Role>() {
         Ok(_) => true,
         Err(_) => {
-            // Verify custom role exists
-            const role_exists = conn.query_row(
+            conn.query_row(
                 "SELECT count(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
-                [&input.role, &auth.org_id],
+                rusqlite::params![&input.role, &auth.org_id],
                 |row| row.get::<_, i32>(0),
-            ).unwrap_or(0) > 0;
-            role_exists
+            ).unwrap_or(0) > 0
         }
     };
-
     if !role_valid {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
