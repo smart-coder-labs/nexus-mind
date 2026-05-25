@@ -80,12 +80,25 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/auth/me", get(auth::me))
         .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
+    let cors_origins = config.cors_origins.clone();
+    let admin_origin = config.admin_origin.clone();
+
     let cors = CorsLayer::new()
-        .allow_origin(
-            config.admin_origin
-                .parse::<axum::http::HeaderValue>()
-                .expect("invalid ADMIN_ORIGIN"),
-        )
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin: &axum::http::HeaderValue, _parts: &axum::http::request::Parts| {
+                if cors_origins == "*" {
+                    return true;
+                }
+                let origin_str = match origin.to_str() {
+                    Ok(s) => s,
+                    Err(_) => return false,
+                };
+                if origin_str == admin_origin {
+                    return true;
+                }
+                cors_origins.split(',').any(|allowed| allowed.trim() == origin_str)
+            },
+        ))
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
