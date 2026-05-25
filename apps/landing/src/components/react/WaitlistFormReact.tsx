@@ -8,10 +8,10 @@ export default function WaitlistFormReact() {
   const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
 
   const interests = [
-    { value: 'coding', label: 'Coding Assistant' },
-    { value: 'agents', label: 'AI Agents' },
-    { value: 'memory', label: 'Memory System' },
-    { value: 'governance', label: 'Enterprise Governance' },
+    { value: 'coding', label: 'Asistente de código' },
+    { value: 'agents', label: 'Agentes AI' },
+    { value: 'memory', label: 'Sistema de memoria' },
+    { value: 'governance', label: 'Gobierno enterprise' },
   ];
 
   const toggleInterest = (value: string) => {
@@ -46,7 +46,7 @@ export default function WaitlistFormReact() {
         localStorage.setItem('nexusmind_waitlist', JSON.stringify(existing));
       }
       (window as any).confetti?.();
-      (window as any).showToast?.("You're on the list! Te avisaremos cuando tengamos slots.");
+      (window as any).showToast?.('¡Estás en la lista! Te avisaremos cuando tengamos slots.');
       form.reset();
       setSelectedInterests([]);
     } finally {
@@ -124,7 +124,7 @@ export default function WaitlistFormReact() {
         />
       </div>
       <Button type="submit" variant="primary" size="lg" fullWidth loading={loading}>
-        Join the Waitlist
+        Unirme a la lista
       </Button>
       <p className="text-xs text-center" style={{ color: 'var(--color-text-tertiary)' }}>
         No spam. Sin compromiso.

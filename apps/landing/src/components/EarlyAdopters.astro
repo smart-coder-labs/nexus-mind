@@ -6,17 +6,17 @@ const TOTAL = 100;
 let count = 0;
 if (SUPABASE_URL && SUPABASE_ANON_KEY) {
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/waitlist?select=*`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_waitlist_count`, {
+      method: 'POST',
       headers: {
         apikey: SUPABASE_ANON_KEY,
         Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Prefer: 'count=exact',
-        Range: '0-0',
+        'Content-Type': 'application/json',
       },
+      body: '{}',
     });
-    const range = res.headers.get('content-range') || '';
-    const total = parseInt(range.split('/')[1] ?? '0', 10);
-    if (!isNaN(total)) count = total;
+    const total = await res.json();
+    if (typeof total === 'number' && !isNaN(total)) count = total;
   } catch (_) {}
 }
 
@@ -27,7 +27,7 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
 <section id="early" class="py-20 px-4" style="background: var(--color-bg-secondary);">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14 reveal" data-reveal>
-      <span class="text-xs font-semibold tracking-widest text-accent uppercase">Early Adopters Program</span>
+      <span class="text-xs font-semibold tracking-widest text-accent uppercase">Programa Early Adopter</span>
       <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Sabemos lo que duele.<br/>Lo vivimos también.</h2>
       <p class="mt-3 max-w-xl mx-auto" style="color: var(--color-text-secondary);">Construimos NexusMind porque enfrentamos los mismos problemas. Si los vivís también — este programa es para ti.</p>
     </div>
@@ -95,7 +95,7 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
             <div class="mt-3 h-2 rounded-full overflow-hidden" style="background: var(--color-border-secondary);">
               <div class="h-full bg-accent rounded-full" style={`width: ${pct}%`}></div>
             </div>
-            <a href="#waitlist" class="mt-4 block w-full bg-accent hover:bg-blue-500 text-white py-2.5 rounded-full text-sm font-semibold transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/25 active:scale-[0.98]">Apply for Early Access</a>
+            <a href="#waitlist" class="mt-4 block w-full bg-accent hover:bg-blue-500 text-white py-2.5 rounded-full text-sm font-semibold transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/25 active:scale-[0.98]">Solicitar acceso anticipado</a>
           </div>
         </div>
       </div>

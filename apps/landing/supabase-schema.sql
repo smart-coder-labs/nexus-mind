@@ -32,3 +32,17 @@ CREATE INDEX idx_waitlist_created_at ON waitlist (created_at DESC);
 
 -- Index for email dedup checks
 CREATE INDEX idx_waitlist_email ON waitlist (email);
+
+-- Public RPC function: returns waitlist count without exposing row data.
+-- SECURITY DEFINER runs as the function owner (bypasses RLS), so anon
+-- can call it without a SELECT policy on the table itself.
+CREATE OR REPLACE FUNCTION get_waitlist_count()
+RETURNS INTEGER
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COUNT(*)::INTEGER FROM waitlist;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_waitlist_count() TO anon;
