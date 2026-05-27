@@ -41,6 +41,8 @@ jobs:
 
       - name: Build
         run: cd apps/admin && npm ci && npm run build
+        env:
+          VITE_API_URL: https://api.nexusmind.smartcoderlabs.com
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
