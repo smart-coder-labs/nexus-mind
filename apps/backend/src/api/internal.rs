@@ -23,10 +23,6 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
     (StatusCode::UNAUTHORIZED, Json(ApiError { error: "Valid superuser key required".to_string(), code: "unauthorized".to_string() }))
 }
 
-fn not_found() -> (StatusCode, Json<ApiError>) {
-    (StatusCode::NOT_FOUND, Json(ApiError { error: "Not found".to_string(), code: "not_found".to_string() }))
-}
-
 // ── Superuser guard ───────────────────────────────────────────────────────────
 
 fn require_superuser(
