@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::auth::api_keys;
 use crate::models::types::{
-    AuthContext, CreateSessionRequest, CustomRole, Memory, Org, OrgStats, PatchSessionRequest,
-    Session, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
+    AuthContext, AuditEntry, CreateSessionRequest, CustomRole, GlobalMetrics, Memory, Org, OrgStats,
+    OrgWithStats, PatchSessionRequest, Session, StoreMemoryRequest, ToolUsage, User, UserRole,
+    Project, ProjectMember,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -1402,7 +1403,7 @@ pub fn get_or_create_project(conn: &Connection, org_id: &str, project_name: &str
 
 pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, description, created_at FROM projects WHERE org_id = ?1 ORDER BY name ASC",
+        "SELECT id, org_id, name, description, created_at, parent_id FROM projects WHERE org_id = ?1 ORDER BY name ASC",
     )?;
     let rows = stmt.query_map([org_id], |row| {
         Ok(Project {
@@ -1411,6 +1412,7 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
             name: row.get(2)?,
             description: row.get(3)?,
             created_at: row.get(4)?,
+            parent_id: row.get(5)?,
         })
     })?;
     let mut projects = Vec::new();
@@ -1420,12 +1422,12 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
     Ok(projects)
 }
 
-pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>) -> Result<Project> {
+pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>, parent_id: Option<&str>) -> Result<Project> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     conn.execute(
-        "INSERT INTO projects (id, org_id, name, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, org_id, name, description, now],
+        "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, org_id, name, description, now, parent_id],
     )?;
     Ok(Project {
         id,
@@ -1433,7 +1435,16 @@ pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: 
         name: name.to_string(),
         description: description.map(String::from),
         created_at: now,
+        parent_id: parent_id.map(String::from),
     })
+}
+
+pub fn update_project(conn: &Connection, org_id: &str, project_id: &str, parent_id: Option<&str>) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE projects SET parent_id = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![parent_id, project_id, org_id],
+    )?;
+    Ok(rows > 0)
 }
 
 pub fn delete_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
@@ -1522,6 +1533,121 @@ pub fn get_memory_owner_and_project(conn: &Connection, org_id: &str, memory_id: 
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+pub fn get_global_metrics(conn: &Connection) -> Result<GlobalMetrics> {
+    let total_orgs: i64 = conn.query_row(
+        "SELECT count(*) FROM organizations",
+        [],
+        |r| r.get(0),
+    )?;
+    let total_users: i64 = conn.query_row(
+        "SELECT count(*) FROM users",
+        [],
+        |r| r.get(0),
+    )?;
+    let total_memories: i64 = conn.query_row(
+        "SELECT count(*) FROM memories",
+        [],
+        |r| r.get(0),
+    )?;
+    let active_users_24h: i64 = conn.query_row(
+        "SELECT count(DISTINCT user_id) FROM audit_logs WHERE timestamp >= datetime('now', '-24 hours')",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(GlobalMetrics { total_orgs, total_users, total_memories, active_users_24h })
+}
+
+pub fn list_orgs_with_stats(conn: &Connection) -> Result<Vec<OrgWithStats>> {
+    let mut stmt = conn.prepare(
+        "SELECT o.id, o.name, o.slug, o.created_at,
+                (SELECT count(*) FROM users u WHERE u.org_id = o.id) AS user_count,
+                (SELECT count(*) FROM memories m WHERE m.org_id = o.id) AS memory_count
+         FROM organizations o
+         ORDER BY o.created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OrgWithStats {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            slug: r.get(2)?,
+            created_at: r.get(3)?,
+            user_count: r.get(4)?,
+            memory_count: r.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn list_all_users(conn: &Connection) -> Result<Vec<User>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, email, name, role, status, created_at FROM users ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(User {
+            id: r.get(0)?,
+            org_id: r.get(1)?,
+            email: r.get(2)?,
+            name: r.get(3)?,
+            role: r.get(4)?,
+            status: r.get(5)?,
+            created_at: r.get(6)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn list_all_audit(
+    conn: &Connection,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AuditEntry>> {
+    let mut sql = "SELECT id, org_id, user_id, timestamp, action, resource_type, resource_id, metadata \
+                   FROM audit_logs WHERE 1=1".to_string();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(a) = action {
+        sql.push_str(&format!(" AND action = ?{}", params.len() + 1));
+        params.push(Box::new(a.to_string()));
+    }
+    if let Some(rt) = resource_type {
+        sql.push_str(&format!(" AND resource_type = ?{}", params.len() + 1));
+        params.push(Box::new(rt.to_string()));
+    }
+    if let Some(f) = from {
+        sql.push_str(&format!(" AND timestamp >= ?{}", params.len() + 1));
+        params.push(Box::new(f.to_string()));
+    }
+    if let Some(t) = to {
+        sql.push_str(&format!(" AND timestamp <= ?{}", params.len() + 1));
+        params.push(Box::new(t.to_string()));
+    }
+    sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT ?{} OFFSET ?{}", params.len() + 1, params.len() + 2));
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |r| {
+        Ok(AuditEntry {
+            id: r.get(0)?,
+            org_id: r.get(1)?,
+            user_id: r.get(2)?,
+            timestamp: r.get(3)?,
+            action: r.get(4)?,
+            resource_type: r.get(5)?,
+            resource_id: r.get(6)?,
+            metadata: r.get::<_, String>(7)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::Value::Null),
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 #[cfg(test)]

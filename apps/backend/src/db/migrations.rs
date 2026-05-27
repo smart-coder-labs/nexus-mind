@@ -9,6 +9,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v4(conn)?;
     run_v5(conn)?;
     run_v6(conn)?;
+    run_v7(conn)?;
     Ok(())
 }
 
@@ -361,6 +362,28 @@ pub fn run_v6(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v7: adds parent_id column to projects for hierarchical project support.
+pub fn run_v7(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 7 {
+        return Ok(());
+    }
+
+    let result = conn.execute(
+        "ALTER TABLE projects ADD COLUMN parent_id TEXT REFERENCES projects(id) ON DELETE SET NULL",
+        [],
+    );
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if !msg.contains("duplicate column name") {
+            return Err(e.into());
+        }
+    }
+
+    conn.execute_batch("PRAGMA user_version = 7;")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,10 +485,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_6() {
+    fn run_all_sets_user_version_to_7() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 6, "user_version must be 6 after run_all");
+        assert_eq!(get_user_version(&conn), 7, "user_version must be 7 after run_all");
     }
 
     #[test]

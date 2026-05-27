@@ -243,6 +243,24 @@ pub struct OrgStats {
     pub top_tools: Vec<ToolUsage>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GlobalMetrics {
+    pub total_orgs: i64,
+    pub total_users: i64,
+    pub total_memories: i64,
+    pub active_users_24h: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OrgWithStats {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub created_at: String,
+    pub user_count: i64,
+    pub memory_count: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Project {
     pub id: String,
@@ -250,6 +268,7 @@ pub struct Project {
     pub name: String,
     pub description: Option<String>,
     pub created_at: String,
+    pub parent_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

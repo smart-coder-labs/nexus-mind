@@ -1,4 +1,4 @@
-import type { Org, User, AuditEntry, CreateOrgResponse } from '../types'
+import type { Org, OrgWithStats, User, AuditEntry, GlobalMetrics, CreateOrgResponse } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
@@ -27,10 +27,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-// ── Orgs ──────────────────────────────────────────────────────────────────────
+// ── Metrics ────────────────────────────────────────────────────────────────────
 
-export function listOrgs(): Promise<Org[]> {
-  return request('/v1/orgs')
+export function getMetrics(): Promise<GlobalMetrics> {
+  return request('/internal/metrics')
+}
+
+// ── Orgs ───────────────────────────────────────────────────────────────────────
+
+export function listOrgs(): Promise<OrgWithStats[]> {
+  return request('/internal/orgs')
 }
 
 export function createOrg(data: {
@@ -39,13 +45,21 @@ export function createOrg(data: {
   admin_email: string
   admin_name: string
 }): Promise<CreateOrgResponse> {
-  return request('/v1/orgs', { method: 'POST', body: JSON.stringify(data) })
+  return request('/internal/orgs', { method: 'POST', body: JSON.stringify(data) })
 }
 
-// ── Users (cross-org via superuser) ──────────────────────────────────────────
+export function updateOrg(orgId: string, data: { name: string }): Promise<Org> {
+  return request(`/internal/orgs/${orgId}`, { method: 'PATCH', body: JSON.stringify(data) })
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
 
 export function listOrgUsers(orgId: string): Promise<User[]> {
-  return request(`/v1/orgs/${orgId}/users`)
+  return request(`/internal/orgs/${orgId}/users`)
+}
+
+export function listAllUsers(): Promise<User[]> {
+  return request('/internal/users')
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────
@@ -62,14 +76,14 @@ export interface AuditFilters {
 export function listAudit(filters: AuditFilters = {}): Promise<AuditEntry[]> {
   const params = new URLSearchParams()
   Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))
-  return request(`/v1/audit?${params}`)
+  return request(`/internal/audit?${params}`)
 }
 
 // ── Auth check (validate key) ─────────────────────────────────────────────────
 
 export async function validateKey(key: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE_URL}/v1/orgs`, {
+    const res = await fetch(`${BASE_URL}/internal/metrics`, {
       headers: { Authorization: `Bearer ${key}` },
     })
     return res.ok

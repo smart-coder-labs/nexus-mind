@@ -6,9 +6,8 @@ export interface Org {
 }
 
 export interface OrgWithStats extends Org {
-  user_count?: number
-  memory_count?: number
-  last_activity?: string
+  user_count: number
+  memory_count: number
 }
 
 export interface User {

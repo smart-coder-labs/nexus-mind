@@ -335,6 +335,12 @@ pub async fn delete_role_api(
 pub struct CreateProjectInput {
     pub name: String,
     pub description: Option<String>,
+    pub parent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectInput {
+    pub parent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -366,7 +372,7 @@ pub async fn create_project_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let project = queries::create_project(&conn, &auth.org_id, &input.name, input.description.as_deref())
+    let project = queries::create_project(&conn, &auth.org_id, &input.name, input.description.as_deref(), input.parent_id.as_deref())
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
                 (
@@ -405,6 +411,34 @@ pub async fn delete_project_api(
             }),
         ))
     }
+}
+
+pub async fn update_project_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(project_id): Path<String>,
+    Json(input): Json<UpdateProjectInput>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let found = queries::update_project(&conn, &auth.org_id, &project_id, input.parent_id.as_deref())
+        .map_err(db_err)?;
+
+    if !found {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn list_project_members_api(

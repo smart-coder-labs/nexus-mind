@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, health, memory, middleware as auth_mw, sessions, users};
+use crate::api::{admin, audit, auth, health, internal, memory, middleware as auth_mw, sessions, users};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -70,7 +70,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/roles", get(admin::list_roles_api).post(admin::create_role_api))
         .route("/v1/roles/:id", delete(admin::delete_role_api))
         .route("/v1/projects", get(admin::list_projects_api).post(admin::create_project_api))
-        .route("/v1/projects/:id", delete(admin::delete_project_api))
+        .route("/v1/projects/:id", delete(admin::delete_project_api).patch(admin::update_project_api))
         .route("/v1/projects/:project_id/members", get(admin::list_project_members_api).post(admin::upsert_project_member_api))
         .route("/v1/projects/:project_id/members/:user_id", delete(admin::delete_project_member_api))
         .route("/v1/audit", get(audit::query))
@@ -111,6 +111,14 @@ pub fn build(conn: Connection, config: Config) -> Router {
         ])
         .allow_credentials(true);
 
+    let internal_routes = Router::new()
+        .route("/internal/metrics", get(internal::get_metrics))
+        .route("/internal/orgs", get(internal::list_orgs).post(internal::create_org))
+        .route("/internal/orgs/:id", patch(internal::update_org))
+        .route("/internal/orgs/:id/users", get(internal::list_org_users))
+        .route("/internal/users", get(internal::list_users))
+        .route("/internal/audit", get(internal::list_audit));
+
     Router::new()
         .route("/v1/health", get(health::handler))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
@@ -120,6 +128,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/auth/request-reset", post(auth::request_reset))
         .route("/v1/admin/auth/logout", post(auth::logout))
         .merge(protected)
+        .merge(internal_routes)
         .layer(Extension(email_config))
         .layer(Extension(config.superuser_key))
         .layer(cors)
