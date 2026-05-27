@@ -108,9 +108,16 @@ export class NexusMindClient {
     return this.request('/v1/projects')
   }
 
-  createProject(data: { name: string; description?: string }): Promise<Project> {
+  createProject(data: { name: string; description?: string; parent_id?: string }): Promise<Project> {
     return this.request('/v1/projects', {
       method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  updateProject(id: string, data: { parent_id: string | null }): Promise<void> {
+    return this.request(`/v1/projects/${id}`, {
+      method: 'PATCH',
       body: JSON.stringify(data),
     })
   }
