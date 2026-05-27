@@ -11,6 +11,8 @@ primary_region = "ord"
 [env]
   DB_PATH = "/data/nexusmind.db"
   RUST_LOG = "info"
+  COOKIE_SECURE = "true"
+  ADMIN_ORIGIN = "https://admin.nexusmind.smartcoderlabs.com"
 
 [http_service]
   internal_port = 8080
