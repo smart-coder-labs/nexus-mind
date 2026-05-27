@@ -541,7 +541,7 @@ pub async fn upsert_project_member_api(
     }
 
     queries::upsert_project_member(&conn, &project_id, &input.user_id, &input.role).map_err(db_err)?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn delete_project_member_api(

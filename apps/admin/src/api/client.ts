@@ -31,9 +31,11 @@ export class NexusMindClient {
         status: res.status,
       })
     }
-    // 204 No Content
+    // 204 No Content or empty body (Safari throws on JSON.parse(""))
     if (res.status === 204) return undefined as T
-    return res.json()
+    const text = await res.text()
+    if (!text) return undefined as T
+    return JSON.parse(text) as T
   }
 
   // Auth
