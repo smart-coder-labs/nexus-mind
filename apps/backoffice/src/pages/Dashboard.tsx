@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Building2, Users, Brain, ArrowRight, AlertCircle, RefreshCw } from 'lucide-react'
-import { listOrgs } from '../api/client'
-import type { Org } from '../types'
+import { Building2, Users, Brain, Activity, ArrowRight, AlertCircle, RefreshCw } from 'lucide-react'
+import { getMetrics, listOrgs } from '../api/client'
+import type { OrgWithStats, GlobalMetrics } from '../types'
 import { cn } from '@/lib/utils'
 
 function StatCard({
@@ -34,20 +34,24 @@ function StatCard({
 }
 
 export default function Dashboard() {
-  const [orgs, setOrgs] = useState<Org[]>([])
+  const [metrics, setMetrics] = useState<GlobalMetrics | null>(null)
+  const [orgs, setOrgs] = useState<OrgWithStats[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const fetchOrgs = () => {
+  const fetchAll = useCallback(() => {
     setLoading(true)
     setError('')
-    listOrgs()
-      .then(setOrgs)
-      .catch(err => setError(err.message ?? 'Failed to load organizations'))
+    Promise.all([getMetrics(), listOrgs()])
+      .then(([m, o]) => {
+        setMetrics(m)
+        setOrgs(o)
+      })
+      .catch(err => setError(err.message ?? 'Failed to load dashboard'))
       .finally(() => setLoading(false))
-  }
+  }, [])
 
-  useEffect(() => { fetchOrgs() }, [])
+  useEffect(() => { fetchAll() }, [fetchAll])
 
   const recent = [...orgs]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
@@ -63,7 +67,7 @@ export default function Dashboard() {
         </div>
         <button
           id="dashboard-refresh"
-          onClick={fetchOrgs}
+          onClick={fetchAll}
           disabled={loading}
           className={cn(
             'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors',
@@ -83,23 +87,29 @@ export default function Dashboard() {
       )}
 
       {/* KPI row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          label="Organizations"
-          value={orgs.length}
+          label="Total Orgs"
+          value={metrics?.total_orgs ?? '—'}
           icon={Building2}
           loading={loading}
         />
         <StatCard
           label="Total Users"
-          value="—"
+          value={metrics?.total_users ?? '—'}
           icon={Users}
           loading={loading}
         />
         <StatCard
           label="Total Memories"
-          value="—"
+          value={metrics?.total_memories ?? '—'}
           icon={Brain}
+          loading={loading}
+        />
+        <StatCard
+          label="Active (24h)"
+          value={metrics?.active_users_24h ?? '—'}
+          icon={Activity}
           loading={loading}
         />
       </div>
@@ -149,7 +159,10 @@ export default function Dashboard() {
                     <p className="text-xs text-text-tertiary">{org.slug}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-4">
+                  <span className="text-xs text-text-quaternary">
+                    {org.user_count} users · {org.memory_count} memories
+                  </span>
                   <span className="text-xs text-text-tertiary">
                     {new Date(org.created_at).toLocaleDateString()}
                   </span>

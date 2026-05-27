@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -1648,6 +1648,71 @@ pub fn list_all_audit(
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn delete_org(conn: &Connection, org_id: &str) -> Result<bool> {
+    conn.execute("DELETE FROM audit_logs WHERE org_id = ?1", rusqlite::params![org_id])?;
+    conn.execute("DELETE FROM api_keys WHERE org_id = ?1", rusqlite::params![org_id])?;
+    conn.execute(
+        "DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE org_id = ?1)",
+        rusqlite::params![org_id],
+    )?;
+    conn.execute("DELETE FROM memories WHERE org_id = ?1", rusqlite::params![org_id])?;
+    conn.execute("DELETE FROM users WHERE org_id = ?1", rusqlite::params![org_id])?;
+    let deleted = conn.execute("DELETE FROM organizations WHERE id = ?1", rusqlite::params![org_id])?;
+    Ok(deleted > 0)
+}
+
+pub fn get_org_admin_key(conn: &Connection, org_id: &str) -> Result<Option<String>> {
+    let admin_user: Option<String> = conn
+        .query_row(
+            "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin' AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+            rusqlite::params![org_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    match admin_user {
+        Some(user_id) => {
+            let key = create_web_session_key(conn, &user_id, org_id)?;
+            Ok(Some(key))
+        }
+        None => Ok(None),
+    }
+}
+
+pub fn suspend_user_global(conn: &Connection, user_id: &str) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE users SET status = 'suspended' WHERE id = ?1 AND status != 'suspended'",
+        rusqlite::params![user_id],
+    )?;
+    if updated > 0 {
+        conn.execute(
+            "DELETE FROM api_keys WHERE user_id = ?1",
+            rusqlite::params![user_id],
+        )?;
+    }
+    Ok(updated > 0)
+}
+
+pub fn get_org_with_stats(conn: &Connection, org_id: &str) -> Result<Option<OrgWithStats>> {
+    conn.query_row(
+        "SELECT o.id, o.name, o.slug, o.created_at,
+                (SELECT count(*) FROM users u WHERE u.org_id = o.id) AS user_count,
+                (SELECT count(*) FROM memories m WHERE m.org_id = o.id) AS memory_count
+         FROM organizations o WHERE o.id = ?1",
+        rusqlite::params![org_id],
+        |r| Ok(OrgWithStats {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            slug: r.get(2)?,
+            created_at: r.get(3)?,
+            user_count: r.get(4)?,
+            memory_count: r.get(5)?,
+        }),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 #[cfg(test)]

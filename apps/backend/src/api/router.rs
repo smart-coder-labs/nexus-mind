@@ -114,9 +114,11 @@ pub fn build(conn: Connection, config: Config) -> Router {
     let internal_routes = Router::new()
         .route("/internal/metrics", get(internal::get_metrics))
         .route("/internal/orgs", get(internal::list_orgs).post(internal::create_org))
-        .route("/internal/orgs/:id", patch(internal::update_org))
+        .route("/internal/orgs/:id", get(internal::get_org).patch(internal::update_org).delete(internal::delete_org))
         .route("/internal/orgs/:id/users", get(internal::list_org_users))
+        .route("/internal/orgs/:id/impersonate", post(internal::impersonate_org))
         .route("/internal/users", get(internal::list_users))
+        .route("/internal/users/:id/suspend", post(internal::suspend_user))
         .route("/internal/audit", get(internal::list_audit));
 
     Router::new()

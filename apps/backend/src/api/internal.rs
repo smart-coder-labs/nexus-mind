@@ -191,3 +191,67 @@ pub async fn list_audit(
     ).map_err(db_err)?;
     Ok(Json(entries))
 }
+
+pub async fn get_org(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<OrgWithStats>, (StatusCode, Json<ApiError>)> {
+    require_superuser(&superuser_key, &headers)?;
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    queries::get_org_with_stats(&conn, &org_id)
+        .map_err(db_err)?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError { error: "Organization not found".to_string(), code: "not_found".to_string() })))
+}
+
+pub async fn delete_org(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_superuser(&superuser_key, &headers)?;
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let deleted = queries::delete_org(&conn, &org_id).map_err(db_err)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(ApiError { error: "Organization not found".to_string(), code: "not_found".to_string() })))
+    }
+}
+
+pub async fn impersonate_org(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    require_superuser(&superuser_key, &headers)?;
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let token = queries::get_org_admin_key(&conn, &org_id)
+        .map_err(db_err)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError { error: "No active admin found for this organization".to_string(), code: "no_admin".to_string() })))?;
+    Ok(Json(serde_json::json!({ "token": token })))
+}
+
+pub async fn suspend_user(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_superuser(&superuser_key, &headers)?;
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let updated = queries::suspend_user_global(&conn, &user_id).map_err(db_err)?;
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found or already suspended".to_string(), code: "not_found".to_string() })))
+    }
+}

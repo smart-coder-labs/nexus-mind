@@ -9,6 +9,9 @@ import {
 import {
   Modal, ModalCloseButton,
 } from '../components/ui/Modal/Modal'
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from '../components/ui/Select/Select'
 
 export default function Projects() {
   const { session } = useAuth()
@@ -303,16 +306,17 @@ export default function Projects() {
                 <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
                   Parent Project
                 </label>
-                <select
-                  value={parentId}
-                  onChange={e => setParentId(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-2 py-1.5 text-text-primary focus:outline-none"
-                >
-                  <option value="">— None (root) —</option>
-                  {(projects ?? []).map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
+                <Select value={parentId} onValueChange={setParentId}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="— None (root) —" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">— None (root) —</SelectItem>
+                    {(projects ?? []).map(p => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <button
@@ -349,22 +353,28 @@ export default function Projects() {
               {/* Parent selector */}
               <div className="flex items-center gap-2 mt-3">
                 <GitBranch className="w-3.5 h-3.5 text-text-tertiary flex-shrink-0" />
-                <select
-                  key={selectedProject.id}
-                  defaultValue={selectedProject.parent_id ?? ''}
-                  onChange={e =>
-                    updateProjectMut.mutate({
-                      id: selectedProject.id,
-                      parent_id: e.target.value || null,
-                    })
-                  }
-                  className="flex-1 bg-bg-secondary border border-border-primary rounded-lg px-2 py-1 text-xs text-text-primary focus:outline-none"
-                >
-                  <option value="">— No parent —</option>
-                  {parentOptions.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
+                <div className="flex-1">
+                  <Select
+                    key={selectedProject.id}
+                    value={selectedProject.parent_id ?? ''}
+                    onValueChange={v =>
+                      updateProjectMut.mutate({
+                        id: selectedProject.id,
+                        parent_id: v || null,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="— No parent —" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">— No parent —</SelectItem>
+                      {parentOptions.map(p => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
 
@@ -501,33 +511,33 @@ export default function Projects() {
                           {usersLoading ? (
                             <div className="text-[10px] text-text-tertiary">Loading users...</div>
                           ) : (
-                            <select
-                              value={selectedUserId}
-                              onChange={e => setSelectedUserId(e.target.value)}
-                              className="w-full bg-bg-secondary border border-border-primary rounded-lg px-2 py-1.5 text-text-primary focus:outline-none"
-                              required
-                            >
-                              <option value="">-- Choose User --</option>
-                              {nonMemberUsers.map(u => (
-                                <option key={u.id} value={u.id}>
-                                  {u.name} ({u.email})
-                                </option>
-                              ))}
-                            </select>
+                            <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue placeholder="-- Choose User --" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {nonMemberUsers.map(u => (
+                                  <SelectItem key={u.id} value={u.id}>
+                                    {u.name} ({u.email})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           )}
                         </div>
 
                         <div className="space-y-1">
                           <label className="text-[10px] text-text-tertiary">Override Role</label>
-                          <select
-                            value={selectedRole}
-                            onChange={e => setSelectedRole(e.target.value)}
-                            className="w-full bg-bg-secondary border border-border-primary rounded-lg px-2 py-1.5 text-text-primary focus:outline-none"
-                          >
-                            {allAvailableRoles.map(r => (
-                              <option key={r} value={r}>{r}</option>
-                            ))}
-                          </select>
+                          <Select value={selectedRole} onValueChange={setSelectedRole}>
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {allAvailableRoles.map(r => (
+                                <SelectItem key={r} value={r}>{r}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
 
                         <button

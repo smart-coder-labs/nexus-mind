@@ -79,6 +79,26 @@ export function listAudit(filters: AuditFilters = {}): Promise<AuditEntry[]> {
   return request(`/internal/audit?${params}`)
 }
 
+// ── Single org ─────────────────────────────────────────────────────────────────
+
+export function getOrg(orgId: string): Promise<OrgWithStats> {
+  return request(`/internal/orgs/${orgId}`)
+}
+
+export function deleteOrg(orgId: string): Promise<void> {
+  return request(`/internal/orgs/${orgId}`, { method: 'DELETE' })
+}
+
+export function impersonateOrg(orgId: string): Promise<{ token: string }> {
+  return request(`/internal/orgs/${orgId}/impersonate`, { method: 'POST' })
+}
+
+// ── User actions ───────────────────────────────────────────────────────────────
+
+export function suspendUser(userId: string): Promise<void> {
+  return request(`/internal/users/${userId}/suspend`, { method: 'POST' })
+}
+
 // ── Auth check (validate key) ─────────────────────────────────────────────────
 
 export async function validateKey(key: string): Promise<boolean> {
