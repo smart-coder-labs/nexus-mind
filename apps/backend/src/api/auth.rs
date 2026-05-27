@@ -42,19 +42,11 @@ fn bad_request(msg: &str, code: &str) -> (StatusCode, Json<ApiError>) {
 }
 
 fn set_session_cookie(cookies: &Cookies, raw_key: String) {
-    let cookie_secure = std::env::var("COOKIE_SECURE")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-
     let mut cookie = Cookie::new("nexusmind_session", raw_key);
     cookie.set_http_only(true);
     cookie.set_path("/");
-    if cookie_secure {
-        cookie.set_secure(true);
-        cookie.set_same_site(tower_cookies::cookie::SameSite::None);
-    } else {
-        cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
-    }
+    cookie.set_secure(true);
+    cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
     cookies.add(cookie);
 }
 
