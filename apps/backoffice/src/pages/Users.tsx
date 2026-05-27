@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Users as UsersIcon, RefreshCw, Search, X, AlertCircle } from 'lucide-react'
-import { listOrgs, listOrgUsers } from '../api/client'
-import type { Org, User } from '../types'
+import { listOrgs, listAllUsers, suspendUser } from '../api/client'
+import type { OrgWithStats, User } from '../types'
 import { cn } from '@/lib/utils'
 
 type UserWithOrg = User & { org_name: string; org_slug: string }
@@ -33,29 +33,32 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [suspending, setSuspending] = useState<string | null>(null)
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const orgs: Org[] = await listOrgs()
-      const results = await Promise.allSettled(
-        orgs.map(async org => {
-          const members = await listOrgUsers(org.id)
-          return members.map(u => ({ ...u, org_name: org.name, org_slug: org.slug }))
-        })
-      )
-      const all: UserWithOrg[] = []
-      results.forEach(r => { if (r.status === 'fulfilled') all.push(...r.value) })
-      // deduplicate by user id
-      const seen = new Set<string>()
-      setUsers(all.filter(u => { const dup = seen.has(u.id); seen.add(u.id); return !dup }))
+      const [allUsers, orgs] = await Promise.all([listAllUsers(), listOrgs()])
+      const orgMap = new Map<string, OrgWithStats>(orgs.map(o => [o.id, o]))
+      setUsers(allUsers.map(u => {
+        const org = orgMap.get(u.org_id)
+        return { ...u, org_name: org?.name ?? u.org_id, org_slug: org?.slug ?? '' }
+      }))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load users')
     } finally {
       setLoading(false)
     }
   }, [])
+
+  const handleSuspend = (userId: string) => {
+    setSuspending(userId)
+    suspendUser(userId)
+      .then(() => fetchAll())
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to suspend user'))
+      .finally(() => setSuspending(null))
+  }
 
   useEffect(() => { fetchAll() }, [fetchAll])
 
@@ -113,17 +116,18 @@ export default function UsersPage() {
       </div>
 
       <div className="bg-surface-primary border border-border-primary rounded-xl overflow-hidden">
-        <div className="grid grid-cols-[1fr_160px_100px_100px] gap-4 px-5 py-3 border-b border-border-secondary">
+        <div className="grid grid-cols-[1fr_160px_100px_100px_80px] gap-4 px-5 py-3 border-b border-border-secondary">
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">User</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Organization</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Role</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Status</span>
+          <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Actions</span>
         </div>
 
         {loading ? (
           <div className="divide-y divide-border-secondary">
             {[...Array(6)].map((_, i) => (
-              <div key={i} className="grid grid-cols-[1fr_160px_100px_100px] gap-4 px-5 py-4 items-center">
+              <div key={i} className="grid grid-cols-[1fr_160px_100px_100px_80px] gap-4 px-5 py-4 items-center">
                 <div className="space-y-1">
                   <div className="h-4 w-28 bg-surface-secondary animate-pulse rounded" />
                   <div className="h-3 w-40 bg-surface-secondary animate-pulse rounded" />
@@ -131,6 +135,7 @@ export default function UsersPage() {
                 <div className="h-3 w-24 bg-surface-secondary animate-pulse rounded" />
                 <div className="h-5 w-14 bg-surface-secondary animate-pulse rounded-full" />
                 <div className="h-5 w-14 bg-surface-secondary animate-pulse rounded-full" />
+                <div className="h-6 w-14 bg-surface-secondary animate-pulse rounded" />
               </div>
             ))}
           </div>
@@ -144,7 +149,7 @@ export default function UsersPage() {
         ) : (
           <div className="divide-y divide-border-secondary">
             {filtered.map(user => (
-              <div key={`${user.org_id}-${user.id}`} className="grid grid-cols-[1fr_160px_100px_100px] gap-4 px-5 py-3.5 items-center hover:bg-surface-secondary/40 transition-colors">
+              <div key={`${user.org_id}-${user.id}`} className="grid grid-cols-[1fr_160px_100px_100px_80px] gap-4 px-5 py-3.5 items-center hover:bg-surface-secondary/40 transition-colors">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-text-primary truncate">{user.name}</p>
                   <p className="text-xs text-text-tertiary truncate">{user.email}</p>
@@ -157,6 +162,21 @@ export default function UsersPage() {
                 <div className="flex items-center gap-1.5">
                   <StatusDot status={user.status} />
                   <span className="text-xs text-text-secondary">{user.status}</span>
+                </div>
+                <div>
+                  {(user.status === 'active' || user.status === 'invited') && (
+                    <button
+                      onClick={() => handleSuspend(user.id)}
+                      disabled={suspending === user.id}
+                      className={cn(
+                        'text-[11px] font-medium px-2 py-1 rounded border transition-colors',
+                        'bg-status-error/10 text-status-error border-status-error/20 hover:bg-status-error/20',
+                        suspending === user.id && 'opacity-50 cursor-not-allowed',
+                      )}
+                    >
+                      {suspending === user.id ? '…' : 'Suspend'}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

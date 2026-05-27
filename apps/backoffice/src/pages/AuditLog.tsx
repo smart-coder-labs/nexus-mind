@@ -21,9 +21,13 @@ function ActionBadge({ action }: { action: string }) {
   )
 }
 
+const PAGE_SIZE = 50
+
 export default function AuditLog() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [actionFilter, setActionFilter] = useState('')
@@ -31,11 +35,26 @@ export default function AuditLog() {
   const fetchAudit = useCallback(() => {
     setLoading(true)
     setError('')
-    listAudit({ limit: 200 })
-      .then(setEntries)
+    setHasMore(true)
+    listAudit({ limit: PAGE_SIZE, offset: 0 })
+      .then(data => {
+        setEntries(data)
+        setHasMore(data.length === PAGE_SIZE)
+      })
       .catch(err => setError(err.message ?? 'Failed to load audit log'))
       .finally(() => setLoading(false))
   }, [])
+
+  const loadMore = () => {
+    setLoadingMore(true)
+    listAudit({ limit: PAGE_SIZE, offset: entries.length })
+      .then(data => {
+        setEntries(prev => [...prev, ...data])
+        setHasMore(data.length === PAGE_SIZE)
+      })
+      .catch(err => setError(err.message ?? 'Failed to load more'))
+      .finally(() => setLoadingMore(false))
+  }
 
   useEffect(() => { fetchAudit() }, [fetchAudit])
 
@@ -109,20 +128,22 @@ export default function AuditLog() {
 
       {/* Table */}
       <div className="bg-surface-primary border border-border-primary rounded-xl overflow-hidden">
-        <div className="grid grid-cols-[160px_100px_120px_1fr] gap-4 px-5 py-3 border-b border-border-secondary">
+        <div className="grid grid-cols-[160px_100px_120px_90px_1fr] gap-4 px-5 py-3 border-b border-border-secondary">
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Timestamp</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Action</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Resource</span>
+          <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Org</span>
           <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">User</span>
         </div>
 
         {loading ? (
           <div className="divide-y divide-border-secondary">
             {[...Array(8)].map((_, i) => (
-              <div key={i} className="grid grid-cols-[160px_100px_120px_1fr] gap-4 px-5 py-3.5 items-center">
+              <div key={i} className="grid grid-cols-[160px_100px_120px_90px_1fr] gap-4 px-5 py-3.5 items-center">
                 <div className="h-3 w-32 bg-surface-secondary animate-pulse rounded" />
                 <div className="h-5 w-16 bg-surface-secondary animate-pulse rounded-full" />
                 <div className="h-3 w-20 bg-surface-secondary animate-pulse rounded" />
+                <div className="h-3 w-16 bg-surface-secondary animate-pulse rounded" />
                 <div className="h-3 w-28 bg-surface-secondary animate-pulse rounded" />
               </div>
             ))}
@@ -135,9 +156,9 @@ export default function AuditLog() {
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-border-secondary max-h-[600px] overflow-y-auto">
+          <div className="divide-y divide-border-secondary">
             {filtered.map(entry => (
-              <div key={entry.id} className="grid grid-cols-[160px_100px_120px_1fr] gap-4 px-5 py-3 items-start text-xs hover:bg-surface-secondary/40 transition-colors">
+              <div key={entry.id} className="grid grid-cols-[160px_100px_120px_90px_1fr] gap-4 px-5 py-3 items-start text-xs hover:bg-surface-secondary/40 transition-colors">
                 <span className="text-text-tertiary font-mono">
                   {new Date(entry.timestamp).toLocaleString()}
                 </span>
@@ -148,6 +169,7 @@ export default function AuditLog() {
                     <span className="block font-mono text-text-quaternary truncate">{entry.resource_id.slice(0, 8)}</span>
                   )}
                 </span>
+                <span className="font-mono text-text-quaternary truncate">{entry.org_id.slice(0, 8)}</span>
                 <span className="text-text-tertiary font-mono truncate">{entry.user_id.slice(0, 8)}…</span>
               </div>
             ))}
@@ -156,9 +178,23 @@ export default function AuditLog() {
       </div>
 
       {!loading && filtered.length > 0 && (
-        <p className="text-xs text-text-quaternary text-right">
-          Showing {filtered.length} of {entries.length} events
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-text-quaternary">
+            Showing {filtered.length} of {entries.length} loaded events
+          </p>
+          {hasMore && (
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              className={cn(
+                'text-xs px-3 py-1.5 rounded-lg border border-border-primary text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors',
+                loadingMore && 'opacity-50 cursor-not-allowed',
+              )}
+            >
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
