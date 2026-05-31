@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import type { NexusMindClient } from '../api/client'
-import type { CustomRole } from '../types'
+import type { CustomRole, ProjectAccess } from '../types'
 
 interface Props {
   open: boolean
@@ -13,22 +14,40 @@ interface Props {
 
 export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Props) {
   const [form, setForm] = useState({ email: '', name: '', role: 'member' })
+  const [projectAccess, setProjectAccess] = useState<'all' | 'specific'>('all')
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+    enabled: open && projectAccess === 'specific',
+  })
 
   if (!open) return null
 
   const set = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [field]: e.target.value }))
 
+  const toggleProject = (id: string) => {
+    setSelectedProjectIds(prev =>
+      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+    )
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError('')
     try {
-      const res = await client.inviteUser(form)
+      const access: ProjectAccess =
+        projectAccess === 'all'
+          ? { type: 'all' }
+          : { type: 'specific', project_ids: selectedProjectIds }
+      const res = await client.inviteUser({ ...form, project_access: access })
       setNewKey(res.api_key)
       onSuccess()
     } catch {
@@ -46,6 +65,8 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
   const handleClose = () => {
     setForm({ email: '', name: '', role: 'member' })
+    setProjectAccess('all')
+    setSelectedProjectIds([])
     setNewKey(null)
     setCopied(false)
     setError('')
@@ -118,6 +139,46 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   </option>
                 ))}
               </select>
+            </div>
+
+            {/* Project access section */}
+            <div className="space-y-2">
+              <label className="text-[11px] text-text-tertiary uppercase tracking-wide">Project Access</label>
+              <div className="flex gap-3">
+                {(['all', 'specific'] as const).map(opt => (
+                  <label key={opt} className="flex items-center gap-1.5 cursor-pointer text-xs text-text-secondary">
+                    <input
+                      type="radio"
+                      name="projectAccess"
+                      value={opt}
+                      checked={projectAccess === opt}
+                      onChange={() => setProjectAccess(opt)}
+                      className="accent-accent-blue"
+                    />
+                    {opt === 'all' ? 'All projects' : 'Specific projects'}
+                  </label>
+                ))}
+              </div>
+
+              {projectAccess === 'specific' && (
+                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-lg p-2 bg-surface-secondary">
+                  {!projects?.length ? (
+                    <p className="text-[11px] text-text-tertiary">No projects found.</p>
+                  ) : (
+                    projects.map(p => (
+                      <label key={p.id} className="flex items-center gap-2 cursor-pointer py-0.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjectIds.includes(p.id)}
+                          onChange={() => toggleProject(p.id)}
+                          className="accent-accent-blue"
+                        />
+                        <span className="text-xs text-text-secondary">{p.name}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             {error && <p className="text-xs text-status-error/80">{error}</p>}

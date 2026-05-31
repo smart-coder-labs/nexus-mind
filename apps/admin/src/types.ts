@@ -116,3 +116,7 @@ export interface AuditFilters {
   limit?: number
   offset?: number
 }
+
+export type ProjectAccess =
+  | { type: 'all' }
+  | { type: 'specific'; project_ids: string[] }

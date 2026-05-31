@@ -18,9 +18,25 @@ pub fn require_permission(
     let effective_role = if let Some(p_name) = project {
         match crate::db::queries::get_project_member_role(conn, &auth.org_id, p_name, &auth.user_id) {
             Ok(Some(role_str)) => {
-                role_str.parse::<crate::models::types::UserRole>().unwrap_or_else(|_| auth.role.clone())
+                role_str.parse::<crate::models::types::UserRole>()
+                    .map_err(|_| (
+                        StatusCode::FORBIDDEN,
+                        Json(ApiError {
+                            error: "Access denied to this project".to_string(),
+                            code: "forbidden".to_string(),
+                        }),
+                    ))?
             }
-            _ => auth.role.clone(),
+            Ok(None) => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ApiError {
+                        error: "Access denied to this project".to_string(),
+                        code: "forbidden".to_string(),
+                    }),
+                ));
+            }
+            Err(_) => auth.role.clone(),
         }
     } else {
         auth.role.clone()

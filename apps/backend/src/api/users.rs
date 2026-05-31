@@ -4,6 +4,7 @@ use axum::{
     Extension, Json,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::{
     db::queries,
@@ -11,6 +12,13 @@ use crate::{
     store::sqlite::SqliteStore,
     api::helpers::require_permission,
 };
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectAccess {
+    All,
+    Specific { project_ids: Vec<String> },
+}
 
 #[derive(Deserialize)]
 pub struct UpdateUserRoleInput {
@@ -22,6 +30,7 @@ pub struct InviteInput {
     pub email: String,
     pub name: String,
     pub role: Option<String>,
+    pub project_access: Option<ProjectAccess>,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +96,24 @@ pub async fn invite(
     let (user, api_key) =
         queries::invite_user(&conn, &auth.org_id, &input.email, &input.name, role)
             .map_err(db_err)?;
+
+    // Resolve which project IDs to grant access to
+    let project_ids: Vec<String> = match &input.project_access {
+        None | Some(ProjectAccess::All) => {
+            queries::list_project_ids_for_org(&conn, &auth.org_id).map_err(db_err)?
+        }
+        Some(ProjectAccess::Specific { project_ids }) => project_ids.clone(),
+    };
+
+    // Insert project_members rows for each resolved project
+    for project_id in &project_ids {
+        let member_id = Uuid::new_v4().to_string();
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            rusqlite::params![member_id, project_id, user.id, role],
+        );
+    }
 
     let _ = queries::log_audit(
         &conn,

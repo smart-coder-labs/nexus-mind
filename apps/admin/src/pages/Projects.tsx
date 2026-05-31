@@ -392,7 +392,7 @@ export default function Projects() {
                 >
                   {tab === 'memories'
                     ? <><Brain className="w-3.5 h-3.5" /> Memories</>
-                    : <><Users className="w-3.5 h-3.5" /> Role Overrides</>
+                    : <><Users className="w-3.5 h-3.5" /> Members</>
                   }
                 </button>
               ))}
@@ -440,21 +440,21 @@ export default function Projects() {
               {sheetTab === 'overrides' && (
                 <div className="space-y-6">
                   <p className="text-[11px] text-text-tertiary">
-                    Configure user roles that override their global roles within this project.
+                    Manage members and their roles within this project.
                   </p>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Members list */}
                     <div className="space-y-3">
                       <span className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider block">
-                        Assigned Users
+                        Members
                       </span>
 
                       {membersLoading ? (
                         <div className="text-center py-4 text-xs text-text-tertiary">Loading...</div>
                       ) : !projectMembers?.length ? (
                         <div className="text-center py-4 text-xs text-text-tertiary border border-dashed border-border-secondary rounded-lg">
-                          No overrides set. Users inherit global roles.
+                          No members assigned to this project.
                         </div>
                       ) : (
                         <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
@@ -496,7 +496,7 @@ export default function Projects() {
                     {/* Add member form */}
                     <div className="space-y-4 border-t md:border-t-0 md:border-l border-border-secondary pt-4 md:pt-0 md:pl-6">
                       <span className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider block">
-                        Assign Override
+                        Add Member
                       </span>
 
                       {memberErrorMsg && (

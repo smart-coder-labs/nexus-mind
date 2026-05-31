@@ -10,6 +10,7 @@ import type {
   CustomRole,
   Project,
   ProjectMember,
+  ProjectAccess,
 } from '../types'
 
 export class NexusMindClient {
@@ -67,6 +68,7 @@ export class NexusMindClient {
     email: string
     name: string
     role: string
+    project_access?: ProjectAccess
   }): Promise<{ user: User; api_key: string }> {
     return this.request('/v1/users/invite', { method: 'POST', body: JSON.stringify(data) })
   }

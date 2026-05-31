@@ -10,6 +10,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v5(conn)?;
     run_v6(conn)?;
     run_v7(conn)?;
+    run_v8(conn)?;
     Ok(())
 }
 
@@ -384,6 +385,30 @@ pub fn run_v7(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v8: seeds project_members for all existing active users across all org projects,
+/// using each user's current global role. Prevents breaking existing access when strict
+/// project-based enforcement activates. No schema changes.
+pub fn run_v8(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 8 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+        SELECT lower(hex(randomblob(16))), p.id, u.id, u.role, datetime('now')
+        FROM projects p
+        JOIN users u ON u.org_id = p.org_id
+        WHERE u.status = 'active';
+
+        PRAGMA user_version = 8;
+        ",
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,10 +510,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_7() {
+    fn run_all_sets_user_version_to_8() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 7, "user_version must be 7 after run_all");
+        assert_eq!(get_user_version(&conn), 8, "user_version must be 8 after run_all");
     }
 
     #[test]

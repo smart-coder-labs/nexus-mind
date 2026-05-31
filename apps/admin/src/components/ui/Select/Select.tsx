@@ -42,19 +42,29 @@ const Select = ({ value: controlledValue, defaultValue, onValueChange, children,
     const [uncontrolledValue, setUncontrolledValue] = React.useState<string | undefined>(defaultValue);
     const [items, setItems] = React.useState<Map<string, SelectItemMeta>>(new Map());
     const [highlightedValue, setHighlightedValue] = React.useState<string | undefined>();
+    const [selectedLabel, setSelectedLabel] = React.useState<string | undefined>();
     const triggerRef = React.useRef<HTMLElement | null>(null);
 
     const currentValue = controlledValue ?? uncontrolledValue;
 
+    // Keep selectedLabel in sync whenever items register or value changes externally
+    React.useEffect(() => {
+        if (currentValue && items.size > 0) {
+            const label = items.get(currentValue)?.label;
+            if (label) setSelectedLabel(label);
+        }
+    }, [items, currentValue]);
+
     const setValue = React.useCallback(
         (next: string) => {
+            setSelectedLabel(items.get(next)?.label);
             if (controlledValue === undefined) {
                 setUncontrolledValue(next);
             }
             onValueChange?.(next);
             setOpen(false);
         },
-        [controlledValue, onValueChange]
+        [controlledValue, onValueChange, items]
     );
 
     const registerItem = React.useCallback((value: string, label: string, disabledItem?: boolean) => {
@@ -76,9 +86,9 @@ const Select = ({ value: controlledValue, defaultValue, onValueChange, children,
     const getLabel = React.useCallback(
         (val?: string) => {
             if (!val) return undefined;
-            return items.get(val)?.label;
+            return items.get(val)?.label ?? (val === currentValue ? selectedLabel : undefined);
         },
-        [items]
+        [items, currentValue, selectedLabel]
     );
 
     React.useEffect(() => {

@@ -1422,6 +1422,16 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
     Ok(projects)
 }
 
+pub fn list_project_ids_for_org(conn: &Connection, org_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM projects WHERE org_id = ?1")?;
+    let rows = stmt.query_map([org_id], |row| row.get(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row?);
+    }
+    Ok(ids)
+}
+
 pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>, parent_id: Option<&str>) -> Result<Project> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
