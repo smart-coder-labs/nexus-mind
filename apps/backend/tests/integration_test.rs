@@ -295,9 +295,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version stays at 7
+    // Verify user_version stays at 8
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
@@ -399,11 +399,11 @@ fn project_role_overrides_integration() {
     // 4. Override Dev's role in project "payments" to "dev-senior"
     queries::upsert_project_member(&conn, &p_id, &dev.id, "dev-senior").unwrap();
 
-    // Verify member list
+    // Verify member list — admin was seeded when the project was created,
+    // so there is at least one additional member alongside dev.
     let members = queries::list_project_members(&conn, &org.id, &p_id).unwrap();
-    assert_eq!(members.len(), 1);
-    assert_eq!(members[0].user_id, dev.id);
-    assert_eq!(members[0].role, "dev-senior");
+    let dev_member = members.iter().find(|m| m.user_id == dev.id).expect("dev should be a member");
+    assert_eq!(dev_member.role, "dev-senior");
 
     // 5. Dev attempts to store memory in "payments" project -> should now SUCCEED permissions check
     assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_ok());
@@ -415,7 +415,7 @@ fn project_role_overrides_integration() {
     let deleted = queries::delete_project_member(&conn, &p_id, &dev.id).unwrap();
     assert!(deleted);
     let members_after = queries::list_project_members(&conn, &org.id, &p_id).unwrap();
-    assert!(members_after.is_empty());
+    assert!(!members_after.iter().any(|m| m.user_id == dev.id), "dev should no longer be a member");
 
     // Dev fails permissions check again
     assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_err());

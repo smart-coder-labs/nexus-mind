@@ -1395,10 +1395,26 @@ pub fn get_or_create_project(conn: &Connection, org_id: &str, project_name: &str
                 "INSERT INTO projects (id, org_id, name, description) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![id, org_id, project_name, None::<String>],
             )?;
+            // Seed all active org users as members so they retain access to the new project.
+            conn.execute(
+                "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+                 SELECT lower(hex(randomblob(16))), ?1, u.id, u.role, datetime('now')
+                 FROM users u WHERE u.org_id = ?2 AND u.status = 'active'",
+                rusqlite::params![id, org_id],
+            )?;
             Ok(id)
         }
         Err(e) => Err(e.into()),
     }
+}
+
+pub fn project_name_exists(conn: &Connection, org_id: &str, name: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {

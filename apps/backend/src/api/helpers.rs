@@ -28,13 +28,21 @@ pub fn require_permission(
                     ))?
             }
             Ok(None) => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(ApiError {
-                        error: "Access denied to this project".to_string(),
-                        code: "forbidden".to_string(),
-                    }),
-                ));
+                // Only enforce membership if the project already exists.
+                // If it doesn't exist yet it will be auto-created on write,
+                // so fall back to the global role for this request.
+                let project_exists = crate::db::queries::project_name_exists(conn, &auth.org_id, p_name)
+                    .unwrap_or(false);
+                if project_exists {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        Json(ApiError {
+                            error: "Access denied to this project".to_string(),
+                            code: "forbidden".to_string(),
+                        }),
+                    ));
+                }
+                auth.role.clone()
             }
             Err(_) => auth.role.clone(),
         }
