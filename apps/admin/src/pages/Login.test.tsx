@@ -34,7 +34,7 @@ function renderLogin() {
   const mockSetSession = vi.fn()
 
   render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider
           value={{ session: null, loading: false, setSession: mockSetSession, logout: vi.fn() }}

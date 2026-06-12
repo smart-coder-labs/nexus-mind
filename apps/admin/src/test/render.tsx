@@ -32,7 +32,7 @@ export function renderWithProviders(ui: ReactElement): RenderResult {
   })
 
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider
           value={{
