@@ -54,6 +54,30 @@ jobs:
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
 
+      - name: Test
+        run: cd apps/admin && npm run test
+
+  backoffice:
+    name: Backoffice (React)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/backoffice/package-lock.json
+
+      - name: Install deps
+        run: cd apps/backoffice && npm ci
+
+      - name: Build
+        run: cd apps/backoffice && npm run build
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
   e2e:
     name: E2E Smoke Test
     runs-on: ubuntu-latest

@@ -2,6 +2,7 @@ import { useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
+import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters } from '../types'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
@@ -65,24 +66,25 @@ export default function AuditLog() {
     setPage(0)
   }
 
-  const handleExportCsv = useCallback(() => {
-    if (!entries) return
-    const rows = [
-      ['timestamp', 'user', 'action', 'resource_type', 'resource_id'],
-      ...entries.map(e => [
-        e.timestamp,
-        userMap.get(e.user_id) ?? e.user_id,
-        e.action,
-        e.resource_type,
-        e.resource_id ?? '',
-      ]),
-    ]
-    const csv = rows.map(r => r.join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = 'audit-log.csv'
-    a.click()
-  }, [entries, userMap])
+  const [exporting, setExporting] = useState<null | 'csv' | 'json'>(null)
+
+  const handleExport = useCallback(async (format: 'csv' | 'json') => {
+    setExporting(format)
+    try {
+      const params = new URLSearchParams({ format })
+      if (filters.user_id)       params.set('user_id', filters.user_id)
+      if (filters.action)        params.set('action', filters.action)
+      if (filters.resource_type) params.set('resource_type', filters.resource_type)
+      if (filters.from)          params.set('from', filters.from)
+      if (filters.to)            params.set('to', filters.to)
+      await downloadExport(
+        `/v1/audit/export?${params}`,
+        `audit-${todayStamp()}.${format}`,
+      )
+    } finally {
+      setExporting(null)
+    }
+  }, [filters])
 
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
@@ -106,13 +108,26 @@ export default function AuditLog() {
           <h1 className="text-lg font-semibold text-text-primary">Audit Log</h1>
           <p className="text-[12px] text-text-tertiary mt-0.5">All actions performed in your organization</p>
         </div>
-        <button
-          onClick={handleExportCsv}
-          disabled={!entries?.length}
-          className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
-        >
-          Export CSV
-        </button>
+        {session?.user.role === 'admin' && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleExport('csv')}
+              disabled={exporting !== null}
+              className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
+              aria-label="Export audit log as CSV"
+            >
+              {exporting === 'csv' ? 'Exporting…' : 'Export CSV'}
+            </button>
+            <button
+              onClick={() => handleExport('json')}
+              disabled={exporting !== null}
+              className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
+              aria-label="Export audit log as JSON"
+            >
+              {exporting === 'json' ? 'Exporting…' : 'Export JSON'}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Filters */}

@@ -9,7 +9,19 @@ interface AuthContextValue {
   logout: () => void
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null)
+// Module-level token store — kept in sync by AuthProvider so that
+// getAuthToken() can be called outside the React tree (e.g. in download.ts).
+let _currentToken: string | null = null
+
+/**
+ * Returns the current session token (API key / Bearer token) without
+ * requiring a React hook. Returns null when the session uses cookie-only auth.
+ */
+export function getAuthToken(): string | null {
+  return _currentToken
+}
+
+export const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSessionState] = useState<AuthSession | null>(null)

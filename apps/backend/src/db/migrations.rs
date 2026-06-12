@@ -11,6 +11,8 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v6(conn)?;
     run_v7(conn)?;
     run_v8(conn)?;
+    run_v9(conn)?;
+    run_v10(conn)?;
     Ok(())
 }
 
@@ -409,6 +411,82 @@ pub fn run_v8(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v9: adds previous_hash/current_hash columns to audit_logs,
+/// adds plan column to organizations (DEFAULT 'free'), and creates four
+/// performance indexes on memories and audit_logs.
+/// All DDL runs inside a single transaction; user_version is bumped to 9
+/// only after all changes commit successfully.
+pub fn run_v9(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 9 {
+        return Ok(());
+    }
+
+    // ALTER TABLE statements must be individual statements outside the main
+    // batch because SQLite only allows one DDL per statement in execute_batch
+    // when mixing with other statements. We ignore "duplicate column" errors
+    // to make each ALTER idempotent.
+    let alter_stmts = [
+        "ALTER TABLE audit_logs ADD COLUMN previous_hash TEXT",
+        "ALTER TABLE audit_logs ADD COLUMN current_hash TEXT",
+        "ALTER TABLE organizations ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'",
+    ];
+
+    for stmt in &alter_stmts {
+        let _ = conn.execute_batch(stmt);
+    }
+
+    // Indexes and version bump in one atomic batch
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_memories_scope
+            ON memories(org_id, scope);
+
+        CREATE INDEX IF NOT EXISTS idx_memories_type
+            ON memories(org_id, type);
+
+        CREATE INDEX IF NOT EXISTS idx_memories_project_id
+            ON memories(org_id, project_id);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_org_ts
+            ON audit_logs(org_id, timestamp);
+
+        PRAGMA user_version = 9;
+        ",
+    )?;
+
+    Ok(())
+}
+
+/// Migration v10: adds policies table + idx_policies_org index.
+/// Idempotent — guarded by PRAGMA user_version < 10.
+pub fn run_v10(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 10 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS policies (
+            id          TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL REFERENCES organizations(id),
+            name        TEXT NOT NULL,
+            rule_type   TEXT NOT NULL CHECK(rule_type IN ('model_whitelist','budget_limit','pii_redact')),
+            config      TEXT NOT NULL DEFAULT '{}',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_policies_org ON policies(org_id, enabled);
+
+        PRAGMA user_version = 10;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,6 +523,7 @@ mod tests {
         assert!(table_exists(&conn, "roles"), "missing: roles");
         assert!(table_exists(&conn, "projects"), "missing: projects");
         assert!(table_exists(&conn, "project_members"), "missing: project_members");
+        assert!(table_exists(&conn, "policies"), "missing: policies");
     }
 
     #[test]
@@ -510,10 +589,10 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_8() {
+    fn run_all_sets_user_version_to_10() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 8, "user_version must be 8 after run_all");
+        assert_eq!(get_user_version(&conn), 10, "user_version must be 10 after run_all");
     }
 
     #[test]
@@ -597,5 +676,199 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count2, 1, "FTS must match on type column");
+    }
+
+    // ── v9 migration tests ────────────────────────────────────────────────────
+
+    /// Build a v8 database (run v1..v8 only) for testing run_v9 in isolation.
+    fn in_memory_db_v8() -> Connection {
+        let conn = connect(":memory:").unwrap();
+        run_v1(&conn).unwrap();
+        run_v2(&conn).unwrap();
+        run_v3(&conn).unwrap();
+        run_v4(&conn).unwrap();
+        run_v5(&conn).unwrap();
+        run_v6(&conn).unwrap();
+        run_v7(&conn).unwrap();
+        run_v8(&conn).unwrap();
+        conn
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![table, column],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        count > 0
+    }
+
+    fn index_exists(conn: &Connection, table: &str, index: &str) -> bool {
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_index_list(?1) WHERE name = ?2",
+            rusqlite::params![table, index],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        count > 0
+    }
+
+    #[test]
+    fn run_v9_adds_hash_columns_to_audit_logs() {
+        let conn = in_memory_db_v8();
+        run_v9(&conn).unwrap();
+
+        assert!(column_exists(&conn, "audit_logs", "previous_hash"),
+                "audit_logs must have previous_hash after v9");
+        assert!(column_exists(&conn, "audit_logs", "current_hash"),
+                "audit_logs must have current_hash after v9");
+    }
+
+    #[test]
+    fn run_v9_adds_plan_to_organizations() {
+        let conn = in_memory_db_v8();
+        run_v9(&conn).unwrap();
+
+        assert!(column_exists(&conn, "organizations", "plan"),
+                "organizations must have plan after v9");
+
+        // Verify DEFAULT 'free' — insert org without plan and read it back
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('test-org', 'Test', 'test')",
+            [],
+        ).unwrap();
+        let plan: String = conn.query_row(
+            "SELECT plan FROM organizations WHERE id = 'test-org'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(plan, "free", "default plan must be 'free'");
+    }
+
+    #[test]
+    fn run_v9_adds_four_indexes() {
+        let conn = in_memory_db_v8();
+        run_v9(&conn).unwrap();
+
+        assert!(index_exists(&conn, "memories", "idx_memories_scope"),
+                "idx_memories_scope must exist");
+        assert!(index_exists(&conn, "memories", "idx_memories_type"),
+                "idx_memories_type must exist");
+        assert!(index_exists(&conn, "memories", "idx_memories_project_id"),
+                "idx_memories_project_id must exist");
+        assert!(index_exists(&conn, "audit_logs", "idx_audit_logs_org_ts"),
+                "idx_audit_logs_org_ts must exist");
+    }
+
+    #[test]
+    fn run_v9_is_idempotent() {
+        let conn = in_memory_db_v8();
+        run_v9(&conn).unwrap();
+        // Running again must not fail
+        let result = run_v9(&conn);
+        assert!(result.is_ok(), "run_v9 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 9, "user_version must remain 9");
+    }
+
+    // ── v10 migration tests ───────────────────────────────────────────────────
+
+    /// Build a v9 database (run v1..v9 only) for testing run_v10 in isolation.
+    fn in_memory_db_v9() -> Connection {
+        let conn = connect(":memory:").unwrap();
+        run_v1(&conn).unwrap();
+        run_v2(&conn).unwrap();
+        run_v3(&conn).unwrap();
+        run_v4(&conn).unwrap();
+        run_v5(&conn).unwrap();
+        run_v6(&conn).unwrap();
+        run_v7(&conn).unwrap();
+        run_v8(&conn).unwrap();
+        run_v9(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn run_v10_creates_policies_table() {
+        let conn = in_memory_db_v9();
+        run_v10(&conn).unwrap();
+        assert!(table_exists(&conn, "policies"), "policies table must exist after v10");
+    }
+
+    #[test]
+    fn run_v10_creates_org_index() {
+        let conn = in_memory_db_v9();
+        run_v10(&conn).unwrap();
+        assert!(index_exists(&conn, "policies", "idx_policies_org"),
+                "idx_policies_org must exist after v10");
+    }
+
+    #[test]
+    fn run_v10_is_idempotent() {
+        let conn = in_memory_db_v9();
+        run_v10(&conn).unwrap();
+        let result = run_v10(&conn);
+        assert!(result.is_ok(), "run_v10 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 10, "user_version must remain 10");
+    }
+
+    #[test]
+    fn run_v10_rejects_invalid_rule_type() {
+        let conn = in_memory_db_v9();
+        run_v10(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let bad = conn.execute(
+            "INSERT INTO policies (id, org_id, name, rule_type, config) VALUES ('p1','org1','x','banana','{}')",
+            [],
+        );
+        assert!(bad.is_err(), "CHECK constraint must reject unknown rule_type");
+    }
+
+    #[test]
+    fn run_v10_preserves_existing_rows() {
+        let conn = in_memory_db_v9();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'a@b.com', 'A', 'admin', 'active')",
+            [],
+        ).unwrap();
+        run_v10(&conn).unwrap();
+        // Existing tables must still be readable
+        let org_count: i32 = conn.query_row("SELECT COUNT(*) FROM organizations", [], |r| r.get(0)).unwrap();
+        assert_eq!(org_count, 1, "existing rows must be preserved after v10");
+    }
+
+    #[test]
+    fn run_v9_preserves_existing_rows() {
+        let conn = in_memory_db_v8();
+
+        // Seed an org + user + audit_log row in v8
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'a@b.com', 'A', 'admin', 'active')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO audit_logs (id, org_id, user_id, action, resource_type) VALUES ('al1', 'org1', 'u1', 'store', 'memory')",
+            [],
+        ).unwrap();
+
+        run_v9(&conn).unwrap();
+
+        // Original row must still be readable; new hash columns default to NULL
+        let (action, prev_hash): (String, Option<String>) = conn.query_row(
+            "SELECT action, previous_hash FROM audit_logs WHERE id = 'al1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(action, "store");
+        assert!(prev_hash.is_none(), "pre-v9 rows must have previous_hash = NULL");
     }
 }

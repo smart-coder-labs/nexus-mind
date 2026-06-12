@@ -221,6 +221,34 @@ pub struct AuditEntry {
     pub resource_type: String,
     pub resource_id: Option<String>,
     pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    #[serde(default)]
+    pub current_hash: Option<String>,
+}
+
+/// Aggregated view of recent activity for a single project (tenant-scoped).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProjectContext {
+    pub project: String,
+    pub recent_memories: Vec<Memory>,
+    pub tools: Vec<String>,
+    pub last_activity: Option<String>,
+}
+
+/// Request body for `POST /v1/audit/log` — external audit ingest.
+///
+/// `action` and `resource_type` are semantically required but declared as `Option`
+/// so that a missing-field JSON body deserializes successfully. The handler validates
+/// and returns 400 (not Axum's default 422) when they are absent or empty.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExternalAuditRequest {
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    /// Optional ISO 8601 timestamp override. Server stamps current time if absent.
+    pub timestamp: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -280,6 +308,89 @@ pub struct ProjectMember {
     pub name: String,
     pub role: String,
     pub created_at: String,
+}
+
+// ── Policy types ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Policy {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub rule_type: String,
+    pub config: serde_json::Value,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Typed enum that represents the config payload for each rule type.
+/// Used by `CreatePolicyRequest` (flat body serialization via `#[serde(flatten)]`).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "rule_type", content = "config", rename_all = "snake_case")]
+pub enum PolicyConfig {
+    ModelWhitelist {
+        allowed_models: Vec<String>,
+    },
+    BudgetLimit {
+        #[serde(default)]
+        max_tokens_per_day: Option<i64>,
+        #[serde(default)]
+        max_requests_per_day: Option<i64>,
+    },
+    PiiRedact {
+        patterns: Vec<String>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreatePolicyRequest {
+    pub name: String,
+    #[serde(flatten)]
+    pub config: PolicyConfig,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UpdatePolicyRequest {
+    pub name: Option<String>,
+    /// If present, handler rejects with 400 immutable_rule_type — rule_type cannot change.
+    pub rule_type: Option<String>,
+    /// Raw JSON config value — validated against the existing rule_type by the handler.
+    pub config: Option<serde_json::Value>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PolicyCheckRequest {
+    pub model: String,
+    #[serde(default)]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default)]
+    pub prompt_preview: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PolicyViolation {
+    pub policy_id: String,
+    pub policy_name: String,
+    pub rule_type: String,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PolicyCheckResponse {
+    pub allowed: bool,
+    pub violations: Vec<PolicyViolation>,
 }
 
 #[cfg(test)]
@@ -379,10 +490,57 @@ mod tests {
             resource_type: "memory".into(),
             resource_id: None,
             metadata: json!({}),
+            previous_hash: None,
+            current_hash: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: AuditEntry = serde_json::from_str(&json).unwrap();
         assert!(back.resource_id.is_none());
+    }
+
+    // ── T-04 tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn audit_entry_serializes_hash_fields_as_null_when_missing() {
+        // Simulates deserializing a pre-v9 row where both columns are NULL/missing.
+        let json_str = r#"{
+            "id": "a1",
+            "org_id": "org1",
+            "user_id": "u1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "action": "store",
+            "resource_type": "memory",
+            "resource_id": null,
+            "metadata": {}
+        }"#;
+        let entry: AuditEntry = serde_json::from_str(json_str).unwrap();
+        assert!(entry.previous_hash.is_none(), "previous_hash must default to None");
+        assert!(entry.current_hash.is_none(), "current_hash must default to None");
+
+        // And the serialized form must include both fields as null (not omit them).
+        let out: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(out["previous_hash"], serde_json::Value::Null);
+        assert_eq!(out["current_hash"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn audit_entry_hash_fields_round_trip() {
+        let entry = AuditEntry {
+            id: "a2".into(),
+            org_id: "org1".into(),
+            user_id: "u1".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            action: "store".into(),
+            resource_type: "memory".into(),
+            resource_id: Some("m1".into()),
+            metadata: json!({}),
+            previous_hash: Some("abc123".into()),
+            current_hash: Some("def456".into()),
+        };
+        let json_str = serde_json::to_string(&entry).unwrap();
+        let back: AuditEntry = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(back.previous_hash.as_deref(), Some("abc123"));
+        assert_eq!(back.current_hash.as_deref(), Some("def456"));
     }
 
     // ── v2 struct tests ───────────────────────────────────────────────────────
@@ -485,5 +643,144 @@ mod tests {
         let empty: PatchSessionRequest = serde_json::from_str("{}").unwrap();
         assert!(empty.ended_at.is_none());
         assert!(empty.summary.is_none());
+    }
+
+    // ── Policy type tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn policy_roundtrip() {
+        let p = Policy {
+            id: "p_abc".into(),
+            org_id: "org1".into(),
+            name: "No GPT".into(),
+            rule_type: "model_whitelist".into(),
+            config: json!({"allowed_models": ["claude-3-5-sonnet"]}),
+            enabled: true,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        let back: Policy = serde_json::from_str(&s).unwrap();
+        assert_eq!(p, back);
+        assert_eq!(back.rule_type, "model_whitelist");
+        assert_eq!(back.enabled, true);
+    }
+
+    #[test]
+    fn create_policy_request_model_whitelist_roundtrip() {
+        let json_str = r#"{
+            "name": "Whitelist only claude",
+            "rule_type": "model_whitelist",
+            "config": {"allowed_models": ["claude-3-5-sonnet", "claude-3-haiku"]},
+            "enabled": true
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.name, "Whitelist only claude");
+        assert!(req.enabled);
+        match &req.config {
+            PolicyConfig::ModelWhitelist { allowed_models } => {
+                assert_eq!(allowed_models.len(), 2);
+                assert_eq!(allowed_models[0], "claude-3-5-sonnet");
+            }
+            other => panic!("expected ModelWhitelist, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn create_policy_request_budget_limit_roundtrip() {
+        let json_str = r#"{
+            "name": "Daily cap",
+            "rule_type": "budget_limit",
+            "config": {"max_tokens_per_day": 100000, "max_requests_per_day": 500}
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert!(req.enabled, "default_enabled should be true");
+        match &req.config {
+            PolicyConfig::BudgetLimit { max_tokens_per_day, max_requests_per_day } => {
+                assert_eq!(*max_tokens_per_day, Some(100000));
+                assert_eq!(*max_requests_per_day, Some(500));
+            }
+            other => panic!("expected BudgetLimit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn create_policy_request_pii_redact_roundtrip() {
+        let json_str = r#"{
+            "name": "PII guard",
+            "rule_type": "pii_redact",
+            "config": {"patterns": ["\\d{3}-\\d{2}-\\d{4}"]}
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        match &req.config {
+            PolicyConfig::PiiRedact { patterns } => {
+                assert_eq!(patterns.len(), 1);
+            }
+            other => panic!("expected PiiRedact, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn update_policy_request_all_optional() {
+        let empty: UpdatePolicyRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.name.is_none());
+        assert!(empty.config.is_none());
+        assert!(empty.enabled.is_none());
+
+        let partial: UpdatePolicyRequest =
+            serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+        assert!(partial.name.is_none());
+        assert_eq!(partial.enabled, Some(false));
+    }
+
+    #[test]
+    fn policy_check_request_roundtrip() {
+        let json_str = r#"{
+            "model": "gpt-4o",
+            "prompt_tokens": 512,
+            "prompt_preview": "What is the capital?",
+            "user_id": "u1",
+            "project": "my-project"
+        }"#;
+        let req: PolicyCheckRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.model, "gpt-4o");
+        assert_eq!(req.prompt_tokens, Some(512));
+        assert_eq!(req.prompt_preview.as_deref(), Some("What is the capital?"));
+        assert_eq!(req.user_id.as_deref(), Some("u1"));
+
+        // Re-serialize and deserialize
+        let s = serde_json::to_string(&req).unwrap();
+        let back: PolicyCheckRequest = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.model, "gpt-4o");
+    }
+
+    #[test]
+    fn policy_check_response_allowed_no_violations() {
+        let resp = PolicyCheckResponse {
+            allowed: true,
+            violations: vec![],
+        };
+        let s = serde_json::to_string(&resp).unwrap();
+        let back: PolicyCheckResponse = serde_json::from_str(&s).unwrap();
+        assert_eq!(resp, back);
+        assert!(back.violations.is_empty());
+    }
+
+    #[test]
+    fn policy_check_response_denied_with_violation() {
+        let resp = PolicyCheckResponse {
+            allowed: false,
+            violations: vec![PolicyViolation {
+                policy_id: "p_abc".into(),
+                policy_name: "No GPT".into(),
+                rule_type: "model_whitelist".into(),
+                reason: "Model 'gpt-4o' is not in the allowed list".into(),
+            }],
+        };
+        let s = serde_json::to_string(&resp).unwrap();
+        let back: PolicyCheckResponse = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.violations.len(), 1);
+        assert_eq!(back.violations[0].policy_id, "p_abc");
+        assert!(!back.allowed);
     }
 }

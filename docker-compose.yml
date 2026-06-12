@@ -9,6 +9,8 @@ services:
     environment:
       DB_PATH: /data/nexusmind.db
       LOG_LEVEL: info
+    env_file:
+      - ./apps/backend/.env
     volumes:
       - nexusmind_data:/data
     healthcheck:
@@ -26,6 +28,14 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  backoffice:
+    build:
+      context: ./apps/backoffice
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
 
 volumes:
   nexusmind_data:

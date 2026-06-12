@@ -1,0 +1,676 @@
+{
+  "info": {
+    "name": "NexusMind Backend API",
+    "description": "Postman collection for the current backend router.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "api_key", "value": "" },
+    { "key": "superuser_key", "value": "" },
+    { "key": "session_cookie", "value": "" },
+    { "key": "memory_id", "value": "" },
+    { "key": "session_id", "value": "" },
+    { "key": "user_id", "value": "" },
+    { "key": "org_id", "value": "" },
+    { "key": "project_id", "value": "" },
+    { "key": "policy_id", "value": "" },
+    { "key": "role_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /v1/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/v1/health", "host": ["{{base_url}}"], "path": ["v1", "health"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin Auth",
+      "item": [
+        {
+          "name": "POST /v1/admin/auth/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["const cookie = pm.response.headers.get('set-cookie');", "if (cookie) {", "  const first = cookie.split(';')[0];", "  pm.collectionVariables.set('session_cookie', first);", "}"] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/admin/auth/login", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "login"] }
+          }
+        },
+        {
+          "name": "POST /v1/admin/auth/logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Cookie", "value": "{{session_cookie}}" }],
+            "url": { "raw": "{{base_url}}/v1/admin/auth/logout", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "logout"] }
+          }
+        },
+        {
+          "name": "GET /v1/admin/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/admin/auth/me", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "me"] }
+          }
+        },
+        {
+          "name": "POST /v1/admin/auth/set-password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"reset-token\",\n  \"password\": \"new-password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/admin/auth/set-password", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "set-password"] }
+          }
+        },
+        {
+          "name": "POST /v1/admin/auth/request-reset",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/admin/auth/request-reset", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "request-reset"] }
+          }
+        },
+        {
+          "name": "POST /v1/admin/auth/change-password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"old-password123\",\n  \"new_password\": \"new-password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/admin/auth/change-password", "host": ["{{base_url}}"], "path": ["v1", "admin", "auth", "change-password"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Organizations",
+      "item": [
+        {
+          "name": "GET /v1/orgs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/orgs", "host": ["{{base_url}}"], "path": ["v1", "orgs"] }
+          }
+        },
+        {
+          "name": "POST /v1/orgs",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"org_name\": \"Acme Corp\",\n  \"org_slug\": \"acme\",\n  \"admin_email\": \"admin@acme.com\",\n  \"admin_name\": \"Admin\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/orgs", "host": ["{{base_url}}"], "path": ["v1", "orgs"] }
+          }
+        },
+        {
+          "name": "GET /v1/orgs/:id/users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/orgs/{{org_id}}/users", "host": ["{{base_url}}"], "path": ["v1", "orgs", "{{org_id}}", "users"] }
+          }
+        },
+        {
+          "name": "DELETE /internal/orgs/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "GET /v1/users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/users", "host": ["{{base_url}}"], "path": ["v1", "users"] }
+          }
+        },
+        {
+          "name": "POST /v1/users/invite",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"dev@acme.com\",\n  \"name\": \"Dev User\",\n  \"role\": \"member\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/users/invite", "host": ["{{base_url}}"], "path": ["v1", "users", "invite"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/users/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/users/{{user_id}}", "host": ["{{base_url}}"], "path": ["v1", "users", "{{user_id}}"] }
+          }
+        },
+        {
+          "name": "POST /v1/users/:id/rotate-key",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/users/{{user_id}}/rotate-key", "host": ["{{base_url}}"], "path": ["v1", "users", "{{user_id}}", "rotate-key"] }
+          }
+        },
+        {
+          "name": "PATCH /v1/users/:id/role",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"admin\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/users/{{user_id}}/role", "host": ["{{base_url}}"], "path": ["v1", "users", "{{user_id}}", "role"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Roles",
+      "item": [
+        {
+          "name": "GET /v1/roles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/roles", "host": ["{{base_url}}"], "path": ["v1", "roles"] }
+          }
+        },
+        {
+          "name": "POST /v1/roles",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"analytics\",\n  \"display_name\": \"Analytics\",\n  \"permissions\": [\"memory:read\"],\n  \"description\": \"Read-only analytics role\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/roles", "host": ["{{base_url}}"], "path": ["v1", "roles"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/roles/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/roles/{{role_id}}", "host": ["{{base_url}}"], "path": ["v1", "roles", "{{role_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "GET /v1/projects",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/projects", "host": ["{{base_url}}"], "path": ["v1", "projects"] }
+          }
+        },
+        {
+          "name": "POST /v1/projects",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Platform\",\n  \"description\": \"Core platform work\",\n  \"parent_id\": null\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/projects", "host": ["{{base_url}}"], "path": ["v1", "projects"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/projects/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/projects/{{project_id}}", "host": ["{{base_url}}"], "path": ["v1", "projects", "{{project_id}}"] }
+          }
+        },
+        {
+          "name": "PATCH /v1/projects/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"parent_id\": null\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/projects/{{project_id}}", "host": ["{{base_url}}"], "path": ["v1", "projects", "{{project_id}}"] }
+          }
+        },
+        {
+          "name": "GET /v1/projects/:project_id/members",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/projects/{{project_id}}/members", "host": ["{{base_url}}"], "path": ["v1", "projects", "{{project_id}}", "members"] }
+          }
+        },
+        {
+          "name": "POST /v1/projects/:project_id/members",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"role\": \"member\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/projects/{{project_id}}/members", "host": ["{{base_url}}"], "path": ["v1", "projects", "{{project_id}}", "members"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/projects/:project_id/members/:user_id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/projects/{{project_id}}/members/{{user_id}}", "host": ["{{base_url}}"], "path": ["v1", "projects", "{{project_id}}", "members", "{{user_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sessions",
+      "item": [
+        {
+          "name": "POST /v1/sessions",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project\": \"nexusmind\",\n  \"directory\": \"/workspace\",\n  \"summary\": \"Session start\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/sessions", "host": ["{{base_url}}"], "path": ["v1", "sessions"] }
+          }
+        },
+        {
+          "name": "PATCH /v1/sessions/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ended_at\": \"2026-06-11T12:00:00Z\",\n  \"summary\": \"Done\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/sessions/{{session_id}}", "host": ["{{base_url}}"], "path": ["v1", "sessions", "{{session_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Memory",
+      "item": [
+        {
+          "name": "POST /v1/memory/store",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const body = pm.response.json();", "  pm.collectionVariables.set('memory_id', body.id);", "}"] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tool\": \"claude-code\",\n  \"project\": \"nexusmind\",\n  \"content\": \"Use snake_case for API routes\",\n  \"tags\": [\"convention\", \"api\"],\n  \"title\": \"API naming\",\n  \"type\": \"note\",\n  \"scope\": \"project\",\n  \"topic_key\": \"api/naming\",\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/memory/store", "host": ["{{base_url}}"], "path": ["v1", "memory", "store"] }
+          }
+        },
+        {
+          "name": "POST /v1/memory/search",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"snake_case\",\n  \"limit\": 10,\n  \"mode\": \"keyword\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/memory/search", "host": ["{{base_url}}"], "path": ["v1", "memory", "search"] }
+          }
+        },
+        {
+          "name": "GET /v1/memory",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/memory?project=nexusmind&tool=claude-code&limit=20&offset=0", "host": ["{{base_url}}"], "path": ["v1", "memory"], "query": [
+              { "key": "project", "value": "nexusmind" },
+              { "key": "tool", "value": "claude-code" },
+              { "key": "limit", "value": "20" },
+              { "key": "offset", "value": "0" }
+            ] }
+          }
+        },
+        {
+          "name": "GET /v1/memory/:id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/memory/{{memory_id}}", "host": ["{{base_url}}"], "path": ["v1", "memory", "{{memory_id}}"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/memory/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/memory/{{memory_id}}", "host": ["{{base_url}}"], "path": ["v1", "memory", "{{memory_id}}"] }
+          }
+        },
+        {
+          "name": "GET /v1/memory/export",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/memory/export?format=json", "host": ["{{base_url}}"], "path": ["v1", "memory", "export"], "query": [{ "key": "format", "value": "json" }] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Context",
+      "item": [
+        {
+          "name": "GET /v1/context/project/:project",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/context/project/nexusmind", "host": ["{{base_url}}"], "path": ["v1", "context", "project", "nexusmind"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {
+          "name": "GET /v1/audit",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/audit?limit=50&offset=0", "host": ["{{base_url}}"], "path": ["v1", "audit"], "query": [
+              { "key": "limit", "value": "50" },
+              { "key": "offset", "value": "0" }
+            ] }
+          }
+        },
+        {
+          "name": "POST /v1/audit/log",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"store\",\n  \"resource_type\": \"memory\",\n  \"resource_id\": \"{{memory_id}}\",\n  \"metadata\": { \"source\": \"postman\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/audit/log", "host": ["{{base_url}}"], "path": ["v1", "audit", "log"] }
+          }
+        },
+        {
+          "name": "GET /v1/audit/export",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/audit/export?format=json", "host": ["{{base_url}}"], "path": ["v1", "audit", "export"], "query": [{ "key": "format", "value": "json" }] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Policies",
+      "item": [
+        {
+          "name": "GET /v1/policies",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/policies", "host": ["{{base_url}}"], "path": ["v1", "policies"] }
+          }
+        },
+        {
+          "name": "POST /v1/policies",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Block GPT-4\",\n  \"rule_type\": \"model_whitelist\",\n  \"config\": { \"allowed_models\": [\"gpt-4o\"] },\n  \"enabled\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/policies", "host": ["{{base_url}}"], "path": ["v1", "policies"] }
+          }
+        },
+        {
+          "name": "PATCH /v1/policies/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated policy\",\n  \"enabled\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/policies/{{policy_id}}", "host": ["{{base_url}}"], "path": ["v1", "policies", "{{policy_id}}"] }
+          }
+        },
+        {
+          "name": "DELETE /v1/policies/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/policies/{{policy_id}}", "host": ["{{base_url}}"], "path": ["v1", "policies", "{{policy_id}}"] }
+          }
+        },
+        {
+          "name": "POST /v1/policy/check",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user\": \"admin@example.com\",\n  \"tool\": \"cursor\",\n  \"model\": \"gpt-4o\",\n  \"action\": \"chat\",\n  \"prompt_hash\": \"sha256:abc123\",\n  \"prompt_preview\": \"hello\",\n  \"estimated_tokens\": 1200,\n  \"estimated_cost\": 0.003\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/policy/check", "host": ["{{base_url}}"], "path": ["v1", "policy", "check"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GET /v1/admin/stats",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/admin/stats", "host": ["{{base_url}}"], "path": ["v1", "admin", "stats"] }
+          }
+        },
+        {
+          "name": "GET /v1/admin/org",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }],
+            "url": { "raw": "{{base_url}}/v1/admin/org", "host": ["{{base_url}}"], "path": ["v1", "admin", "org"] }
+          }
+        },
+        {
+          "name": "PATCH /v1/admin/org",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{api_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme Corp Updated\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/v1/admin/org", "host": ["{{base_url}}"], "path": ["v1", "admin", "org"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Internal",
+      "item": [
+        {
+          "name": "GET /internal/metrics",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/metrics", "host": ["{{base_url}}"], "path": ["internal", "metrics"] }
+          }
+        },
+        {
+          "name": "GET /internal/orgs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs", "host": ["{{base_url}}"], "path": ["internal", "orgs"] }
+          }
+        },
+        {
+          "name": "POST /internal/orgs",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"org_name\": \"Acme Corp\",\n  \"org_slug\": \"acme\",\n  \"admin_email\": \"admin@acme.com\",\n  \"admin_name\": \"Admin\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/internal/orgs", "host": ["{{base_url}}"], "path": ["internal", "orgs"] }
+          }
+        },
+        {
+          "name": "GET /internal/orgs/:id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}"] }
+          }
+        },
+        {
+          "name": "PATCH /internal/orgs/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated Org\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}"] }
+          }
+        },
+        {
+          "name": "DELETE /internal/orgs/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}"] }
+          }
+        },
+        {
+          "name": "GET /internal/orgs/:id/users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}/users", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}", "users"] }
+          }
+        },
+        {
+          "name": "POST /internal/orgs/:id/impersonate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/orgs/{{org_id}}/impersonate", "host": ["{{base_url}}"], "path": ["internal", "orgs", "{{org_id}}", "impersonate"] }
+          }
+        },
+        {
+          "name": "GET /internal/users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/users", "host": ["{{base_url}}"], "path": ["internal", "users"] }
+          }
+        },
+        {
+          "name": "POST /internal/users/:id/suspend",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/users/{{user_id}}/suspend", "host": ["{{base_url}}"], "path": ["internal", "users", "{{user_id}}", "suspend"] }
+          }
+        },
+        {
+          "name": "GET /internal/audit",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{superuser_key}}" }],
+            "url": { "raw": "{{base_url}}/internal/audit?limit=50&offset=0", "host": ["{{base_url}}"], "path": ["internal", "audit"], "query": [
+              { "key": "limit", "value": "50" },
+              { "key": "offset", "value": "0" }
+            ] }
+          }
+        }
+      ]
+    }
+  ]
+}

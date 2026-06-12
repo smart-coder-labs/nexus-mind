@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
+import { downloadExport, todayStamp } from '../lib/download'
 import type { Memory } from '../types'
 import { Search, X, Brain, Tag } from 'lucide-react'
 
@@ -243,30 +244,19 @@ export default function Memories() {
     },
   })
 
-  const handleExportCsv = useCallback(() => {
-    if (!memories) return
-    const rows = [
-      ['id', 'user', 'tool', 'type', 'scope', 'title', 'project', 'content', 'tags', 'revision_count', 'created_at'],
-      ...memories.map(m => [
-        m.id,
-        userMap.get(m.user_id) ?? m.user_id,
-        m.tool,
-        m.type ?? '',
-        m.scope ?? '',
-        m.title ? `"${m.title.replace(/"/g, '""')}"` : '',
-        m.project,
-        `"${m.content.replace(/"/g, '""')}"`,
-        m.tags.join(';'),
-        String(m.revision_count ?? 1),
-        m.created_at,
-      ]),
-    ]
-    const csv = rows.map(r => r.join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = 'memories.csv'
-    a.click()
-  }, [memories, userMap])
+  const [exporting, setExporting] = useState<null | 'csv' | 'json'>(null)
+
+  const handleExport = useCallback(async (format: 'csv' | 'json') => {
+    setExporting(format)
+    try {
+      await downloadExport(
+        `/v1/memory/export?format=${format}`,
+        `memories-${todayStamp()}.${format}`,
+      )
+    } finally {
+      setExporting(null)
+    }
+  }, [])
 
   return (
     <div className="p-8 max-w-5xl mx-auto space-y-6">
@@ -284,13 +274,24 @@ export default function Memories() {
             </p>
           </div>
         </div>
-        <button
-          onClick={handleExportCsv}
-          disabled={!memories?.length}
-          className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
-        >
-          Export CSV
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => handleExport('csv')}
+            disabled={exporting !== null}
+            className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
+            aria-label="Export memories as CSV"
+          >
+            {exporting === 'csv' ? 'Exporting…' : 'Export CSV'}
+          </button>
+          <button
+            onClick={() => handleExport('json')}
+            disabled={exporting !== null}
+            className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors disabled:opacity-30"
+            aria-label="Export memories as JSON"
+          >
+            {exporting === 'json' ? 'Exporting…' : 'Export JSON'}
+          </button>
+        </div>
       </div>
 
       {/* Search */}

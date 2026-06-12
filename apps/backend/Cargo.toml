@@ -32,10 +32,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
+regex = "1"
 bcrypt = "0.15"
 tower-cookies = "0.10"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "builder", "smtp-transport"] }
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub"] }
+dashmap = "5"
+csv = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, health, internal, memory, middleware as auth_mw, sessions, users};
+use crate::api::{admin, audit, auth, context, health, internal, memory, middleware as auth_mw, policy, rate_limit, sessions, users};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -55,10 +55,13 @@ pub fn build(conn: Connection, config: Config) -> Router {
         }
     };
 
+    let rate_state = rate_limit::RateLimitState::new(store.conn());
+
     let protected = Router::new()
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
-        .route("/v1/memory/:id", delete(memory::delete))
+        .route("/v1/memory/export", get(memory::export))
+        .route("/v1/memory/:id", get(memory::get_by_id).delete(memory::delete))
         .route("/v1/memory", get(memory::list))
         .route("/v1/sessions", post(sessions::create_session_handler))
         .route("/v1/sessions/:id", patch(sessions::patch_session_handler))
@@ -73,11 +76,20 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/projects/:id", delete(admin::delete_project_api).patch(admin::update_project_api))
         .route("/v1/projects/:project_id/members", get(admin::list_project_members_api).post(admin::upsert_project_member_api))
         .route("/v1/projects/:project_id/members/:user_id", delete(admin::delete_project_member_api))
+        .route("/v1/policies", get(policy::list_policies).post(policy::create_policy))
+        .route("/v1/policies/:id", patch(policy::update_policy).delete(policy::delete_policy))
+        .route("/v1/policy/check", post(policy::check_policy))
+        .route("/v1/context/project/:project", get(context::get_project_context))
         .route("/v1/audit", get(audit::query))
+        .route("/v1/audit/export", get(audit::export))
+        .route("/v1/audit/log", post(audit::post_audit))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
         .route("/v1/admin/auth/change-password", post(auth::change_password))
         .route("/v1/admin/auth/me", get(auth::me))
+        // Rate limit runs after auth (inner layer = runs second at runtime).
+        // Auth is outermost (last `.layer()`) so it runs first.
+        .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))
         .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
     let cors_origins = config.cors_origins.clone();

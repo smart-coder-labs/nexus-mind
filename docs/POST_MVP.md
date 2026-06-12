@@ -9,7 +9,9 @@ Este documento consolida TODO lo que los docs del producto prometen y marca hone
 
 ---
 
-## Estado Actual — v0.2.0 "Enterprise Demo Ready"
+## Estado Actual — v0.3.x "Project Access Control + Backoffice"
+
+> Última actualización: 2026-05-31
 
 ### ✅ Hecho
 
@@ -17,7 +19,7 @@ Este documento consolida TODO lo que los docs del producto prometen y marca hone
 |---|---|
 | Backend multi-tenant | Rust + Axum 0.7 + SQLite (WAL) — orgs, users, api_keys, memories, audit_logs |
 | Auth middleware | API key por usuario, scoped a org_id — sin JWT, sin sesiones |
-| Memory API | `POST /v1/memory/store`, `POST /v1/memory/search` (FTS5), `GET /v1/memory`, `DELETE /v1/memory/:id` |
+| Memory API | `POST /v1/memory/store`, `POST /v1/memory/search` (FTS5+híbrido), `GET /v1/memory`, `DELETE /v1/memory/:id` |
 | Users API | List, invite (genera key), revoke, rotate key |
 | Admin API | Org stats, org settings |
 | Audit trail | Append-only, scoped por org — store/search/delete/invite/revoke |
@@ -30,6 +32,12 @@ Este documento consolida TODO lo que los docs del producto prometen y marca hone
 | CI/CD | GitHub Actions — backend (build + test + clippy), admin (build), MCP (build), E2E smoke test |
 | Scripts | `reset-demo.sh`, `test-mcp.sh`, `test-e2e.sh` (multi-tenant isolation) |
 | Docs | `README.md` enterprise, `docs/RUNNING.md`, `demo/MCP_DEMO.md` |
+| **Proyectos jerárquicos** | parent_id en projects (migration v7) — árbol root/children en admin panel |
+| **Admin panel: Projects** | Sheet modal por proyecto — tabs Memories + Members, selector de parent, inline role management |
+| **Project-based access control** | `require_permission` deniega acceso si usuario no tiene fila en `project_members` para el proyecto — migration v8 seedea usuarios existentes |
+| **Invite con selección de proyectos** | Al invitar, admin elige "All projects" o proyectos específicos — crea `project_members` en el momento |
+| **Backoffice interno** | App `apps/backoffice` con Dashboard, Orgs, OrgDetail, Users, AuditLog — rol `superadmin` |
+| **Internal API** | `/internal/*` — list/create/update/delete orgs, list users cross-org, impersonate, suspend user, metrics, audit global |
 
 ### ❌ No hecho (prometido en los docs)
 
@@ -64,7 +72,7 @@ Documentado en: ROADMAP.md M2, 03-SCOPE_CHANGELOG.md, PRD.md §3.5
 | ✅ MCP server Cursor-compatible | Mismo servidor stdio, Cursor v0.45+ lo soporta nativamente |
 | ✅ `cursor_rules` context injection | Tool `get_context` — fetches memorias agrupadas por tipo, formato listo para `.cursor/rules/` o notepad |
 | ✅ `docs/CURSOR_PLUGIN.md` | Setup guide + `.cursor/mcp.json` de ejemplo (npx y local binary) |
-| ❌ Demo: Cursor → admin panel | Equivalente al MCP_DEMO.md para Cursor |
+| ❌ Demo: Cursor → admin panel | Equivalente al MCP_DEMO.md para Cursor — PENDIENTE |
 
 **Estimación**: ~1 semana. El servidor MCP ya existe — es config + docs + testing con Cursor real.
 
@@ -106,19 +114,19 @@ Documentado en: ADR-002 §6.3
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Rol `superadmin` | Nuevo rol en DB — no asignable desde el admin panel de cliente — solo creado via seed/migration |
-| ❌ Middleware `require_superadmin` | Guard separado del `require_permission` de cliente — bloquea cualquier request sin rol superadmin |
-| ❌ `GET /internal/orgs` | Lista todas las orgs con stats: usuarios activos, memorias almacenadas, última actividad, plan |
-| ❌ `POST /internal/orgs` | Crear org desde backoffice — equivalente al seed pero via API |
-| ❌ `PATCH /internal/orgs/:id` | Editar nombre, plan, límites, estado (active/suspended/trial) |
-| ❌ `DELETE /internal/orgs/:id` | Soft-delete de org + cascade a users/memories/audit |
+| ✅ Rol `superadmin` | Nuevo rol en DB — no asignable desde el admin panel de cliente — solo creado via seed/migration |
+| ✅ Middleware `require_superadmin` | Guard separado del `require_permission` de cliente — bloquea cualquier request sin rol superadmin |
+| ✅ `GET /internal/orgs` | Lista todas las orgs con stats: usuarios activos, memorias almacenadas, última actividad, plan |
+| ✅ `POST /internal/orgs` | Crear org desde backoffice — equivalente al seed pero via API |
+| ✅ `PATCH /internal/orgs/:id` | Editar nombre, plan, límites, estado (active/suspended/trial) |
+| ✅ `DELETE /internal/orgs/:id` | Soft-delete de org + cascade a users/memories/audit |
 | ❌ `GET /internal/orgs/:id/stats` | Uso detallado: memorias por usuario, distribución de herramientas, actividad últimos 30 días |
-| ❌ `POST /internal/orgs/:id/impersonate` | Genera token temporal de admin para entrar como cliente a su panel — para soporte |
-| ❌ `GET /internal/users` | Lista todos los usuarios cross-org con filtros (rol, org, estado, última actividad) |
-| ❌ `POST /internal/users/:id/suspend` | Suspender usuario sin borrar sus datos |
-| ❌ `GET /internal/audit` | Audit log global cross-org — para investigación de incidentes |
-| ❌ `GET /internal/metrics` | Métricas agregadas del sistema: orgs totales, usuarios, memorias, RPM, latencia p95 |
-| ❌ Prefijo `/internal/*` en router | Rutas internas bajo prefijo dedicado — nunca expuestas en la doc pública del API |
+| ✅ `POST /internal/orgs/:id/impersonate` | Genera token temporal de admin para entrar como cliente a su panel — para soporte |
+| ✅ `GET /internal/users` | Lista todos los usuarios cross-org con filtros (rol, org, estado, última actividad) |
+| ✅ `POST /internal/users/:id/suspend` | Suspender usuario sin borrar sus datos |
+| ✅ `GET /internal/audit` | Audit log global cross-org — para investigación de incidentes |
+| ✅ `GET /internal/metrics` | Métricas agregadas del sistema: orgs totales, usuarios, memorias, RPM, latencia p95 |
+| ✅ Prefijo `/internal/*` en router | Rutas internas bajo prefijo dedicado — nunca expuestas en la doc pública del API |
 
 ### Backoffice App (React + Vite)
 
@@ -128,15 +136,15 @@ Documentado en: ADR-002 §6.3
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Login de superadmin | Pantalla de login propia — no comparte la del admin panel — credentials de backoffice |
-| ❌ AuthContext de superadmin | Contexto separado que sabe distinguir el rol `superadmin` |
-| ❌ Guard de rutas | Todas las rutas del backoffice requieren rol `superadmin` — redirect a login si no |
+| ✅ Login de superadmin | Pantalla de login propia — no comparte la del admin panel |
+| ✅ AuthContext de superadmin | Contexto separado que sabe distinguir el rol `superadmin` |
+| ✅ Guard de rutas | Todas las rutas del backoffice requieren rol `superadmin` — redirect a login si no |
 
 #### Dashboard Global
 
 | Tarea | Detalle |
 |---|---|
-| ❌ KPIs del negocio | Orgs activas, usuarios totales, memorias almacenadas, crecimiento semanal |
+| ✅ KPIs del negocio | Orgs activas, usuarios totales, memorias almacenadas |
 | ❌ Gráficos de actividad | Nuevas orgs por semana, memorias creadas por día, RPM por hora |
 | ❌ Orgs con mayor actividad | Top 5 orgs por uso en últimas 24h / 7 días / 30 días |
 | ❌ Alertas del sistema | Orgs cerca del límite de su plan, errores de autenticación repetidos, latencia alta |
@@ -145,32 +153,32 @@ Documentado en: ADR-002 §6.3
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Lista de orgs con búsqueda y filtros | Filtrar por plan, estado (active/trial/suspended), actividad reciente |
-| ❌ Detalle de org | Stats completos: usuarios, memorias, proyectos, último acceso, uso acumulado |
-| ❌ Crear org | Formulario: nombre, plan, límites de usuarios/memorias, admin inicial |
-| ❌ Editar org | Cambiar nombre, plan, límites, estado — con confirmación para cambios destructivos |
-| ❌ Suspender / reactivar org | Bloquea acceso a todos sus usuarios sin borrar datos |
-| ❌ Borrar org | Soft-delete con warning explícito — muestra cuántas memorias/usuarios se van a perder |
-| ❌ Impersonar admin de org | Botón "Entrar como cliente" — genera token temporal, abre admin panel del cliente en nueva pestaña |
+| ✅ Lista de orgs con búsqueda y filtros | Filtrar por plan, estado (active/trial/suspended), actividad reciente |
+| ✅ Detalle de org | Stats: usuarios, memorias, proyectos, último acceso |
+| ✅ Crear org | Formulario: nombre, plan, límites de usuarios/memorias, admin inicial |
+| ✅ Editar org | Cambiar nombre, plan, límites, estado |
+| ✅ Suspender / reactivar org | Bloquea acceso a todos sus usuarios sin borrar datos |
+| ✅ Borrar org | Con warning explícito |
+| ✅ Impersonar admin de org | Botón "Entrar como cliente" — genera token temporal |
 | ❌ Ver proyectos de la org | Lista de proyectos con miembros y memorias asociadas |
-| ❌ Ver audit log de la org | Filtrado al scope de esa org — útil para soporte |
+| ✅ Ver audit log de la org | Filtrado al scope de esa org |
 
 #### Gestión de Usuarios (cross-org)
 
 | Tarea | Detalle |
 |---|---|
-| ❌ Lista global de usuarios | Búsqueda por email/nombre, filtros por org/rol/estado |
-| ❌ Detalle de usuario | Org a la que pertenece, rol, última actividad, memorias creadas, API keys activas |
-| ❌ Suspender / reactivar usuario | Individual, sin afectar al resto de la org |
+| ✅ Lista global de usuarios | Búsqueda por email/nombre, filtros por org/rol/estado |
+| ❌ Detalle de usuario | Org, rol, última actividad, memorias creadas, API keys activas |
+| ✅ Suspender / reactivar usuario | Individual, sin afectar al resto de la org |
 | ❌ Reasignar usuario a otra org | Para migraciones o reorganizaciones |
-| ❌ Ver API keys del usuario | Lista de keys con última utilización — sin mostrar el valor completo |
+| ❌ Ver API keys del usuario | Lista de keys con última utilización |
 
 #### Monitoreo y Métricas
 
 | Tarea | Detalle |
 |---|---|
 | ❌ Dashboard de salud del sistema | Latencia p50/p95/p99, tasa de errores, uso de CPU/memoria del proceso |
-| ❌ Audit log global | Todos los eventos de todas las orgs — con búsqueda por tipo de acción, usuario, org, fecha |
+| ✅ Audit log global | Todos los eventos de todas las orgs — con búsqueda por tipo de acción, usuario, org, fecha |
 | ❌ Exportar audit global | JSONL export para análisis externo o auditoría forense |
 | ❌ Alertas configurables | Umbrales: si latencia p95 > Xms, si org supera Y memorias, etc. |
 
@@ -187,10 +195,10 @@ Documentado en: ADR-002 §6.3
 
 | Tarea | Detalle |
 |---|---|
-| ❌ `apps/backoffice/` scaffold | Vite + React + TypeScript — misma estructura que admin panel |
-| ❌ `apps/backoffice/src/api/client.ts` | Cliente HTTP para rutas `/internal/*` |
+| ✅ `apps/backoffice/` scaffold | Vite + React + TypeScript — misma estructura que admin panel |
+| ✅ `apps/backoffice/src/api/client.ts` | Cliente HTTP para rutas `/internal/*` |
 | ❌ Docker Compose: servicio `backoffice` | Puerto separado (e.g. `:5175`) — no expuesto públicamente en producción |
-| ❌ CI: build del backoffice | Job en GitHub Actions — igual que el admin panel |
+| ✅ CI: build del backoffice | Job en GitHub Actions — igual que el admin panel |
 | ❌ `docs/BACKOFFICE.md` | Guía de setup, credenciales de superadmin, cómo crear la primera cuenta |
 
 **Estimación total**: ~3 semanas. Backend (1 sem) + App (1.5 sem) + Infra + Docs (0.5 sem).  
@@ -212,7 +220,7 @@ Documentado en: AUTH_SPEC.md (v1.1 completo), PRD.md, ROADMAP.md M4-M5
 | ✅ Permissions catalog | `memory:write`, `memory:read`, `memory:delete`, `user:invite`, `user:revoke`, `audit:read`, `settings:write` |
 | ✅ Middleware de roles | Cada endpoint verifica el rol del API key — no solo que pertenezca a la org |
 | ✅ Custom roles | Admin puede definir roles custom con subsets de permissions and assign them to users |
-| ✅ Per-project role overrides | Un usuario puede ser `viewer` en la org pero `admin` en un proyecto — AUTH_SPEC.md §4.5 |
+| ✅ Per-project role overrides | Un usuario puede ser `viewer` en la org pero `admin` en un proyecto — enforcement activo desde migration v8 + require_permission fix (2026-05-31) |
 
 ### Memory isolation levels
 

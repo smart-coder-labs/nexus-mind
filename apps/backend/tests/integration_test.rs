@@ -1,6 +1,6 @@
 use nexusmind::auth::api_keys;
 use nexusmind::db::{connection, migrations, queries};
-use nexusmind::models::types::{Role, UserRole};
+use nexusmind::models::types::{Memory, Role, StoreMemoryRequest, UserRole};
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -41,6 +41,31 @@ fn insert_user(conn: &Connection, org_id: &str, email: &str, role: &str) -> (Str
     .unwrap();
 
     (user_id, raw_key)
+}
+
+/// Minimal helper that reproduces the old `store_memory` API via `upsert_memory`.
+/// `upsert_memory` with `topic_key: None` always INSERTs, so behavior is identical.
+fn legacy_store(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    project: &str,
+    tool: &str,
+    content: &str,
+    tags: &[String],
+) -> Memory {
+    let req = StoreMemoryRequest {
+        project: Some(project.to_string()),
+        tool: tool.to_string(),
+        content: content.to_string(),
+        tags: Some(tags.to_vec()),
+        title: None,
+        memory_type: None,
+        scope: None,
+        topic_key: None,
+        session_id: None,
+    };
+    queries::upsert_memory(conn, org_id, user_id, &req).unwrap()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -97,7 +122,7 @@ fn store_memory_org_isolation() {
 
     // Store a memory in org1 only.
     let tags: Vec<String> = vec!["test".to_string()];
-    queries::store_memory(&conn, &org1.id, &user1.id, "proj", "claude-code", "org1 secret content", &tags).unwrap();
+    legacy_store(&conn, &org1.id, &user1.id, "proj", "claude-code", "org1 secret content", &tags);
 
     // Org2 must see nothing.
     let org2_memories = queries::list_memories(&conn, &org2_id, None, None, None, None, None, 10, 0).unwrap();
@@ -123,7 +148,7 @@ fn search_memory_org_isolation() {
     let (_user2_id, _) = insert_user(&conn, &org2_id, "admin@beta.com", "admin");
 
     // Store "authentication oauth" in org1 only.
-    queries::store_memory(&conn, &org1.id, &user1.id, "proj", "cursor", "authentication oauth flow", &[]).unwrap();
+    legacy_store(&conn, &org1.id, &user1.id, "proj", "cursor", "authentication oauth flow", &[]);
 
     // Org2 searching must get nothing.
     let org2_results = queries::search_memories(&conn, &org2_id, "authentication", 10).unwrap();
@@ -295,9 +320,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version stays at 8
+    // Verify user_version stays at 10
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 10);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
