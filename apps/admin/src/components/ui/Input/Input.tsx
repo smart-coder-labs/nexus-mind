@@ -176,7 +176,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         const textareaClassName = `
       ${baseInputStyles}
       px-4 py-3
-      rounded-xl
+      rounded-[11px]
       min-h-[100px]
       resize-${resize}
       ${hasError ? 'border-status-error focus:border-status-error focus:ring-status-error/20' : ''}

@@ -117,7 +117,7 @@ export default function Settings() {
               <button
                 onClick={() => updateOrgMut.mutate(orgName)}
                 disabled={updateOrgMut.isPending || orgName === org?.name}
-                className="px-4 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
               >
                 {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
               </button>
@@ -169,7 +169,7 @@ export default function Settings() {
               <button
                 type="submit"
                 disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
-                className="px-4 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
               >
                 {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
               </button>
@@ -220,7 +220,7 @@ export default function Settings() {
                 <button
                   onClick={() => rotateMut.mutate()}
                   disabled={rotateMut.isPending}
-                  className="flex-1 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-40 transition-colors"
+                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-40 transition-colors"
                 >
                   {rotateMut.isPending ? 'Rotating…' : 'Rotate'}
                 </button>

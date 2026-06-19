@@ -162,7 +162,7 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-10 w-full items-center justify-between rounded-lg border border-border-primary bg-surface-primary px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 shadow-sm hover:bg-surface-secondary/50 transition-colors",
+                    "group flex h-10 w-full items-center justify-between rounded-lg border border-border-primary bg-surface-primary px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-surface-secondary/50 transition-colors",
                     className
                 )}
                 {...props}
@@ -281,7 +281,7 @@ const SelectContent = React.forwardRef<HTMLDivElement, SelectContentProps>(({ cl
             role="listbox"
             aria-activedescendant={highlightedValue ? `select-item-${highlightedValue}` : undefined}
             className={cn(
-                "relative z-50 min-w-[8rem] overflow-hidden rounded-xl border border-border-primary bg-surface-glass backdrop-blur-xl text-text-primary shadow-lg p-1",
+                "relative z-50 min-w-[8rem] overflow-hidden rounded-[18px] border border-border-primary bg-surface-glass backdrop-blur-xl text-text-primary p-1",
                 className
             )}
             style={{ position: "fixed", top: position.top, left: position.left, minWidth: position.width }}
@@ -472,7 +472,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                         className="fixed inset-0 z-10"
                         onClick={() => setIsOpen(false)}
                     />
-                    <div className="absolute top-full left-0 mt-2 w-64 bg-surface-primary border border-border-primary rounded-xl shadow-lg z-20 overflow-hidden">
+                    <div className="absolute top-full left-0 mt-2 w-64 bg-surface-primary border border-border-primary rounded-[18px] z-20 overflow-hidden">
                         <div className="max-h-80 overflow-y-auto p-2">
                             {options.map((option) => {
                                 const isActive = isOptionActive(option.value);

@@ -322,7 +322,7 @@ export default function Projects() {
               <button
                 type="submit"
                 disabled={createProjectMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors disabled:opacity-50"
               >
                 <Plus className="w-4 h-4" />
                 Create Project
@@ -543,7 +543,7 @@ export default function Projects() {
                         <button
                           type="submit"
                           disabled={addMemberMut.isPending}
-                          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors text-xs disabled:opacity-50"
+                          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors text-xs disabled:opacity-50"
                         >
                           <UserPlus className="w-3.5 h-3.5" />
                           Save Override

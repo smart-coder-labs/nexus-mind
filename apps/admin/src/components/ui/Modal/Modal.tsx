@@ -39,27 +39,27 @@ interface ModalConfig {
 const modalConfig: Record<string, ModalConfig> = {
     center: {
         wrapper: 'items-center justify-center p-4',
-        content: 'rounded-2xl',
+        content: 'rounded-[18px]',
         variant: 'center',
     },
     bottom: {
         wrapper: 'items-end justify-center',
-        content: 'rounded-t-2xl',
+        content: 'rounded-t-[18px]',
         variant: 'bottom',
     },
     bottomFull: {
         wrapper: 'items-end justify-center',
-        content: 'w-full rounded-t-2xl',
+        content: 'w-full rounded-t-[18px]',
         variant: 'bottom',
     },
     left: {
         wrapper: 'items-stretch justify-start',
-        content: 'h-full rounded-r-2xl',
+        content: 'h-full rounded-r-[18px]',
         variant: 'left',
     },
     right: {
         wrapper: 'items-stretch justify-end',
-        content: 'h-full rounded-l-2xl',
+        content: 'h-full rounded-l-[18px]',
         variant: 'right',
     },
     fullscreen: {
@@ -226,7 +226,7 @@ export const Modal: React.FC<ModalProps> = ({
                     {/* Content */}
                     <motion.div
                         ref={contentRef}
-                        className={`w-full ${sizeStyles[size]} bg-surface-primary shadow-xl p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
+                        className={`w-full ${sizeStyles[size]} bg-surface-primary p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
                         initial={variants[config.variant]?.initial}
                         animate={variants[config.variant]?.animate}
                         exit={variants[config.variant]?.exit}

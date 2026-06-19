@@ -122,12 +122,12 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
     return (
         <div
             className={cn(
-                'flex w-full items-center justify-between gap-4 rounded-2xl border border-border-primary bg-surface-secondary/80 px-4 py-3 shadow-sm backdrop-blur-sm',
+                'flex w-full items-center justify-between gap-4 rounded-[18px] border border-border-primary bg-surface-secondary/80 px-4 py-3 backdrop-blur-sm',
                 className
             )}
         >
             <div className="flex items-center gap-3">
-                <div className="relative flex h-11 w-11 items-center justify-center rounded-xl border border-border-secondary bg-gradient-to-br from-accent-blue/10 via-surface-primary to-accent-blue/30 text-accent-blue shadow-xs">
+                <div className="relative flex h-11 w-11 items-center justify-center rounded-[11px] border border-border-secondary bg-[#272729] text-accent-blue">
                     <AnimatePresence mode="wait" initial={false}>
                         <motion.span
                             key={theme}

@@ -91,7 +91,7 @@ export const Switch: React.FC<SwitchProps> = ({
             <motion.span
                 className={`
                     ${sizes.thumb}
-                    pointer-events-none block rounded-full bg-white shadow-lg ring-0
+                    pointer-events-none block rounded-full bg-white ring-0
                 `}
                 animate={{
                     x: checked ? sizes.translateX : 0

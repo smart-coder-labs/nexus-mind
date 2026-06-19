@@ -92,7 +92,7 @@ export function Table<T>({
         density === "compact" ? "py-2" : "py-3";
 
     return (
-        <div className="overflow-hidden border border-border-primary rounded-xl bg-surface-elevated shadow-lg">
+        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-surface-elevated">
             {/* TABLE */}
             <table className="w-full border-collapse text-left">
                 <thead className="bg-surface-secondary/50 border-b border-border-primary">

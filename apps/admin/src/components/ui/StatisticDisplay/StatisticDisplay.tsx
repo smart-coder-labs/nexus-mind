@@ -94,17 +94,17 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
 };
 
 const variantClasses: Record<StatisticVariant, string> = {
-    card: "bg-surface-primary border border-border-primary rounded-2xl shadow-sm",
-    soft: "bg-surface-secondary/70 border border-border-secondary/60 rounded-2xl",
-    bordered: "bg-surface-primary border border-border-tertiary rounded-2xl",
-    minimal: "rounded-xl",
-    glass: "bg-accent-blue/5 border border-accent-blue/10 backdrop-blur-xl rounded-2xl",
+    card: "bg-surface-primary border border-border-primary rounded-[18px]",
+    soft: "bg-surface-secondary/70 border border-border-secondary/60 rounded-[18px]",
+    bordered: "bg-surface-primary border border-border-tertiary rounded-[18px]",
+    minimal: "rounded-[18px]",
+    glass: "bg-accent-blue/5 border border-accent-blue/10 backdrop-blur-xl rounded-[18px]",
 };
 
 const accentTokens: Record<StatisticAccent, { color: string; fillColor: string; text: string; chip: string; }> = {
     blue: {
-        color: '#22d3ee',
-        fillColor: 'rgba(34,211,238,0.12)',
+        color: '#0066cc',
+        fillColor: 'rgba(0,102,204,0.12)',
         text: 'text-accent-blue',
         chip: 'bg-accent-blue/10 text-accent-blue',
     },
@@ -250,7 +250,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                                 </span>
                                 {metric.icon && (
                                     <div className={cn(
-                                        'flex items-center justify-center rounded-xl bg-white/5 border border-white/5 text-text-secondary group-hover:text-text-primary transition-colors',
+                                        'flex items-center justify-center rounded-[11px] bg-white/5 border border-white/5 text-text-secondary group-hover:text-text-primary transition-colors',
                                         currentSize.icon
                                     )}>
                                         {metric.icon}
@@ -364,8 +364,6 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                 transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
                 {...props}
             >
-                <div className="absolute inset-0 bg-gradient-to-br from-accent-blue/5 via-transparent to-transparent pointer-events-none" />
-
                 <div className="relative flex flex-col gap-4">
                     <div className="flex items-center justify-between gap-3">
                         <div>
