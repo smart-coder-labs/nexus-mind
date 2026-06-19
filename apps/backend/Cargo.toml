@@ -39,6 +39,8 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub"] }
 dashmap = "5"
 csv = "1"
+ignore = "0.4"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

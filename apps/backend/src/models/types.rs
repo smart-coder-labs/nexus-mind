@@ -393,6 +393,85 @@ pub struct PolicyCheckResponse {
     pub violations: Vec<PolicyViolation>,
 }
 
+// ── Code index types ──────────────────────────────────────────────────────────
+
+/// Represents a logical code project being indexed.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CodeProject {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub root_path: String,
+    pub file_count: i64,
+    pub chunk_count: i64,
+    pub last_indexed: Option<String>,
+    pub created_at: String,
+}
+
+/// A single chunk of source code with its embedding metadata.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CodeChunk {
+    pub id: i64,
+    pub code_project_id: i64,
+    pub file_path: String,
+    pub file_hash: String,
+    pub language: Option<String>,
+    pub symbol: Option<String>,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub content: String,
+    pub created_at: String,
+}
+
+/// Request body for `POST /v1/code/index`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IndexProjectRequest {
+    pub project: String,
+    pub root_path: String,
+}
+
+/// Response body for `POST /v1/code/index`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IndexProjectResponse {
+    pub project: String,
+    pub status: String,
+    pub file_count: i64,
+    pub chunk_count: i64,
+    pub last_indexed: String,
+}
+
+/// Request body for `POST /v1/code/search`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SearchCodeRequest {
+    pub project: String,
+    pub query: String,
+    pub top_k: Option<i64>,
+}
+
+/// A single result from a code semantic search.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SearchCodeResult {
+    pub file_path: String,
+    pub symbol: Option<String>,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub content: String,
+    pub score: f32,
+}
+
+/// Response body for `GET /v1/code/status/:project`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CodeStatusResponse {
+    pub project: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_indexed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_count: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -782,5 +861,65 @@ mod tests {
         assert_eq!(back.violations.len(), 1);
         assert_eq!(back.violations[0].policy_id, "p_abc");
         assert!(!back.allowed);
+    }
+
+    // ── Code index type tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn code_project_roundtrip() {
+        let p = CodeProject {
+            id: "cp1".into(),
+            org_id: "org1".into(),
+            name: "myapp".into(),
+            root_path: "/workspace/myapp".into(),
+            file_count: 10,
+            chunk_count: 42,
+            last_indexed: Some("2026-06-19T12:00:00Z".into()),
+            created_at: "2026-06-19T12:00:00Z".into(),
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        let back: CodeProject = serde_json::from_str(&s).unwrap();
+        assert_eq!(p, back);
+        assert_eq!(back.file_count, 10);
+    }
+
+    #[test]
+    fn code_status_response_not_indexed_omits_optional_fields() {
+        let resp = CodeStatusResponse {
+            project: "ghost".into(),
+            status: "not_indexed".into(),
+            last_indexed: None,
+            file_count: None,
+            chunk_count: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["project"], "ghost");
+        assert_eq!(v["status"], "not_indexed");
+        // None fields must be absent (skip_serializing_if)
+        assert!(v.get("last_indexed").is_none(), "last_indexed must be omitted when None");
+        assert!(v.get("file_count").is_none(), "file_count must be omitted when None");
+    }
+
+    #[test]
+    fn index_project_request_roundtrip() {
+        let req = IndexProjectRequest {
+            project: "myapp".into(),
+            root_path: "/workspace/myapp".into(),
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: IndexProjectRequest = serde_json::from_str(&s).unwrap();
+        assert_eq!(req.project, back.project);
+        assert_eq!(req.root_path, back.root_path);
+    }
+
+    #[test]
+    fn search_code_request_top_k_optional() {
+        let with_top_k: SearchCodeRequest =
+            serde_json::from_str(r#"{"project":"p","query":"q","top_k":10}"#).unwrap();
+        assert_eq!(with_top_k.top_k, Some(10));
+
+        let without_top_k: SearchCodeRequest =
+            serde_json::from_str(r#"{"project":"p","query":"q"}"#).unwrap();
+        assert!(without_top_k.top_k.is_none());
     }
 }

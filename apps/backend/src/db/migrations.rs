@@ -13,6 +13,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v8(conn)?;
     run_v9(conn)?;
     run_v10(conn)?;
+    run_v11(conn)?;
     Ok(())
 }
 
@@ -487,6 +488,54 @@ pub fn run_v10(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v11: adds code_projects and code_chunks tables for the code-index RAG feature.
+/// Idempotent — guarded by PRAGMA user_version < 11.
+pub fn run_v11(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 11 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS code_projects (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id       TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name         TEXT NOT NULL,
+            root_path    TEXT NOT NULL,
+            file_count   INTEGER NOT NULL DEFAULT 0,
+            chunk_count  INTEGER NOT NULL DEFAULT 0,
+            last_indexed TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE(org_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS code_chunks (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            code_project_id  INTEGER NOT NULL REFERENCES code_projects(id) ON DELETE CASCADE,
+            file_path        TEXT NOT NULL,
+            file_hash        TEXT NOT NULL,
+            language         TEXT,
+            symbol           TEXT,
+            start_line       INTEGER NOT NULL,
+            end_line         INTEGER NOT NULL,
+            content          TEXT NOT NULL,
+            embedding        BLOB,
+            created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_code_chunks_project
+            ON code_chunks(code_project_id);
+
+        CREATE INDEX IF NOT EXISTS idx_code_chunks_file
+            ON code_chunks(code_project_id, file_path);
+
+        PRAGMA user_version = 11;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,10 +638,12 @@ mod tests {
     // ── v2 migration tests ────────────────────────────────────────────────────
 
     #[test]
-    fn run_all_sets_user_version_to_10() {
+    fn run_all_sets_user_version_to_10_is_now_11() {
+        // This test documents the historical expectation; the current version is 11
+        // after v11 migration was added. See run_all_sets_user_version_to_11.
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 10, "user_version must be 10 after run_all");
+        assert!(get_user_version(&conn) >= 10, "user_version must be at least 10 after run_all");
     }
 
     #[test]
@@ -870,5 +921,123 @@ mod tests {
         ).unwrap();
         assert_eq!(action, "store");
         assert!(prev_hash.is_none(), "pre-v9 rows must have previous_hash = NULL");
+    }
+
+    // ── v11 migration tests ───────────────────────────────────────────────────
+
+    /// Build a v10 database for testing run_v11 in isolation.
+    fn in_memory_db_v10() -> Connection {
+        let conn = connect(":memory:").unwrap();
+        run_v1(&conn).unwrap();
+        run_v2(&conn).unwrap();
+        run_v3(&conn).unwrap();
+        run_v4(&conn).unwrap();
+        run_v5(&conn).unwrap();
+        run_v6(&conn).unwrap();
+        run_v7(&conn).unwrap();
+        run_v8(&conn).unwrap();
+        run_v9(&conn).unwrap();
+        run_v10(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn run_v11_creates_code_tables() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        assert!(table_exists(&conn, "code_projects"), "code_projects must exist after v11");
+        assert!(table_exists(&conn, "code_chunks"), "code_chunks must exist after v11");
+    }
+
+    #[test]
+    fn run_v11_creates_indexes() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        assert!(index_exists(&conn, "code_chunks", "idx_code_chunks_project"),
+                "idx_code_chunks_project must exist after v11");
+        assert!(index_exists(&conn, "code_chunks", "idx_code_chunks_file"),
+                "idx_code_chunks_file must exist after v11");
+    }
+
+    #[test]
+    fn run_v11_is_idempotent() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        let result = run_v11(&conn);
+        assert!(result.is_ok(), "run_v11 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 11, "user_version must remain 11");
+    }
+
+    #[test]
+    fn run_v11_sets_user_version_to_11() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 11, "user_version must be 11 after v11");
+    }
+
+    #[test]
+    fn run_all_sets_user_version_to_11() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 11, "user_version must be 11 after run_all");
+    }
+
+    #[test]
+    fn run_v11_code_projects_unique_org_name() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        // Seed org
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'myapp', '/ws/myapp')",
+            [],
+        ).unwrap();
+        // Duplicate must fail
+        let dup = conn.execute(
+            "INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'myapp', '/ws/myapp2')",
+            [],
+        );
+        assert!(dup.is_err(), "UNIQUE(org_id, name) must be enforced on code_projects");
+    }
+
+    #[test]
+    fn run_v11_code_chunks_cascade_delete() {
+        let conn = in_memory_db_v10();
+        run_v11(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'myapp', '/ws')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content) VALUES (1, 'src/lib.rs', 'abc123', 1, 10, 'fn main() {}')",
+            [],
+        ).unwrap();
+        // Chunk must exist
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM code_chunks WHERE code_project_id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "chunk must exist before delete");
+        // Delete project — chunks cascade
+        conn.execute("DELETE FROM code_projects WHERE id = 1", []).unwrap();
+        let after: i32 = conn.query_row("SELECT COUNT(*) FROM code_chunks WHERE code_project_id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, 0, "chunks must cascade-delete with project");
+    }
+
+    #[test]
+    fn run_v11_preserves_existing_tables() {
+        let conn = in_memory_db_v10();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        run_v11(&conn).unwrap();
+        // Prior tables still readable
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM organizations", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "existing rows must be preserved after v11");
     }
 }
