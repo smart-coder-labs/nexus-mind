@@ -243,7 +243,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                             {/* Top row: Label & Icon */}
                             <div className="flex items-center justify-between mb-4">
                                 <span className={cn(
-                                    'uppercase tracking-widest text-text-tertiary font-bold',
+                                    'tracking-[-0.08px] text-text-tertiary font-semibold',
                                     currentSize.label
                                 )}>
                                     {metric.label}
@@ -270,7 +270,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                                 {(metric.change || metric.trend) && (
                                     <div className="flex items-center gap-2 mt-0.5">
                                         <div className={cn(
-                                            'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-widest transition-colors duration-300',
+                                            'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold tracking-[-0.08px] transition-colors duration-300',
                                             trendTokens[trend].bg,
                                             trendTokens[trend].text
                                         )}>
@@ -367,7 +367,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                 <div className="relative flex flex-col gap-4">
                     <div className="flex items-center justify-between gap-3">
                         <div>
-                            <p className={cn('uppercase tracking-[0.18em] text-text-tertiary font-semibold', sizeClasses[size].label)}>
+                            <p className={cn('tracking-[-0.08px] text-text-tertiary font-semibold', sizeClasses[size].label)}>
                                 {label}
                             </p>
                             {description && (
