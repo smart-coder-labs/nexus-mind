@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, context, health, internal, memory, middleware as auth_mw, policy, rate_limit, sessions, users};
+use crate::api::{admin, audit, auth, code, context, health, internal, memory, middleware as auth_mw, policy, rate_limit, sessions, users};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -80,6 +80,10 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/policies/:id", patch(policy::update_policy).delete(policy::delete_policy))
         .route("/v1/policy/check", post(policy::check_policy))
         .route("/v1/context/project/:project", get(context::get_project_context))
+        .route("/v1/code/index", post(code::post_index))
+        .route("/v1/code/search", post(code::post_search))
+        .route("/v1/code/status/:project", get(code::get_status))
+        .route("/v1/code/context", get(code::get_context))
         .route("/v1/audit", get(audit::query))
         .route("/v1/audit/export", get(audit::export))
         .route("/v1/audit/log", post(audit::post_audit))

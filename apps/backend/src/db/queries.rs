@@ -5,9 +5,9 @@ use uuid::Uuid;
 
 use crate::auth::api_keys;
 use crate::models::types::{
-    AuthContext, AuditEntry, CreateSessionRequest, CustomRole, GlobalMetrics, Memory, Org, OrgStats,
-    OrgWithStats, PatchSessionRequest, Policy, Session, StoreMemoryRequest, ToolUsage, User, UserRole,
-    Project, ProjectMember,
+    AuthContext, AuditEntry, CodeChunk, CodeProject, CreateSessionRequest, CustomRole,
+    GlobalMetrics, Memory, Org, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
+    Session, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -2072,6 +2072,302 @@ pub fn fetch_daily_stats(conn: &Connection, org_id: &str) -> Result<DailyStats> 
     Ok(DailyStats { requests_today, tokens_today })
 }
 
+// ── Code index queries ─────────────────────────────────────────────────────────
+
+/// Insert or update a code_project row for (org_id, name).
+/// Returns the `id` (ROWID) of the project.
+pub fn upsert_code_project(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    root_path: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO code_projects (org_id, name, root_path)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(org_id, name) DO UPDATE SET root_path = excluded.root_path",
+        rusqlite::params![org_id, name, root_path],
+    )?;
+    let id: i64 = conn.query_row(
+        "SELECT id FROM code_projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, name],
+        |r| r.get(0),
+    )?;
+    Ok(id)
+}
+
+/// Update file_count, chunk_count, and last_indexed for a code project.
+pub fn update_code_project_stats(
+    conn: &Connection,
+    code_project_id: i64,
+    file_count: i64,
+    chunk_count: i64,
+    last_indexed: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET file_count = ?1, chunk_count = ?2, last_indexed = ?3 WHERE id = ?4",
+        rusqlite::params![file_count, chunk_count, last_indexed, code_project_id],
+    )?;
+    Ok(())
+}
+
+/// Delete all code_chunks for a specific file within a project.
+/// Called before re-indexing a changed file.
+pub fn delete_chunks_for_file(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
+}
+
+/// Count chunks for a specific file (used when skipping unchanged files).
+pub fn count_chunks_for_file(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Insert a single code chunk, optionally with its embedding BLOB.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_code_chunk(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    file_hash: &str,
+    language: Option<&str>,
+    symbol: Option<&str>,
+    start_line: i64,
+    end_line: i64,
+    content: &str,
+    embedding: Option<&[u8]>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO code_chunks
+         (code_project_id, file_path, file_hash, language, symbol, start_line, end_line, content, embedding)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            code_project_id, file_path, file_hash, language, symbol,
+            start_line, end_line, content, embedding
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Return all (chunk_id, embedding_blob) pairs for a project. Used for cosine ranking.
+pub fn get_code_embeddings(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<Vec<(i64, Vec<u8>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, embedding FROM code_chunks WHERE code_project_id = ?1 AND embedding IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut pairs = Vec::new();
+    for r in rows {
+        pairs.push(r?);
+    }
+    Ok(pairs)
+}
+
+/// Fetch multiple code chunks by their row IDs (ORDER preserved).
+pub fn get_chunks_by_ids(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<Vec<CodeChunk>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders: String = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let sql = format!(
+        "SELECT id, code_project_id, file_path, file_hash, language, symbol,
+                start_line, end_line, content, created_at
+         FROM code_chunks WHERE id IN ({placeholders})"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let params: Vec<Box<dyn rusqlite::ToSql>> = ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>)
+        .collect();
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(CodeChunk {
+            id: row.get(0)?,
+            code_project_id: row.get(1)?,
+            file_path: row.get(2)?,
+            file_hash: row.get(3)?,
+            language: row.get(4)?,
+            symbol: row.get(5)?,
+            start_line: row.get(6)?,
+            end_line: row.get(7)?,
+            content: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+
+    // Restore order of `ids`
+    let mut map: std::collections::HashMap<i64, CodeChunk> = std::collections::HashMap::new();
+    for r in rows {
+        let chunk = r?;
+        map.insert(chunk.id, chunk);
+    }
+
+    Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
+}
+
+/// Retrieve the code project record for (org_id, name), if it exists.
+pub fn get_code_project(
+    org_id: &str,
+    name: &str,
+    conn: &Connection,
+) -> Result<Option<CodeProject>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, name, root_path, file_count, chunk_count, last_indexed, created_at
+         FROM code_projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, name],
+        |row| {
+            Ok(CodeProject {
+                id: row.get::<_, i64>(0)?.to_string(),
+                org_id: row.get(1)?,
+                name: row.get(2)?,
+                root_path: row.get(3)?,
+                file_count: row.get(4)?,
+                chunk_count: row.get(5)?,
+                last_indexed: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        },
+    );
+
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Return file_path → file_hash for all chunks of a project (deduplicated).
+/// Used by the indexer to detect unchanged files.
+pub fn list_indexed_files_with_hashes(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT file_path, file_hash FROM code_chunks WHERE code_project_id = ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for r in rows {
+        let (path, hash) = r?;
+        map.insert(path, hash);
+    }
+    Ok(map)
+}
+
+/// Fetch chunks adjacent to the given chunk (same file, ordered by start_line).
+/// Returns the target chunk plus up to `neighbors` chunks before and after.
+pub fn get_chunk_context(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    symbol: &str,
+    neighbors: i64,
+) -> Result<Vec<CodeChunk>> {
+    // First find the target chunk by symbol name
+    let target_result = conn.query_row(
+        "SELECT id, code_project_id, file_path, file_hash, language, symbol,
+                start_line, end_line, content, created_at
+         FROM code_chunks
+         WHERE code_project_id = ?1 AND file_path = ?2 AND symbol = ?3
+         ORDER BY start_line ASC LIMIT 1",
+        rusqlite::params![code_project_id, file_path, symbol],
+        |row| {
+            Ok(CodeChunk {
+                id: row.get(0)?,
+                code_project_id: row.get(1)?,
+                file_path: row.get(2)?,
+                file_hash: row.get(3)?,
+                language: row.get(4)?,
+                symbol: row.get(5)?,
+                start_line: row.get(6)?,
+                end_line: row.get(7)?,
+                content: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        },
+    );
+
+    let target = match target_result {
+        Ok(c) => c,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    // Fetch neighbors: `neighbors` chunks before and after by start_line
+    let mut stmt = conn.prepare(
+        "SELECT id, code_project_id, file_path, file_hash, language, symbol,
+                start_line, end_line, content, created_at
+         FROM code_chunks
+         WHERE code_project_id = ?1 AND file_path = ?2
+           AND ABS(start_line - ?3) <= (?4 * 60)
+         ORDER BY start_line ASC",
+    )?;
+
+    let rows = stmt.query_map(
+        rusqlite::params![code_project_id, file_path, target.start_line, neighbors],
+        |row| {
+            Ok(CodeChunk {
+                id: row.get(0)?,
+                code_project_id: row.get(1)?,
+                file_path: row.get(2)?,
+                file_hash: row.get(3)?,
+                language: row.get(4)?,
+                symbol: row.get(5)?,
+                start_line: row.get(6)?,
+                end_line: row.get(7)?,
+                content: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        },
+    )?;
+
+    let mut chunks: Vec<CodeChunk> = rows.collect::<Result<_, _>>()?;
+
+    // Trim to: target + `neighbors` before + `neighbors` after
+    if let Some(pos) = chunks.iter().position(|c| c.id == target.id) {
+        let start = pos.saturating_sub(neighbors as usize);
+        let end = (pos + neighbors as usize + 1).min(chunks.len());
+        chunks = chunks[start..end].to_vec();
+    }
+
+    Ok(chunks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3294,5 +3590,168 @@ mod tests {
         let perms = get_role_permissions(&conn, "irrelevant", "viewer").unwrap();
         assert!(!perms.contains(&"policy:read".to_string()), "viewer must not have policy:read");
         assert!(!perms.contains(&"policy:write".to_string()), "viewer must not have policy:write");
+    }
+
+    // ── Code index query tests ─────────────────────────────────────────────────
+
+    fn setup_org_for_code(conn: &Connection) -> String {
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        "org1".to_string()
+    }
+
+    #[test]
+    fn upsert_code_project_creates_new() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let id = upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
+        assert!(id > 0, "project id must be positive");
+    }
+
+    #[test]
+    fn upsert_code_project_idempotent() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let id1 = upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
+        let id2 = upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp2").unwrap();
+        assert_eq!(id1, id2, "upsert must return same id for same (org_id, name)");
+        // root_path should have been updated
+        let project = get_code_project(&org_id, "myapp", &conn).unwrap().unwrap();
+        assert_eq!(project.root_path, "/ws/myapp2", "root_path must be updated on conflict");
+    }
+
+    #[test]
+    fn insert_and_get_code_chunks() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        let chunk_id = insert_code_chunk(
+            &conn, project_id, "src/lib.rs", "abc123",
+            Some("rust"), Some("authenticate_user"),
+            1, 10, "fn authenticate_user() {}", None,
+        ).unwrap();
+        assert!(chunk_id > 0);
+
+        let chunks = get_chunks_by_ids(&conn, &[chunk_id]).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].symbol.as_deref(), Some("authenticate_user"));
+        assert_eq!(chunks[0].file_path, "src/lib.rs");
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 10);
+    }
+
+    #[test]
+    fn delete_chunks_for_file_removes_only_target_file() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        insert_code_chunk(&conn, project_id, "src/lib.rs", "h1", Some("rust"), None, 1, 10, "code", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/main.rs", "h2", Some("rust"), None, 1, 5, "main", None).unwrap();
+
+        delete_chunks_for_file(&conn, project_id, "src/lib.rs").unwrap();
+
+        let lib_count = count_chunks_for_file(&conn, project_id, "src/lib.rs").unwrap();
+        let main_count = count_chunks_for_file(&conn, project_id, "src/main.rs").unwrap();
+        assert_eq!(lib_count, 0, "lib.rs chunks must be deleted");
+        assert_eq!(main_count, 1, "main.rs chunks must be preserved");
+    }
+
+    #[test]
+    fn get_code_embeddings_returns_only_non_null() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        let embedding: Vec<u8> = vec![0u8; 32]; // dummy blob
+        insert_code_chunk(&conn, project_id, "a.rs", "h1", None, None, 1, 5, "code", Some(&embedding)).unwrap();
+        insert_code_chunk(&conn, project_id, "b.rs", "h2", None, None, 1, 5, "code", None).unwrap();
+
+        let pairs = get_code_embeddings(&conn, project_id).unwrap();
+        assert_eq!(pairs.len(), 1, "only chunk with embedding must be returned");
+    }
+
+    #[test]
+    fn list_indexed_files_with_hashes_returns_map() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        insert_code_chunk(&conn, project_id, "src/lib.rs", "deadbeef", None, None, 1, 5, "code", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/lib.rs", "deadbeef", None, None, 6, 10, "more", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/main.rs", "cafebabe", None, None, 1, 3, "main", None).unwrap();
+
+        let hashes = list_indexed_files_with_hashes(&conn, project_id).unwrap();
+        assert_eq!(hashes.len(), 2, "must deduplicate by file_path");
+        assert_eq!(hashes.get("src/lib.rs").map(|h| h.as_str()), Some("deadbeef"));
+        assert_eq!(hashes.get("src/main.rs").map(|h| h.as_str()), Some("cafebabe"));
+    }
+
+    #[test]
+    fn update_code_project_stats_sets_counts() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        update_code_project_stats(&conn, project_id, 5, 42, "2026-06-19T12:00:00Z").unwrap();
+
+        let project = get_code_project(&org_id, "myapp", &conn).unwrap().unwrap();
+        assert_eq!(project.file_count, 5);
+        assert_eq!(project.chunk_count, 42);
+        assert_eq!(project.last_indexed.as_deref(), Some("2026-06-19T12:00:00Z"));
+    }
+
+    #[test]
+    fn get_code_project_returns_none_for_unknown() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let result = get_code_project(&org_id, "ghost", &conn).unwrap();
+        assert!(result.is_none(), "must return None for unknown project");
+    }
+
+    #[test]
+    fn get_code_project_org_isolation() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Beta', 'beta')",
+            [],
+        ).unwrap();
+        upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+        // org2 must not see org1's project
+        let result = get_code_project("org2", "myapp", &conn).unwrap();
+        assert!(result.is_none(), "org isolation must hold for code projects");
+    }
+
+    #[test]
+    fn get_chunk_context_returns_target_and_neighbors() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        // Insert 3 chunks: before, target, after — all in the same file
+        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("validate_token"), 1, 20, "fn validate_token() {}", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("authenticate_user"), 21, 60, "fn authenticate_user() {}", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("refresh_token"), 61, 80, "fn refresh_token() {}", None).unwrap();
+
+        let context = get_chunk_context(&conn, project_id, "src/auth.rs", "authenticate_user", 1).unwrap();
+        assert!(!context.is_empty(), "must return at least the target chunk");
+        assert!(
+            context.iter().any(|c| c.symbol.as_deref() == Some("authenticate_user")),
+            "target chunk must be present"
+        );
+    }
+
+    #[test]
+    fn get_chunk_context_returns_empty_for_unknown_symbol() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        let context = get_chunk_context(&conn, project_id, "src/auth.rs", "nonexistent_fn", 1).unwrap();
+        assert!(context.is_empty(), "must return empty vec for unknown symbol");
     }
 }
