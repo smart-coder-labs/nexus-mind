@@ -174,7 +174,7 @@ export default function AuditLog() {
       </div>
 
       {/* Table */}
-      <div className="border border-border-primary rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary">

@@ -128,7 +128,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
 
   return (
     <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-[#050810] p-6">
-      <div className="bg-bg-secondary border border-border-primary rounded-2xl w-full max-w-3xl flex flex-col max-h-full shadow-xl">
+      <div className="bg-bg-secondary border border-border-primary rounded-[18px] w-full max-w-3xl flex flex-col max-h-full">
 
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4 shrink-0 border-b border-border-secondary">
@@ -264,7 +264,7 @@ export default function Memories() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-accent-blue/10 border border-accent-blue/20">
+          <div className="p-2 rounded-[11px] bg-accent-blue/10 border border-accent-blue/20">
             <Brain className="w-4 h-4 text-accent-blue" />
           </div>
           <div>
@@ -302,7 +302,7 @@ export default function Memories() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search memories…"
-            className="w-full bg-surface-primary border border-border-primary rounded-xl pl-10 pr-4 py-3 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
+            className="w-full bg-surface-primary border border-border-primary rounded-full pl-10 pr-4 py-3 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
           />
           {query && (
             <button
@@ -313,7 +313,7 @@ export default function Memories() {
             </button>
           )}
         </div>
-        <div className="flex items-center bg-surface-primary border border-border-primary rounded-xl px-1 gap-0.5">
+        <div className="flex items-center bg-surface-primary border border-border-primary rounded-[11px] px-1 gap-0.5">
           {(['keyword', 'hybrid'] as const).map(m => (
             <button
               key={m}
@@ -331,7 +331,7 @@ export default function Memories() {
       </div>
 
       {/* Table */}
-      <div className="border border-border-primary rounded-2xl overflow-hidden">
+      <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-secondary border-b border-border-primary">

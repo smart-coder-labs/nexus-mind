@@ -87,7 +87,7 @@ export default function Roles() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Roles List */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="border border-border-primary rounded-xl overflow-hidden bg-bg-primary">
+          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-bg-primary">
             <div className="px-4 py-3 border-b border-border-secondary bg-surface-secondary/40">
               <span className="text-xs font-semibold text-text-secondary">Active Roles</span>
             </div>
@@ -150,7 +150,7 @@ export default function Roles() {
 
         {/* Create Role Form */}
         <div className="space-y-4">
-          <div className="border border-border-primary rounded-xl p-5 bg-bg-primary space-y-4">
+          <div className="border border-border-primary rounded-[18px] p-5 bg-bg-primary space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
                 <Shield className="w-4 h-4 text-accent-blue" />

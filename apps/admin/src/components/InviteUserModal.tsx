@@ -75,7 +75,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-primary border border-border-primary rounded-xl p-6 w-full max-w-md space-y-5">
+      <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5">
         <div className="flex items-center justify-between">
           <p className="text-text-primary font-medium">{newKey ? 'User invited' : 'Invite user'}</p>
           <button onClick={handleClose} className="text-text-tertiary hover:text-text-primary transition-colors">

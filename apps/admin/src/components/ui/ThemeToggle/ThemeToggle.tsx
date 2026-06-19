@@ -154,7 +154,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
                         onClick={handleAuto}
                         className={cn(
                             'group inline-flex items-center gap-1.5 rounded-full border border-border-secondary px-3 py-1 text-xs font-medium text-text-secondary transition-apple hover:border-border-primary hover:text-text-primary',
-                            mode === 'system' && 'bg-surface-primary text-text-primary shadow-xs'
+                            mode === 'system' && 'bg-surface-primary text-text-primary'
                         )}
                     >
                         <Monitor className="h-3.5 w-3.5" />

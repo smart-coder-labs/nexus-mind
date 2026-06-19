@@ -90,7 +90,7 @@ export default function Settings() {
       {/* Organization */}
       <section className="space-y-4">
         <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Organization</p>
-        <div className="border border-border-primary rounded-xl p-5 space-y-4">
+        <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs text-text-tertiary">Name</label>
             <input
@@ -132,7 +132,7 @@ export default function Settings() {
       {/* Password */}
       <section className="space-y-4">
         <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Password</p>
-        <div className="border border-border-primary rounded-xl p-5">
+        <div className="border border-border-primary rounded-[18px] p-5">
           <form onSubmit={handleChangePassword} className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-xs text-text-tertiary">Current password</label>
@@ -181,7 +181,7 @@ export default function Settings() {
       {/* My API Key */}
       <section className="space-y-4">
         <p className="text-text-tertiary uppercase tracking-wide text-[11px]">My API Key</p>
-        <div className="border border-border-primary rounded-xl p-5 space-y-4">
+        <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
           <div className="flex items-center gap-3 bg-surface-secondary rounded-lg px-3 py-2">
             <code className="flex-1 text-xs text-text-tertiary truncate">
               Session managed via secure HttpOnly cookie

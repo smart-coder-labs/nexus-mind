@@ -233,7 +233,7 @@ export default function Projects() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Project List */}
         <div className="lg:col-span-2">
-          <div className="border border-border-primary rounded-xl overflow-hidden bg-bg-primary">
+          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-bg-primary">
             <div className="px-4 py-3 border-b border-border-secondary bg-surface-secondary/40">
               <span className="text-xs font-semibold text-text-secondary">Projects</span>
             </div>
@@ -258,7 +258,7 @@ export default function Projects() {
 
         {/* Create Project Form */}
         <div>
-          <div className="border border-border-primary rounded-xl p-5 bg-bg-primary space-y-4">
+          <div className="border border-border-primary rounded-[18px] p-5 bg-bg-primary space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
                 <FolderGit className="w-4 h-4 text-accent-blue" />
@@ -407,7 +407,7 @@ export default function Projects() {
                   {memoriesLoading ? (
                     <div className="text-center py-8 text-sm text-text-tertiary">Loading memories...</div>
                   ) : !projectMemories?.length ? (
-                    <div className="text-center py-8 text-sm text-text-tertiary border border-dashed border-border-secondary rounded-xl">
+                    <div className="text-center py-8 text-sm text-text-tertiary border border-dashed border-border-secondary rounded-[18px]">
                       No memories stored for this project.
                     </div>
                   ) : (

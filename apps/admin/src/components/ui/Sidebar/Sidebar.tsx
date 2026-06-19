@@ -26,7 +26,7 @@ export interface SidebarProps extends Omit<HTMLMotionProps<'nav'>, 'children'> {
 export const Sidebar = React.forwardRef<HTMLDivElement, SidebarProps>(
     ({ items, className = '', ...props }, ref) => {
         const baseStyles = `
-      flex flex-col space-y-1 p-4 bg-surface-secondary rounded-lg shadow-sm`
+      flex flex-col space-y-1 p-4 bg-surface-secondary rounded-lg`
             ;
         const itemBase = `
       flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium

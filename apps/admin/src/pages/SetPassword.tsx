@@ -66,7 +66,7 @@ export default function SetPassword() {
           <p className="text-text-secondary mt-2 text-sm">Set your password to get started</p>
         </div>
 
-        <div className="bg-surface-primary border border-border-primary rounded-2xl p-8 shadow-sm">
+        <div className="bg-surface-primary border border-border-primary rounded-[18px] p-8">
           {done ? (
             <div className="text-center space-y-2 py-4">
               <p className="text-text-primary font-medium">Password set!</p>

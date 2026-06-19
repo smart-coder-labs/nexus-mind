@@ -96,7 +96,7 @@ export default function Users() {
         )}
       </div>
 
-      <div className="border border-border-primary rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary">
@@ -216,7 +216,7 @@ export default function Users() {
       {/* New key reveal */}
       {newKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-surface-primary border border-border-primary rounded-xl p-6 w-full max-w-md space-y-4">
+          <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-4">
             <p className="text-text-primary font-medium">New API key generated</p>
             <p className="text-xs text-text-quaternary">Copy this key now — it won't be shown again.</p>
             <div className="flex items-center gap-2 bg-surface-secondary rounded-lg px-3 py-2">

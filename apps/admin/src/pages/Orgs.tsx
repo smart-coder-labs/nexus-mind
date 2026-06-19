@@ -29,7 +29,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-full max-w-sm bg-surface-primary border border-border-primary rounded-2xl p-8 space-y-5">
+      <div className="w-full max-w-sm bg-surface-primary border border-border-primary rounded-[18px] p-8 space-y-5">
         <div className="flex items-center gap-3">
           <Key className="w-5 h-5 text-accent-blue" />
           <h2 className="text-base font-semibold text-text-primary">Superuser access required</h2>
@@ -116,7 +116,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-2xl p-6 space-y-5 shadow-xl">
+      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-[18px] p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-text-primary">Create organization</h2>
           <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-xl leading-none">×</button>
@@ -167,7 +167,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-2xl p-6 space-y-4 shadow-xl">
+      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-[18px] p-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-status-success" />
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
@@ -232,7 +232,7 @@ export default function Orgs() {
       </div>
 
       {/* Table */}
-      <div className="border border-border-primary rounded-xl overflow-hidden">
+      <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary bg-surface-secondary/50">
