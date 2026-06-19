@@ -29,7 +29,7 @@ function roleBadge(role: string) {
   }
   const cls = styles[role] || 'text-status-success border-status-success/30 bg-status-success/5'
   return (
-    <span className={`text-[11px] border rounded px-1.5 py-0.5 capitalize ${cls}`}>
+    <span className={`text-[11px] border rounded-[5px] px-1.5 py-0.5 capitalize ${cls}`}>
       {role}
     </span>
   )
@@ -136,7 +136,7 @@ export default function Users() {
                         value={user.role}
                         onChange={e => updateRoleMut.mutate({ userId: user.id, role: e.target.value })}
                         disabled={updateRoleMut.isPending}
-                        className="bg-transparent border border-border-primary rounded px-2 py-0.5 text-xs text-text-secondary focus:outline-none focus:border-border-focus"
+                        className="bg-transparent border border-border-primary rounded-[5px] px-2 py-0.5 text-xs text-text-secondary focus:outline-none focus:border-border-focus"
                       >
                         <option value="admin">Admin</option>
                         <option value="member">Member</option>
@@ -158,7 +158,7 @@ export default function Users() {
                       {(session?.user.role === 'admin' || user.id === session?.user.id) && (
                         <button
                           onClick={() => setRotateTarget(user)}
-                          className="text-xs text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
+                          className="text-xs text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded-[5px] hover:bg-surface-secondary"
                         >
                           Rotate key
                         </button>
@@ -166,7 +166,7 @@ export default function Users() {
                       {session?.user.role === 'admin' && (
                         <button
                           onClick={() => setRevokeTarget(user)}
-                          className="text-xs text-status-error/60 hover:text-status-error transition-colors px-2 py-1 rounded hover:bg-surface-secondary"
+                          className="text-xs text-status-error/60 hover:text-status-error transition-colors px-2 py-1 rounded-[5px] hover:bg-surface-secondary"
                         >
                           Revoke
                         </button>
@@ -219,7 +219,7 @@ export default function Users() {
           <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-4">
             <p className="text-text-primary font-semibold">New API key generated</p>
             <p className="text-xs text-text-quaternary">Copy this key now — it won't be shown again.</p>
-            <div className="flex items-center gap-2 bg-surface-secondary rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2 bg-surface-secondary rounded-[11px] px-3 py-2">
               <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
               <button
                 onClick={() => handleCopy(newKey)}

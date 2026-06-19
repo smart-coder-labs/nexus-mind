@@ -162,7 +162,7 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-10 w-full items-center justify-between rounded-lg border border-border-primary bg-surface-primary px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-surface-secondary/50 transition-colors",
+                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-surface-primary px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-surface-secondary/50 transition-colors",
                     className
                 )}
                 {...props}
@@ -449,7 +449,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className={cn(
-                    "inline-flex items-center gap-2 px-4 py-2 rounded-lg",
+                    "inline-flex items-center gap-2 px-4 py-2 rounded-full",
                     "border transition-all",
                     activeLabel
                         ? "bg-accent-blue/10 border-accent-blue/30 text-accent-blue"
