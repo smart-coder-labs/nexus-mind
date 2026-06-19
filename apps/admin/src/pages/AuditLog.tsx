@@ -153,16 +153,16 @@ export default function AuditLog() {
           </select>
         </SelectWrapper>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-text-tertiary uppercase tracking-wide px-0.5">From</span>
+          <span className="text-[10px] text-text-tertiary px-0.5">From</span>
           <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-text-tertiary uppercase tracking-wide px-0.5">To</span>
+          <span className="text-[10px] text-text-tertiary px-0.5">To</span>
           <input type="date" value={draft.to}   onChange={setField('to')}   className={inputCls} />
         </label>
         <button
           onClick={applyFilters}
-          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
         >
           Apply
         </button>
@@ -179,7 +179,7 @@ export default function AuditLog() {
           <thead>
             <tr className="border-b border-border-secondary">
               {['Timestamp', 'User', 'Action', 'Resource', 'ID'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">
+                <th key={h} className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-normal">
                   {h}
                 </th>
               ))}
@@ -204,7 +204,7 @@ export default function AuditLog() {
                   <td className="px-4 py-3 text-xs text-text-secondary">
                     {userMap.get(entry.user_id) ?? '—'}
                   </td>
-                  <td className={`px-4 py-3 text-xs font-medium ${actionClass(entry.action)}`}>
+                  <td className={`px-4 py-3 text-xs font-semibold ${actionClass(entry.action)}`}>
                     {entry.action}
                   </td>
                   <td className="px-4 py-3 text-xs text-text-tertiary">{entry.resource_type}</td>

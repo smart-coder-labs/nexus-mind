@@ -111,7 +111,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               { id: 'email', label: 'Email', type: 'email',    placeholder: 'sarah@acme.com' },
             ].map(f => (
               <div key={f.id} className="space-y-1.5">
-                <label className="text-[11px] text-text-tertiary uppercase tracking-wide">{f.label}</label>
+                <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">{f.label}</label>
                 <input
                   type={f.type}
                   value={form[f.id as 'name' | 'email']}
@@ -124,7 +124,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             ))}
 
             <div className="space-y-1.5">
-              <label className="text-[11px] text-text-tertiary uppercase tracking-wide">Role</label>
+              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Role</label>
               <select
                 value={form.role}
                 onChange={set('role')}
@@ -143,7 +143,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
             {/* Project access section */}
             <div className="space-y-2">
-              <label className="text-[11px] text-text-tertiary uppercase tracking-wide">Project Access</label>
+              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Project Access</label>
               <div className="flex gap-3">
                 {(['all', 'specific'] as const).map(opt => (
                   <label key={opt} className="flex items-center gap-1.5 cursor-pointer text-xs text-text-secondary">

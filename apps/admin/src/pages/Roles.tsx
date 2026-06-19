@@ -207,7 +207,7 @@ export default function Roles() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider block">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] block">
                   Permissions
                 </label>
                 <div className="space-y-1.5 max-h-48 overflow-y-auto border border-border-secondary p-2 rounded-lg bg-surface-secondary/20">

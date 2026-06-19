@@ -39,7 +39,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-[11px] text-text-tertiary uppercase tracking-wide">Superuser key</label>
+            <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Superuser key</label>
             <div className="relative">
               <input
                 type={visible ? 'text' : 'password'}
@@ -124,7 +124,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
         <form onSubmit={handleSubmit} className="space-y-4">
           {fields.map(({ key, label, placeholder, type }) => (
             <div key={key} className="space-y-1.5">
-              <label className="text-[11px] text-text-tertiary uppercase tracking-wide">{label}</label>
+              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">{label}</label>
               <input
                 type={type ?? 'text'}
                 value={form[key]}
@@ -177,7 +177,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
           Save the admin API key — it won't be shown again.
         </p>
         <div className="space-y-1.5">
-          <label className="text-[11px] text-text-tertiary uppercase tracking-wide">Admin API key</label>
+          <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Admin API key</label>
           <div className="flex items-center gap-2 bg-surface-secondary border border-border-secondary rounded-lg px-3 py-2">
             <code className="flex-1 text-xs text-text-primary font-mono break-all">{apiKey}</code>
             <button onClick={copy} className="flex-shrink-0 text-text-tertiary hover:text-accent-blue transition-colors">
@@ -236,9 +236,9 @@ export default function Orgs() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary bg-surface-secondary/50">
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Name</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Slug</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Created</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Name</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Slug</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Created</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">

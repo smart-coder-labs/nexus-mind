@@ -457,7 +457,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                 )}
             >
                 {icon || <ChevronDown className="w-4 h-4" />}
-                <span className="text-sm font-medium">
+                <span className="text-sm font-semibold">
                     {activeLabel || label}
                 </span>
                 <ChevronDown className={cn(

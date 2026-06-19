@@ -51,7 +51,7 @@ export default function SetPassword() {
     return (
       <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
         <div className="text-center space-y-2">
-          <p className="text-text-primary font-medium">Invalid link</p>
+          <p className="text-text-primary font-semibold">Invalid link</p>
           <p className="text-text-tertiary text-sm">This link is missing a token.</p>
         </div>
       </div>
@@ -69,7 +69,7 @@ export default function SetPassword() {
         <div className="bg-surface-primary border border-border-primary rounded-[18px] p-8">
           {done ? (
             <div className="text-center space-y-2 py-4">
-              <p className="text-text-primary font-medium">Password set!</p>
+              <p className="text-text-primary font-semibold">Password set!</p>
               <p className="text-text-tertiary text-sm">Redirecting to login…</p>
             </div>
           ) : (

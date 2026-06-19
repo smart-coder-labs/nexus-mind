@@ -220,7 +220,7 @@ export default function Settings() {
                 <button
                   onClick={() => rotateMut.mutate()}
                   disabled={rotateMut.isPending}
-                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-40 transition-colors"
+                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
                 >
                   {rotateMut.isPending ? 'Rotating…' : 'Rotate'}
                 </button>

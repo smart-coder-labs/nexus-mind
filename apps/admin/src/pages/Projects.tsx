@@ -277,7 +277,7 @@ export default function Projects() {
 
             <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Project Name (slug)
                 </label>
                 <input
@@ -291,7 +291,7 @@ export default function Projects() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Description
                 </label>
                 <textarea
@@ -303,7 +303,7 @@ export default function Projects() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Parent Project
                 </label>
                 <Select value={parentId} onValueChange={setParentId}>
@@ -322,7 +322,7 @@ export default function Projects() {
               <button
                 type="submit"
                 disabled={createProjectMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-normal transition-colors disabled:opacity-50"
               >
                 <Plus className="w-4 h-4" />
                 Create Project
@@ -384,7 +384,7 @@ export default function Projects() {
                 <button
                   key={tab}
                   onClick={() => setSheetTab(tab)}
-                  className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                  className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors ${
                     sheetTab === tab
                       ? 'text-accent-blue border-accent-blue'
                       : 'text-text-tertiary border-transparent hover:text-text-secondary'
@@ -446,7 +446,7 @@ export default function Projects() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Members list */}
                     <div className="space-y-3">
-                      <span className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider block">
+                      <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] block">
                         Members
                       </span>
 
@@ -464,13 +464,13 @@ export default function Projects() {
                               className="flex items-center justify-between p-3 border border-border-secondary rounded-lg bg-surface-secondary/10"
                             >
                               <div>
-                                <div className="font-medium text-xs text-text-primary">
+                                <div className="font-semibold text-xs text-text-primary">
                                   {member.name || member.email}
                                 </div>
                                 <div className="text-[10px] text-text-tertiary">{member.email}</div>
                               </div>
                               <div className="flex items-center gap-3">
-                                <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-2 py-0.5 rounded font-mono font-medium uppercase">
+                                <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-2 py-0.5 rounded font-mono font-semibold">
                                   {member.role}
                                 </span>
                                 <button
@@ -495,7 +495,7 @@ export default function Projects() {
 
                     {/* Add member form */}
                     <div className="space-y-4 border-t md:border-t-0 md:border-l border-border-secondary pt-4 md:pt-0 md:pl-6">
-                      <span className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider block">
+                      <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] block">
                         Add Member
                       </span>
 
@@ -543,7 +543,7 @@ export default function Projects() {
                         <button
                           type="submit"
                           disabled={addMemberMut.isPending}
-                          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors text-xs disabled:opacity-50"
+                          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-normal transition-colors text-xs disabled:opacity-50"
                         >
                           <UserPlus className="w-3.5 h-3.5" />
                           Save Override

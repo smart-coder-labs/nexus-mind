@@ -32,7 +32,7 @@ function TypeBadge({ type }: { type?: string }) {
   const meta = TYPE_META[type]
   const cls = meta?.cls ?? 'text-text-tertiary bg-surface-secondary border-border-primary'
   return (
-    <span className={`text-[11px] font-medium border rounded-md px-2 py-0.5 ${cls}`}>
+    <span className={`text-[11px] font-semibold border rounded-md px-2 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
   )
@@ -137,11 +137,11 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
               <p className="text-sm font-semibold text-text-primary leading-snug">{memory.title}</p>
             )}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] font-medium border border-border-primary rounded-md px-2 py-0.5 text-text-tertiary bg-surface-secondary">
+              <span className="text-[11px] font-semibold border border-border-primary rounded-md px-2 py-0.5 text-text-tertiary bg-surface-secondary">
                 {memory.tool}
               </span>
               {memory.project && (
-                <span className="text-[11px] text-text-tertiary font-medium">{memory.project}</span>
+                <span className="text-[11px] text-text-tertiary font-semibold">{memory.project}</span>
               )}
               <TypeBadge type={memory.type} />
               {memory.revision_count != null && memory.revision_count > 1 && (
@@ -336,7 +336,7 @@ export default function Memories() {
           <thead>
             <tr className="bg-surface-secondary border-b border-border-primary">
               {['Date', 'User', 'Type', 'Memory'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[11px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <th key={h} className="text-left px-4 py-3 text-[11px] font-semibold text-text-tertiary tracking-[-0.12px]">
                   {h}
                 </th>
               ))}
@@ -360,7 +360,7 @@ export default function Memories() {
                   className={`border-t border-border-secondary hover:bg-accent-blue/[0.04] transition-colors cursor-pointer group ${idx === 0 ? 'border-t-0' : ''}`}
                 >
                   <td className="px-4 py-3.5 whitespace-nowrap">
-                    <p className="text-xs font-medium text-text-secondary">
+                    <p className="text-xs font-semibold text-text-secondary">
                       {new Date(mem.created_at).toLocaleDateString()}
                     </p>
                     <p className="text-[11px] text-text-quaternary mt-0.5">
@@ -369,7 +369,7 @@ export default function Memories() {
                   </td>
                   <td className="px-4 py-3.5">
                     <div className="space-y-1">
-                      <p className="text-xs text-text-secondary font-medium">
+                      <p className="text-xs text-text-secondary font-semibold">
                         {userMap.get(mem.user_id) ?? '—'}
                       </p>
                       <span className="text-[10px] border border-border-primary rounded px-1.5 py-0.5 text-text-quaternary bg-surface-secondary/50 inline-block">
