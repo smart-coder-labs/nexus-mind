@@ -241,7 +241,7 @@ export default function Settings() {
       {session?.user.role === 'admin' && (
         <section className="space-y-4">
           <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Danger Zone</p>
-          <div className="border border-status-error/15 rounded-xl p-5 space-y-3">
+          <div className="border border-status-error/15 rounded-[18px] p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-text-secondary font-medium">Export all data</p>
