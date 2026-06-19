@@ -16,7 +16,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, Org, OrgStats, User, CustomRole, Project, ProjectMember},
+    models::types::{ApiError, AuthContext, Org, OrgSettings, OrgStats, User, CustomRole, Project, ProjectMember},
     store::sqlite::SqliteStore,
 };
 
@@ -225,6 +225,30 @@ pub async fn update_org(
     let conn = db.lock().map_err(|_| lock_err())?;
     let org = queries::update_org_name(&conn, &auth.org_id, &input.name).map_err(db_err)?;
     Ok(Json(org))
+}
+
+pub async fn get_org_settings_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let settings = queries::get_org_settings(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(settings))
+}
+
+pub async fn update_org_settings_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<OrgSettings>,
+) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let settings = queries::update_org_settings(&conn, &auth.org_id, &input).map_err(db_err)?;
+    Ok(Json(settings))
 }
 
 #[derive(Deserialize)]

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::api_keys;
 use crate::models::types::{
     AuthContext, AuditEntry, CodeChunk, CodeProject, CreateSessionRequest, CustomRole,
-    GlobalMetrics, Memory, Org, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
+    GlobalMetrics, Memory, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
     Session, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
 };
 
@@ -728,6 +728,26 @@ pub fn update_org_name(conn: &Connection, org_id: &str, name: &str) -> Result<Or
     let org = get_org(conn, org_id)?
         .ok_or_else(|| anyhow::anyhow!("org_not_found"))?;
     Ok(org)
+}
+
+pub fn get_org_settings(conn: &Connection, org_id: &str) -> Result<OrgSettings> {
+    let raw: String = conn.query_row(
+        "SELECT COALESCE(settings, '{}') FROM organizations WHERE id = ?1",
+        [org_id],
+        |r| r.get(0),
+    ).unwrap_or_else(|_| "{}".to_string());
+
+    let settings: OrgSettings = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(settings)
+}
+
+pub fn update_org_settings(conn: &Connection, org_id: &str, settings: &OrgSettings) -> Result<OrgSettings> {
+    let raw = serde_json::to_string(settings)?;
+    conn.execute(
+        "UPDATE organizations SET settings = ?1 WHERE id = ?2",
+        rusqlite::params![raw, org_id],
+    )?;
+    get_org_settings(conn, org_id)
 }
 
 /// Returns aggregate stats for the org.

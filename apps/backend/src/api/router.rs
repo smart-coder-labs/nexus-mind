@@ -89,6 +89,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/audit/log", post(audit::post_audit))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
+        .route("/v1/admin/org/settings", get(admin::get_org_settings_api).patch(admin::update_org_settings_api))
         .route("/v1/admin/auth/change-password", post(auth::change_password))
         .route("/v1/admin/auth/me", get(auth::me))
         // Rate limit runs after auth (inner layer = runs second at runtime).

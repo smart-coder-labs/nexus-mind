@@ -5,6 +5,18 @@ export interface Org {
   created_at: string
 }
 
+export interface AgentEventSettings {
+  resolve_issues: boolean
+  review_prs: boolean
+  respond_comments: boolean
+  auto_index: boolean
+  scanner: boolean
+}
+
+export interface OrgSettings {
+  events: AgentEventSettings
+}
+
 export interface User {
   id: string
   org_id: string

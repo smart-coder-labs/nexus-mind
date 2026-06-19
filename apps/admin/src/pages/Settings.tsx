@@ -2,6 +2,8 @@ import { useMemo, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
+import { Switch } from '../components/ui/Switch/Switch'
+import type { AgentEventSettings, OrgSettings } from '../types'
 
 export default function Settings() {
   const { session, setSession } = useAuth()
@@ -64,6 +66,42 @@ export default function Settings() {
     mutationFn: () => client.rotateKey(session!.user.id),
     onSuccess: (data) => { setRotateConfirm(false); setNewKey(data.api_key) },
   })
+
+  const defaultEventSettings: AgentEventSettings = {
+    resolve_issues: true,
+    review_prs: true,
+    respond_comments: true,
+    auto_index: true,
+    scanner: true,
+  }
+
+  const [eventSettings, setEventSettings] = useState<AgentEventSettings>(defaultEventSettings)
+  const [eventSaved, setEventSaved] = useState(false)
+
+  const { data: orgSettings } = useQuery({
+    queryKey: ['org-settings'],
+    queryFn: () => client.getOrgSettings(),
+    enabled: session?.user.role === 'admin',
+  })
+
+  useEffect(() => {
+    if (orgSettings) setEventSettings(orgSettings.events)
+  }, [orgSettings])
+
+  const updateEventSettingsMut = useMutation({
+    mutationFn: (data: OrgSettings) => client.updateOrgSettings(data),
+    onSuccess: (updated) => {
+      setEventSettings(updated.events)
+      setEventSaved(true)
+      setTimeout(() => setEventSaved(false), 2000)
+    },
+  })
+
+  const handleEventToggle = (key: keyof AgentEventSettings) => {
+    const next = { ...eventSettings, [key]: !eventSettings[key] }
+    setEventSettings(next)
+    updateEventSettingsMut.mutate({ events: next })
+  }
 
   const handleExportAll = async () => {
     const [memories, users, audit] = await Promise.all([
@@ -236,6 +274,42 @@ export default function Settings() {
           )}
         </div>
       </section>
+
+      {/* Agent Events */}
+      {session?.user.role === 'admin' && (
+        <section className="space-y-4">
+          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">
+            Agent Events
+            {eventSaved && <span className="ml-2 text-accent-blue">Saved</span>}
+          </p>
+          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
+            <p className="text-xs text-text-tertiary">
+              Control which GitHub events the AI agent reacts to automatically.
+            </p>
+            <div className="divide-y divide-border-secondary">
+              {([
+                { key: 'resolve_issues' as const, label: 'Resolve Issues', description: 'Agent responds to newly opened GitHub issues' },
+                { key: 'review_prs' as const, label: 'Review Pull Requests', description: 'Agent auto-reviews PRs when opened or updated' },
+                { key: 'respond_comments' as const, label: 'Respond to Comments', description: 'Agent replies to issue and PR review comments' },
+                { key: 'auto_index' as const, label: 'Auto-index on Push', description: 'Trigger code indexing jobs on every push' },
+                { key: 'scanner' as const, label: 'Proactive Scanner', description: 'Periodically scan for issues without being triggered' },
+              ] as { key: keyof AgentEventSettings; label: string; description: string }[]).map(({ key, label, description }) => (
+                <div key={key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+                  <div>
+                    <p className="text-sm text-text-secondary font-semibold">{label}</p>
+                    <p className="text-xs text-text-tertiary mt-0.5">{description}</p>
+                  </div>
+                  <Switch
+                    checked={eventSettings[key]}
+                    onCheckedChange={() => handleEventToggle(key)}
+                    size="sm"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Danger zone */}
       {session?.user.role === 'admin' && (

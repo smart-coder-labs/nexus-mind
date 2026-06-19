@@ -95,6 +95,44 @@ fn default_scope() -> String {
     "project".to_string()
 }
 
+// ── Agent event settings ──────────────────────────────────────────────────────
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentEventSettings {
+    #[serde(default = "default_true")]
+    pub resolve_issues: bool,
+    #[serde(default = "default_true")]
+    pub review_prs: bool,
+    #[serde(default = "default_true")]
+    pub respond_comments: bool,
+    #[serde(default = "default_true")]
+    pub auto_index: bool,
+    #[serde(default = "default_true")]
+    pub scanner: bool,
+}
+
+impl Default for AgentEventSettings {
+    fn default() -> Self {
+        Self {
+            resolve_issues: true,
+            review_prs: true,
+            respond_comments: true,
+            auto_index: true,
+            scanner: true,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct OrgSettings {
+    #[serde(default)]
+    pub events: AgentEventSettings,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Org {
     pub id: String,

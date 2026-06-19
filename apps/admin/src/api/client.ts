@@ -1,5 +1,6 @@
 import type {
   Org,
+  OrgSettings,
   User,
   AuthSession,
   Memory,
@@ -58,6 +59,14 @@ export class NexusMindClient {
 
   updateOrg(data: { name: string }): Promise<Org> {
     return this.request('/v1/admin/org', { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  getOrgSettings(): Promise<OrgSettings> {
+    return this.request('/v1/admin/org/settings')
+  }
+
+  updateOrgSettings(data: OrgSettings): Promise<OrgSettings> {
+    return this.request('/v1/admin/org/settings', { method: 'PATCH', body: JSON.stringify(data) })
   }
 
   listUsers(): Promise<User[]> {

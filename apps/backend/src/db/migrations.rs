@@ -14,6 +14,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v9(conn)?;
     run_v10(conn)?;
     run_v11(conn)?;
+    run_v12(conn)?;
     Ok(())
 }
 
@@ -532,6 +533,20 @@ pub fn run_v11(conn: &Connection) -> Result<()> {
 
         PRAGMA user_version = 11;
         ",
+    )?;
+    Ok(())
+}
+
+/// Migration v12: adds settings column to organizations for per-org agent event configuration.
+/// Idempotent — guarded by PRAGMA user_version < 12.
+pub fn run_v12(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 12 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE organizations ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';
+         PRAGMA user_version = 12;"
     )?;
     Ok(())
 }
