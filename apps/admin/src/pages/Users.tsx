@@ -88,7 +88,7 @@ export default function Users() {
         {session?.user.role === 'admin' && (
           <button
             onClick={() => setInviteOpen(true)}
-            className="flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+            className="flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
           >
             <UserPlus className="w-4 h-4" />
             Invite user
@@ -100,10 +100,10 @@ export default function Users() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary">
-              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">User</th>
-              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Role</th>
-              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Status</th>
-              <th className="text-right px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Actions</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-normal">User</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-normal">Role</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-normal">Status</th>
+              <th className="text-right px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-normal">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">
@@ -121,11 +121,11 @@ export default function Users() {
                 <tr key={user.id} className="hover:bg-surface-secondary/40 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-surface-secondary flex items-center justify-center text-xs font-medium text-text-secondary">
+                      <div className="w-7 h-7 rounded-full bg-surface-secondary flex items-center justify-center text-xs font-semibold text-text-secondary">
                         {user.name[0].toUpperCase()}
                       </div>
                       <div>
-                        <p className="text-text-secondary font-medium leading-tight">{user.name}</p>
+                        <p className="text-text-secondary font-semibold leading-tight">{user.name}</p>
                         <p className="text-text-tertiary text-xs">{user.email}</p>
                       </div>
                     </div>
@@ -217,7 +217,7 @@ export default function Users() {
       {newKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-4">
-            <p className="text-text-primary font-medium">New API key generated</p>
+            <p className="text-text-primary font-semibold">New API key generated</p>
             <p className="text-xs text-text-quaternary">Copy this key now — it won't be shown again.</p>
             <div className="flex items-center gap-2 bg-surface-secondary rounded-lg px-3 py-2">
               <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
@@ -230,7 +230,7 @@ export default function Users() {
             </div>
             <button
               onClick={() => { setNewKey(null); setCopied(false) }}
-              className="w-full py-2 rounded-lg bg-accent-blue text-white text-sm font-medium hover:bg-accent-blue-hover transition-colors"
+              className="w-full py-2 rounded-full bg-accent-blue text-white text-sm font-normal hover:bg-accent-blue-hover transition-colors"
             >
               Done
             </button>

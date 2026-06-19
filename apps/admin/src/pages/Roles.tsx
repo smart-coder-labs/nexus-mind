@@ -101,14 +101,14 @@ export default function Roles() {
                   <div key={role.id} className="p-4 flex items-start justify-between gap-4">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-text-primary">{role.display_name}</span>
+                        <span className="font-semibold text-text-primary">{role.display_name}</span>
                         <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
                         {role.is_template ? (
-                          <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-1.5 py-0.5 rounded font-medium">
+                          <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-1.5 py-0.5 rounded font-semibold">
                             Template
                           </span>
                         ) : (
-                          <span className="text-[10px] bg-status-success/15 text-status-success px-1.5 py-0.5 rounded font-medium">
+                          <span className="text-[10px] bg-status-success/15 text-status-success px-1.5 py-0.5 rounded font-semibold">
                             Custom
                           </span>
                         )}
@@ -167,7 +167,7 @@ export default function Roles() {
 
             <form onSubmit={handleSubmit} className="space-y-4 text-xs">
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Role Name (slug)
                 </label>
                 <input
@@ -181,7 +181,7 @@ export default function Roles() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Display Name
                 </label>
                 <input
@@ -195,7 +195,7 @@ export default function Roles() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
                   Description
                 </label>
                 <textarea
@@ -220,7 +220,7 @@ export default function Roles() {
                         className="mt-0.5 rounded border-border-primary text-accent-blue focus:ring-accent-blue/30"
                       />
                       <div>
-                        <div className="font-medium text-text-secondary text-[11px]">{perm.name}</div>
+                        <div className="font-semibold text-text-secondary text-[11px]">{perm.name}</div>
                         <div className="text-[10px] text-text-tertiary leading-tight">{perm.description}</div>
                       </div>
                     </label>
@@ -231,7 +231,7 @@ export default function Roles() {
               <button
                 type="submit"
                 disabled={createMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-normal transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Plus className="w-4 h-4" />
                 Create Role

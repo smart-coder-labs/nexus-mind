@@ -62,7 +62,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
           <button
             type="submit"
             disabled={loading || !key.trim()}
-            className="w-full bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            className="w-full bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
           >
             {loading ? 'Verifying…' : 'Unlock'}
           </button>
@@ -137,13 +137,13 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
           ))}
           {error && <p className="text-sm text-status-error">{error}</p>}
           <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-sm rounded-lg px-4 py-2 transition-colors">
+            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-sm rounded-full px-4 py-2 transition-colors">
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !form.org_name || !form.org_slug || !form.admin_email || !form.admin_name}
-              className="flex-1 bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+              className="flex-1 bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
             >
               {loading ? 'Creating…' : 'Create'}
             </button>
@@ -173,7 +173,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
         </div>
         <p className="text-sm text-text-secondary">
-          <span className="text-text-primary font-medium">{org.name}</span> is ready.
+          <span className="text-text-primary font-semibold">{org.name}</span> is ready.
           Save the admin API key — it won't be shown again.
         </p>
         <div className="space-y-1.5">
@@ -187,7 +187,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </div>
         <button
           onClick={onDone}
-          className="w-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+          className="w-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
         >
           Done
         </button>
@@ -224,7 +224,7 @@ export default function Orgs() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
         >
           <Plus className="w-4 h-4" />
           New org
@@ -236,9 +236,9 @@ export default function Orgs() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary bg-surface-secondary/50">
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-medium">Name</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-medium">Slug</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-medium">Created</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Name</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Slug</th>
+              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Created</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">
@@ -270,7 +270,7 @@ export default function Orgs() {
             )}
             {orgs.map(org => (
               <tr key={org.id} className="hover:bg-surface-secondary/40 transition-colors">
-                <td className="px-4 py-3 text-text-primary font-medium">{org.name}</td>
+                <td className="px-4 py-3 text-text-primary font-semibold">{org.name}</td>
                 <td className="px-4 py-3">
                   <span className="font-mono text-xs bg-surface-secondary px-2 py-0.5 rounded text-text-secondary">{org.slug}</span>
                 </td>

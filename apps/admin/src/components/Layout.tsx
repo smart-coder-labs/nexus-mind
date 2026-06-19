@@ -63,7 +63,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             className={cn(
               'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0066cc]/40',
               isActive
-                ? 'bg-[#272729] text-white font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-[#0066cc] before:rounded-full'
+                ? 'bg-[#272729] text-white font-semibold before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-[#0066cc] before:rounded-full'
                 : 'text-[#cccccc] hover:text-white hover:bg-[#272729]/60 font-normal',
             )}
           >
@@ -180,7 +180,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <div className="flex items-center gap-2">
             <Brain className="w-4 h-4 text-[#2997ff] flex-shrink-0" />
-            <p className="text-sm font-medium text-text-primary">NexusMind</p>
+            <p className="text-sm font-semibold text-text-primary">NexusMind</p>
           </div>
           {session?.org.name && (
             <span className="ml-1 text-[11px] text-text-tertiary truncate">{session.org.name}</span>

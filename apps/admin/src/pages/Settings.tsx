@@ -89,7 +89,7 @@ export default function Settings() {
 
       {/* Organization */}
       <section className="space-y-4">
-        <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Organization</p>
+        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Organization</p>
         <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs text-text-tertiary">Name</label>
@@ -117,7 +117,7 @@ export default function Settings() {
               <button
                 onClick={() => updateOrgMut.mutate(orgName)}
                 disabled={updateOrgMut.isPending || orgName === org?.name}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-30 transition-colors"
               >
                 {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
               </button>
@@ -131,7 +131,7 @@ export default function Settings() {
 
       {/* Password */}
       <section className="space-y-4">
-        <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Password</p>
+        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Password</p>
         <div className="border border-border-primary rounded-[18px] p-5">
           <form onSubmit={handleChangePassword} className="space-y-4">
             <div className="space-y-1.5">
@@ -169,7 +169,7 @@ export default function Settings() {
               <button
                 type="submit"
                 disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-30 transition-colors"
               >
                 {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
               </button>
@@ -180,7 +180,7 @@ export default function Settings() {
 
       {/* My API Key */}
       <section className="space-y-4">
-        <p className="text-text-tertiary uppercase tracking-wide text-[11px]">My API Key</p>
+        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">My API Key</p>
         <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
           <div className="flex items-center gap-3 bg-surface-secondary rounded-lg px-3 py-2">
             <code className="flex-1 text-xs text-text-tertiary truncate">
@@ -240,11 +240,11 @@ export default function Settings() {
       {/* Danger zone */}
       {session?.user.role === 'admin' && (
         <section className="space-y-4">
-          <p className="text-text-tertiary uppercase tracking-wide text-[11px]">Danger Zone</p>
+          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Danger Zone</p>
           <div className="border border-status-error/15 rounded-[18px] p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-text-secondary font-medium">Export all data</p>
+                <p className="text-sm text-text-secondary font-semibold">Export all data</p>
                 <p className="text-xs text-text-tertiary mt-0.5">Download all memories, users, and audit logs as JSON.</p>
               </div>
               <button

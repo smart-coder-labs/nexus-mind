@@ -110,7 +110,7 @@ export function Table<T>({
                             <th
                                 key={String(col.key)}
                                 className={cn(
-                                    "px-4 py-3 text-sm font-medium text-text-secondary select-none whitespace-nowrap",
+                                    "px-4 py-3 text-sm font-normal text-text-secondary select-none whitespace-nowrap",
                                     col.width && `w-[${col.width}]`
                                 )}
                             >

@@ -9,7 +9,7 @@ import type { BadgeProps, BadgeVariant, BadgeSize } from './Badge.types';
 
 const baseStyles = `
   inline-flex items-center justify-center gap-1.5
-  font-medium
+  font-semibold
   rounded-full
   transition-apple
 `;

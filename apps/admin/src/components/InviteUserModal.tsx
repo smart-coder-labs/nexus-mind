@@ -77,7 +77,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5">
         <div className="flex items-center justify-between">
-          <p className="text-text-primary font-medium">{newKey ? 'User invited' : 'Invite user'}</p>
+          <p className="text-text-primary font-semibold">{newKey ? 'User invited' : 'Invite user'}</p>
           <button onClick={handleClose} className="text-text-tertiary hover:text-text-primary transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -99,7 +99,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             </div>
             <button
               onClick={handleClose}
-              className="w-full py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+              className="w-full py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
             >
               Done
             </button>
@@ -194,7 +194,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium disabled:opacity-40 transition-colors"
+                className="flex-1 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
               >
                 {loading ? 'Inviting…' : 'Invite'}
               </button>

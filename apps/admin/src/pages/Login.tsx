@@ -103,7 +103,7 @@ export default function Login() {
               onClick={() => { setMode('email'); setError('') }}
               className={`flex-1 py-2 transition-colors ${
                 mode === 'email'
-                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-medium'
+                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -114,7 +114,7 @@ export default function Login() {
               onClick={() => { setMode('apikey'); setError('') }}
               className={`flex-1 py-2 transition-colors border-l border-border-primary ${
                 mode === 'apikey'
-                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-medium'
+                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -167,7 +167,7 @@ export default function Login() {
             <div className="space-y-4">
               {forgotSent ? (
                 <div className="text-center space-y-3 py-2">
-                  <p className="text-sm text-text-primary font-medium">Check your email</p>
+                  <p className="text-sm text-text-primary font-semibold">Check your email</p>
                   <p className="text-xs text-text-tertiary">If that address exists, a reset link has been sent.</p>
                   <button
                     onClick={() => { setMode('email'); setForgotSent(false) }}

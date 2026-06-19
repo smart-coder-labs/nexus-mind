@@ -127,7 +127,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
     (session?.user.role === 'member' && memory.user_id === session.user.id)
 
   return (
-    <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-[#050810] p-6">
+    <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-black/60 p-6">
       <div className="bg-bg-secondary border border-border-primary rounded-[18px] w-full max-w-3xl flex flex-col max-h-full">
 
         {/* Header */}
@@ -156,7 +156,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-text-quaternary hover:text-text-primary hover:bg-surface-secondary transition-colors shrink-0"
+            className="p-1.5 rounded-[11px] text-text-quaternary hover:text-text-primary hover:bg-surface-secondary transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -318,7 +318,7 @@ export default function Memories() {
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              className={`px-3 py-1.5 text-xs font-normal rounded-lg transition-colors ${
                 mode === m
                   ? 'bg-accent-blue/15 text-accent-blue'
                   : 'text-text-quaternary hover:text-text-tertiary'

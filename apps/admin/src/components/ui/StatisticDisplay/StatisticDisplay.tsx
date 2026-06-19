@@ -284,7 +284,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                             {/* Description if any */}
                             {metric.description && (
                                 <p className={cn(
-                                    'text-text-tertiary mt-3 leading-relaxed max-w-[85%] font-medium opacity-70 group-hover:opacity-100 transition-opacity',
+                                    'text-text-tertiary mt-3 leading-relaxed max-w-[85%] font-normal opacity-70 group-hover:opacity-100 transition-opacity',
                                     currentSize.meta
                                 )}>
                                     {metric.description}
