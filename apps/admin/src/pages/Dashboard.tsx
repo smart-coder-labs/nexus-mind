@@ -71,10 +71,10 @@ export default function Dashboard() {
   }, [stats])
 
   return (
-    <div className="p-6 space-y-8 max-w-7xl mx-auto">
+    <div className="p-8 space-y-8 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.28px]">Dashboard</h1>
-        <p className="text-text-secondary mt-1 text-sm">
+        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Dashboard</h1>
+        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">
           {session?.org.name} — organization overview
         </p>
       </div>

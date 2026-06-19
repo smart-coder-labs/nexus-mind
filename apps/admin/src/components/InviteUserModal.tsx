@@ -99,7 +99,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             </div>
             <button
               onClick={handleClose}
-              className="w-full py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
+              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
             >
               Done
             </button>
@@ -118,7 +118,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
                 />
               </div>
             ))}
@@ -128,7 +128,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <select
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-surface-primary border border-border-primary rounded-lg px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors"
+                className="w-full bg-surface-primary border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -161,7 +161,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               </div>
 
               {projectAccess === 'specific' && (
-                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-lg p-2 bg-surface-secondary">
+                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-[11px] p-2 bg-surface-secondary">
                   {!projects?.length ? (
                     <p className="text-[11px] text-text-tertiary">No projects found.</p>
                   ) : (
@@ -187,14 +187,14 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-lg border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-surface-secondary transition-colors"
+                className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-surface-secondary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
+                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
               >
                 {loading ? 'Inviting…' : 'Invite'}
               </button>

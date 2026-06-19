@@ -28,14 +28,14 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
           <button
             onClick={onClose}
             disabled={loading}
-            className="flex-1 py-2 rounded-lg border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors disabled:opacity-40"
+            className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors disabled:opacity-40"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
             disabled={loading}
-            className={`flex-1 py-2 rounded-lg text-sm font-normal transition-colors disabled:opacity-40 ${
+            className={`flex-1 py-2 rounded-full text-sm font-normal transition-colors disabled:opacity-40 ${
               danger
                 ? 'bg-status-error text-white hover:opacity-90'
                 : 'bg-accent-blue hover:bg-accent-blue-hover text-white'

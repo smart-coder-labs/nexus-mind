@@ -356,7 +356,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
             <MotionDiv
                 ref={ref}
                 className={cn(
-                    'w-full rounded-3xl bg-surface-primary border border-border-primary shadow-[0_30px_80px_-50px_rgba(15,23,42,0.65)] p-6 md:p-8 relative overflow-hidden',
+                    'w-full rounded-[18px] bg-surface-primary border border-border-primary p-6 md:p-8 relative overflow-hidden',
                     className
                 )}
                 initial={{ opacity: 0, scale: 0.98 }}
