@@ -40,6 +40,11 @@ impl SqliteStore {
     pub fn conn(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.db)
     }
+
+    /// Returns a clone of the optional embed service, for handlers that drive embedding directly.
+    pub fn embed_service(&self) -> Option<Arc<EmbedService>> {
+        self.embed.clone()
+    }
 }
 
 // ── MemoryStore impl ──────────────────────────────────────────────────────────
