@@ -80,8 +80,8 @@ export default function Roles() {
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div>
-        <h1 className="text-lg font-semibold text-text-primary">Roles & Permissions</h1>
-        <p className="text-[12px] text-text-tertiary mt-0.5">Define custom roles and manage fine-grained permissions.</p>
+        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Roles & Permissions</h1>
+        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Define custom roles and manage fine-grained permissions.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

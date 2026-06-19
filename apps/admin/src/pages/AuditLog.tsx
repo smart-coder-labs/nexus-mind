@@ -105,8 +105,8 @@ export default function AuditLog() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-text-primary">Audit Log</h1>
-          <p className="text-[12px] text-text-tertiary mt-0.5">All actions performed in your organization</p>
+          <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Audit Log</h1>
+          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">All actions performed in your organization</p>
         </div>
         {session?.user.role === 'admin' && (
           <div className="flex gap-2">
@@ -162,7 +162,7 @@ export default function AuditLog() {
         </label>
         <button
           onClick={applyFilters}
-          className="px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
         >
           Apply
         </button>
@@ -179,7 +179,7 @@ export default function AuditLog() {
           <thead>
             <tr className="border-b border-border-secondary">
               {['Timestamp', 'User', 'Action', 'Resource', 'ID'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">
+                <th key={h} className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">
                   {h}
                 </th>
               ))}

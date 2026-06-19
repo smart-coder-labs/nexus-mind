@@ -82,13 +82,13 @@ export default function Users() {
     <div className="p-8 max-w-5xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-text-primary">Users</h1>
-          <p className="text-[12px] text-text-tertiary mt-0.5">Manage team members and API keys</p>
+          <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Users</h1>
+          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Manage team members and API keys</p>
         </div>
         {session?.user.role === 'admin' && (
           <button
             onClick={() => setInviteOpen(true)}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
+            className="flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-medium transition-colors"
           >
             <UserPlus className="w-4 h-4" />
             Invite user
@@ -100,10 +100,10 @@ export default function Users() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary">
-              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">User</th>
-              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Role</th>
-              <th className="text-left px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Status</th>
-              <th className="text-right px-4 py-3 text-[11px] text-text-tertiary uppercase tracking-wide font-normal">Actions</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">User</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Role</th>
+              <th className="text-left px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Status</th>
+              <th className="text-right px-4 py-3 text-[12px] text-text-tertiary tracking-[-0.12px] font-medium">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">

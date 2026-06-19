@@ -75,7 +75,7 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
     },
     md: {
         label: "text-xs",
-        value: "text-4xl",
+        value: "text-[34px] font-semibold tracking-[-0.374px]",
         meta: "text-sm",
         padding: "p-5",
         gap: "space-y-4",
@@ -261,7 +261,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                             {/* Main Value Area */}
                             <div className="flex flex-col gap-1 z-10">
                                 <h3 className={cn(
-                                    'font-bold text-text-primary tracking-tight tabular-nums',
+                                    'text-text-primary tabular-nums',
                                     currentSize.value
                                 )}>
                                     {metric.value}

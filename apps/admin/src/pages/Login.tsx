@@ -92,12 +92,12 @@ export default function Login() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-[34px] font-semibold text-white tracking-[-0.374px]">NexusMind</h1>
-          <p className="text-text-secondary mt-2 text-sm">Enterprise Memory Control Plane</p>
+          <p className="text-text-secondary mt-2 text-[14px] tracking-[-0.224px]">Enterprise Memory Control Plane</p>
         </div>
 
         <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-8 space-y-6">
           {/* Mode toggle */}
-          <div className="flex rounded-lg border border-border-primary overflow-hidden text-sm">
+          <div className="flex rounded-[11px] border border-border-primary overflow-hidden text-sm">
             <button
               type="button"
               onClick={() => { setMode('email'); setError('') }}

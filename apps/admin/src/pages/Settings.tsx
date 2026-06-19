@@ -83,8 +83,8 @@ export default function Settings() {
   return (
     <div className="p-8 max-w-2xl mx-auto space-y-10">
       <div>
-        <h1 className="text-lg font-semibold text-text-primary">Settings</h1>
-        <p className="text-[12px] text-text-tertiary mt-0.5">Organization and account configuration</p>
+        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Settings</h1>
+        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Organization and account configuration</p>
       </div>
 
       {/* Organization */}

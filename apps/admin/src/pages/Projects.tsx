@@ -224,8 +224,8 @@ export default function Projects() {
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div>
-        <h1 className="text-lg font-semibold text-text-primary">Projects & Scopes</h1>
-        <p className="text-[12px] text-text-tertiary mt-0.5">
+        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Projects & Scopes</h1>
+        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">
           Manage organization projects and configure dynamic per-project user role overrides.
         </p>
       </div>
