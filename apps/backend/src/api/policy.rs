@@ -351,12 +351,11 @@ pub async fn check_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{delete, get, patch, post},
+        routing::{get, patch, post},
         Router,
     };
     use tower::util::ServiceExt;

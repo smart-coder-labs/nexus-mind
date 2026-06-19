@@ -205,7 +205,7 @@ mod tests {
     async fn get_project_context_cross_tenant_isolation() {
         // Org A has memories for project "shared"; org B must see empty results.
         let store_a = make_store();
-        let (key_a, org_id_a) = {
+        let (_key_a, org_id_a) = {
             let db = store_a.conn();
             let conn = db.lock().unwrap();
             let (org, _, key) = q::bootstrap(&conn, "OrgA", "orga", "admin@a.com", "AdminA").unwrap();
