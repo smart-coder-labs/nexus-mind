@@ -78,7 +78,7 @@ export default function Settings() {
     a.click()
   }
 
-  const inputCls = 'w-full bg-transparent border border-border-primary rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors'
+  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors'
 
   return (
     <div className="p-8 max-w-2xl mx-auto space-y-10">
@@ -213,7 +213,7 @@ export default function Settings() {
               <div className="flex gap-2">
                 <button
                   onClick={() => setRotateConfirm(false)}
-                  className="flex-1 py-2 rounded-lg border border-border-primary text-sm text-text-tertiary hover:text-text-secondary transition-colors"
+                  className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary transition-colors"
                 >
                   Cancel
                 </button>
@@ -249,7 +249,7 @@ export default function Settings() {
               </div>
               <button
                 onClick={handleExportAll}
-                className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-lg px-3 py-1.5 hover:bg-surface-secondary transition-colors"
+                className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-[8px] px-3 py-1.5 hover:bg-surface-secondary transition-colors"
               >
                 Export
               </button>

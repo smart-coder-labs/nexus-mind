@@ -118,7 +118,7 @@ export const CardTitle: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <h3 className={`text-xl font-semibold text-text-primary mb-1 ${className}`}>
+    <h3 className={`text-[21px] font-semibold text-text-primary tracking-[0.231px] mb-1 ${className}`}>
         {children}
     </h3>
 );

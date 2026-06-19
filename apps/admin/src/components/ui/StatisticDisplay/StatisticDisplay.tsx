@@ -66,7 +66,7 @@ const MotionDiv = motion.div as any;
 const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: string; padding: string; gap: string; icon: string; sparkline: { width: number; height: number }; }> = {
     sm: {
         label: "text-[11px]",
-        value: "text-2xl",
+        value: "text-[21px] font-semibold tracking-[0.231px]",
         meta: "text-xs",
         padding: "p-4",
         gap: "space-y-3",
@@ -84,7 +84,7 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
     },
     lg: {
         label: "text-sm",
-        value: "text-5xl",
+        value: "text-[40px] font-semibold tracking-[-0.4px]",
         meta: "text-base",
         padding: "p-6",
         gap: "space-y-5",

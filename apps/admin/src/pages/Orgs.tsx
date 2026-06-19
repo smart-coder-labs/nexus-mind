@@ -219,8 +219,8 @@ export default function Orgs() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-text-primary">Organizations</h1>
-          <p className="text-sm text-text-secondary mt-0.5">All tenants on this NexusMind instance.</p>
+          <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Organizations</h1>
+          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">All tenants on this NexusMind instance.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}

@@ -272,7 +272,7 @@ export const ModalTitle: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <h2 className={`text-2xl font-semibold text-text-primary ${className}`}>
+    <h2 className={`text-[21px] font-semibold text-text-primary tracking-[0.231px] ${className}`}>
         {children}
     </h2>
 );

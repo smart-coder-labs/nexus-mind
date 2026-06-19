@@ -37,7 +37,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         </div>
       )}
 
-      <h3 className="text-xl font-semibold text-text-primary mb-2">
+      <h3 className="text-[21px] font-semibold text-text-primary tracking-[0.231px] mb-2">
         {title}
       </h3>
 
