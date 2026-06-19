@@ -108,7 +108,7 @@ pub async fn post_search(
     }
 
     // Resolve top_k with default and cap
-    let top_k = input.top_k.unwrap_or(DEFAULT_TOP_K).min(MAX_TOP_K).max(1);
+    let top_k = input.top_k.unwrap_or(DEFAULT_TOP_K).clamp(1, MAX_TOP_K);
 
     // Check project exists and is indexed
     let code_project = {
