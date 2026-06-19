@@ -88,14 +88,14 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-text-primary">NexusMind</h1>
+          <h1 className="text-[34px] font-semibold text-white tracking-[-0.374px]">NexusMind</h1>
           <p className="text-text-secondary mt-2 text-sm">Enterprise Memory Control Plane</p>
         </div>
 
-        <div className="bg-surface-primary border border-border-primary rounded-2xl p-8 space-y-6 shadow-sm">
+        <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-8 space-y-6">
           {/* Mode toggle */}
           <div className="flex rounded-lg border border-border-primary overflow-hidden text-sm">
             <button
@@ -103,7 +103,7 @@ export default function Login() {
               onClick={() => { setMode('email'); setError('') }}
               className={`flex-1 py-2 transition-colors ${
                 mode === 'email'
-                  ? 'bg-accent-blue/10 text-accent-blue font-medium'
+                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-medium'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -114,7 +114,7 @@ export default function Login() {
               onClick={() => { setMode('apikey'); setError('') }}
               className={`flex-1 py-2 transition-colors border-l border-border-primary ${
                 mode === 'apikey'
-                  ? 'bg-accent-blue/10 text-accent-blue font-medium'
+                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-medium'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -171,7 +171,7 @@ export default function Login() {
                   <p className="text-xs text-text-tertiary">If that address exists, a reset link has been sent.</p>
                   <button
                     onClick={() => { setMode('email'); setForgotSent(false) }}
-                    className="text-xs text-accent-blue hover:underline transition-colors"
+                    className="text-xs text-[#2997ff] hover:underline transition-colors"
                   >
                     Back to sign in
                   </button>

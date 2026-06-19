@@ -7,25 +7,22 @@ import type { CardProps, CardVariant } from './Card.types';
    ======================================== */
 
 const baseStyles = `
-  rounded-2xl
+  rounded-[18px]
   transition-apple
 `;
 
 const variantStyles: Record<CardVariant, string> = {
     elevated: `
     bg-surface-primary
-    shadow-md
-    hover:shadow-lg
+    border border-white/[0.08]
   `,
     glass: `
     glass
-    border border-border-secondary
-    shadow-sm
+    border border-white/[0.08]
   `,
     outlined: `
     bg-surface-primary
-    border border-border-primary
-    hover:border-border-primary
+    border border-white/[0.08]
   `,
     flat: `
     bg-surface-secondary
@@ -64,7 +61,6 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
 
         const hoverAnimation = hoverable
             ? {
-                whileHover: { y: -4, scale: 1.01 },
                 transition: {
                     type: 'spring' as const,
                     stiffness: 300,

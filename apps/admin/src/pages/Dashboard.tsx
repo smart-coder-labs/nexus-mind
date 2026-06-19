@@ -73,7 +73,7 @@ export default function Dashboard() {
   return (
     <div className="p-6 space-y-8 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary">Dashboard</h1>
+        <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.28px]">Dashboard</h1>
         <p className="text-text-secondary mt-1 text-sm">
           {session?.org.name} — organization overview
         </p>
@@ -83,13 +83,13 @@ export default function Dashboard() {
       {isAdmin && (
         <section aria-label="Organization statistics">
           {statsError ? (
-            <div className="rounded-2xl border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
+            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
               Failed to load statistics. Check your connection and try again.
             </div>
           ) : statsLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-32 rounded-2xl" />
+                <Skeleton key={i} className="h-32 rounded-[18px]" />
               ))}
             </div>
           ) : (
@@ -106,10 +106,10 @@ export default function Dashboard() {
       {/* Activity timeline */}
       {isAdmin && (
         <section aria-label="Recent activity">
-          <h2 className="text-lg font-semibold text-text-primary mb-4">
+          <h2 className="text-[21px] font-semibold text-text-primary mb-4 tracking-[0.231px]">
             Recent Activity
           </h2>
-          <div className="bg-surface-primary border border-border-primary rounded-2xl px-6 divide-y divide-border-secondary">
+          <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] px-6 divide-y divide-border-secondary">
             {activityLoading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="py-3">
@@ -134,7 +134,7 @@ export default function Dashboard() {
       )}
 
       {!isAdmin && (
-        <div className="border border-border-primary bg-surface-primary rounded-2xl p-6 max-w-xl">
+        <div className="border border-white/[0.08] bg-[#272729] rounded-[18px] p-6 max-w-xl">
           <p className="text-sm text-text-secondary leading-relaxed">
             Welcome to <strong>{session?.org.name}</strong> on NexusMind.
           </p>

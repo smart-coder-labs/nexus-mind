@@ -61,16 +61,16 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             to={href}
             onClick={onNavigate}
             className={cn(
-              'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
+              'relative group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0066cc]/40',
               isActive
-                ? 'bg-surface-secondary text-text-primary font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-accent-blue before:rounded-full'
-                : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary/60 font-normal',
+                ? 'bg-[#272729] text-white font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-[#0066cc] before:rounded-full'
+                : 'text-[#cccccc] hover:text-white hover:bg-[#272729]/60 font-normal',
             )}
           >
             <Icon
               className={cn(
                 'w-[15px] h-[15px] flex-shrink-0',
-                isActive ? 'text-accent-blue' : 'text-text-tertiary group-hover:text-text-secondary',
+                isActive ? 'text-[#0066cc]' : 'text-[#7a7a7a] group-hover:text-[#cccccc]',
               )}
             />
             {label}
@@ -96,7 +96,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       {/* Logo */}
       <div className="px-5 pt-6 pb-5">
         <div className="flex items-center gap-2">
-          <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
+          <Brain className="w-4 h-4 text-[#2997ff] flex-shrink-0" />
           <p className="text-sm font-semibold text-text-primary">NexusMind</p>
         </div>
         {session?.org.name && (
@@ -117,7 +117,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="px-2 pb-3">
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-status-error hover:bg-surface-secondary/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
+          className="flex w-full items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#cccccc] hover:text-[#ff453a] hover:bg-[#272729]/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0066cc]/40"
         >
           <LogOut className="w-[15px] h-[15px] flex-shrink-0 text-text-tertiary" />
           Sign out
@@ -132,9 +132,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { session } = useAuth()
 
   return (
-    <div className="min-h-screen bg-bg-secondary flex">
+    <div className="min-h-screen bg-[#1d1d1f] flex">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-border-primary bg-bg-primary z-30">
+      <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-white/[0.06] bg-black z-30">
         <SidebarContent />
       </aside>
       <div className="hidden lg:block w-52 flex-shrink-0" />
@@ -151,7 +151,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile drawer */}
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-bg-primary border-r border-border-primary lg:hidden transition-transform duration-200',
+          'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-black border-r border-white/[0.06] lg:hidden transition-transform duration-200',
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
@@ -170,7 +170,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mobile top bar */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border-primary bg-bg-primary">
+        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-black">
           <button
             onClick={() => setDrawerOpen(true)}
             className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
@@ -179,7 +179,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <Menu className="w-4 h-4" />
           </button>
           <div className="flex items-center gap-2">
-            <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
+            <Brain className="w-4 h-4 text-[#2997ff] flex-shrink-0" />
             <p className="text-sm font-medium text-text-primary">NexusMind</p>
           </div>
           {session?.org.name && (

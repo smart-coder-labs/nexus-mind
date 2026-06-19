@@ -4,7 +4,6 @@
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
 
 @import "tailwindcss";
 @variant dark (&:where(.dark, .dark *));
@@ -15,48 +14,45 @@
    ======================================== */
 
 :root {
-  /* Background — NexusMind dark theme (always dark) */
-  --color-bg-primary: #050810;
-  --color-bg-secondary: #0b0f1a;
-  --color-bg-tertiary: #111827;
-  --color-bg-elevated: #0d1117;
+  /* Action Blue — the single interactive color */
+  --color-accent-blue: #0066cc;           /* Action Blue (light/dark surfaces) */
+  --color-accent-blue-hover: #0071e3;     /* Focus Blue */
+  --color-accent-blue-active: #0058a8;    /* Pressed */
+  --color-accent-blue-tint: rgba(0, 102, 204, 0.12);
+  --color-accent-on-dark: #2997ff;        /* Sky Link Blue — for dark tiles */
+
+  /* Background — Apple near-black tile family */
+  --color-bg-primary: #000000;           /* surface-black: true black, nav bg */
+  --color-bg-secondary: #1d1d1f;         /* ink: near-black, main canvas */
+  --color-bg-tertiary: #272729;          /* surface-tile-1: dark tile */
+  --color-bg-elevated: #2a2a2c;          /* surface-tile-2: stacked dark tile */
 
   /* Surface */
-  --color-surface-primary: #0d1117;
-  --color-surface-secondary: #111827;
-  --color-surface-glass: rgba(5, 8, 16, 0.72);
-  --color-surface-glass-dark: rgba(5, 8, 16, 0.85);
+  --color-surface-primary: #272729;      /* surface-tile-1 */
+  --color-surface-secondary: #2a2a2c;   /* surface-tile-2 */
+  --color-surface-glass: rgba(39, 39, 41, 0.80);
+  --color-surface-glass-dark: rgba(0, 0, 0, 0.85);
 
-  /* Text */
-  --color-text-primary: #f0f9ff;
-  --color-text-secondary: #94a3b8;
-  --color-text-tertiary: #64748b;
-  --color-text-quaternary: #475569;
-  --color-text-inverse: #050810;
+  /* Text — Apple text ladder on dark */
+  --color-text-primary: #ffffff;          /* body-on-dark */
+  --color-text-secondary: #cccccc;       /* body-muted */
+  --color-text-tertiary: #7a7a7a;        /* ink-muted-48 */
+  --color-text-quaternary: #555555;
+  --color-text-inverse: #1d1d1f;
 
-  /* Border */
-  --color-border-primary: rgba(34, 211, 238, 0.12);
-  --color-border-secondary: rgba(34, 211, 238, 0.06);
-  --color-border-focus: rgba(34, 211, 238, 0.5);
+  /* Border — hairline */
+  --color-border-primary: rgba(255, 255, 255, 0.08);   /* hairline on dark */
+  --color-border-secondary: rgba(255, 255, 255, 0.04);
+  --color-border-focus: #0066cc;
 
-  /* Accent — cyan primary, green secondary */
-  --color-accent-blue: #22d3ee;
-  --color-accent-blue-hover: #06b6d4;
-  --color-accent-blue-active: #0891b2;
-  --color-accent-blue-tint: rgba(34, 211, 238, 0.12);
+  /* Status — semantic clarity */
+  --color-status-success: #30d158;
+  --color-status-warning: #ffd60a;
+  --color-status-error: #ff453a;
+  --color-status-info: #0066cc;
 
-  /* Status */
-  --color-status-success: #4ade80;
-  --color-status-warning: #f59e0b;
-  --color-status-error: #f87171;
-  --color-status-info: #22d3ee;
-
-  /* Shadows */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.64), 0 4px 16px rgba(0, 0, 0, 0.48);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.72), 0 8px 24px rgba(0, 0, 0, 0.56);
+  /* Shadows — ZERO decorative shadows; only product photography */
+  --shadow-product: rgba(0, 0, 0, 0.22) 3px 5px 30px;
 }
 
 
@@ -101,15 +97,11 @@
   --color-status-error: var(--color-status-error);
   --color-status-info: var(--color-status-info);
 
-  /* Shadows */
-  --shadow-xs: var(--shadow-xs);
-  --shadow-sm: var(--shadow-sm);
-  --shadow-md: var(--shadow-md);
-  --shadow-lg: var(--shadow-lg);
-  --shadow-xl: var(--shadow-xl);
+  /* Shadows — only product photography shadow */
+  --shadow-product: var(--shadow-product);
 
   /* Typography */
-  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Monaco", "Cascadia Code", monospace;
 
   /* Motion */
@@ -135,10 +127,10 @@
   body {
     background-color: var(--color-bg-primary);
     color: var(--color-text-primary);
-    font-family: "Geist", -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
-    font-size: 15px;
-    line-height: 1.5;
-    letter-spacing: -0.01em;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+    font-size: 17px;            /* Apple body — not 16px */
+    line-height: 1.47;
+    letter-spacing: -0.374px;  /* Apple body tracking */
   }
 
   ::-webkit-scrollbar {

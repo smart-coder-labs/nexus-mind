@@ -18,22 +18,20 @@ const baseStyles = `
 
 const variantStyles: Record<ButtonVariant, string> = {
     primary: `
-    bg-accent-blue text-white
-    hover:bg-accent-blue-hover
-    active:bg-accent-blue-active
-    shadow-sm
+    bg-[#0066cc] text-white
+    hover:bg-[#0071e3]
+    active:bg-[#0058a8]
   `,
     secondary: `
-    bg-surface-secondary text-text-primary
-    border border-border-primary
-    hover:bg-surface-primary hover:border-border-primary
-    active:bg-surface-secondary
-    shadow-xs
+    bg-transparent text-[#2997ff]
+    border border-white/10
+    hover:bg-white/5
+    active:bg-white/10
   `,
     ghost: `
-    bg-transparent text-accent-blue
-    hover:bg-accent-blue-tint
-    active:bg-accent-blue-tint
+    bg-transparent text-[#2997ff]
+    hover:bg-[rgba(0,102,204,0.12)]
+    active:bg-[rgba(0,102,204,0.12)]
   `,
     subtle: `
     bg-surface-secondary text-text-primary
@@ -41,23 +39,22 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-surface-secondary
   `,
     outline: `
-    bg-transparent text-text-primary
-    border border-border-primary
-    hover:bg-surface-secondary hover:border-border-secondary
-    active:bg-surface-tertiary
+    bg-transparent text-[#2997ff]
+    border border-white/10
+    hover:bg-white/5
+    active:bg-white/10
   `,
     destructive: `
     bg-status-error text-white
     hover:bg-red-600
     active:bg-red-700
-    shadow-sm
   `,
 };
 
 const sizeStyles: Record<ButtonSize, string> = {
-    sm: 'h-8 px-3 text-sm rounded-lg',
-    md: 'h-10 px-4 text-base rounded-xl',
-    lg: 'h-12 px-6 text-lg rounded-xl',
+    sm: 'h-8 px-4 text-[14px] rounded-full',
+    md: 'h-[44px] px-[22px] text-[17px] rounded-full',
+    lg: 'h-[52px] px-[28px] text-[18px] font-light rounded-full',
 };
 
 /* ========================================
@@ -102,8 +99,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
                 className={combinedClassName}
                 disabled={disabled || loading}
                 aria-busy={loading || undefined}
-                whileHover={{ scale: disabled || loading ? 1 : 1.02 }}
-                whileTap={{ scale: disabled || loading ? 1 : 0.98 }}
+                whileHover={{}}
+                whileTap={{ scale: disabled || loading ? 1 : 0.95 }}
                 transition={{
                     type: 'spring',
                     stiffness: 400,
