@@ -24,7 +24,7 @@ const MAX_TOP_K: i64 = 20;
 /// Servers started by process managers (systemd, Docker, etc.) often have a stripped PATH
 /// that excludes /usr/local/bin and /opt/homebrew/bin where git lives.
 fn git_cmd() -> std::process::Command {
-    let mut cmd = git_cmd();
+    let mut cmd = std::process::Command::new("git");
     let base = std::env::var("PATH").unwrap_or_default();
     cmd.env(
         "PATH",
