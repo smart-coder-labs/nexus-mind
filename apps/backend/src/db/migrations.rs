@@ -994,7 +994,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 11, "user_version must be 11 after run_all");
+        assert_eq!(get_user_version(&conn), 12, "user_version must be 12 after run_all");
     }
 
     #[test]
