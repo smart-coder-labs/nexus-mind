@@ -101,7 +101,7 @@ function MemoryMarkdown({ content }: { content: string }) {
           )
         },
         pre: ({ children }) => (
-          <pre className="bg-bg-secondary border border-border-primary rounded-lg px-4 py-3 overflow-x-auto mb-3 last:mb-0">
+          <pre className="bg-[#1d1d1f] border border-border-primary rounded-lg px-4 py-3 overflow-x-auto mb-3 last:mb-0">
             {children}
           </pre>
         ),
@@ -128,7 +128,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting }: {
 
   return (
     <div className="fixed inset-y-0 left-0 lg:left-52 right-0 z-50 flex items-center justify-center bg-black/60 p-6">
-      <div className="bg-bg-secondary border border-border-primary rounded-[18px] w-full max-w-3xl flex flex-col max-h-full">
+      <div className="bg-[#272729] border border-white/[0.08] rounded-[18px] w-full max-w-3xl flex flex-col max-h-full">
 
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4 shrink-0 border-b border-border-secondary">

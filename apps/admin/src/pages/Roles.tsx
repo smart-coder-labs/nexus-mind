@@ -87,7 +87,7 @@ export default function Roles() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Roles List */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-bg-primary">
+          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-[#272729]">
             <div className="px-4 py-3 border-b border-border-secondary bg-surface-secondary/40">
               <span className="text-xs font-semibold text-text-secondary">Active Roles</span>
             </div>
@@ -150,7 +150,7 @@ export default function Roles() {
 
         {/* Create Role Form */}
         <div className="space-y-4">
-          <div className="border border-border-primary rounded-[18px] p-5 bg-bg-primary space-y-4">
+          <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
                 <Shield className="w-4 h-4 text-accent-blue" />
@@ -175,7 +175,7 @@ export default function Roles() {
                   placeholder="e.g. security-officer"
                   value={name}
                   onChange={e => setName(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
+                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
                   required
                 />
               </div>
@@ -189,7 +189,7 @@ export default function Roles() {
                   placeholder="e.g. Security Officer"
                   value={displayName}
                   onChange={e => setDisplayName(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
+                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
                   required
                 />
               </div>
@@ -202,7 +202,7 @@ export default function Roles() {
                   placeholder="What is this role for?"
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40 h-20 resize-none"
+                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40 h-20 resize-none"
                 />
               </div>
 

@@ -233,7 +233,7 @@ export default function Projects() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Project List */}
         <div className="lg:col-span-2">
-          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-bg-primary">
+          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-[#272729]">
             <div className="px-4 py-3 border-b border-border-secondary bg-surface-secondary/40">
               <span className="text-xs font-semibold text-text-secondary">Projects</span>
             </div>
@@ -258,7 +258,7 @@ export default function Projects() {
 
         {/* Create Project Form */}
         <div>
-          <div className="border border-border-primary rounded-[18px] p-5 bg-bg-primary space-y-4">
+          <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
                 <FolderGit className="w-4 h-4 text-accent-blue" />
@@ -285,7 +285,7 @@ export default function Projects() {
                   placeholder="e.g. core-payments"
                   value={name}
                   onChange={e => setName(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
+                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
                   required
                 />
               </div>
@@ -298,7 +298,7 @@ export default function Projects() {
                   placeholder="What is this scope about?"
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  className="w-full bg-bg-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40 h-20 resize-none"
+                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40 h-20 resize-none"
                 />
               </div>
 

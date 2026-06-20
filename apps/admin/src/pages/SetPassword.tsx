@@ -49,7 +49,7 @@ export default function SetPassword() {
 
   if (!token) {
     return (
-      <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
         <div className="text-center space-y-2">
           <p className="text-text-primary font-semibold">Invalid link</p>
           <p className="text-text-tertiary text-sm">This link is missing a token.</p>
@@ -59,7 +59,7 @@ export default function SetPassword() {
   }
 
   return (
-    <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">NexusMind</h1>
