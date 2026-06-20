@@ -15,6 +15,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v10(conn)?;
     run_v11(conn)?;
     run_v12(conn)?;
+    run_v13(conn)?;
     Ok(())
 }
 
@@ -551,6 +552,20 @@ pub fn run_v12(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v13: adds repo_url column to code_projects for GitHub URL-based indexing.
+/// Idempotent — guarded by PRAGMA user_version < 13.
+pub fn run_v13(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 13 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE code_projects ADD COLUMN repo_url TEXT;
+         PRAGMA user_version = 13;"
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,7 +1009,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 12, "user_version must be 12 after run_all");
+        assert_eq!(get_user_version(&conn), 13, "user_version must be 13 after run_all");
     }
 
     #[test]

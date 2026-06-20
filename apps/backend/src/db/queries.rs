@@ -2265,7 +2265,7 @@ pub fn get_code_project(
     conn: &Connection,
 ) -> Result<Option<CodeProject>> {
     let result = conn.query_row(
-        "SELECT id, org_id, name, root_path, file_count, chunk_count, last_indexed, created_at
+        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at
          FROM code_projects WHERE org_id = ?1 AND name = ?2",
         rusqlite::params![org_id, name],
         |row| {
@@ -2274,10 +2274,11 @@ pub fn get_code_project(
                 org_id: row.get(1)?,
                 name: row.get(2)?,
                 root_path: row.get(3)?,
-                file_count: row.get(4)?,
-                chunk_count: row.get(5)?,
-                last_indexed: row.get(6)?,
-                created_at: row.get(7)?,
+                repo_url: row.get(4)?,
+                file_count: row.get(5)?,
+                chunk_count: row.get(6)?,
+                last_indexed: row.get(7)?,
+                created_at: row.get(8)?,
             })
         },
     );
@@ -2292,7 +2293,7 @@ pub fn get_code_project(
 /// List all code projects for an org, ordered by creation date (newest first).
 pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodeProject>> {
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, root_path, file_count, chunk_count, last_indexed, created_at
+        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at
          FROM code_projects WHERE org_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([org_id], |row| {
@@ -2301,13 +2302,23 @@ pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodePro
             org_id: row.get(1)?,
             name: row.get(2)?,
             root_path: row.get(3)?,
-            file_count: row.get(4)?,
-            chunk_count: row.get(5)?,
-            last_indexed: row.get(6)?,
-            created_at: row.get(7)?,
+            repo_url: row.get(4)?,
+            file_count: row.get(5)?,
+            chunk_count: row.get(6)?,
+            last_indexed: row.get(7)?,
+            created_at: row.get(8)?,
         })
     })?;
     rows.map(|r| r.map_err(Into::into)).collect()
+}
+
+/// Set the repo_url for an existing code project.
+pub fn set_code_project_repo_url(conn: &Connection, org_id: &str, name: &str, repo_url: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET repo_url = ?1 WHERE org_id = ?2 AND name = ?3",
+        rusqlite::params![repo_url, org_id, name],
+    )?;
+    Ok(())
 }
 
 /// Delete a code project (and its chunks, via cascade) for (org_id, name).

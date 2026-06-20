@@ -138,6 +138,7 @@ export interface CodeProject {
   org_id: string
   name: string
   root_path: string
+  repo_url: string | null
   file_count: number
   chunk_count: number
   last_indexed: string | null

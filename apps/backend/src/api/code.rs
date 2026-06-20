@@ -42,8 +42,9 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 
 /// `POST /v1/code/index`
 ///
-/// Walks the given root_path, chunks and embeds all eligible source files,
-/// and persists them for semantic search. Synchronous in v1.
+/// Accepts either a `repo_url` (GitHub URL to clone/pull) or a `root_path` (local path).
+/// Chunks and embeds all eligible source files and persists them for semantic search.
+/// Synchronous in v1.
 pub async fn post_index(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -57,23 +58,64 @@ pub async fn post_index(
     }
 
     if input.project.trim().is_empty() {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError {
-                error: "project must not be empty".to_string(),
-                code: "validation_error".to_string(),
-            }),
-        ));
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+            error: "project must not be empty".to_string(),
+            code: "validation_error".to_string(),
+        })));
     }
-    if input.root_path.trim().is_empty() {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError {
+
+    // Determine effective root_path
+    let effective_root_path: String = if let Some(url) = &input.repo_url {
+        if url.trim().is_empty() {
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+                error: "repo_url must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            })));
+        }
+        // Clone to /tmp/nexusmind/{org_id}/{project}
+        let clone_dir = format!("/tmp/nexusmind/{}/{}", auth.org_id, input.project.trim());
+        let path = std::path::Path::new(&clone_dir);
+        if path.join(".git").exists() {
+            // Pull latest
+            let out = std::process::Command::new("git")
+                .args(["-C", &clone_dir, "pull", "--rebase", "--quiet"])
+                .output()
+                .map_err(|e| db_err(anyhow::anyhow!("git pull failed: {e}")))?;
+            if !out.status.success() {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+                    error: format!("git pull failed: {}", String::from_utf8_lossy(&out.stderr)),
+                    code: "git_error".to_string(),
+                })));
+            }
+        } else {
+            std::fs::create_dir_all(&clone_dir)
+                .map_err(|e| db_err(anyhow::anyhow!("failed to create clone dir: {e}")))?;
+            let out = std::process::Command::new("git")
+                .args(["clone", "--depth=1", "--quiet", url.trim(), &clone_dir])
+                .output()
+                .map_err(|e| db_err(anyhow::anyhow!("git clone failed: {e}")))?;
+            if !out.status.success() {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+                    error: format!("git clone failed: {}", String::from_utf8_lossy(&out.stderr)),
+                    code: "git_error".to_string(),
+                })));
+            }
+        }
+        clone_dir
+    } else if let Some(path) = &input.root_path {
+        if path.trim().is_empty() {
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
                 error: "root_path must not be empty".to_string(),
                 code: "validation_error".to_string(),
-            }),
-        ));
-    }
+            })));
+        }
+        path.trim().to_string()
+    } else {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+            error: "either repo_url or root_path must be provided".to_string(),
+            code: "validation_error".to_string(),
+        })));
+    };
 
     let embed_svc = store.embed_service();
     let db = store.conn();
@@ -82,11 +124,17 @@ pub async fn post_index(
     let response = indexer::index_project(
         &auth.org_id,
         &input.project,
-        &input.root_path,
+        &effective_root_path,
         &db,
         embed_svc.as_ref(),
     )
     .map_err(db_err)?;
+
+    // Save repo_url if provided
+    if let Some(url) = &input.repo_url {
+        let conn = db.lock().map_err(|_| lock_err())?;
+        let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &input.project, url);
+    }
 
     Ok((StatusCode::OK, Json(response)))
 }

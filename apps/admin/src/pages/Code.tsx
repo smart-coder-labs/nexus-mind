@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject } from '../types'
 
+
 const INPUT_CLS =
   'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors'
 
@@ -40,8 +41,10 @@ export default function Code() {
   const client = useMemo(() => createClient(), [session])
 
   const [showForm, setShowForm] = useState(false)
-  const [projectName, setProjectName] = useState('')
-  const [rootPath, setRootPath] = useState('')
+  const [repoUrl, setRepoUrl] = useState('')
+  const [selectedProject, setSelectedProject] = useState('')
+  const [projectMode, setProjectMode] = useState<'existing' | 'new'>('existing')
+  const [newProjectName, setNewProjectName] = useState('')
   const [indexError, setIndexError] = useState<string | null>(null)
 
   const { data: projects, isLoading } = useQuery({
@@ -49,11 +52,18 @@ export default function Code() {
     queryFn: () => client.listCodeProjects(),
   })
 
+  const { data: memProjects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+    enabled: showForm,
+  })
+
   const indexMut = useMutation({
-    mutationFn: (data: { project: string; root_path: string }) => client.indexProject(data),
+    mutationFn: (data: { project: string; repo_url?: string; root_path?: string }) => client.indexProject(data),
     onSuccess: () => {
-      setProjectName('')
-      setRootPath('')
+      setRepoUrl('')
+      setSelectedProject('')
+      setNewProjectName('')
       setShowForm(false)
       setIndexError(null)
       qc.invalidateQueries({ queryKey: ['code-projects'] })
@@ -62,7 +72,11 @@ export default function Code() {
   })
 
   const reindexMut = useMutation({
-    mutationFn: (p: CodeProject) => client.indexProject({ project: p.name, root_path: p.root_path }),
+    mutationFn: (p: CodeProject) => client.indexProject({
+      project: p.name,
+      repo_url: p.repo_url ?? undefined,
+      root_path: p.repo_url ? undefined : p.root_path,
+    }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['code-projects'] }),
   })
 
@@ -74,7 +88,8 @@ export default function Code() {
   const handleIndex = (e: React.FormEvent) => {
     e.preventDefault()
     setIndexError(null)
-    indexMut.mutate({ project: projectName.trim(), root_path: rootPath.trim() })
+    const project = projectMode === 'existing' ? selectedProject : newProjectName.trim()
+    indexMut.mutate({ project, repo_url: repoUrl.trim() })
   }
 
   const handleDelete = (p: CodeProject) => {
@@ -116,36 +131,72 @@ export default function Code() {
       {showForm && (
         <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
           <p className="text-[12px] tracking-[-0.12px] text-text-tertiary">Add Repository</p>
-          <form onSubmit={handleIndex} className="space-y-3">
+          <form onSubmit={handleIndex} className="space-y-4">
+            {/* Project selector */}
+            <div>
+              <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-2">
+                Project
+              </label>
+              {/* Toggle: existing / new */}
+              <div className="flex items-center bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 gap-0.5 w-fit mb-3">
+                {(['existing', 'new'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setProjectMode(mode)}
+                    className={`px-3 py-1 rounded-[8px] text-xs transition-colors ${
+                      projectMode === mode
+                        ? 'bg-accent-blue/15 text-accent-blue font-semibold'
+                        : 'text-text-tertiary hover:text-text-secondary'
+                    }`}
+                  >
+                    {mode === 'existing' ? 'Existing project' : 'New project'}
+                  </button>
+                ))}
+              </div>
+              {projectMode === 'existing' ? (
+                <select
+                  value={selectedProject}
+                  onChange={e => setSelectedProject(e.target.value)}
+                  disabled={indexMut.isPending}
+                  required
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-border-focus transition-colors"
+                >
+                  <option value="">Select a project…</option>
+                  {memProjects?.map(p => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={INPUT_CLS}
+                  placeholder="my-repo"
+                  value={newProjectName}
+                  onChange={e => setNewProjectName(e.target.value)}
+                  disabled={indexMut.isPending}
+                  required
+                />
+              )}
+            </div>
+
+            {/* Repo URL */}
             <div>
               <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-1.5">
-                Project name
+                GitHub repository URL
               </label>
               <input
                 className={INPUT_CLS}
-                placeholder="nexus-mind"
-                value={projectName}
-                onChange={e => setProjectName(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                value={repoUrl}
+                onChange={e => setRepoUrl(e.target.value)}
                 disabled={indexMut.isPending}
+                type="url"
                 required
               />
             </div>
-            <div>
-              <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-1.5">
-                Root path
-              </label>
-              <input
-                className={INPUT_CLS}
-                placeholder="/absolute/path/to/repo"
-                value={rootPath}
-                onChange={e => setRootPath(e.target.value)}
-                disabled={indexMut.isPending}
-                required
-              />
-            </div>
-            {indexError && (
-              <p className="text-xs text-status-error/80">{indexError}</p>
-            )}
+
+            {indexError && <p className="text-xs text-status-error/80">{indexError}</p>}
+
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
@@ -161,7 +212,7 @@ export default function Code() {
                 className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-sm font-normal hover:opacity-90 transition-opacity disabled:opacity-60"
               >
                 {indexMut.isPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {indexMut.isPending ? 'Indexing…' : 'Index'}
+                {indexMut.isPending ? 'Cloning & indexing…' : 'Index'}
               </button>
             </div>
           </form>
@@ -204,7 +255,7 @@ export default function Code() {
                     <span className="font-semibold text-text-primary text-sm">{p.name}</span>
                     <StatusChip project={p} />
                   </div>
-                  <p className="text-xs text-text-tertiary font-mono truncate">{p.root_path}</p>
+                  <p className="text-xs text-text-tertiary font-mono truncate">{p.repo_url ?? p.root_path}</p>
                   <p className="text-xs text-text-tertiary">
                     {p.file_count.toLocaleString()} files
                     {' · '}

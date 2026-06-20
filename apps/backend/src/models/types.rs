@@ -440,6 +440,7 @@ pub struct CodeProject {
     pub org_id: String,
     pub name: String,
     pub root_path: String,
+    pub repo_url: Option<String>,
     pub file_count: i64,
     pub chunk_count: i64,
     pub last_indexed: Option<String>,
@@ -465,7 +466,8 @@ pub struct CodeChunk {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct IndexProjectRequest {
     pub project: String,
-    pub root_path: String,
+    pub root_path: Option<String>,
+    pub repo_url: Option<String>,
 }
 
 /// Response body for `POST /v1/code/index`.
@@ -910,6 +912,7 @@ mod tests {
             org_id: "org1".into(),
             name: "myapp".into(),
             root_path: "/workspace/myapp".into(),
+            repo_url: Some("https://github.com/owner/myapp".into()),
             file_count: 10,
             chunk_count: 42,
             last_indexed: Some("2026-06-19T12:00:00Z".into()),
@@ -942,7 +945,8 @@ mod tests {
     fn index_project_request_roundtrip() {
         let req = IndexProjectRequest {
             project: "myapp".into(),
-            root_path: "/workspace/myapp".into(),
+            root_path: Some("/workspace/myapp".into()),
+            repo_url: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         let back: IndexProjectRequest = serde_json::from_str(&s).unwrap();
