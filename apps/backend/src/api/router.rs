@@ -84,6 +84,8 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/code/search", post(code::post_search))
         .route("/v1/code/status/:project", get(code::get_status))
         .route("/v1/code/context", get(code::get_context))
+        .route("/v1/code/projects", get(code::list_projects))
+        .route("/v1/code/projects/:name", delete(code::delete_project))
         .route("/v1/audit", get(audit::query))
         .route("/v1/audit/export", get(audit::export))
         .route("/v1/audit/log", post(audit::post_audit))

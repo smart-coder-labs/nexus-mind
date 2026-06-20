@@ -9,6 +9,7 @@ import AuditLog from './pages/AuditLog'
 import Settings from './pages/Settings'
 import Roles from './pages/Roles'
 import Projects from './pages/Projects'
+import Code from './pages/Code'
 import { Layout } from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -45,6 +46,7 @@ function AppRoutes() {
               <Route path="/users"    element={<AdminRoute><Users /></AdminRoute>} />
               <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
               <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
+              <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
               <Route path="/memories" element={<Memories />} />
               <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
               <Route path="/settings" element={<Settings />} />

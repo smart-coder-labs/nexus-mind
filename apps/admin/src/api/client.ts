@@ -12,6 +12,8 @@ import type {
   Project,
   ProjectMember,
   ProjectAccess,
+  CodeProject,
+  CodeIndexResponse,
 } from '../types'
 
 export class NexusMindClient {
@@ -179,6 +181,18 @@ export class NexusMindClient {
     const params = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))
     return this.request(`/v1/audit?${params}`)
+  }
+
+  listCodeProjects(): Promise<CodeProject[]> {
+    return this.request('/v1/code/projects')
+  }
+
+  indexProject(data: { project: string; root_path: string }): Promise<CodeIndexResponse> {
+    return this.request('/v1/code/index', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  deleteCodeProject(name: string): Promise<void> {
+    return this.request(`/v1/code/projects/${encodeURIComponent(name)}`, { method: 'DELETE' })
   }
 }
 

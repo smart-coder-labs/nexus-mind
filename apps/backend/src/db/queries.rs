@@ -2289,6 +2289,37 @@ pub fn get_code_project(
     }
 }
 
+/// List all code projects for an org, ordered by creation date (newest first).
+pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodeProject>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, root_path, file_count, chunk_count, last_indexed, created_at
+         FROM code_projects WHERE org_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(CodeProject {
+            id: row.get::<_, i64>(0)?.to_string(),
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            root_path: row.get(3)?,
+            file_count: row.get(4)?,
+            chunk_count: row.get(5)?,
+            last_indexed: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.map(|r| r.map_err(Into::into)).collect()
+}
+
+/// Delete a code project (and its chunks, via cascade) for (org_id, name).
+/// Returns `true` if a row was deleted, `false` if not found.
+pub fn delete_code_project(conn: &Connection, org_id: &str, name: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM code_projects WHERE org_id = ?1 AND name = ?2",
+        [org_id, name],
+    )?;
+    Ok(affected > 0)
+}
+
 /// Return file_path → file_hash for all chunks of a project (deduplicated).
 /// Used by the indexer to detect unchanged files.
 pub fn list_indexed_files_with_hashes(

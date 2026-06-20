@@ -11,8 +11,8 @@ use crate::{
     embed::{self},
     indexer,
     models::types::{
-        ApiError, AuthContext, CodeStatusResponse, IndexProjectRequest, IndexProjectResponse,
-        SearchCodeRequest, SearchCodeResult,
+        ApiError, AuthContext, CodeProject, CodeStatusResponse, IndexProjectRequest,
+        IndexProjectResponse, SearchCodeRequest, SearchCodeResult,
     },
     store::sqlite::SqliteStore,
 };
@@ -312,6 +312,56 @@ pub async fn get_context(
         .collect();
 
     Ok(Json(results))
+}
+
+fn forbidden() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError {
+            error: "Forbidden".to_string(),
+            code: "forbidden".to_string(),
+        }),
+    )
+}
+
+/// `GET /v1/code/projects`
+///
+/// Returns all code projects for the authenticated org.
+pub async fn list_projects(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<CodeProject>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let projects = db_queries::list_code_projects(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(projects))
+}
+
+/// `DELETE /v1/code/projects/:name`
+///
+/// Deletes a code project and all its indexed chunks. Admin only.
+pub async fn delete_project(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let deleted = db_queries::delete_code_project(&conn, &auth.org_id, &name).map_err(db_err)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
 }
 
 #[cfg(test)]

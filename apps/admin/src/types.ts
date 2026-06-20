@@ -132,3 +132,22 @@ export interface AuditFilters {
 export type ProjectAccess =
   | { type: 'all' }
   | { type: 'specific'; project_ids: string[] }
+
+export interface CodeProject {
+  id: string
+  org_id: string
+  name: string
+  root_path: string
+  file_count: number
+  chunk_count: number
+  last_indexed: string | null
+  created_at: string
+}
+
+export interface CodeIndexResponse {
+  project: string
+  status: string
+  file_count: number
+  chunk_count: number
+  last_indexed: string
+}

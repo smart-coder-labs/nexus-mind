@@ -11,6 +11,7 @@ import {
   X,
   Shield,
   FolderGit,
+  Code2,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Users',      href: '/users',    icon: Users },
   { label: 'Roles',      href: '/roles',    icon: Shield },
   { label: 'Projects',   href: '/projects', icon: FolderGit },
+  { label: 'Code',       href: '/code',     icon: Code2 },
   { label: 'Memories',   href: '/memories', icon: Brain },
   { label: 'Audit Log',  href: '/audit',    icon: ScrollText },
   { label: 'Settings',   href: '/settings', icon: Settings },
@@ -40,7 +42,8 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       item.href === '/users' ||
       item.href === '/audit' ||
       item.href === '/roles' ||
-      item.href === '/projects'
+      item.href === '/projects' ||
+      item.href === '/code'
     ) {
       return session?.user.role === 'admin'
     }
