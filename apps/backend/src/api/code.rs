@@ -20,6 +20,19 @@ use crate::{
 const DEFAULT_TOP_K: i64 = 5;
 const MAX_TOP_K: i64 = 20;
 
+/// Build a Command for `git` with an augmented PATH that covers common install locations.
+/// Servers started by process managers (systemd, Docker, etc.) often have a stripped PATH
+/// that excludes /usr/local/bin and /opt/homebrew/bin where git lives.
+fn git_cmd() -> std::process::Command {
+    let mut cmd = git_cmd();
+    let base = std::env::var("PATH").unwrap_or_default();
+    cmd.env(
+        "PATH",
+        format!("{base}:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/usr/local/git/bin"),
+    );
+    cmd
+}
+
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -77,7 +90,7 @@ pub async fn post_index(
         let path = std::path::Path::new(&clone_dir);
         if path.join(".git").exists() {
             // Pull latest
-            let out = std::process::Command::new("git")
+            let out = git_cmd()
                 .args(["-C", &clone_dir, "pull", "--rebase", "--quiet"])
                 .output()
                 .map_err(|e| db_err(anyhow::anyhow!("git pull failed: {e}")))?;
@@ -90,7 +103,7 @@ pub async fn post_index(
         } else {
             std::fs::create_dir_all(&clone_dir)
                 .map_err(|e| db_err(anyhow::anyhow!("failed to create clone dir: {e}")))?;
-            let out = std::process::Command::new("git")
+            let out = git_cmd()
                 .args(["clone", "--depth=1", "--quiet", url.trim(), &clone_dir])
                 .output()
                 .map_err(|e| db_err(anyhow::anyhow!("git clone failed: {e}")))?;
