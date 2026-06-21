@@ -34,12 +34,12 @@ function ApiKeyModal({ apiKey, onClose }: { apiKey: string; onClose: () => void 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
       <div
-        className="bg-[#272729] border border-border-primary rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4"
+        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4"
         onClick={e => e.stopPropagation()}
       >
-        <p className="text-text-primary font-semibold">Setup complete!</p>
-        <p className="text-xs text-status-warning">Copy your API key — it won't be shown again.</p>
-        <div className="font-mono text-sm bg-[#1d1d1f] rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
+        <p className="text-base font-semibold text-text-primary">Setup complete!</p>
+        <p className="text-xs text-text-quaternary">Copy your API key — it won't be shown again.</p>
+        <div className="font-mono text-xs bg-[#272729] rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={handleCopy}
@@ -153,8 +153,8 @@ export default function SetPassword() {
     return (
       <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
         <div className="text-center space-y-2">
-          <p className="text-text-primary font-semibold">Invalid link</p>
-          <p className="text-text-tertiary text-sm">This link is missing a token.</p>
+          <p className="text-base font-semibold text-text-primary">Invalid link</p>
+          <p className="text-xs text-text-quaternary mt-0.5">This link is missing a token.</p>
         </div>
       </div>
     )
@@ -164,7 +164,7 @@ export default function SetPassword() {
   if (inviteToken && inviteLoading) {
     return (
       <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
-        <p className="text-text-tertiary text-sm">Validating invite…</p>
+        <p className="text-xs text-text-quaternary">Validating invite…</p>
       </div>
     )
   }
@@ -180,8 +180,8 @@ export default function SetPassword() {
     return (
       <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
         <div className="text-center space-y-2">
-          <p className="text-status-error font-semibold">{message}</p>
-          <p className="text-text-tertiary text-sm">Please ask your admin for a new link.</p>
+          <p className="text-base font-semibold text-status-error">{message}</p>
+          <p className="text-xs text-text-quaternary mt-0.5">Please ask your admin for a new link.</p>
         </div>
       </div>
     )
@@ -203,22 +203,22 @@ export default function SetPassword() {
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">NexusMind</h1>
-            <p className="text-text-secondary mt-2 text-sm">
+            <p className="text-xs text-text-quaternary mt-0.5">
               {inviteToken ? 'Create your account to get started' : 'Set your password to get started'}
             </p>
           </div>
 
-          <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-8">
+          <div className="bg-[#272729] border border-border-primary rounded-[18px] p-8">
             {done ? (
               <div className="text-center space-y-2 py-4">
-                <p className="text-text-primary font-semibold">Password set!</p>
-                <p className="text-text-tertiary text-sm">Redirecting to login…</p>
+                <p className="text-base font-semibold text-text-primary">Password set!</p>
+                <p className="text-xs text-text-quaternary mt-0.5">Redirecting to login…</p>
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Invite welcome banner */}
                 {inviteToken && invite?.valid && invite.org_name && (
-                  <div className="bg-accent-blue/5 border border-accent-blue/20 rounded-[11px] p-3 text-sm text-text-secondary mb-4">
+                  <div className="bg-accent-blue/5 border border-accent-blue/20 rounded-[11px] p-3 text-xs text-text-secondary mb-4">
                     You've been invited to join <span className="text-text-primary font-semibold">{invite.org_name}</span>
                   </div>
                 )}
@@ -246,7 +246,7 @@ export default function SetPassword() {
                     autoFocus={!inviteToken}
                     autoComplete="new-password"
                   />
-                  <p className="text-[11px] text-text-quaternary mt-1">At least 8 characters</p>
+                  <p className="text-[10px] text-text-quaternary mt-1">At least 8 characters</p>
                 </div>
                 <Input
                   type="password"
