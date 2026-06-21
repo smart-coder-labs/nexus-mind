@@ -46,7 +46,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
                 value={key}
                 onChange={e => setKey(e.target.value)}
                 placeholder="sk_…"
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus pr-10"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10"
                 autoFocus
               />
               <button
@@ -58,7 +58,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
               </button>
             </div>
           </div>
-          {error && <p className="text-sm text-status-error">{error}</p>}
+          {error && <p className="text-[10px] text-status-error">{error}</p>}
           <button
             type="submit"
             disabled={loading || !key.trim()}
@@ -131,11 +131,11 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
                 onChange={set(key)}
                 placeholder={placeholder}
                 required
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
               />
             </div>
           ))}
-          {error && <p className="text-sm text-status-error">{error}</p>}
+          {error && <p className="text-[10px] text-status-error">{error}</p>}
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-sm rounded-full px-4 py-2 transition-colors">
               Cancel
@@ -269,7 +269,7 @@ export default function Orgs() {
               </tr>
             )}
             {orgs.map(org => (
-              <tr key={org.id} className="hover:bg-[#272729]/40 transition-colors">
+              <tr key={org.id} className="hover:bg-white/[0.04] transition-colors">
                 <td className="px-4 py-3 text-text-primary font-semibold">{org.name}</td>
                 <td className="px-4 py-3">
                   <span className="font-mono text-xs bg-[#272729] px-2 py-0.5 rounded-[5px] text-text-secondary">{org.slug}</span>

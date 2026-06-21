@@ -460,6 +460,10 @@ export class NexusMindClient {
     return this.request(`/v1/admin/keys/${keyId}`, { method: 'DELETE' })
   }
 
+  createOrgKey(data: { name: string; expires_at?: string; role?: string; description?: string }): Promise<{ id: string; name: string; key: string; role?: string; expires_at?: string; created_at?: string }> {
+    return this.request('/v1/admin/keys', { method: 'POST', body: JSON.stringify(data) })
+  }
+
   getOnboarding(): Promise<OnboardingStatus> {
     return this.request('/v1/admin/onboarding')
   }
