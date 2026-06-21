@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Shield, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Shield, Plus, Trash2, ToggleLeft, ToggleRight, Pencil, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import type { CreatePolicyRequest, Policy } from '../types'
@@ -40,6 +40,11 @@ export default function Policies() {
   const [formEnabled, setFormEnabled] = useState(true)
   const [formError, setFormError] = useState('')
 
+  const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editConfig, setEditConfig] = useState('')
+  const [editError, setEditError] = useState('')
+
   const { data, isLoading } = useQuery({
     queryKey: ['policies'],
     queryFn: () => client.listPolicies(),
@@ -71,6 +76,19 @@ export default function Policies() {
     mutationFn: (id: string) => client.deletePolicy(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['policies'] })
+    },
+  })
+
+  const editMut = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name: string; config: Record<string, unknown> } }) =>
+      client.updatePolicy(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['policies'] })
+      setEditingPolicy(null)
+      setEditError('')
+    },
+    onError: (err: Error) => {
+      setEditError(err.message || 'Failed to update policy')
     },
   })
 
@@ -200,21 +218,120 @@ export default function Policies() {
                   {policy.enabled ? 'Enabled' : 'Disabled'}
                 </button>
 
-                <button
-                  onClick={() => {
-                    if (confirm(`Delete policy "${policy.name}"? This cannot be undone.`)) {
-                      deleteMut.mutate(policy.id)
-                    }
-                  }}
-                  disabled={deleteMut.isPending}
-                  className="p-1.5 rounded-[8px] opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-error transition-opacity disabled:opacity-40"
-                  aria-label={`Delete policy ${policy.name}`}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      setEditingPolicy(policy)
+                      setEditName(policy.name)
+                      setEditConfig(policy.config ? JSON.stringify(policy.config, null, 2) : '')
+                      setEditError('')
+                    }}
+                    className="p-1.5 rounded-[8px] opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-text-primary transition-opacity"
+                    aria-label={`Edit policy ${policy.name}`}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete policy "${policy.name}"? This cannot be undone.`)) {
+                        deleteMut.mutate(policy.id)
+                      }
+                    }}
+                    disabled={deleteMut.isPending}
+                    className="p-1.5 rounded-[8px] opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-error transition-opacity disabled:opacity-40"
+                    aria-label={`Delete policy ${policy.name}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Edit Policy Modal */}
+      {editingPolicy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-text-primary">Edit policy</h2>
+              <button
+                onClick={() => { setEditingPolicy(null); setEditError('') }}
+                className="text-text-quaternary hover:text-text-secondary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {editError && (
+              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+                {editError}
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Name</label>
+              <input
+                type="text"
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+                Rule Type
+              </label>
+              <div className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-secondary px-2 py-1.5">
+                {RULE_TYPE_LABELS[editingPolicy.rule_type]}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Config (JSON)</label>
+              <textarea
+                value={editConfig}
+                onChange={e => setEditConfig(e.target.value)}
+                placeholder={CONFIG_HINTS[editingPolicy.rule_type]}
+                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 transition-colors min-h-[80px] resize-y font-mono"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setEditingPolicy(null); setEditError('') }}
+                className="bg-white/[0.06] hover:bg-white/[0.10] text-text-primary text-xs px-4 py-2 rounded-full transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setEditError('')
+                  let parsedConfig: Record<string, unknown> = {}
+                  if (editConfig.trim()) {
+                    try {
+                      parsedConfig = JSON.parse(editConfig)
+                    } catch {
+                      setEditError('Config must be valid JSON')
+                      return
+                    }
+                  }
+                  if (!editName.trim()) {
+                    setEditError('Name is required')
+                    return
+                  }
+                  editMut.mutate({ id: editingPolicy.id, data: { name: editName.trim(), config: parsedConfig } })
+                }}
+                disabled={editMut.isPending}
+                className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {editMut.isPending ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

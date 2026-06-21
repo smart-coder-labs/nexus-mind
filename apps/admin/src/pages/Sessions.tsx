@@ -21,6 +21,8 @@ export default function Sessions() {
   const [creating, setCreating] = useState(false)
   const [newSessionName, setNewSessionName] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameVal, setRenameVal] = useState('')
 
   const { data: sessions = [], isLoading } = useQuery({
     queryKey: ['sessions'],
@@ -38,6 +40,12 @@ export default function Sessions() {
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => client.deleteSession(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
+  })
+
+  const renameMut = useMutation({
+    mutationFn: ({ id, summary }: { id: string; summary: string }) =>
+      client.updateSession(id, { summary }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
   })
 
@@ -110,9 +118,40 @@ export default function Sessions() {
               >
                 <MessageSquare className="w-4 h-4 text-text-quaternary shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-text-primary truncate">
-                    {session.summary || 'Untitled Session'}
-                  </p>
+                  {renamingId === session.id ? (
+                    <input
+                      autoFocus
+                      value={renameVal}
+                      onChange={e => setRenameVal(e.target.value)}
+                      onBlur={() => {
+                        if (renameVal.trim() !== (session.summary ?? '')) {
+                          renameMut.mutate({ id: session.id, summary: renameVal.trim() })
+                        }
+                        setRenamingId(null)
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.currentTarget.blur()
+                        }
+                        if (e.key === 'Escape') {
+                          setRenamingId(null)
+                        }
+                      }}
+                      onClick={e => e.stopPropagation()}
+                      className="bg-transparent text-xs font-semibold text-text-primary focus:outline-none border-b border-accent-blue/60 w-full"
+                    />
+                  ) : (
+                    <span
+                      className="text-xs font-semibold text-text-primary cursor-text truncate block"
+                      onClick={e => {
+                        e.stopPropagation()
+                        setRenamingId(session.id)
+                        setRenameVal(session.summary ?? '')
+                      }}
+                    >
+                      {session.summary || 'Untitled session'}
+                    </span>
+                  )}
                   <p className="text-[10px] text-text-quaternary mt-0.5">
                     {session.memory_count ?? 0} memories
                     {session.started_at ? ` · ${new Date(session.started_at).toLocaleDateString()}` : ''}

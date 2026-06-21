@@ -1621,7 +1621,7 @@ export default function Memories() {
       {/* Drag-and-drop overlay */}
       {isDragOver && (
         <div className="fixed inset-0 bg-accent-blue/5 border-2 border-dashed border-accent-blue/40 z-20 flex items-center justify-center pointer-events-none">
-          <p className="text-sm text-accent-blue font-semibold">Drop JSON or CSV to import memories</p>
+          <p className="text-xs text-accent-blue font-semibold">Drop JSON or CSV to import memories</p>
         </div>
       )}
 
@@ -1629,7 +1629,7 @@ export default function Memories() {
       {importToast && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#272729] border border-border-primary rounded-[11px] px-4 py-3 shadow-xl flex items-center gap-3">
           <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
-          <span className="text-sm text-text-primary">
+          <span className="text-xs text-text-primary">
             Imported {importToast.imported} {importToast.imported === 1 ? 'memory' : 'memories'}
             {importToast.failed > 0 ? ` (${importToast.failed} failed)` : ''}
           </span>
@@ -1638,12 +1638,12 @@ export default function Memories() {
 
       {/* Session filter banner */}
       {sessionIdFilter && (
-        <div className="flex items-center gap-2 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.06] px-3 py-2">
-          <span className="text-[11px] text-accent-blue font-semibold">Filtered by session</span>
-          <span className="text-[11px] text-text-quaternary font-mono">{sessionIdFilter.slice(0, 12)}…</span>
+        <div className="flex items-center gap-2 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.08] px-3 py-2">
+          <span className="text-xs text-accent-blue font-semibold">Filtered by session</span>
+          <span className="text-xs text-text-quaternary font-mono">{sessionIdFilter.slice(0, 12)}…</span>
           <button
             onClick={() => setSearchParams({}, { replace: true })}
-            className="ml-auto text-[11px] text-text-quaternary hover:text-text-secondary transition-colors flex items-center gap-1"
+            className="ml-auto text-xs text-text-quaternary hover:text-text-secondary transition-colors flex items-center gap-1"
           >
             <X className="w-3 h-3" />
             Clear
@@ -1658,8 +1658,8 @@ export default function Memories() {
             <Brain className="w-4 h-4 text-accent-blue" />
           </div>
           <div>
-            <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Memories</h1>
-            <p className="text-[12px] text-text-tertiary">
+            <h1 className="text-base font-semibold text-text-primary">Memories</h1>
+            <p className="text-xs text-text-quaternary mt-0.5">
               {memories ? `${memories.length} entries` : 'Browse and search stored memories'}
             </p>
           </div>
@@ -1699,7 +1699,7 @@ export default function Memories() {
             <button
               onClick={() => { setSavePresetOpen(prev => !prev); setPresetsOpen(false) }}
               aria-label="Save current filter as preset"
-              className="border border-border-primary rounded-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+              className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
             >
               {presetSavedFlash
                 ? <><Check className="w-3.5 h-3.5 text-status-success" /><span className="text-status-success">Saved</span></>
@@ -1715,7 +1715,7 @@ export default function Memories() {
                   onChange={e => setPresetName(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setSavePresetOpen(false) }}
                   placeholder="e.g. My bugfixes"
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
                 />
                 <button
                   onClick={handleSavePreset}
@@ -1734,7 +1734,7 @@ export default function Memories() {
               <button
                 onClick={() => { setPresetsOpen(prev => !prev); setSavePresetOpen(false) }}
                 aria-label="Load a filter preset"
-                className="border border-border-primary rounded-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
               >
                 <BookmarkCheck className="w-3.5 h-3.5" />
                 Presets
@@ -1748,7 +1748,7 @@ export default function Memories() {
                     >
                       <button
                         onClick={() => handleApplyPreset(preset)}
-                        className="flex-1 text-left text-sm text-text-secondary hover:text-text-primary transition-colors truncate"
+                        className="flex-1 text-left text-xs text-text-secondary hover:text-text-primary transition-colors truncate"
                       >
                         {preset.name}
                       </button>
@@ -1780,7 +1780,7 @@ export default function Memories() {
               <button
                 onClick={() => importFileRef.current?.click()}
                 aria-label="Import memories from JSON or CSV"
-                className="border border-border-primary rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
               >
                 {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                 {importing ? 'Importing…' : 'Import'}
@@ -1805,7 +1805,7 @@ export default function Memories() {
               aria-label="Export memories"
               aria-expanded={exportOpen}
               aria-haspopup="menu"
-              className="border border-border-primary rounded-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-30"
+              className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-30"
             >
               {exporting !== null
                 ? <><span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />Exporting…</>
@@ -1820,14 +1820,14 @@ export default function Memories() {
                 <button
                   role="menuitem"
                   onClick={() => handleExport('json')}
-                  className="block w-full text-left px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
                 >
                   Export JSON
                 </button>
                 <button
                   role="menuitem"
                   onClick={() => handleExport('csv')}
-                  className="block w-full text-left px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
                 >
                   Export CSV
                 </button>
@@ -1835,7 +1835,7 @@ export default function Memories() {
                 <button
                   role="menuitem"
                   onClick={handleExportServer}
-                  className="block w-full text-left px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
                 >
                   Export via API
                 </button>
@@ -1860,7 +1860,7 @@ export default function Memories() {
           >
             {importState === 'success' && importResult ? (
               <>
-                <p className="text-sm font-semibold text-status-success">
+                <p className="text-xs font-semibold text-status-success">
                   ✓ Imported {importResult.imported} {importResult.imported === 1 ? 'memory' : 'memories'}.
                   {importResult.skipped > 0 && ` ${importResult.skipped} skipped (empty content).`}
                 </p>
@@ -1875,7 +1875,7 @@ export default function Memories() {
                 <div className="flex justify-end">
                   <button
                     onClick={handleImportClose}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-2 text-sm hover:text-text-primary transition-colors"
+                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
                   >
                     Done
                   </button>
@@ -1883,12 +1883,12 @@ export default function Memories() {
               </>
             ) : importState === 'error' ? (
               <>
-                <p className="text-sm font-semibold text-text-primary">Import failed</p>
-                <p className="text-sm text-status-error/80">{importError}</p>
+                <p className="text-xs font-semibold text-text-primary">Import failed</p>
+                <p className="text-xs text-status-error/80">{importError}</p>
                 <div className="flex justify-end">
                   <button
                     onClick={handleImportClose}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-2 text-sm hover:text-text-primary transition-colors"
+                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
                   >
                     Close
                   </button>
@@ -1896,7 +1896,7 @@ export default function Memories() {
               </>
             ) : (
               <>
-                <p className="text-sm font-semibold text-text-primary">
+                <p className="text-xs font-semibold text-text-primary">
                   Import {importPending?.length ?? 0} {(importPending?.length ?? 0) === 1 ? 'memory' : 'memories'}?
                 </p>
                 {importPending && importPending.length > 0 && (
@@ -1913,14 +1913,14 @@ export default function Memories() {
                   <button
                     onClick={handleImportClose}
                     disabled={importState === 'loading'}
-                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-2 text-sm hover:text-text-primary transition-colors disabled:opacity-40"
+                    className="rounded-full border border-border-primary text-text-secondary font-semibold px-4 py-1.5 text-xs hover:text-text-primary transition-colors disabled:opacity-40"
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleImportConfirm}
                     disabled={importState === 'loading'}
-                    className="rounded-full bg-accent-blue text-white font-semibold px-4 py-2 text-sm hover:bg-accent-blue/90 transition-colors disabled:opacity-40 flex items-center gap-2"
+                    className="rounded-full bg-accent-blue text-white font-semibold px-4 py-1.5 text-xs hover:bg-accent-blue/90 transition-colors disabled:opacity-40 flex items-center gap-2"
                   >
                     {importState === 'loading'
                       ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Importing…</>
@@ -1986,7 +1986,7 @@ export default function Memories() {
             onChange={e => setQuery(e.target.value)}
             placeholder="Search memories…"
             aria-label="Search memories"
-            className="w-full bg-transparent border border-border-primary rounded-full pl-10 pr-4 py-3 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+            className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-10 pr-4 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
           />
           {query && (
             <button
@@ -2164,7 +2164,7 @@ export default function Memories() {
 
       {/* Table */}
       <div className="border border-border-primary rounded-[18px] overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="w-full text-xs">
           <thead>
             <tr className="bg-[#272729] border-b border-border-primary">
               {/* Select-all checkbox — admin only, select mode only */}
@@ -2602,7 +2602,7 @@ export default function Memories() {
         {!isLoading && (!memories || memories.length === 0) && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <Brain className="w-6 h-6 text-text-quaternary/50" />
-            <p className="text-sm font-semibold text-text-secondary">
+            <p className="text-xs font-semibold text-text-secondary">
               {isSearching ? 'No results found' : 'No memories stored yet'}
             </p>
             <p className="text-xs text-text-quaternary max-w-xs">
@@ -2664,7 +2664,7 @@ export default function Memories() {
           ) : !tagStats?.length ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
               <Tag className="w-6 h-6 text-text-quaternary/50" />
-              <p className="text-sm font-semibold text-text-secondary">No tags found</p>
+              <p className="text-xs font-semibold text-text-secondary">No tags found</p>
               <p className="text-xs text-text-quaternary max-w-xs">
                 Tags will appear here once memories with tags are stored by the AI agent.
               </p>
@@ -2779,14 +2779,14 @@ export default function Memories() {
                   onChange={e => setNewCollectionName(e.target.value)}
                   placeholder="Collection name"
                   aria-label="Collection name"
-                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
                 />
                 <input
                   value={newCollectionDesc}
                   onChange={e => setNewCollectionDesc(e.target.value)}
                   placeholder="Description (optional)"
                   aria-label="Collection description"
-                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                  className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
                 />
                 <button
                   onClick={() => {
@@ -2816,7 +2816,7 @@ export default function Memories() {
           ) : !collections?.length ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
               <Folder className="w-6 h-6 text-text-quaternary/50" />
-              <p className="text-sm font-semibold text-text-secondary">No collections yet</p>
+              <p className="text-xs font-semibold text-text-secondary">No collections yet</p>
               <p className="text-xs text-text-quaternary max-w-xs">
                 Create a collection to organize memories into named groups.
               </p>
@@ -2831,7 +2831,7 @@ export default function Memories() {
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
                       <Folder className="w-4 h-4 text-accent-blue shrink-0" />
-                      <p className="text-sm font-semibold text-text-primary truncate">{col.name}</p>
+                      <p className="text-xs font-semibold text-text-primary truncate">{col.name}</p>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -2886,7 +2886,7 @@ export default function Memories() {
           ) : !duplicateGroups?.length ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
               <CheckCircle2 className="w-6 h-6 text-status-success/60" />
-              <p className="text-sm font-semibold text-text-secondary">No duplicate memories found</p>
+              <p className="text-xs font-semibold text-text-secondary">No duplicate memories found</p>
               <p className="text-xs text-text-quaternary max-w-xs">
                 All memories in this organization have unique content. Nothing to clean up.
               </p>
@@ -2931,7 +2931,7 @@ export default function Memories() {
                         else next.add(groupIdx)
                         return next
                       })}
-                      className="flex items-center gap-2 text-sm font-semibold text-text-primary hover:text-text-secondary transition-colors"
+                      className="flex items-center gap-2 text-xs font-semibold text-text-primary hover:text-text-secondary transition-colors"
                     >
                       {isExpanded
                         ? <ChevronUp className="w-4 h-4 text-text-quaternary" />
@@ -3033,7 +3033,7 @@ export default function Memories() {
           ) : !sessions?.length ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center border border-border-primary rounded-[18px]">
               <Clock className="w-6 h-6 text-text-quaternary/50" />
-              <p className="text-sm font-semibold text-text-secondary">No sessions yet</p>
+              <p className="text-xs font-semibold text-text-secondary">No sessions yet</p>
               <p className="text-xs text-text-quaternary max-w-xs">
                 Sessions are created automatically when an AI agent starts working. Each session groups a set of memories.
               </p>
