@@ -17,12 +17,12 @@ import {
   Bot,
   Bell,
   Keyboard,
-  AlertCircle,
   BookMarked,
   Zap,
   FolderOpen,
   Hash,
   Search,
+  Megaphone,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -383,20 +383,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { session } = useAuth()
   const navigate = useNavigate()
 
-  const { data: orgSettings, refetch: refetchSettings } = useQuery({
+  const { data: orgSettings } = useQuery({
     queryKey: ['org-settings'],
     queryFn: () => client.getOrgSettings(),
     enabled: !!session,
-    staleTime: 60000,
+    staleTime: 5 * 60_000,
   })
 
-  const announcement = orgSettings?.announcement ?? null
-  const announcementType = orgSettings?.announcement_type ?? 'info'
-
-  const handleClearAnnouncement = async () => {
-    await client.updateAnnouncement('', 'info')
-    refetchSettings()
-  }
+  const announcement = orgSettings?.announcement ?? ''
+  const dismissKey = `nexusmind_announcement_dismissed_${announcement.slice(0, 20)}`
+  const [dismissed, setDismissed] = useState(() => !!sessionStorage.getItem(dismissKey))
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -451,30 +447,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Announcement Banner */}
-        {announcement && (
-          <div className={cn(
-            'w-full px-5 py-2.5 text-xs flex items-center gap-2',
-            announcementType === 'error'
-              ? 'bg-status-error/10 text-status-error border-b border-status-error/20'
-              : announcementType === 'warning'
-              ? 'bg-status-warning/10 text-status-warning border-b border-status-warning/20'
-              : 'bg-accent-blue/10 text-accent-blue border-b border-accent-blue/20',
-          )}>
-            <AlertCircle className="w-3 h-3 shrink-0" />
-            <span className="flex-1">{announcement}</span>
-            {session?.user.role === 'admin' && (
-              <button
-                onClick={handleClearAnnouncement}
-                className="ml-auto shrink-0 text-current opacity-60 hover:opacity-100 transition-opacity"
-                aria-label="Dismiss announcement"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-        )}
-
         {/* Mobile top bar */}
         <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-black">
           <button
@@ -494,6 +466,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="flex-1 overflow-y-auto">
+          {announcement && !dismissed && (
+            <div className="mx-6 mt-4 mb-0 flex items-start gap-3 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.08] px-4 py-3">
+              <Megaphone className="w-4 h-4 text-accent-blue mt-0.5 shrink-0" />
+              <p className="flex-1 text-xs text-text-primary leading-relaxed">{announcement}</p>
+              <button
+                onClick={() => {
+                  setDismissed(true)
+                  sessionStorage.setItem(`nexusmind_announcement_dismissed_${announcement.slice(0, 20)}`, '1')
+                }}
+                className="text-text-quaternary hover:text-text-secondary transition-colors shrink-0"
+                aria-label="Dismiss announcement"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           {children}
         </main>
       </div>

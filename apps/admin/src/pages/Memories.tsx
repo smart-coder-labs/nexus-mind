@@ -2053,7 +2053,7 @@ export default function Memories() {
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value as SortBy)}
-              className="appearance-none bg-transparent border border-border-secondary/40 rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+              className="appearance-none bg-white/[0.04] border border-border-primary rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
               aria-label="Sort memories"
             >
               <option value="newest">Newest first</option>
@@ -2069,7 +2069,7 @@ export default function Memories() {
           {activeFilterCount > 0 && (
             <button
               onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false); setQuery('') }}
-              className="rounded-full border border-border-primary px-3 py-1.5 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors flex items-center gap-1.5"
+              className="rounded-full border border-border-primary px-3 py-1.5 text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors flex items-center gap-1.5"
             >
               <span className="bg-accent-blue/10 text-accent-blue rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{activeFilterCount}</span>
               filters active · clear all
