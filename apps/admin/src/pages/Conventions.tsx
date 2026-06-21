@@ -101,6 +101,154 @@ JSON: store as TEXT, validate in application layer`,
   },
 ]
 
+// ── Markdown Import ───────────────────────────────────────────────────────────
+
+interface ParsedConvention {
+  title: string
+  content: string
+  category: string
+}
+
+function parseMarkdownConventions(md: string): ParsedConvention[] {
+  const lines = md.split('\n')
+  const result: ParsedConvention[] = []
+
+  let currentTitle = ''
+  let currentContent: string[] = []
+  let currentCategory = 'general'
+
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      if (currentTitle) {
+        result.push({ title: currentTitle, content: currentContent.join('\n').trim(), category: currentCategory })
+      }
+      currentTitle = line.slice(3).trim()
+      currentContent = []
+    } else if (line.startsWith('# ')) {
+      if (currentTitle) {
+        result.push({ title: currentTitle, content: currentContent.join('\n').trim(), category: currentCategory })
+        currentTitle = ''
+        currentContent = []
+      }
+      currentCategory = line.slice(2).trim().toLowerCase().replace(/\s+/g, '-')
+    } else if (currentTitle) {
+      currentContent.push(line)
+    }
+  }
+
+  if (currentTitle) {
+    result.push({ title: currentTitle, content: currentContent.join('\n').trim(), category: currentCategory })
+  }
+
+  return result.filter(c => c.title && c.content)
+}
+
+// ── MD Import Modal ───────────────────────────────────────────────────────────
+
+interface MdImportModalProps {
+  open: boolean
+  onClose: () => void
+  onImportDone: () => void
+}
+
+function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
+  const [mdText, setMdText] = useState('')
+  const [mdParsed, setMdParsed] = useState<ParsedConvention[]>([])
+  const [importProgress, setImportProgress] = useState(0)
+  const [importing, setImporting] = useState(false)
+
+  if (!open) return null
+
+  const handlePreview = () => {
+    setMdParsed(parseMarkdownConventions(mdText))
+    setImportProgress(0)
+  }
+
+  const handleImport = async () => {
+    setImporting(true)
+    setImportProgress(0)
+    for (let i = 0; i < mdParsed.length; i++) {
+      await client.createConvention({ ...mdParsed[i], weight: 100 })
+      setImportProgress(i + 1)
+    }
+    onImportDone()
+    onClose()
+    setMdText('')
+    setMdParsed([])
+    setImportProgress(0)
+    setImporting(false)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-sm font-semibold text-text-primary">Import from Markdown</h2>
+          <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <p className="text-xs text-text-quaternary mb-3">
+          Use <code className="bg-white/[0.06] rounded px-1 font-mono"># Heading</code> for categories and{' '}
+          <code className="bg-white/[0.06] rounded px-1 font-mono">## Heading</code> for conventions.
+        </p>
+
+        <textarea
+          className="w-full h-48 rounded-[8px] border border-border-primary bg-white/[0.04] text-xs font-mono text-text-primary px-3 py-2.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none"
+          value={mdText}
+          onChange={e => { setMdText(e.target.value); setMdParsed([]); setImportProgress(0) }}
+          placeholder={"# Architecture\n\n## Clean Architecture layers\nStrict layer separation...\n\n## REST API naming\nUse nouns, not verbs..."}
+        />
+
+        <div className="flex items-center gap-2 mt-3">
+          <button
+            onClick={handlePreview}
+            disabled={!mdText.trim()}
+            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] disabled:opacity-40 transition-colors"
+          >
+            Preview
+          </button>
+
+          {mdParsed.length > 0 && !importing && (
+            <button
+              onClick={handleImport}
+              className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold"
+            >
+              Import {mdParsed.length} convention{mdParsed.length !== 1 ? 's' : ''}
+            </button>
+          )}
+
+          {importing && (
+            <span className="text-xs text-text-quaternary">
+              {importProgress}/{mdParsed.length} imported…
+            </span>
+          )}
+        </div>
+
+        {mdParsed.length > 0 && (
+          <div className="mt-4 flex flex-col gap-1">
+            <p className="text-[10px] text-text-quaternary mb-1">Detected {mdParsed.length} convention{mdParsed.length !== 1 ? 's' : ''}:</p>
+            {mdParsed.map((c, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className="text-text-quaternary shrink-0">{i + 1}.</span>
+                <span className="font-medium text-text-primary">{c.title}</span>
+                <span className="text-[10px] bg-white/[0.06] text-text-quaternary rounded-[4px] px-1.5 py-0.5">{c.category}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -547,6 +695,7 @@ export default function Conventions() {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [showArchived, setShowArchived] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [showMdImport, setShowMdImport] = useState(false)
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<'weight' | 'recent'>('weight')
@@ -680,6 +829,13 @@ export default function Conventions() {
             Export
           </button>
           <button
+            onClick={() => setShowMdImport(true)}
+            className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+          >
+            <Upload className="w-3 h-3" />
+            Import MD
+          </button>
+          <button
             onClick={() => fileInputRef.current?.click()}
             className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
           >
@@ -799,6 +955,12 @@ export default function Conventions() {
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
         saving={saving}
+      />
+
+      <MdImportModal
+        open={showMdImport}
+        onClose={() => setShowMdImport(false)}
+        onImportDone={() => qc.invalidateQueries({ queryKey: ['conventions'] })}
       />
     </div>
   )

@@ -234,7 +234,7 @@ function CreateMemoryModal({
       onClick={onClose}
     >
       <div
-        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -258,7 +258,7 @@ function CreateMemoryModal({
                 placeholder="Memory content..."
                 value={content}
                 onChange={e => setContent(e.target.value)}
-                className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary resize-y min-h-[160px] p-3 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
+                className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary resize-none min-h-[160px] p-3 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
                 maxLength={10000}
                 required
               />
@@ -315,7 +315,7 @@ function CreateMemoryModal({
               <button
                 type="submit"
                 disabled={saving || !content.trim()}
-                className="px-4 py-2 rounded-full bg-accent-blue text-white text-sm font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
+                className="px-4 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
               >
                 {saving ? 'Creating…' : 'Create memory'}
               </button>
@@ -664,10 +664,10 @@ function MemorySlideOver({
 
       {/* Slide-over panel */}
       <div
-        className={`fixed right-0 top-0 h-full w-[420px] bg-[#1d1d1f] border-l border-border-primary shadow-2xl z-40 overflow-y-auto p-6 transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed right-0 top-0 h-full w-[420px] bg-[#1d1d1f] border-l border-border-primary shadow-2xl z-50 flex flex-col transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 mb-5">
+        <div className="px-5 py-4 border-b border-border-primary flex items-start justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             {memory && <TypeBadge type={memory.type} />}
             <p className="text-sm font-semibold text-text-primary leading-snug truncate">
@@ -677,12 +677,13 @@ function MemorySlideOver({
           <button
             onClick={onClose}
             aria-label="Close detail panel"
-            className="p-1.5 rounded-[8px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors shrink-0"
+            className="text-text-quaternary hover:text-text-primary transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
+        <div className="overflow-y-auto flex-1 p-6">
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3].map(i => (
@@ -700,7 +701,7 @@ function MemorySlideOver({
             </div>
 
             {/* Metadata grid */}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-4 border-t border-border-primary">
+            <div className="grid grid-cols-2 gap-3 pt-4 border-t border-border-primary">
               {([
                 ['Created',    fmt(memory.created_at)],
                 ['Updated',    fmt((memory as any).updated_at)],
@@ -713,7 +714,7 @@ function MemorySlideOver({
               ] as [string, string][]).map(([label, val]) => (
                 <div key={label}>
                   <p className="text-[10px] text-text-quaternary uppercase tracking-wide">{label}</p>
-                  <p className="text-xs text-text-primary mt-0.5">{val}</p>
+                  <p className="text-xs text-text-secondary mt-0.5">{val}</p>
                 </div>
               ))}
             </div>
@@ -815,7 +816,7 @@ function MemorySlideOver({
                     .filter(r => r.id !== memory.id)
                     .slice(0, 3)
                     .map(r => (
-                      <div key={r.id} className="rounded-[8px] bg-white/[0.04] border border-border-primary/50 px-3 py-2">
+                      <div key={r.id} className="rounded-[11px] bg-white/[0.04] border border-border-primary/50 px-3 py-2">
                         <div className="flex items-center gap-2 mb-0.5">
                           {r.type && <TypeBadge type={r.type} />}
                         </div>
@@ -832,6 +833,7 @@ function MemorySlideOver({
             </div>
           </div>
         ) : null}
+        </div>
       </div>
     </>
   )
