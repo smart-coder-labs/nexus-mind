@@ -121,7 +121,7 @@ export default function Sessions() {
                 />
               </div>
               {expandedId === session.id && (
-                <div className="px-4 pb-4 space-y-1.5 border-t border-border-primary pt-3">
+                <div className="px-4 pb-4 space-y-1.5 border-t border-border-primary mt-3 pt-3">
                   {(sessionMemories ?? []).length === 0 ? (
                     <p className="text-[10px] text-text-quaternary py-2">No memories in this session</p>
                   ) : (

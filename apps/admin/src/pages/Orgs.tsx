@@ -34,19 +34,19 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
           <Key className="w-5 h-5 text-accent-blue" />
           <h2 className="text-base font-semibold text-text-primary">Superuser access required</h2>
         </div>
-        <p className="text-sm text-text-secondary">
+        <p className="text-xs text-text-secondary">
           Org management requires your superuser key. It is only held in memory for this session.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Superuser key</label>
+            <label className="text-[10px] text-text-quaternary">Superuser key</label>
             <div className="relative">
               <input
                 type={visible ? 'text' : 'password'}
                 value={key}
                 onChange={e => setKey(e.target.value)}
                 placeholder="sk_…"
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 pr-10"
                 autoFocus
               />
               <button
@@ -62,7 +62,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
           <button
             type="submit"
             disabled={loading || !key.trim()}
-            className="w-full bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
+            className="w-full bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
           >
             {loading ? 'Verifying…' : 'Unlock'}
           </button>
@@ -124,26 +124,26 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
         <form onSubmit={handleSubmit} className="space-y-4">
           {fields.map(({ key, label, placeholder, type }) => (
             <div key={key} className="space-y-1.5">
-              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">{label}</label>
+              <label className="text-[10px] text-text-quaternary">{label}</label>
               <input
                 type={type ?? 'text'}
                 value={form[key]}
                 onChange={set(key)}
                 placeholder={placeholder}
                 required
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60"
               />
             </div>
           ))}
           {error && <p className="text-[10px] text-status-error">{error}</p>}
           <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-sm rounded-full px-4 py-2 transition-colors">
+            <button type="button" onClick={onClose} className="flex-1 border border-border-primary text-text-secondary hover:text-text-primary text-xs rounded-full px-4 py-1.5 transition-colors">
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !form.org_name || !form.org_slug || !form.admin_email || !form.admin_name}
-              className="flex-1 bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
+              className="flex-1 bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-40 text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
             >
               {loading ? 'Creating…' : 'Create'}
             </button>
@@ -172,12 +172,12 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
           <div className="w-2 h-2 rounded-full bg-status-success" />
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
         </div>
-        <p className="text-sm text-text-secondary">
+        <p className="text-xs text-text-secondary">
           <span className="text-text-primary font-semibold">{org.name}</span> is ready.
           Save the admin API key — it won't be shown again.
         </p>
         <div className="space-y-1.5">
-          <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Admin API key</label>
+          <label className="text-[10px] text-text-quaternary">Admin API key</label>
           <div className="flex items-center gap-2 bg-[#272729] border border-border-secondary rounded-[11px] px-3 py-2">
             <code className="flex-1 text-xs text-text-primary font-mono break-all">{apiKey}</code>
             <button onClick={copy} className="flex-shrink-0 text-text-tertiary hover:text-accent-blue transition-colors">
@@ -187,7 +187,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </div>
         <button
           onClick={onDone}
-          className="w-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
+          className="w-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
         >
           Done
         </button>
@@ -219,12 +219,12 @@ export default function Orgs() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Organizations</h1>
-          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">All tenants on this NexusMind instance.</p>
+          <h1 className="text-base font-semibold text-text-primary">Organizations</h1>
+          <p className="text-xs text-text-quaternary mt-0.5">All tenants on this NexusMind instance.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal rounded-full px-4 py-2 transition-colors"
+          className="flex items-center gap-2 bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold rounded-full px-4 py-1.5 transition-colors"
         >
           <Plus className="w-4 h-4" />
           New org
@@ -233,7 +233,7 @@ export default function Orgs() {
 
       {/* Table */}
       <div className="border border-border-primary rounded-[18px] overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="w-full">
           <thead>
             <tr className="border-b border-border-secondary bg-[#272729]/50">
               <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Name</th>
@@ -255,7 +255,7 @@ export default function Orgs() {
             )}
             {!isLoading && error && (
               <tr>
-                <td colSpan={3} className="px-4 py-6 text-center text-sm text-status-error">
+                <td colSpan={3} className="px-4 py-6 text-center text-xs text-status-error">
                   Failed to load organizations.
                 </td>
               </tr>
@@ -264,17 +264,17 @@ export default function Orgs() {
               <tr>
                 <td colSpan={3} className="px-4 py-10 text-center">
                   <Building2 className="w-8 h-8 text-text-quaternary mx-auto mb-2" />
-                  <p className="text-sm text-text-tertiary">No organizations yet.</p>
+                  <p className="text-xs text-text-quaternary">No organizations yet.</p>
                 </td>
               </tr>
             )}
             {orgs.map(org => (
               <tr key={org.id} className="hover:bg-white/[0.04] transition-colors">
-                <td className="px-4 py-3 text-text-primary font-semibold">{org.name}</td>
+                <td className="px-4 py-3 text-xs font-semibold text-text-primary">{org.name}</td>
                 <td className="px-4 py-3">
-                  <span className="font-mono text-xs bg-[#272729] px-2 py-0.5 rounded-[5px] text-text-secondary">{org.slug}</span>
+                  <span className="font-mono text-xs bg-white/[0.04] px-2 py-0.5 rounded-[5px] text-text-secondary">{org.slug}</span>
                 </td>
-                <td className="px-4 py-3 text-text-tertiary">
+                <td className="px-4 py-3 text-xs text-text-quaternary">
                   {new Date(org.created_at).toLocaleDateString()}
                 </td>
               </tr>

@@ -556,7 +556,13 @@ function BulkActionBar({
             onClick={() => setTagAction('add')}
             className="text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
-            Tag
+            Add tag
+          </button>
+          <button
+            onClick={() => setTagAction('remove')}
+            className="text-xs text-text-secondary hover:text-text-primary transition-colors"
+          >
+            Remove tag
           </button>
           <button
             onClick={onDelete}
