@@ -117,6 +117,7 @@ export default function AuditLog() {
   }
 
   const [exporting, setExporting] = useState(false)
+  const [exportingServer, setExportingServer] = useState(false)
 
   const handleExportCsv = useCallback(async () => {
     setExporting(true)
@@ -155,6 +156,26 @@ export default function AuditLog() {
     }
   }, [filters, client])
 
+  const handleExportServer = useCallback(async () => {
+    setExportingServer(true)
+    try {
+      const blob = await client.exportAuditLog({
+        ...filters,
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `audit-log-${todayStamp()}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportingServer(false)
+    }
+  }, [filters, debouncedSearch, client])
+
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
@@ -191,15 +212,26 @@ export default function AuditLog() {
             {groupBySessions ? 'Grouped' : 'Group by session'}
           </button>
           {session?.user.role === 'admin' && (
-            <button
-              onClick={handleExportCsv}
-              disabled={exporting}
-              className="border border-border-primary rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors disabled:opacity-40"
-              aria-label="Export audit log as CSV"
-            >
-              <Download className="w-3.5 h-3.5" />
-              {exporting ? 'Exporting…' : 'Export CSV'}
-            </button>
+            <>
+              <button
+                onClick={handleExportCsv}
+                disabled={exporting || exportingServer}
+                className="border border-border-primary rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors disabled:opacity-40"
+                aria-label="Export audit log as CSV"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {exporting ? 'Exporting…' : 'Export CSV'}
+              </button>
+              <button
+                onClick={handleExportServer}
+                disabled={exporting || exportingServer}
+                className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                aria-label="Export audit log via API"
+              >
+                <Download className="w-3 h-3" />
+                {exportingServer ? 'Exporting…' : 'Export'}
+              </button>
+            </>
           )}
         </div>
       </div>

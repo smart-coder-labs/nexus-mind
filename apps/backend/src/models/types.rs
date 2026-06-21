@@ -362,6 +362,42 @@ pub struct ProjectContext {
     pub last_activity: Option<String>,
 }
 
+// ── Convention ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Convention {
+    pub id: i64,
+    pub org_id: String,
+    pub project_id: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub category: String,
+    pub weight: i64,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateConventionRequest {
+    pub title: String,
+    pub content: String,
+    pub category: Option<String>,
+    pub weight: Option<i64>,
+    pub tags: Option<Vec<String>>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateConventionRequest {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub category: Option<String>,
+    pub weight: Option<i64>,
+    pub tags: Option<Vec<String>>,
+}
+
 /// Request body for `POST /v1/audit/log` — external audit ingest.
 ///
 /// `action` and `resource_type` are semantically required but declared as `Option`

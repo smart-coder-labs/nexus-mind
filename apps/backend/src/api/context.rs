@@ -11,6 +11,9 @@ use crate::{
     api::helpers::require_permission,
 };
 
+// Re-export the return type alias for clarity.
+type ContextResponse = serde_json::Value;
+
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -25,7 +28,7 @@ pub async fn get_project_context(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(project): Path<String>,
-) -> Result<Json<ProjectContext>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
 
@@ -34,7 +37,18 @@ pub async fn get_project_context(
     let ctx = db_queries::get_project_context(&conn, &auth.org_id, &project)
         .map_err(db_err)?;
 
-    Ok(Json(ctx))
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false))
+        .map_err(db_err)?;
+
+    let mut ctx_json = serde_json::to_value(&ctx).map_err(|e| db_err(e.into()))?;
+    if let serde_json::Value::Object(ref mut map) = ctx_json {
+        map.insert(
+            "conventions".to_string(),
+            serde_json::to_value(&conventions).unwrap_or(serde_json::json!([])),
+        );
+    }
+
+    Ok(Json(ctx_json))
 }
 
 #[cfg(test)]

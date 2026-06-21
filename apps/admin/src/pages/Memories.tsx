@@ -6,7 +6,7 @@ import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
-import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star } from 'lucide-react'
+import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
@@ -131,6 +131,198 @@ function MemoryMarkdown({ content }: { content: string }) {
     >
       {content}
     </ReactMarkdown>
+  )
+}
+
+// ── Create Memory Modal ───────────────────────────────────────────────────────
+
+function CreateMemoryModal({
+  open,
+  onClose,
+  onCreated,
+}: {
+  open: boolean
+  onClose: () => void
+  onCreated: () => void
+}) {
+  const { session } = useAuth()
+  const client = React.useMemo(() => createClient(), [session])
+  const qc = useQueryClient()
+
+  const [content, setContent] = useState('')
+  const [tagInput, setTagInput] = useState('')
+  const [tags, setTags] = useState<string[]>([])
+  const [projectId, setProjectId] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+  const [flash, setFlash] = useState(false)
+
+  const { data: projects = [] } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+    enabled: open,
+  })
+
+  useEffect(() => {
+    if (!open) {
+      setContent('')
+      setTagInput('')
+      setTags([])
+      setProjectId('')
+      setSaving(false)
+      setFlash(false)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
+  const handleTagSelect = (tag: string) => {
+    if (!tags.includes(tag)) {
+      setTags(prev => [...prev, tag])
+    }
+    setTagInput('')
+  }
+
+  const handleTagKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.key === 'Enter' || e.key === ',') && tagInput.trim()) {
+      e.preventDefault()
+      const newTag = tagInput.trim().replace(/,$/, '')
+      if (newTag && !tags.includes(newTag)) {
+        setTags(prev => [...prev, newTag])
+      }
+      setTagInput('')
+    } else if (e.key === 'Backspace' && !tagInput && tags.length > 0) {
+      setTags(prev => prev.slice(0, -1))
+    }
+  }
+
+  const removeTag = (tag: string) => {
+    setTags(prev => prev.filter(t => t !== tag))
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!content.trim()) return
+    setSaving(true)
+    try {
+      await client.storeMemory({
+        content: content.trim(),
+        tags: tags.length > 0 ? tags : undefined,
+        project_id: projectId || undefined,
+      })
+      qc.invalidateQueries({ queryKey: ['memories'] })
+      setFlash(true)
+      setTimeout(() => {
+        onCreated()
+        onClose()
+      }, 800)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-sm font-semibold text-text-primary">New memory</h2>
+          <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {flash ? (
+          <div className="flex items-center gap-2 py-6 justify-center text-status-success">
+            <CheckCircle2 className="w-5 h-5" />
+            <span className="text-sm font-semibold">Memory created</span>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            {/* Content */}
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1.5">Content</label>
+              <textarea
+                placeholder="Memory content..."
+                value={content}
+                onChange={e => setContent(e.target.value)}
+                className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary resize-y min-h-[160px] p-3 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
+                maxLength={10000}
+                required
+              />
+              <p className="text-[10px] text-text-quaternary text-right mt-0.5">{content.length} / 10000</p>
+            </div>
+
+            {/* Tags */}
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1.5">Tags</label>
+              <div className="rounded-[8px] border border-border-primary bg-white/[0.04] px-2 py-1.5 flex flex-wrap gap-1.5 focus-within:border-accent-blue/60 transition-colors">
+                {tags.map(tag => (
+                  <span key={tag} className="bg-white/[0.06] rounded-full px-2 py-0.5 text-[10px] text-text-secondary flex items-center gap-1">
+                    {tag}
+                    <button type="button" onClick={() => removeTag(tag)} className="hover:text-text-primary transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </span>
+                ))}
+                <TagAutocomplete
+                  value={tagInput}
+                  onChange={setTagInput}
+                  onSelect={handleTagSelect}
+                  onKeyDown={handleTagKeyDown}
+                  existingTags={tags}
+                  placeholder={tags.length === 0 ? 'Add tags…' : ''}
+                  className="flex-1 min-w-[100px] bg-transparent text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Project */}
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1.5">Project <span className="text-text-quaternary">(optional)</span></label>
+              <select
+                value={projectId}
+                onChange={e => setProjectId(e.target.value)}
+                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs focus:outline-none focus:border-accent-blue/60 text-text-primary px-2 py-1.5"
+              >
+                <option value="">No project</option>
+                {projects.filter(p => !p.archived_at).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-1">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-[8px] text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving || !content.trim()}
+                className="px-4 py-2 rounded-full bg-accent-blue text-white text-sm font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
+              >
+                {saving ? 'Creating…' : 'Create memory'}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -470,6 +662,7 @@ export default function Memories() {
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
   const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections'>('memories')
+  const [createMemoryOpen, setCreateMemoryOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -633,6 +826,19 @@ export default function Memories() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editContent, setEditContent] = useState('')
   const [editFlash, setEditFlash] = useState<string | null>(null)
+
+  // Session inline rename state
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editSessionSummary, setEditSessionSummary] = useState('')
+
+  const updateSessionMut = useMutation({
+    mutationFn: ({ id, summary }: { id: string; summary: string }) =>
+      client.updateSession(id, { summary }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sessions'] })
+      setEditingSessionId(null)
+    },
+  })
 
   // History panel state
   const [historyMemoryId, setHistoryMemoryId] = useState<string | null>(null)
@@ -929,6 +1135,27 @@ export default function Memories() {
     }
   }, [client, isSearching, debouncedQuery, mode, filterType, filterScope, filterProject])
 
+  const handleExportServer = useCallback(async () => {
+    setExportOpen(false)
+    setExporting('json')
+    try {
+      const blob = await client.exportMemories({
+        q: debouncedQuery || undefined,
+        collection_id: filterCollection || undefined,
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `memories-export-${todayStamp()}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } finally {
+      setExporting(null)
+    }
+  }, [client, debouncedQuery, filterCollection])
+
   const handleImportFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!importFileRef.current) return
@@ -1097,6 +1324,15 @@ export default function Memories() {
             </>
           )}
 
+          {/* New memory */}
+          <button
+            onClick={() => setCreateMemoryOpen(true)}
+            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+          >
+            <Plus className="w-3 h-3" />
+            New memory
+          </button>
+
           {/* Export */}
           <div ref={exportRef} className="relative">
             <button
@@ -1115,7 +1351,7 @@ export default function Memories() {
             {exportOpen && (
               <div
                 role="menu"
-                className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] py-1 z-10 min-w-[130px]"
+                className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] py-1 z-10 min-w-[160px]"
               >
                 <button
                   role="menuitem"
@@ -1130,6 +1366,14 @@ export default function Memories() {
                   className="block w-full text-left px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
                 >
                   Export CSV
+                </button>
+                <div className="border-t border-border-secondary/40 my-1" />
+                <button
+                  role="menuitem"
+                  onClick={handleExportServer}
+                  className="block w-full text-left px-4 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                >
+                  Export via API
                 </button>
               </div>
             )}
@@ -2312,8 +2556,53 @@ export default function Memories() {
                         {session.directory}
                       </p>
                     )}
-                    {session.summary && (
-                      <p className="text-[13px] text-text-tertiary mt-1 line-clamp-2">{session.summary}</p>
+                    {editingSessionId === session.id ? (
+                      <div className="mt-1" onClick={e => e.stopPropagation()}>
+                        <input
+                          autoFocus
+                          value={editSessionSummary}
+                          onChange={e => setEditSessionSummary(e.target.value)}
+                          onBlur={() => {
+                            if (editSessionSummary.trim() !== (session.summary ?? '')) {
+                              updateSessionMut.mutate({ id: session.id, summary: editSessionSummary.trim() })
+                            } else {
+                              setEditingSessionId(null)
+                            }
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              updateSessionMut.mutate({ id: session.id, summary: editSessionSummary.trim() })
+                            }
+                            if (e.key === 'Escape') {
+                              setEditingSessionId(null)
+                            }
+                          }}
+                          className="w-full bg-[#1d1d1f] border border-accent-blue/40 rounded-[8px] px-2 py-1 text-[13px] text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue"
+                          placeholder="Session summary…"
+                        />
+                      </div>
+                    ) : (
+                      <div
+                        className="flex items-center gap-1.5 mt-1 group/summary"
+                        onClick={e => e.stopPropagation()}
+                      >
+                        {session.summary ? (
+                          <p className="text-[13px] text-text-tertiary line-clamp-2">{session.summary}</p>
+                        ) : (
+                          <p className="text-[13px] text-text-quaternary italic opacity-0 group-hover:opacity-60 transition-opacity">Add summary…</p>
+                        )}
+                        <button
+                          onClick={e => {
+                            e.stopPropagation()
+                            setEditingSessionId(session.id)
+                            setEditSessionSummary(session.summary ?? '')
+                          }}
+                          aria-label="Rename session summary"
+                          className="opacity-0 group-hover/summary:opacity-100 transition-opacity text-text-quaternary hover:text-text-primary shrink-0"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      </div>
                     )}
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
@@ -2389,6 +2678,13 @@ export default function Memories() {
           )}
         </div>
       )}
+
+      {/* Create Memory Modal */}
+      <CreateMemoryModal
+        open={createMemoryOpen}
+        onClose={() => setCreateMemoryOpen(false)}
+        onCreated={() => qc.invalidateQueries({ queryKey: ['memories'] })}
+      />
     </div>
   )
 }

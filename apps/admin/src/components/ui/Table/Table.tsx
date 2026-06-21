@@ -110,7 +110,7 @@ export function Table<T>({
                             <th
                                 key={String(col.key)}
                                 className={cn(
-                                    "px-4 py-3 text-sm font-normal text-text-secondary select-none whitespace-nowrap",
+                                    "px-4 py-3 text-[10px] font-semibold text-text-quaternary uppercase tracking-wide select-none whitespace-nowrap",
                                     col.width && `w-[${col.width}]`
                                 )}
                             >
@@ -184,7 +184,7 @@ export function Table<T>({
                                     <td
                                         key={String(col.key)}
                                         className={cn(
-                                            "px-4 text-sm text-text-primary",
+                                            "px-4 text-xs text-text-secondary",
                                             rowPadding
                                         )}
                                     >
@@ -280,7 +280,7 @@ function Checkbox({
                 }
             }}
             className={cn(
-                "h-4 w-4 rounded-[5px] border border-border-primary bg-transparent flex items-center justify-center",
+                "h-4 w-4 rounded-[5px] border border-border-primary bg-white/[0.04] flex items-center justify-center",
                 "data-[state=checked]:bg-accent-blue data-[state=checked]:border-accent-blue",
                 "transition-colors",
                 disabled && "opacity-50 cursor-not-allowed"

@@ -47,6 +47,12 @@ import type {
   RetryDeliveryResponse,
   RetentionPreview,
   ImportConfigResponse,
+  Policy,
+  CreatePolicyRequest,
+  UpdatePolicyRequest,
+  Convention,
+  CreateConventionRequest,
+  UpdateConventionRequest,
 } from '../types'
 
 export class NexusMindClient {
@@ -318,6 +324,13 @@ export class NexusMindClient {
     return this.request('/v1/sessions')
   }
 
+  updateSession(id: string, data: { summary?: string; description?: string }): Promise<SessionSummary> {
+    return this.request(`/v1/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
   bulkDeleteMemories(ids: string[]): Promise<BulkDeleteResponse> {
     return this.request('/v1/memory/bulk', {
       method: 'DELETE',
@@ -514,6 +527,51 @@ export class NexusMindClient {
     return res.blob()
   }
 
+  async exportMemories(params: {
+    q?: string
+    tags?: string
+    collection_id?: string
+  } = {}): Promise<Blob> {
+    const qs = new URLSearchParams()
+    if (params.q)             qs.set('q',             params.q)
+    if (params.tags)          qs.set('tags',          params.tags)
+    if (params.collection_id) qs.set('collection_id', params.collection_id)
+    const res = await fetch(`${this.baseUrl}/v1/memory/export?${qs}`, {
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw Object.assign(new Error(body.error ?? res.statusText), {
+        code: body.code,
+        status: res.status,
+      })
+    }
+    return res.blob()
+  }
+
+  async exportAuditLog(params: {
+    user_id?: string
+    action?: string
+    resource_type?: string
+    from?: string
+    to?: string
+    search?: string
+  } = {}): Promise<Blob> {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => v != null && v !== '' && qs.set(k, String(v)))
+    const res = await fetch(`${this.baseUrl}/v1/audit/export?${qs}`, {
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw Object.assign(new Error(body.error ?? res.statusText), {
+        code: body.code,
+        status: res.status,
+      })
+    }
+    return res.blob()
+  }
+
   // ── Collections ─────────────────────────────────────────────────────────────
 
   async listCollections(): Promise<Collection[]> {
@@ -551,6 +609,68 @@ export class NexusMindClient {
     return this.request(`/v1/webhooks/deliveries/${deliveryId}/retry`, {
       method: 'POST',
     })
+  }
+
+  // ── Policies ─────────────────────────────────────────────────────────────────
+
+  listPolicies(): Promise<{ policies: Policy[] }> {
+    return this.request('/v1/policies')
+  }
+
+  createPolicy(data: CreatePolicyRequest): Promise<Policy> {
+    return this.request('/v1/policies', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  updatePolicy(id: string, data: UpdatePolicyRequest): Promise<Policy> {
+    return this.request(`/v1/policies/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  deletePolicy(id: string): Promise<void> {
+    return this.request(`/v1/policies/${id}`, { method: 'DELETE' })
+  }
+
+  checkPolicy(data: { model: string; prompt_tokens?: number }): Promise<{ allowed: boolean; violations: Array<{ rule_type: string; reason: string }> }> {
+    return this.request('/v1/policy/check', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  // Conventions
+  listConventions(category?: string, includeArchived?: boolean): Promise<Convention[]> {
+    const params = new URLSearchParams()
+    if (category) params.set('category', category)
+    if (includeArchived) params.set('include_archived', 'true')
+    const qs = params.toString() ? `?${params.toString()}` : ''
+    return this.request(`/v1/conventions${qs}`)
+  }
+
+  getConvention(id: number): Promise<Convention> {
+    return this.request(`/v1/conventions/${id}`)
+  }
+
+  createConvention(data: CreateConventionRequest): Promise<Convention> {
+    return this.request('/v1/conventions', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  updateConvention(id: number, data: UpdateConventionRequest): Promise<Convention> {
+    return this.request(`/v1/conventions/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  deleteConvention(id: number): Promise<void> {
+    return this.request(`/v1/conventions/${id}`, { method: 'DELETE' })
+  }
+
+  storeMemory(data: { content: string; tags?: string[]; project_id?: string; metadata?: object }): Promise<Memory> {
+    return this.request('/v1/memory/store', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  archiveConvention(id: number): Promise<void> {
+    return this.request(`/v1/conventions/${id}/archive`, { method: 'POST' })
+  }
+
+  restoreConvention(id: number): Promise<void> {
+    return this.request(`/v1/conventions/${id}/restore`, { method: 'POST' })
   }
 }
 

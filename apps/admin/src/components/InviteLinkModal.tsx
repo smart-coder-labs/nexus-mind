@@ -87,7 +87,7 @@ export function InviteLinkModal({ open, client, onClose }: Props) {
             value={role}
             onChange={e => setRole(e.target.value)}
             disabled={!!invite}
-            className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors disabled:opacity-50"
+            className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors disabled:opacity-50"
           >
             <option value="user">User</option>
             <option value="member">Member</option>

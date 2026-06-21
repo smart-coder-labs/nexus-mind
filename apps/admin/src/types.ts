@@ -456,3 +456,59 @@ export interface ImportConfigResponse {
   applied_fields: string[]
   skipped_fields: string[]
 }
+
+// ── Policies ──────────────────────────────────────────────────────────────────
+
+export interface Policy {
+  id: string
+  org_id: string
+  name: string
+  rule_type: 'model_whitelist' | 'budget_limit' | 'pii_redact'
+  config: Record<string, unknown>
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreatePolicyRequest {
+  name: string
+  rule_type: 'model_whitelist' | 'budget_limit' | 'pii_redact'
+  config: Record<string, unknown>
+  enabled?: boolean
+}
+
+export interface UpdatePolicyRequest {
+  name?: string
+  enabled?: boolean
+}
+
+export interface Convention {
+  id: number
+  org_id: string
+  project_id?: string | null
+  title: string
+  content: string
+  category: string
+  weight: number
+  tags: string[]
+  created_at: string
+  updated_at: string
+  archived_at?: string | null
+}
+
+export interface CreateConventionRequest {
+  title: string
+  content: string
+  category?: string
+  weight?: number
+  tags?: string[]
+  project_id?: string
+}
+
+export interface UpdateConventionRequest {
+  title?: string
+  content?: string
+  category?: string
+  weight?: number
+  tags?: string[]
+}

@@ -9,7 +9,7 @@ use crate::models::types::{
     GlobalMetrics, Memory, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
     Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
     ProjectEventOverrides, Webhook, CreateWebhookRequest, UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser,
-    OnboardingItem, OnboardingStatus, InviteLink,
+    OnboardingItem, OnboardingStatus, InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -6772,4 +6772,130 @@ mod project_stats_tests {
         assert_eq!(stats.memories_this_week, 3, "memories_this_week should be 3 (just inserted)");
         assert!(stats.last_memory_at.is_some(), "last_memory_at should be set");
     }
+}
+
+// ── Convention queries ────────────────────────────────────────────────────────
+
+pub fn list_conventions(
+    conn: &Connection,
+    org_id: &str,
+    category: Option<&str>,
+    include_archived: Option<bool>,
+) -> Result<Vec<Convention>> {
+    let include_archived = include_archived.unwrap_or(false);
+    let mut sql = String::from(
+        "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
+         FROM conventions
+         WHERE org_id = ?1"
+    );
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    if category.is_some() {
+        sql.push_str(" AND category = ?2");
+    }
+    sql.push_str(" ORDER BY weight DESC, created_at DESC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = if let Some(cat) = category {
+        stmt.query_map(rusqlite::params![org_id, cat], convention_from_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map(rusqlite::params![org_id], convention_from_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(rows)
+}
+
+pub fn get_convention(conn: &Connection, org_id: &str, id: i64) -> Result<Option<Convention>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
+         FROM conventions WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id],
+        convention_from_row,
+    ).optional()?;
+    Ok(result)
+}
+
+pub fn create_convention(
+    conn: &Connection,
+    org_id: &str,
+    req: &CreateConventionRequest,
+) -> Result<Convention> {
+    let tags_json = serde_json::to_string(&req.tags.clone().unwrap_or_default())?;
+    let category = req.category.as_deref().unwrap_or("general");
+    let weight = req.weight.unwrap_or(100);
+    conn.execute(
+        "INSERT INTO conventions (org_id, project_id, title, content, category, weight, tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![org_id, req.project_id, req.title, req.content, category, weight, tags_json],
+    )?;
+    let id = conn.last_insert_rowid();
+    get_convention(conn, org_id, id)?.ok_or_else(|| anyhow::anyhow!("convention not found after insert"))
+}
+
+pub fn update_convention(
+    conn: &Connection,
+    org_id: &str,
+    id: i64,
+    req: &UpdateConventionRequest,
+) -> Result<Option<Convention>> {
+    let existing = match get_convention(conn, org_id, id)? {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let title = req.title.as_deref().unwrap_or(&existing.title);
+    let content = req.content.as_deref().unwrap_or(&existing.content);
+    let category = req.category.as_deref().unwrap_or(&existing.category);
+    let weight = req.weight.unwrap_or(existing.weight);
+    let tags = req.tags.clone().unwrap_or(existing.tags.clone());
+    let tags_json = serde_json::to_string(&tags)?;
+    conn.execute(
+        "UPDATE conventions SET title = ?1, content = ?2, category = ?3, weight = ?4, tags = ?5, updated_at = datetime('now')
+         WHERE org_id = ?6 AND id = ?7",
+        rusqlite::params![title, content, category, weight, tags_json, org_id, id],
+    )?;
+    get_convention(conn, org_id, id)
+}
+
+pub fn archive_convention(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE conventions SET archived_at = datetime('now') WHERE org_id = ?1 AND id = ?2 AND archived_at IS NULL",
+        rusqlite::params![org_id, id],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn restore_convention(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE conventions SET archived_at = NULL WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn delete_convention(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM conventions WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id],
+    )?;
+    Ok(n > 0)
+}
+
+fn convention_from_row(row: &rusqlite::Row) -> rusqlite::Result<Convention> {
+    let tags_str: String = row.get(7)?;
+    let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+    Ok(Convention {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project_id: row.get(2)?,
+        title: row.get(3)?,
+        content: row.get(4)?,
+        category: row.get(5)?,
+        weight: row.get(6)?,
+        tags,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        archived_at: row.get(10)?,
+    })
 }

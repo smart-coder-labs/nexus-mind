@@ -162,7 +162,7 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-[#272729]/50 transition-colors",
+                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-white/[0.04] px-3 py-2 text-sm placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-[#272729]/50 transition-colors",
                     className
                 )}
                 {...props}

@@ -4,7 +4,7 @@
 
 export const baseInputStyles = `
   w-full
-  bg-transparent
+  bg-white/[0.04]
   border border-border-primary
   text-text-primary
   placeholder:text-text-quaternary

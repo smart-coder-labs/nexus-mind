@@ -168,7 +168,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus transition-colors"
+                  className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
                 />
               </div>
             ))}
@@ -179,7 +179,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                 id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>

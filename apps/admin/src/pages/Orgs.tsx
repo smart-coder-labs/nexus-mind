@@ -236,9 +236,9 @@ export default function Orgs() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-secondary bg-[#272729]/50">
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Name</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Slug</th>
-              <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Created</th>
+              <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Name</th>
+              <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Slug</th>
+              <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Created</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">

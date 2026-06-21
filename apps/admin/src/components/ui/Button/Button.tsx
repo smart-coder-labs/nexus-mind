@@ -10,7 +10,7 @@ import type { ButtonProps, ButtonVariant, ButtonSize } from './Button.types';
 const baseStyles = `
   inline-flex items-center justify-center gap-2
   font-semibold transition-apple
-  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40 focus-visible:ring-offset-2
+  focus:outline-none
   cursor-pointer
   disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none
   select-none
@@ -18,20 +18,20 @@ const baseStyles = `
 
 const variantStyles: Record<ButtonVariant, string> = {
     primary: `
-    bg-[#0066cc] text-white
-    hover:bg-[#0071e3]
-    active:bg-[#0058a8]
+    bg-accent-blue text-white
+    hover:bg-accent-blue-hover
+    active:bg-accent-blue-active
   `,
     secondary: `
-    bg-transparent text-[#2997ff]
+    bg-transparent text-accent-blue
     border border-white/10
     hover:bg-white/5
     active:bg-white/10
   `,
     ghost: `
-    bg-transparent text-[#2997ff]
-    hover:bg-[rgba(0,102,204,0.12)]
-    active:bg-[rgba(0,102,204,0.12)]
+    bg-transparent text-accent-blue
+    hover:bg-accent-blue-tint
+    active:bg-accent-blue-tint
   `,
     subtle: `
     bg-[#272729] text-text-primary
@@ -39,7 +39,7 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-[#272729]
   `,
     outline: `
-    bg-transparent text-[#2997ff]
+    bg-transparent text-accent-blue
     border border-white/10
     hover:bg-white/5
     active:bg-white/10

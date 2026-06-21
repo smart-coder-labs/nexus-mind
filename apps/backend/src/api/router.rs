@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, code, context, health, internal, memory, middleware as auth_mw, policy, rate_limit, search, sessions, users, webhooks};
+use crate::api::{admin, audit, auth, code, context, conventions, health, internal, memory, middleware as auth_mw, policy, rate_limit, search, sessions, users, webhooks};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -88,6 +88,10 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/policies", get(policy::list_policies).post(policy::create_policy))
         .route("/v1/policies/:id", patch(policy::update_policy).delete(policy::delete_policy))
         .route("/v1/policy/check", post(policy::check_policy))
+        .route("/v1/conventions", get(conventions::list_conventions).post(conventions::create_convention))
+        .route("/v1/conventions/:id", get(conventions::get_convention).patch(conventions::update_convention).delete(conventions::delete_convention))
+        .route("/v1/conventions/:id/archive", post(conventions::archive_convention))
+        .route("/v1/conventions/:id/restore", post(conventions::restore_convention))
         .route("/v1/context/project/:project", get(context::get_project_context))
         .route("/v1/code/index", post(code::post_index))
         .route("/v1/code/search", post(code::post_search))

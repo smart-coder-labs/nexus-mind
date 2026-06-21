@@ -38,6 +38,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v33(conn)?;
     run_v34(conn)?;
     run_v35(conn)?;
+    run_v36(conn)?;
     Ok(())
 }
 
@@ -86,6 +87,37 @@ pub fn run_v35(conn: &Connection) -> Result<()> {
     }
     let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN logo_url TEXT");
     conn.execute_batch("PRAGMA user_version = 35;")?;
+    Ok(())
+}
+
+/// Migration v36: creates the conventions table.
+/// Conventions are org-scoped rules that agents must follow. They can be scoped to a project,
+/// categorized, weighted for priority, and soft-archived.
+/// Idempotent — guarded by PRAGMA user_version < 36.
+pub fn run_v36(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 36 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS conventions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT 'general',
+          weight INTEGER NOT NULL DEFAULT 100,
+          tags TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          archived_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_conventions_org ON conventions(org_id);
+        CREATE INDEX IF NOT EXISTS idx_conventions_category ON conventions(org_id, category);",
+    )?;
+    conn.execute_batch("PRAGMA user_version = 36;")?;
     Ok(())
 }
 
@@ -1428,7 +1460,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     #[test]
@@ -1825,7 +1857,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     #[test]
@@ -1834,7 +1866,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35 after re-running v20");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36 after re-running v20");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -1966,7 +1998,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -1993,14 +2025,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     #[test]
@@ -2118,7 +2150,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2137,14 +2169,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2221,14 +2253,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2311,7 +2343,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -2505,14 +2537,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     #[test]
@@ -2549,14 +2581,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -2595,14 +2627,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -2659,5 +2691,55 @@ mod tests {
         let result = run_v35(&conn);
         assert!(result.is_ok(), "run_v35 must be idempotent: {:?}", result.err());
         assert!(get_user_version(&conn) >= 35, "user_version must be at least 35");
+    }
+
+    // ── v36 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v36_creates_conventions_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "conventions"), "conventions table must exist after v36");
+    }
+
+    #[test]
+    fn run_v36_creates_indexes() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(index_exists(&conn, "conventions", "idx_conventions_org"),
+                "idx_conventions_org must exist after v36");
+        assert!(index_exists(&conn, "conventions", "idx_conventions_category"),
+                "idx_conventions_category must exist after v36");
+    }
+
+    #[test]
+    fn run_v36_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v36(&conn);
+        assert!(result.is_ok(), "run_v36 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+    }
+
+    #[test]
+    fn run_v36_convention_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags) VALUES ('org1', 'Test Convention', 'Content here', 'architecture', 200, '[]')",
+            [],
+        ).unwrap();
+        let (title, cat, weight): (String, String, i64) = conn.query_row(
+            "SELECT title, category, weight FROM conventions WHERE org_id = 'org1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(title, "Test Convention");
+        assert_eq!(cat, "architecture");
+        assert_eq!(weight, 200);
     }
 }

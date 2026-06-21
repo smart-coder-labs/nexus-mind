@@ -11,8 +11,8 @@ import { cn } from '@/lib/utils'
 import { Sparkles, X, Check, CheckCircle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
-type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions'
-const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'agent-activity', 'usage', 'quick-actions']
+type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions'
+const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -202,6 +202,20 @@ export default function Dashboard() {
     staleTime: 60_000,
     enabled: isAdmin,
   })
+
+  const { data: conventions } = useQuery({
+    queryKey: ['conventions'],
+    queryFn: () => client.listConventions(),
+    staleTime: 60_000,
+    enabled: isAdmin,
+  })
+
+  const conventionStats = useMemo(() => {
+    if (!conventions) return []
+    const counts = new Map<string, number>()
+    conventions.forEach(c => counts.set(c.category ?? 'uncategorized', (counts.get(c.category ?? 'uncategorized') ?? 0) + 1))
+    return [...counts.entries()].map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count)
+  }, [conventions])
 
   const [dismissed, setDismissed] = useState(
     () => localStorage.getItem(ONBOARDING_DISMISSED_KEY) === 'true'
@@ -710,6 +724,27 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Conventions */}
+      {isAdmin && isVisible('conventions') && (
+        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm text-text-primary font-semibold">Conventions</h3>
+            <a href="/conventions" className="text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors">
+              View all →
+            </a>
+          </div>
+          {conventionStats.map(cat => (
+            <div key={cat.category} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
+              <span className="text-xs text-text-secondary capitalize">{cat.category}</span>
+              <span className="text-xs text-text-quaternary">{cat.count}</span>
+            </div>
+          ))}
+          {conventionStats.length === 0 && (
+            <p className="text-xs text-text-quaternary">No conventions yet. <a href="/conventions" className="text-accent-blue">Add one →</a></p>
+          )}
+        </div>
+      )}
+
       {/* Quick Actions */}
       {isAdmin && isVisible('quick-actions') && (() => {
         const QUICK_ACTIONS = [
@@ -730,7 +765,7 @@ export default function Dashboard() {
                     to={action.href}
                     className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs text-text-secondary hover:text-text-primary transition-colors border border-border-secondary/30"
                   >
-                    <action.icon className="w-3 h-3" />
+                    <action.icon className="w-4 h-4" />
                     {action.label}
                   </Link>
                 ) : (
@@ -739,7 +774,7 @@ export default function Dashboard() {
                     onClick={action.action}
                     className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs text-text-secondary hover:text-text-primary transition-colors border border-border-secondary/30"
                   >
-                    <action.icon className="w-3 h-3" />
+                    <action.icon className="w-4 h-4" />
                     {action.label}
                   </button>
                 )

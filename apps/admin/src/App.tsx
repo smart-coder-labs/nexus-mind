@@ -14,6 +14,9 @@ const Roles     = lazy(() => import('./pages/Roles'))
 const Projects  = lazy(() => import('./pages/Projects'))
 const Code      = lazy(() => import('./pages/Code'))
 const ApiKeys   = lazy(() => import('./pages/ApiKeys'))
+const Agents      = lazy(() => import('./pages/Agents'))
+const Policies    = lazy(() => import('./pages/Policies'))
+const Conventions = lazy(() => import('./pages/Conventions'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
@@ -58,6 +61,9 @@ function AppRoutes() {
                 <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
                 <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
                 <Route path="/api-keys" element={<AdminRoute><ApiKeys /></AdminRoute>} />
+                <Route path="/agents"  element={<AdminRoute><Agents /></AdminRoute>} />
+                <Route path="/policies"     element={<AdminRoute><Policies /></AdminRoute>} />
+                <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
                 <Route path="/memories" element={<Memories />} />
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
                 <Route path="/settings" element={<Settings />} />

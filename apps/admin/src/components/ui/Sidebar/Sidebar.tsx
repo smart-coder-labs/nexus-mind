@@ -30,7 +30,7 @@ export const Sidebar = React.forwardRef<HTMLDivElement, SidebarProps>(
             ;
         const itemBase = `
       flex items-center gap-2 px-3 py-2 rounded-[8px] text-sm font-normal
-      transition-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue
+      transition-apple focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-accent-blue/60
     `;
         const itemActive = `text-text-primary bg-[#1d1d1f]`;
         const itemInactive = `text-text-secondary hover:bg-[#1d1d1f]/20`;

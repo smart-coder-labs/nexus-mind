@@ -98,6 +98,11 @@ cd apps/admin && npm run build
 | 46 | UI/UX | Code search export buttons + Users last login | ✅ |
 | 57 | Feature | Org logo/branding (v35) + memory favorites (localStorage) | ✅ |
 | 47 | UI/UX | Code ExcludePatternsEditor + pattern pills | ✅ |
+| — | Audit | Coverage audit: backend vs frontend vs MCP (5.5% MCP coverage) | ✅ |
+| 58 | Feature | Agents page (create/manage/activity) + 5 MCP tools (update/archive/restore/pin/unpin memory) | ✅ |
+| 59 | Feature | MCP global_search + list_code_projects + bulk_delete_memories + export buttons | ✅ |
+| 60 | Feature | MCP merge_memories + bulk_tag + collections; Policies frontend page | 🔄 en progreso |
+| 48 | UI/UX | Agents page Apple token audit | 🔄 en progreso |
 
 ---
 
