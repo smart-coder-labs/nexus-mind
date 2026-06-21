@@ -834,15 +834,15 @@ export default function Dashboard() {
         <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-text-primary">Memory Trends</h3>
-            <span className="text-[10px] text-text-quaternary">Last 30 days</span>
+            <span className="text-[10px] text-text-quaternary">Last {period} days</span>
           </div>
           {!trends || !trends.daily_counts || trends.daily_counts.length === 0 ? (
             <p className="text-xs text-text-quaternary text-center py-4">No data yet</p>
           ) : (() => {
-            const pts30 = trends.daily_counts.slice(-30)
-            const max = Math.max(...pts30.map((t: DailyCount) => t.count), 1)
+            const ptsN = trends.daily_counts.slice(-period)
+            const max = Math.max(...ptsN.map((t: DailyCount) => t.count), 1)
             const w = 300, h = 60, pad = 4
-            const pts = pts30.map((t: DailyCount, i: number, arr: DailyCount[]) => {
+            const pts = ptsN.map((t: DailyCount, i: number, arr: DailyCount[]) => {
               const x = pad + (arr.length > 1 ? (i / (arr.length - 1)) : 0.5) * (w - pad * 2)
               const y = h - pad - ((t.count / max) * (h - pad * 2))
               return `${x},${y}`
@@ -861,7 +861,7 @@ export default function Dashboard() {
               {trends?.daily_counts?.slice(-7).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} this week
             </span>
             <span className="text-[10px] text-text-quaternary">
-              {trends?.daily_counts?.slice(-30).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} total
+              {trends?.daily_counts?.slice(-period).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} last {period}d
             </span>
           </div>
         </div>

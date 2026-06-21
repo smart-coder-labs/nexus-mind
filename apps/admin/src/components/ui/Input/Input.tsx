@@ -133,7 +133,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-sm
+              mt-2 text-[10px]
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >
@@ -214,7 +214,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-sm
+              mt-2 text-[10px]
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >
