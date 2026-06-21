@@ -244,7 +244,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
           <div>
             <label className="block text-xs text-text-tertiary mb-1.5">Content</label>
             <textarea
-              className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y min-h-[120px]"
+              className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none min-h-[120px]"
               value={content}
               onChange={e => setContent(e.target.value)}
               placeholder="Describe the convention in detail. Agents will receive this as an authoritative rule."
@@ -353,13 +353,13 @@ function ConventionCard({
             autoFocus
             value={editTitle}
             onChange={e => setEditTitle(e.target.value)}
-            className="bg-transparent border-b border-accent-blue/60 text-sm text-text-primary font-semibold focus:outline-none w-full"
+            className="rounded-[8px] bg-white/[0.04] border border-accent-blue/60 text-sm text-text-primary font-semibold focus:outline-none px-2 py-0.5 w-full"
             placeholder="Convention title"
           />
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-text-primary font-semibold">{conv.title}</span>
-            <span className="text-[10px] bg-white/[0.06] text-text-quaternary rounded-[5px] px-1.5 py-0.5 capitalize">
+            <span className="text-[10px] bg-white/[0.06] text-text-secondary rounded-[5px] px-1.5 py-0.5 capitalize">
               {conv.category}
             </span>
             {conv.weight > 100 && (
@@ -443,7 +443,7 @@ function ConventionCard({
           <textarea
             value={editContent}
             onChange={e => setEditContent(e.target.value)}
-            className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-2.5 focus:outline-none focus:border-accent-blue/60 resize-y min-h-[80px] w-full mt-2"
+            className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-2.5 focus:outline-none focus:border-accent-blue/60 resize-none min-h-[80px] w-full mt-2"
           />
 
           {/* Save / Cancel */}
@@ -723,10 +723,10 @@ export default function Conventions() {
               <button
                 key={cat.value}
                 onClick={() => setSelectedCategory(cat.value)}
-                className={`text-left px-3 py-1.5 rounded-full text-xs transition-colors ${
+                className={`text-left px-3 py-2 rounded-[8px] text-xs transition-colors ${
                   selectedCategory === cat.value
-                    ? 'bg-[#272729] text-text-primary font-semibold'
-                    : 'text-text-secondary hover:text-text-primary'
+                    ? 'bg-accent-blue/10 text-accent-blue font-semibold'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04]'
                 }`}
               >
                 {cat.label}

@@ -707,6 +707,15 @@ export class NexusMindClient {
     })
   }
 
+  getMemoryHealth(): Promise<{
+    total_memories: number
+    duplicate_count: number
+    stale_count: number
+    untagged_count: number
+  }> {
+    return this.request('/v1/admin/memories/health')
+  }
+
   archiveConvention(id: number): Promise<void> {
     return this.request(`/v1/conventions/${id}/archive`, { method: 'POST' })
   }

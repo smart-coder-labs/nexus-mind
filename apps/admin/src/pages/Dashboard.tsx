@@ -8,11 +8,11 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { ActivityItem } from '../components/ActivityItem'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, CheckCircle2, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
-type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends'
-const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'memory-trends', 'agent-activity', 'usage', 'quick-actions']
+type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends' | 'memory-health'
+const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'memory-trends', 'memory-health', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -224,6 +224,14 @@ export default function Dashboard() {
     queryFn: () => client.listConventions(),
     staleTime: 60_000,
     enabled: isAdmin,
+  })
+
+  const { data: healthData } = useQuery({
+    queryKey: ['memory-health'],
+    queryFn: () => client.getMemoryHealth(),
+    staleTime: 5 * 60_000,
+    enabled: isAdmin,
+    retry: false,
   })
 
   const conventionStats = useMemo(() => {
@@ -855,6 +863,34 @@ export default function Dashboard() {
             <span className="text-[10px] text-text-quaternary">
               {trends?.daily_counts?.slice(-30).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} total
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Memory Health */}
+      {isAdmin && isVisible('memory-health') && (
+        <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-text-primary">Memory Health</h3>
+            <span className="text-[10px] text-text-quaternary">Last 30 days</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: 'Total', value: healthData?.total_memories ?? '—', icon: Brain, ok: true },
+              { label: 'Duplicates', value: healthData?.duplicate_count ?? '—', icon: Copy, ok: (healthData?.duplicate_count ?? 0) === 0 },
+              { label: 'Stale (>30d)', value: healthData?.stale_count ?? '—', icon: Clock, ok: (healthData?.stale_count ?? 0) < 10 },
+              { label: 'Untagged', value: healthData?.untagged_count ?? '—', icon: Tag, ok: (healthData?.untagged_count ?? 0) < 5 },
+            ].map(({ label, value, icon: Icon, ok }) => (
+              <div key={label} className="rounded-[11px] bg-white/[0.03] border border-border-primary p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Icon className="w-3 h-3 text-text-quaternary" />
+                  <span className="text-[10px] text-text-quaternary">{label}</span>
+                </div>
+                <span className={`text-sm font-semibold ${ok ? 'text-text-primary' : 'text-status-warning'}`}>
+                  {value}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}
