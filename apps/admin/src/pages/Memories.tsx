@@ -7,7 +7,7 @@ import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
-import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus } from 'lucide-react'
+import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
@@ -2233,14 +2233,15 @@ export default function Memories() {
             </button>
           )}
           <button
-            onClick={() => setShowArchived(prev => !prev)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            onClick={() => setShowArchived(a => !a)}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-semibold transition-colors ${
               showArchived
-                ? 'border-accent-blue/40 text-accent-blue bg-accent-blue/10'
-                : 'border-border-primary text-text-quaternary hover:text-text-secondary'
+                ? 'bg-status-warning/10 text-status-warning border border-status-warning/30'
+                : 'border border-border-primary text-text-quaternary hover:text-text-secondary'
             }`}
           >
-            {showArchived ? 'Showing archived' : 'Show archived'}
+            {showArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
+            {showArchived ? 'Archived' : 'Active'}
           </button>
           <button
             onClick={() => setShowFavoritesOnly(v => !v)}
@@ -2333,7 +2334,7 @@ export default function Memories() {
                   role="button"
                   tabIndex={0}
                   aria-label={`View memory: ${mem.title ?? 'untitled'}`}
-                  className={`border-t border-border-secondary transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-blue/40 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.04]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
+                  className={`border-t border-border-secondary transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.04]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
                 >
                   {/* Row checkbox — only shown in selectMode */}
                   <td className="w-10 px-4 py-3.5" onClick={e => e.stopPropagation()}>
