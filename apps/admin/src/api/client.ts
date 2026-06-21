@@ -279,6 +279,17 @@ export class NexusMindClient {
     return this.request(`/v1/memory?${params}`)
   }
 
+  getMemory(id: string): Promise<Memory> {
+    return this.request<Memory>(`/v1/memory/${encodeURIComponent(id)}`)
+  }
+
+  searchMemory(params: { query: string; limit?: number }): Promise<Memory[]> {
+    return this.request<Memory[]>('/v1/memory/search', {
+      method: 'POST',
+      body: JSON.stringify({ query: params.query, limit: params.limit ?? 5, mode: 'hybrid' }),
+    })
+  }
+
   searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
     return this.request('/v1/memory/search', {
       method: 'POST',
@@ -329,6 +340,10 @@ export class NexusMindClient {
       method: 'PATCH',
       body: JSON.stringify(data),
     })
+  }
+
+  deleteSession(id: string): Promise<void> {
+    return this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
   bulkDeleteMemories(ids: string[]): Promise<BulkDeleteResponse> {

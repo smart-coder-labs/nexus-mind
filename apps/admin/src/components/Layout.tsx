@@ -19,6 +19,10 @@ import {
   Keyboard,
   AlertCircle,
   BookMarked,
+  Zap,
+  FolderOpen,
+  Hash,
+  Search,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -113,6 +117,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { label: 'Search',       href: '/search',       icon: Search },
   { label: 'Dashboard',    href: '/',             icon: LayoutDashboard },
   { label: 'Users',        href: '/users',        icon: Users },
   { label: 'Roles',        href: '/roles',        icon: Shield },
@@ -122,7 +127,10 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Agents',       href: '/agents',       icon: Bot },
   { label: 'Conventions',  href: '/conventions',  icon: BookMarked },
   { label: 'Policies',     href: '/policies',     icon: ShieldAlert },
+  { label: 'Webhooks',     href: '/webhooks',     icon: Zap },
   { label: 'Memories',     href: '/memories',     icon: Brain },
+  { label: 'Tags',         href: '/tags',         icon: Hash },
+  { label: 'Collections',  href: '/collections',  icon: FolderOpen },
   { label: 'Audit Log',    href: '/audit',        icon: ScrollText },
   { label: 'Settings',     href: '/settings',     icon: Settings },
 ]
@@ -141,7 +149,10 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       item.href === '/api-keys' ||
       item.href === '/agents' ||
       item.href === '/conventions' ||
-      item.href === '/policies'
+      item.href === '/policies' ||
+      item.href === '/webhooks' ||
+      item.href === '/collections' ||
+      item.href === '/tags'
     ) {
       return session?.user.role === 'admin'
     }
@@ -370,6 +381,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const { session } = useAuth()
+  const navigate = useNavigate()
 
   const { data: orgSettings, refetch: refetchSettings } = useQuery({
     queryKey: ['org-settings'],
@@ -390,7 +402,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
-        setPaletteOpen((prev) => !prev)
+        navigate('/search')
       }
       if (e.key === '?' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
         setShowShortcuts((prev) => !prev)
@@ -399,7 +411,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [navigate])
 
   return (
     <div className="h-screen overflow-hidden bg-[#1d1d1f] flex">

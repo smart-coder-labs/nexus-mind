@@ -812,9 +812,8 @@ export default function Settings() {
             <textarea
               value={announcementText}
               onChange={e => setAnnouncementText(e.target.value)}
-              rows={3}
               placeholder="e.g. Scheduled maintenance on Saturday 2 AM UTC. Expect ~30 min downtime."
-              className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none"
+              className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none h-20"
             />
 
             <div className="flex items-center gap-3">

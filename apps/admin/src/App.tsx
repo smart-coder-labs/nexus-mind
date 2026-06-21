@@ -17,6 +17,10 @@ const ApiKeys   = lazy(() => import('./pages/ApiKeys'))
 const Agents      = lazy(() => import('./pages/Agents'))
 const Policies    = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
+const Webhooks    = lazy(() => import('./pages/Webhooks'))
+const Collections = lazy(() => import('./pages/Collections'))
+const Tags        = lazy(() => import('./pages/Tags'))
+const Search      = lazy(() => import('./pages/Search'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
@@ -64,7 +68,11 @@ function AppRoutes() {
                 <Route path="/agents"  element={<AdminRoute><Agents /></AdminRoute>} />
                 <Route path="/policies"     element={<AdminRoute><Policies /></AdminRoute>} />
                 <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
+                <Route path="/webhooks"    element={<AdminRoute><Webhooks /></AdminRoute>} />
+                <Route path="/collections" element={<AdminRoute><Collections /></AdminRoute>} />
+                <Route path="/search"   element={<Search />} />
                 <Route path="/memories" element={<Memories />} />
+                <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>

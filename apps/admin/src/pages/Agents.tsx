@@ -431,16 +431,14 @@ function AgentActivitySection() {
       {/* Per-agent leaderboard */}
       {topAgents.length > 0 && (
         <div className="mt-6">
-          <p className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide mb-2">
+          <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wide mb-2">
             Top agents by requests
           </p>
-          <div className="space-y-1">
+          <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
             {topAgents.map((agent, idx) => (
-              <div key={agent.name} className="flex items-center gap-3 px-3 py-2 rounded-[9px] bg-white/[0.02]">
-                <span className="text-[10px] text-text-quaternary w-4 shrink-0">{idx + 1}</span>
-                <span className="flex-1 text-xs text-text-secondary truncate">{agent.name}</span>
-                <span className="text-[11px] font-semibold text-text-primary">{agent.count}</span>
-                <span className="text-[10px] text-text-quaternary">req</span>
+              <div key={agent.name} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
+                <span className="text-xs text-text-secondary truncate">{idx + 1}. {agent.name}</span>
+                <span className="text-xs text-text-quaternary shrink-0 ml-4">{agent.count}</span>
               </div>
             ))}
           </div>
@@ -528,10 +526,10 @@ export default function Agents() {
             <button
               key={filter}
               onClick={() => setStatusFilter(filter)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              className={`px-3 py-1 rounded-full text-xs transition-colors ${
                 statusFilter === filter
-                  ? 'bg-white/[0.10] text-text-primary'
-                  : 'text-text-tertiary hover:text-text-secondary'
+                  ? 'bg-[#272729] text-text-primary font-semibold shadow-sm'
+                  : 'text-text-quaternary'
               }`}
             >
               {filter}

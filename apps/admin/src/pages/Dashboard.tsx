@@ -8,11 +8,11 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { ActivityItem } from '../components/ActivityItem'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
-type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions'
-const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'agent-activity', 'usage', 'quick-actions']
+type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity'
+const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'recent-activity', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -98,6 +98,15 @@ function relativeTime(isoString: string): string {
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   return `${days}d ago`
+}
+
+function activityIcon(action: string) {
+  if (action.startsWith('memory.')) return Brain
+  if (action.startsWith('user.')) return User
+  if (action.startsWith('api_key.')) return Key
+  if (action.startsWith('convention.')) return BookMarked
+  if (action.startsWith('webhook.')) return Webhook
+  return Activity
 }
 
 export default function Dashboard() {
@@ -200,6 +209,13 @@ export default function Dashboard() {
     queryKey: ['top-contributors', period],
     queryFn: () => client.getTopContributors(period),
     staleTime: 60_000,
+    enabled: isAdmin,
+  })
+
+  const { data: recentActivity } = useQuery({
+    queryKey: ['recent-activity'],
+    queryFn: () => client.getAuditLog({ limit: 10 }),
+    refetchInterval: 30_000,
     enabled: isAdmin,
   })
 
@@ -741,6 +757,38 @@ export default function Dashboard() {
           ))}
           {conventionStats.length === 0 && (
             <p className="text-xs text-text-quaternary">No conventions yet. <a href="/conventions" className="text-accent-blue">Add one →</a></p>
+          )}
+        </div>
+      )}
+
+      {/* Recent Activity feed */}
+      {isAdmin && isVisible('recent-activity') && (
+        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm text-text-primary font-semibold">Recent Activity</h3>
+            <span className="text-[10px] text-text-quaternary">Live · 30s</span>
+          </div>
+          {recentActivity && recentActivity.length > 0 ? (
+            recentActivity.map(entry => {
+              const Icon = activityIcon(entry.action)
+              return (
+                <div key={entry.id} className="flex items-start gap-3 py-2 border-b border-border-secondary/20 last:border-0">
+                  <div className="w-6 h-6 rounded-full bg-white/[0.06] flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Icon className="w-3 h-3 text-text-quaternary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-text-secondary line-clamp-1">
+                      {(entry.metadata?.description as string) || entry.action}
+                    </p>
+                    <p className="text-[10px] text-text-quaternary mt-0.5">
+                      {relativeTime(entry.timestamp)} · {(entry.metadata?.user_email as string) || userMap.get(entry.user_id) || 'System'}
+                    </p>
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <p className="text-xs text-text-quaternary text-center py-4">No recent activity</p>
           )}
         </div>
       )}

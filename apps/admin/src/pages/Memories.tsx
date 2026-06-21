@@ -53,7 +53,7 @@ function TypeBadge({ type }: { type?: string }) {
   const meta = TYPE_META[type]
   const cls = meta?.cls ?? 'text-text-tertiary bg-[#272729] border-border-primary'
   return (
-    <span className={`text-[11px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
+    <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
   )
@@ -478,8 +478,10 @@ function FacetSelect({
 function BulkActionBar({
   count,
   onDelete,
+  onArchive,
   onClear,
   deleting,
+  archiving,
   tagAction,
   setTagAction,
   tagInput,
@@ -489,8 +491,10 @@ function BulkActionBar({
 }: {
   count: number
   onDelete: () => void
+  onArchive: () => void
   onClear: () => void
   deleting: boolean
+  archiving: boolean
   tagAction: 'add' | 'remove' | null
   setTagAction: (a: 'add' | 'remove' | null) => void
   tagInput: string
@@ -501,14 +505,14 @@ function BulkActionBar({
   if (count === 0) return null
   return (
     <div
-      className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-[#272729] border border-white/[0.08] rounded-[18px] px-5 py-3 shadow-xl"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 bg-[#272729] border border-border-primary rounded-full px-4 py-2.5 shadow-xl"
       role="toolbar"
       aria-label="Bulk actions"
     >
-      <span className="text-sm text-text-secondary font-normal">
-        {count} selected
+      <span className="bg-accent-blue/10 text-accent-blue rounded-full px-2 py-0.5 text-xs font-semibold">
+        {count}
       </span>
-      <div className="w-px h-4 bg-white/10" />
+      <div className="w-px h-4 bg-border-primary" />
       {tagAction ? (
         <div className="flex items-center gap-2">
           <TagAutocomplete
@@ -540,38 +544,295 @@ function BulkActionBar({
       ) : (
         <>
           <button
-            onClick={() => setTagAction('add')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-border-secondary/60 text-xs text-text-secondary hover:text-text-primary hover:border-border-primary transition-colors"
+            onClick={onArchive}
+            disabled={archiving}
+            className="text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40"
+            aria-label={`Archive ${count} selected memories`}
           >
-            <Tag className="w-3 h-3" /> Add tag
+            {archiving ? 'Archiving…' : 'Archive'}
           </button>
           <button
-            onClick={() => setTagAction('remove')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-border-secondary/60 text-xs text-text-secondary hover:text-text-primary hover:border-border-primary transition-colors"
+            onClick={() => setTagAction('add')}
+            className="text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
-            <Tag className="w-3 h-3" /> Remove tag
+            Tag
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={deleting}
+            className="text-xs text-status-error/80 hover:text-status-error transition-colors disabled:opacity-40"
+            aria-label={`Delete ${count} selected memories`}
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
           </button>
         </>
       )}
-      <div className="w-px h-4 bg-white/10" />
-      <button
-        onClick={onDelete}
-        disabled={deleting}
-        className="flex items-center gap-1.5 rounded-full bg-status-error/10 border border-status-error/20 text-sm text-status-error/80 hover:text-status-error hover:bg-status-error/15 px-3 py-1 transition-colors disabled:opacity-40"
-        aria-label={`Delete ${count} selected memories`}
-      >
-        <Trash2 className="w-3.5 h-3.5" />
-        {deleting ? 'Deleting…' : 'Delete selected'}
-      </button>
+      <div className="w-px h-4 bg-border-primary" />
       <button
         onClick={onClear}
-        disabled={deleting}
+        disabled={deleting || archiving}
         className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-tertiary transition-colors disabled:opacity-40"
         aria-label="Clear selection"
       >
         Clear
       </button>
     </div>
+  )
+}
+
+// ── Memory Detail Slide-over ──────────────────────────────────────────────────
+
+function MemorySlideOver({
+  memoryId,
+  onClose,
+  client,
+}: {
+  memoryId: string | null
+  onClose: () => void
+  client: NexusMindClient
+}) {
+  const qc = useQueryClient()
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+
+  const { data: memory, isLoading } = useQuery({
+    queryKey: ['memory', memoryId],
+    queryFn: () => client.getMemory(memoryId!),
+    enabled: !!memoryId,
+  })
+
+  const firstWords = memory?.content?.split(/\s+/).slice(0, 8).join(' ') ?? ''
+
+  const { data: related, isLoading: relatedLoading } = useQuery({
+    queryKey: ['memory-related', memoryId, firstWords],
+    queryFn: () => client.searchMemory({ query: firstWords, limit: 3 }),
+    enabled: !!memoryId && !!firstWords,
+    staleTime: 60_000,
+  })
+
+  const pinMut = useMutation({
+    mutationFn: (id: string) => client.pinMemory(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['memories'] }); qc.invalidateQueries({ queryKey: ['memory', memoryId] }) },
+  })
+
+  const unpinMut = useMutation({
+    mutationFn: (id: string) => client.unpinMemory(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['memories'] }); qc.invalidateQueries({ queryKey: ['memory', memoryId] }) },
+  })
+
+  const archiveMut = useMutation({
+    mutationFn: (id: string) => client.archiveMemory(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['memories'] }); qc.invalidateQueries({ queryKey: ['memory', memoryId] }) },
+  })
+
+  const restoreMut = useMutation({
+    mutationFn: (id: string) => client.restoreMemory(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['memories'] }); qc.invalidateQueries({ queryKey: ['memory', memoryId] }) },
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => client.deleteMemory(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['memories'] })
+      onClose()
+    },
+  })
+
+  // Escape key to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const isOpen = !!memoryId
+
+  function fmt(ts?: string) {
+    if (!ts) return '—'
+    return new Date(ts).toLocaleString()
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/30 z-30"
+          onClick={onClose}
+        />
+      )}
+
+      {/* Slide-over panel */}
+      <div
+        className={`fixed right-0 top-0 h-full w-[420px] bg-[#1d1d1f] border-l border-border-primary shadow-2xl z-40 overflow-y-auto p-6 transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-5">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            {memory && <TypeBadge type={memory.type} />}
+            <p className="text-sm font-semibold text-text-primary leading-snug truncate">
+              {memory?.content?.slice(0, 60) ?? (isLoading ? 'Loading…' : '—')}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close detail panel"
+            className="p-1.5 rounded-[8px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-4 rounded-[5px] bg-white/[0.06] animate-pulse" />
+            ))}
+          </div>
+        ) : memory ? (
+          <div className="space-y-5">
+            {/* Full content */}
+            <div>
+              <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1.5">Content</p>
+              <p className="whitespace-pre-wrap text-xs text-text-secondary leading-relaxed">
+                {memory.content}
+              </p>
+            </div>
+
+            {/* Metadata grid */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-4 border-t border-border-primary">
+              {([
+                ['Created',    fmt(memory.created_at)],
+                ['Updated',    fmt((memory as any).updated_at)],
+                ['Type',       memory.type ?? '—'],
+                ['Project',    memory.project || '—'],
+                ['Session',    (memory as any).session_id ? ((memory as any).session_id as string).slice(0, 12) + '…' : '—'],
+                ['Pinned',     (memory as any).pinned ? 'Yes' : 'No'],
+                ['Archived',   (memory as any).archived_at ? 'Yes' : 'No'],
+                ['Revisions',  String(memory.revision_count ?? 1)],
+              ] as [string, string][]).map(([label, val]) => (
+                <div key={label}>
+                  <p className="text-[10px] text-text-quaternary uppercase tracking-wide">{label}</p>
+                  <p className="text-xs text-text-primary mt-0.5">{val}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Tags */}
+            {memory.tags && memory.tags.length > 0 && (
+              <div className="pt-4 border-t border-border-primary">
+                <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Tags</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {memory.tags.map(tag => (
+                    <span key={tag} className="rounded-full px-2 py-0.5 text-[10px] bg-white/[0.06] text-text-secondary">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex flex-wrap gap-2 pt-4 border-t border-border-primary">
+              {(memory as any).pinned ? (
+                <button
+                  onClick={() => unpinMut.mutate(memory.id)}
+                  disabled={unpinMut.isPending}
+                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <Pin className="w-3 h-3 fill-current text-accent-blue" />
+                  Unpin
+                </button>
+              ) : (
+                <button
+                  onClick={() => pinMut.mutate(memory.id)}
+                  disabled={pinMut.isPending}
+                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <Pin className="w-3 h-3" />
+                  Pin
+                </button>
+              )}
+              {(memory as any).archived_at ? (
+                <button
+                  onClick={() => restoreMut.mutate(memory.id)}
+                  disabled={restoreMut.isPending}
+                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Restore
+                </button>
+              ) : (
+                <button
+                  onClick={() => archiveMut.mutate(memory.id)}
+                  disabled={archiveMut.isPending}
+                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-text-primary hover:border-border-secondary transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <Archive className="w-3 h-3" />
+                  Archive
+                </button>
+              )}
+              {!deleteConfirm ? (
+                <button
+                  onClick={() => setDeleteConfirm(true)}
+                  className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Delete
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-status-error">Confirm?</span>
+                  <button
+                    onClick={() => deleteMut.mutate(memory.id)}
+                    disabled={deleteMut.isPending}
+                    className="rounded-full bg-status-error/10 border border-status-error/30 px-3 py-1 text-xs text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40"
+                  >
+                    {deleteMut.isPending ? 'Deleting…' : 'Yes, delete'}
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(false)}
+                    className="rounded-full border border-border-primary px-3 py-1 text-xs text-text-quaternary hover:text-text-secondary transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Related memories */}
+            <div className="pt-4 border-t border-border-primary">
+              <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Related memories</p>
+              {relatedLoading ? (
+                <div className="space-y-2">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="h-10 rounded-[8px] bg-white/[0.04] animate-pulse" />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {(related ?? [])
+                    .filter(r => r.id !== memory.id)
+                    .slice(0, 3)
+                    .map(r => (
+                      <div key={r.id} className="rounded-[8px] bg-white/[0.04] border border-border-primary/50 px-3 py-2">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          {r.type && <TypeBadge type={r.type} />}
+                        </div>
+                        <p className="text-xs text-text-secondary line-clamp-2 leading-relaxed">
+                          {r.content?.slice(0, 100)}
+                        </p>
+                      </div>
+                    ))}
+                  {(related ?? []).filter(r => r.id !== memory.id).length === 0 && (
+                    <p className="text-xs text-text-quaternary">No related memories found.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </>
   )
 }
 
@@ -661,6 +922,7 @@ export default function Memories() {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
+  const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections'>('memories')
   const [createMemoryOpen, setCreateMemoryOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
@@ -682,6 +944,7 @@ export default function Memories() {
   }
 
   // Bulk selection
+  const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const toggleRow = useCallback((id: string) => {
     setSelectedIds(prev => {
@@ -691,7 +954,10 @@ export default function Memories() {
       return next
     })
   }, [])
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+    setSelectMode(false)
+  }, [])
   const isAdmin = session?.user.role === 'admin'
 
   const { data: users } = useQuery({
@@ -840,6 +1106,16 @@ export default function Memories() {
     },
   })
 
+  const [deleteConfirmSessionId, setDeleteConfirmSessionId] = useState<string | null>(null)
+
+  const deleteSessionMut = useMutation({
+    mutationFn: (id: string) => client.deleteSession(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sessions'] })
+      setDeleteConfirmSessionId(null)
+    },
+  })
+
   // History panel state
   const [historyMemoryId, setHistoryMemoryId] = useState<string | null>(null)
 
@@ -893,6 +1169,14 @@ export default function Memories() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['memories'] })
       qc.invalidateQueries({ queryKey: ['memory-facets'] })
+      clearSelection()
+    },
+  })
+
+  const bulkArchiveMut = useMutation({
+    mutationFn: (ids: string[]) => Promise.all(ids.map(id => client.archiveMemory(id))),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['memories'] })
       clearSelection()
     },
   })
@@ -951,6 +1235,11 @@ export default function Memories() {
     if (selectedIds.size === 0) return
     bulkDeleteMut.mutate(Array.from(selectedIds))
   }, [selectedIds, bulkDeleteMut])
+
+  const handleBulkArchive = useCallback(() => {
+    if (selectedIds.size === 0) return
+    bulkArchiveMut.mutate(Array.from(selectedIds))
+  }, [selectedIds, bulkArchiveMut])
 
   // Bulk tag state
   const [tagAction, setTagAction] = useState<'add' | 'remove' | null>(null)
@@ -1230,6 +1519,35 @@ export default function Memories() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Select mode controls — admin only, memories tab only */}
+          {isAdmin && activeTab === 'memories' && (
+            selectMode ? (
+              <>
+                <button
+                  onClick={() => {
+                    if (memories) setSelectedIds(new Set(memories.map(m => m.id)))
+                  }}
+                  className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                >
+                  Select all ({memories?.length ?? 0})
+                </button>
+                <button
+                  onClick={clearSelection}
+                  className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setSelectMode(true)}
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+              >
+                Select
+              </button>
+            )
+          )}
+
           {/* Save Filter preset */}
           <div ref={savePresetRef} className="relative">
             <button
@@ -1662,9 +1980,9 @@ export default function Memories() {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-[#272729] border-b border-border-primary">
-              {/* Select-all checkbox — admin only */}
+              {/* Select-all checkbox — admin only, select mode only */}
               <th className="w-10 px-4 py-3">
-                {isAdmin && memories && memories.length > 0 && (
+                {isAdmin && selectMode && memories && memories.length > 0 && (
                   <input
                     type="checkbox"
                     aria-label="Select all memories"
@@ -1673,7 +1991,7 @@ export default function Memories() {
                       if (e.target.checked) {
                         setSelectedIds(new Set(memories.map(m => m.id)))
                       } else {
-                        clearSelection()
+                        setSelectedIds(new Set())
                       }
                     }}
                     className="rounded border-border-primary accent-accent-blue cursor-pointer"
@@ -1706,22 +2024,32 @@ export default function Memories() {
                 return (
                 <tr
                   key={mem.id}
-                  onClick={() => { if (!isEditing) setSelected(mem) }}
-                  onKeyDown={e => { if (!isEditing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setSelected(mem) } }}
+                  onClick={() => {
+                    if (isEditing) return
+                    if (selectMode) { toggleRow(mem.id) }
+                    else setSelectedMemoryId(mem.id)
+                  }}
+                  onKeyDown={e => {
+                    if (!isEditing && (e.key === 'Enter' || e.key === ' ')) {
+                      e.preventDefault()
+                      if (selectMode) toggleRow(mem.id)
+                      else setSelectedMemoryId(mem.id)
+                    }
+                  }}
                   role="button"
                   tabIndex={0}
                   aria-label={`View memory: ${mem.title ?? 'untitled'}`}
-                  className={`border-t border-border-secondary transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-blue/40 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06]' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.04]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
+                  className={`border-t border-border-secondary transition-colors cursor-pointer group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-blue/40 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.04]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
                 >
-                  {/* Row checkbox */}
+                  {/* Row checkbox — only shown in selectMode */}
                   <td className="w-10 px-4 py-3.5" onClick={e => e.stopPropagation()}>
-                    {isAdmin && (
+                    {isAdmin && selectMode && (
                       <input
                         type="checkbox"
                         aria-label={`Select memory ${mem.id}`}
                         checked={isChecked}
                         onChange={() => toggleRow(mem.id)}
-                        className="rounded border-border-primary accent-accent-blue cursor-pointer"
+                        className="absolute top-3 left-3 w-4 h-4 rounded border border-border-primary bg-white/[0.04] accent-accent-blue cursor-pointer"
                       />
                     )}
                   </td>
@@ -2109,11 +2437,19 @@ export default function Memories() {
         />
       )}
 
+      <MemorySlideOver
+        memoryId={selectedMemoryId}
+        onClose={() => setSelectedMemoryId(null)}
+        client={client}
+      />
+
       <BulkActionBar
         count={selectedIds.size}
         onDelete={handleBulkDelete}
+        onArchive={handleBulkArchive}
         onClear={clearSelection}
         deleting={bulkDeleteMut.isPending}
+        archiving={bulkArchiveMut.isPending}
         tagAction={tagAction}
         setTagAction={setTagAction}
         tagInput={tagInput}
@@ -2521,7 +2857,7 @@ export default function Memories() {
               return (
               <div
                 key={session.id}
-                className="border border-border-primary rounded-[18px] bg-[#272729] overflow-hidden transition-colors hover:border-border-focus"
+                className="group border border-border-primary rounded-[18px] bg-[#272729] overflow-hidden transition-colors hover:border-border-focus"
               >
                 {/* Card header — clickable to expand */}
                 <div
@@ -2613,6 +2949,36 @@ export default function Memories() {
                       <p className="text-[10px] text-text-quaternary">
                         {new Date(session.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
+                    </div>
+                    {/* Delete session */}
+                    <div className="relative" onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={e => { e.stopPropagation(); setDeleteConfirmSessionId(deleteConfirmSessionId === session.id ? null : session.id) }}
+                        aria-label={`Delete session ${session.id}`}
+                        className="p-1 rounded-[5px] text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                      {deleteConfirmSessionId === session.id && (
+                        <div className="absolute right-0 top-7 z-30 bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl min-w-[180px]">
+                          <p className="text-[11px] text-text-secondary mb-2">Delete this session?</p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => deleteSessionMut.mutate(session.id)}
+                              disabled={deleteSessionMut.isPending}
+                              className="flex-1 rounded-full bg-status-error/10 border border-status-error/20 text-[11px] text-status-error hover:bg-status-error/20 py-1 transition-colors disabled:opacity-40"
+                            >
+                              {deleteSessionMut.isPending ? 'Deleting…' : 'Delete'}
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirmSessionId(null)}
+                              className="flex-1 rounded-full border border-border-primary text-[11px] text-text-quaternary hover:text-text-secondary py-1 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     {isExpanded
                       ? <ChevronUp className="w-3.5 h-3.5 text-text-quaternary" />

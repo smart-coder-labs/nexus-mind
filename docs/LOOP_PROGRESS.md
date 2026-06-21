@@ -101,8 +101,42 @@ cd apps/admin && npm run build
 | — | Audit | Coverage audit: backend vs frontend vs MCP (5.5% MCP coverage) | ✅ |
 | 58 | Feature | Agents page (create/manage/activity) + 5 MCP tools (update/archive/restore/pin/unpin memory) | ✅ |
 | 59 | Feature | MCP global_search + list_code_projects + bulk_delete_memories + export buttons | ✅ |
-| 60 | Feature | MCP merge_memories + bulk_tag + collections; Policies frontend page | 🔄 en progreso |
-| 48 | UI/UX | Agents page Apple token audit | 🔄 en progreso |
+| 60 | Feature | MCP merge_memories + bulk_tag + collections; Policies frontend page | ✅ |
+| 48 | UI/UX | Agents page Apple token audit | ✅ |
+| 61 | Feature | MCP import_memories + rename_tag + set_announcement + check_policy | ✅ |
+| 62 | Feature | MCP get_project_context + list/create projects; backend context.rs conventions | ✅ |
+| 63 | Feature | MCP conventions CRUD (list/get/store/update/archive/restore/delete) | ✅ |
+| 64 | Feature | MCP users/roles/webhooks/org tools (15+ new tools) | ✅ |
+| 65 | Feature | MCP api-keys/audit/stats tools; Conventions page (category sidebar, search, sort) | ✅ |
+| 66 | Feature | MCP user management + webhook tools | ✅ |
+| 49 | UI/UX | Policies page + Conventions page token audit | ✅ |
+| 50 | UI/UX | UI component sweep (Input/Button/Select/Toast/Switch/Table/Sidebar) | ✅ |
+| 67 | Feature | Backend migration v36 (conventions table) + 7 API handlers + context injection | ✅ |
+| 68 | Feature | Agents page (create/filter/leaderboard/activity) — dedicated management page | ✅ |
+| 51 | UI/UX | Input bg-transparent → bg-white/[0.04], Button raw hex → accent-blue tokens | ✅ |
+| 52 | UI/UX | Sidebar/Switch/Table/Select token sweep | ✅ |
+| 53 | UI/UX | Orgs/Dashboard/Projects pages audit | ✅ |
+| 69 | Feature | MCP import_memories + rename_tag + set_announcement (npm package) | ✅ |
+| 70 | Feature | Create memory modal (New memory button, TagAutocomplete, project select) + Convention markdown preview | ✅ |
+| 54 | UI/UX | Conventions import/export + Create memory modal token compliance | ✅ |
+| 71 | Feature | MCP store_memory+search_memory enhanced (collection_id/pinned/archived) + export_memories; Dashboard Conventions widget | ✅ |
+| 55 | UI/UX | Create memory modal + Convention markdown preview Raw/Preview toggle audit | ✅ |
+| 72 | Feature | MCP get_memory_facets + get_usage_stats + update_session; Session inline rename in Memories.tsx | ✅ |
+| 56 | UI/UX | Dashboard Conventions widget + Session rename audit | ✅ |
+| 73 | Feature | MCP search_conventions (client-side) + list_sessions; Agents filter bar (All/Active/Inactive/Expired) + leaderboard | ✅ |
+| 57 | UI/UX | Agents filter bar active pill (bg-[#272729] font-semibold shadow-sm) + leaderboard card | ✅ |
+| — | Commit | Push b50ed56 — cycles 58–73, 30 files, 2573 insertions | ✅ |
+| 74 | Feature | Convention inline edit (self-contained ConventionCard, Escape key) + MCP memory_health_check | ✅ |
+| 75 | Feature | Convention templates dropdown (5 templates: Clean Arch / Commits / REST / Testing / DB) + MCP check_convention_compliance | ✅ |
+| 58 | UI/UX | Convention templates dropdown token audit + inline edit fields | ✅ |
+| 76 | Feature | Webhooks.tsx (2-col, event checkboxes, secret toggle) + Collections.tsx (grid, drawer modal, memory assign) | ✅ |
+| 59 | UI/UX | Webhooks status dot raw hex → bg-status-success; Collections 0 violations | ✅ |
+| 77 | Feature | Tags.tsx (tag cloud, inline rename, table) + MCP batch_archive/batch_restore/search_and_tag | ✅ |
+| 60 | UI/UX | Tags.tsx token audit (pills, selected state, inline rename input) | ✅ |
+| 78 | Feature | Global search page `/search` (Cmd+K shortcut, type tabs, result cards) + Announcement section in Settings | ✅ |
+| 61 | UI/UX | Search.tsx rounded-[11px] + result cards + Settings announcement textarea | ✅ |
+| 79 | Feature | MCP delete_session + get_session_memories + create_session; Session delete in Memories.tsx | ✅ |
+| 80 | Feature | Memory detail slide-over panel + MCP get_memory_timeline + find_related_memories + pin_convention | 🔄 running |
 
 ---
 
