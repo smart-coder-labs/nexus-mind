@@ -63,7 +63,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">New collection</h2>
+          <h2 className="text-xs font-semibold text-text-primary">New collection</h2>
           <button
             onClick={onClose}
             className="text-text-quaternary hover:text-text-secondary transition-colors"
@@ -75,7 +75,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">Name</label>
+            <label className="text-[10px] text-text-quaternary">Name</label>
             <input
               type="text"
               value={name}
@@ -87,7 +87,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">
+            <label className="text-[10px] text-text-quaternary">
               Description <span className="text-text-quaternary">(optional)</span>
             </label>
             <textarea
@@ -166,14 +166,14 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">Rename collection</h2>
+          <h2 className="text-xs font-semibold text-text-primary">Rename collection</h2>
           <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors" aria-label="Close">
             <X className="w-4 h-4" />
           </button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">Name</label>
+            <label className="text-[10px] text-text-quaternary">Name</label>
             <input
               type="text"
               value={name}
@@ -183,7 +183,7 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">Description</label>
+            <label className="text-[10px] text-text-quaternary">Description</label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
@@ -252,7 +252,7 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
       >
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-sm font-semibold text-text-primary">{collection.name}</h2>
+            <h2 className="text-xs font-semibold text-text-primary">{collection.name}</h2>
             {collection.description && (
               <p className="text-xs text-text-quaternary mt-0.5">{collection.description}</p>
             )}
@@ -331,7 +331,7 @@ function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProp
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <FolderOpen className="w-4 h-4 text-text-quaternary flex-shrink-0 group-hover:text-accent-blue transition-colors" />
-            <span className="text-sm font-semibold text-text-primary truncate">{collection.name}</span>
+            <span className="text-xs font-semibold text-text-primary truncate">{collection.name}</span>
           </div>
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
             <button
@@ -407,8 +407,8 @@ export default function Collections() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-[21px] font-semibold tracking-[0.231px] text-text-primary">Collections</h1>
-          <p className="mt-1 text-[14px] text-text-tertiary tracking-[-0.224px]">
+          <h1 className="text-base font-semibold text-text-primary">Collections</h1>
+          <p className="mt-1 text-xs text-text-tertiary">
             Group memories into named collections for easier organization and filtering.
           </p>
         </div>
@@ -433,7 +433,7 @@ export default function Collections() {
         <div className="flex flex-col items-center gap-4 py-20">
           <CollectionIcon />
           <div className="text-center">
-            <p className="text-sm font-semibold text-text-tertiary">No collections yet</p>
+            <p className="text-xs font-semibold text-text-quaternary">No collections yet</p>
             <p className="text-xs text-text-quaternary mt-1">
               Create a collection to group related memories together.
             </p>
