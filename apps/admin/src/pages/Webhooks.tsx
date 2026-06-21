@@ -272,6 +272,10 @@ export default function Webhooks() {
     },
   })
 
+  const testWebhookMut = useMutation({
+    mutationFn: (id: string) => client.testWebhook(id),
+  })
+
   const handleDelete = (webhook: Webhook) => {
     if (!window.confirm(`Delete webhook "${webhook.target_url}"? This cannot be undone.`)) return
     deleteMut.mutate(webhook.id)
@@ -346,6 +350,14 @@ export default function Webhooks() {
               <span className="text-[10px] text-text-quaternary flex-shrink-0">
                 {new Date(webhook.created_at).toLocaleDateString()}
               </span>
+              <button
+                onClick={e => { e.stopPropagation(); testWebhookMut.mutate(webhook.id) }}
+                disabled={testWebhookMut.isPending && testWebhookMut.variables === webhook.id}
+                className="opacity-0 group-hover:opacity-100 border border-border-primary rounded-full px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-primary transition-colors disabled:opacity-40 flex items-center gap-1"
+              >
+                <Zap className="w-3 h-3" />
+                {testWebhookMut.isPending && testWebhookMut.variables === webhook.id ? 'Sending…' : 'Test'}
+              </button>
               <button
                 onClick={e => { e.stopPropagation(); handleDelete(webhook) }}
                 disabled={deleteMut.isPending}
