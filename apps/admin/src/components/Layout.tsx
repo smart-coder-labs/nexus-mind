@@ -23,6 +23,7 @@ import {
   Hash,
   Search,
   Megaphone,
+  MessageSquare,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -130,6 +131,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Policies',     href: '/policies',     icon: ShieldAlert },
   { label: 'Webhooks',     href: '/webhooks',     icon: Zap },
   { label: 'Memories',     href: '/memories',     icon: Brain },
+  { label: 'Sessions',     href: '/sessions',     icon: MessageSquare },
   { label: 'Tags',         href: '/tags',         icon: Hash },
   { label: 'Collections',  href: '/collections',  icon: FolderOpen },
   { label: 'Audit Log',    href: '/audit',        icon: ScrollText },

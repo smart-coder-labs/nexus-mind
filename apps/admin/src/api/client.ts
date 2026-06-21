@@ -342,8 +342,21 @@ export class NexusMindClient {
     })
   }
 
-  listSessions(): Promise<SessionSummary[]> {
-    return this.request('/v1/sessions')
+  listSessions(params: { limit?: number } = {}): Promise<SessionSummary[]> {
+    const qs = params.limit !== undefined ? `?limit=${params.limit}` : ''
+    return this.request(`/v1/sessions${qs}`)
+  }
+
+  createSession(data: { summary?: string; description?: string } = {}): Promise<SessionSummary> {
+    return this.request('/v1/sessions', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  getSessionMemories(sessionId: string, limit = 50): Promise<import('../types').Memory[]> {
+    const qs = new URLSearchParams({ session_id: sessionId, limit: String(limit) })
+    return this.request(`/v1/memory?${qs}`)
   }
 
   updateSession(id: string, data: { summary?: string; description?: string }): Promise<SessionSummary> {

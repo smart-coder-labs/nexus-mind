@@ -185,7 +185,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
       onClick={onClose}
     >
       <div
-        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -236,10 +236,10 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
           <div className="mt-4 flex flex-col gap-1">
             <p className="text-[10px] text-text-quaternary mb-1">Detected {mdParsed.length} convention{mdParsed.length !== 1 ? 's' : ''}:</p>
             {mdParsed.map((c, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs text-text-secondary">
+              <div key={i} className="flex items-center gap-2 text-[10px] text-text-secondary">
                 <span className="text-text-quaternary shrink-0">{i + 1}.</span>
-                <span className="font-medium text-text-primary">{c.title}</span>
-                <span className="text-[10px] bg-white/[0.06] text-text-quaternary rounded-[4px] px-1.5 py-0.5">{c.category}</span>
+                <span className="text-text-secondary">{c.title}</span>
+                <span className="text-[10px] bg-white/[0.06] text-text-secondary rounded-[5px] px-1.5 py-0.5">{c.category}</span>
               </div>
             ))}
           </div>

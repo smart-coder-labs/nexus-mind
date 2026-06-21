@@ -164,7 +164,7 @@ function CreateKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1c1c1e] shadow-2xl">
+      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1d1d1f] shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">New API Key</h2>
@@ -187,7 +187,7 @@ function CreateKeyModal({
 
           {/* Name */}
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+            <label className="block text-[10px] text-text-quaternary mb-1">
               Key Name <span className="text-status-error">*</span>
             </label>
             <input
@@ -195,20 +195,20 @@ function CreateKeyModal({
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               placeholder="e.g. CI/CD pipeline"
-              className="w-full rounded-[10px] border border-border-primary bg-[#272729] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/50 transition-colors"
+              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
               required
             />
           </div>
 
           {/* Role */}
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+            <label className="block text-[10px] text-text-quaternary mb-1">
               Role
             </label>
             <select
               value={form.role}
               onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-              className="w-full rounded-[10px] border border-border-primary bg-[#272729] px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue/50 transition-colors"
+              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full"
             >
               <option value="admin">admin</option>
               <option value="member">member</option>
@@ -218,29 +218,29 @@ function CreateKeyModal({
 
           {/* Expiry */}
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
-              Expiry Date <span className="text-text-quaternary font-normal normal-case">(optional)</span>
+            <label className="block text-[10px] text-text-quaternary mb-1">
+              Expiry Date <span className="text-text-quaternary">(optional)</span>
             </label>
             <input
               type="date"
               value={form.expires_at}
               onChange={(e) => setForm((f) => ({ ...f, expires_at: e.target.value }))}
               min={new Date().toISOString().slice(0, 10)}
-              className="w-full rounded-[10px] border border-border-primary bg-[#272729] px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue/50 transition-colors"
+              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full"
             />
           </div>
 
           {/* Description */}
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
-              Description <span className="text-text-quaternary font-normal normal-case">(optional)</span>
+            <label className="block text-[10px] text-text-quaternary mb-1">
+              Description <span className="text-text-quaternary">(optional)</span>
             </label>
             <textarea
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="What is this key for?"
               rows={2}
-              className="w-full rounded-[10px] border border-border-primary bg-[#272729] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/50 transition-colors resize-none"
+              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary resize-none"
             />
           </div>
 
@@ -249,14 +249,14 @@ function CreateKeyModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 rounded-full border border-border-primary px-4 py-2 text-sm text-text-secondary hover:bg-white/[0.04] transition-colors"
+              className="flex-1 rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMut.isPending}
-              className="flex-1 rounded-full bg-accent-blue px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+              className="flex-1 rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-40"
             >
               {createMut.isPending ? 'Creating…' : 'Create Key'}
             </button>
@@ -286,7 +286,7 @@ function CreatedKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1c1c1e] shadow-2xl">
+      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1d1d1f] shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">Key Created</h2>
@@ -301,34 +301,34 @@ function CreatedKeyModal({
 
         <div className="px-5 py-4 space-y-4">
           {/* Warning */}
-          <div className="rounded-[10px] border border-status-warning/30 bg-status-warning/5 px-3 py-2.5 text-xs text-status-warning leading-relaxed">
+          <div className="rounded-[11px] bg-status-warning/10 border border-status-warning/30 p-3 text-xs text-status-warning leading-relaxed">
             Save this key now — it won't be shown again.
           </div>
 
           <div className="space-y-1.5">
-            <p className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+            <p className="text-[10px] text-text-quaternary mb-1">
               {created.name}
             </p>
-            <div className="relative flex items-center gap-2 rounded-[10px] border border-border-primary bg-[#0d0d0e] px-3 py-2.5">
+            <div className="relative flex items-center gap-2">
               <code
                 ref={codeRef}
-                className="flex-1 font-mono text-xs text-text-primary break-all select-all"
+                className="flex-1 font-mono text-xs bg-white/[0.06] rounded-[8px] px-3 py-2 break-all text-text-primary select-all"
               >
                 {created.key}
               </code>
               <button
                 onClick={handleCopy}
-                className="shrink-0 rounded-[7px] border border-border-primary p-1.5 text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                className="shrink-0 p-1.5 transition-colors"
                 aria-label="Copy key"
               >
-                {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5" />}
+                {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5 text-text-quaternary hover:text-text-primary" />}
               </button>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="w-full rounded-full bg-accent-blue px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition-opacity"
+            className="w-full rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
           >
             Done
           </button>

@@ -21,6 +21,7 @@ const Webhooks    = lazy(() => import('./pages/Webhooks'))
 const Collections = lazy(() => import('./pages/Collections'))
 const Tags        = lazy(() => import('./pages/Tags'))
 const Search      = lazy(() => import('./pages/Search'))
+const Sessions    = lazy(() => import('./pages/Sessions'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
@@ -71,6 +72,7 @@ function AppRoutes() {
                 <Route path="/webhooks"    element={<AdminRoute><Webhooks /></AdminRoute>} />
                 <Route path="/collections" element={<AdminRoute><Collections /></AdminRoute>} />
                 <Route path="/search"   element={<Search />} />
+                <Route path="/sessions" element={<Sessions />} />
                 <Route path="/memories" element={<Memories />} />
                 <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
