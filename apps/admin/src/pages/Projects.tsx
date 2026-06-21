@@ -678,7 +678,7 @@ export default function Projects() {
       <div key={project.id}>
         {/* Row */}
         <div
-          className={`p-4 flex items-start justify-between gap-4 transition-colors ${
+          className={`group p-4 flex items-start justify-between gap-4 transition-colors ${
             isExpanded ? 'bg-[#272729]' : 'hover:bg-[#272729]/20'
           } ${indent ? 'pl-10 border-l-2 border-border-secondary ml-4' : ''} ${
             isArchived ? 'opacity-60' : ''
@@ -747,7 +747,7 @@ export default function Projects() {
                   onClick={(e) => { e.stopPropagation(); setEditingProject(project) }}
                   aria-label={`Settings for ${project.name}`}
                   title="Project settings"
-                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-[#272729]/60 transition-colors"
+                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-[#272729]/60 opacity-0 group-hover:opacity-100 transition-all"
                 >
                   <Settings className="w-3 h-3" />
                 </button>
@@ -988,7 +988,7 @@ export default function Projects() {
               className="space-y-4"
             >
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
+                <label className="text-[10px] text-text-quaternary">Description</label>
                 <textarea
                   value={settingsDescription}
                   onChange={e => setSettingsDescription(e.target.value)}
@@ -998,7 +998,7 @@ export default function Projects() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Custom AI Instructions</label>
+                <label className="text-[10px] text-text-quaternary">Custom AI Instructions</label>
                 <textarea
                   value={settingsCustomInstructions}
                   onChange={e => setSettingsCustomInstructions(e.target.value)}
@@ -1008,7 +1008,7 @@ export default function Projects() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Retention Days</label>
+                <label className="text-[10px] text-text-quaternary">Retention Days</label>
                 <input
                   type="number"
                   min={0}

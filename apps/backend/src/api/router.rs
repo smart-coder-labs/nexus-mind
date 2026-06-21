@@ -136,6 +136,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/memories/:id/schedule-delete", patch(admin::schedule_memory_delete))
         .route("/v1/admin/org/announcement", patch(admin::update_org_announcement))
         .route("/v1/admin/org/logo", patch(admin::update_org_logo))
+        .route("/v1/admin/memories/health", get(admin::get_memory_health_handler))
         .route("/v1/admin/memories/import", post(admin::import_memories))
         .route("/v1/admin/memories/merge", post(admin::merge_memories))
         .route("/v1/admin/memories/bulk-tag", post(admin::bulk_tag_memories))

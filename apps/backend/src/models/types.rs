@@ -1003,6 +1003,15 @@ pub struct HeatmapDay {
     pub count: i64,
 }
 
+/// Memory health summary — returned by `GET /v1/admin/memories/health`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct MemoryHealth {
+    pub total_memories: i64,
+    pub duplicate_count: i64,
+    pub stale_count: i64,
+    pub untagged_count: i64,
+}
+
 /// Agent/tool activity summary — returned by `GET /v1/admin/stats/agent-activity`.
 #[derive(Debug, Serialize, Clone)]
 pub struct AgentActivity {

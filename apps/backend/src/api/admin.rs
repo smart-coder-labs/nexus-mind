@@ -2608,6 +2608,21 @@ pub async fn assign_memory_collection_api(
 ///
 /// Returns how many memories would be deleted given the current retention policy.
 /// If no retention policy is set (retention_days = NULL), returns would_delete = 0.
+/// `GET /v1/admin/memories/health` — admin-only.
+/// Returns a health summary for the org's memory corpus: total, duplicates, stale, and untagged.
+pub async fn get_memory_health_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<crate::models::types::MemoryHealth>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let health = queries::get_memory_health(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(health))
+}
+
 pub async fn get_retention_preview(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

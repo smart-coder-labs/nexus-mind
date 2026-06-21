@@ -6083,6 +6083,48 @@ pub fn get_duplicate_groups(conn: &Connection, org_id: &str) -> Result<Vec<Vec<M
     Ok(groups)
 }
 
+/// Returns a health summary for the org's memory corpus.
+/// Used by `GET /v1/admin/memories/health`.
+pub fn get_memory_health(conn: &Connection, org_id: &str) -> Result<crate::models::types::MemoryHealth> {
+    let total_memories: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND archived_at IS NULL",
+        [org_id],
+        |row| row.get(0),
+    )?;
+
+    let stale_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND archived_at IS NULL
+         AND updated_at < datetime('now', '-30 days')",
+        [org_id],
+        |row| row.get(0),
+    )?;
+
+    let untagged_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND archived_at IS NULL
+         AND (tags IS NULL OR tags = '[]' OR tags = '')",
+        [org_id],
+        |row| row.get(0),
+    )?;
+
+    let duplicate_count: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(cnt - 1), 0) FROM (
+           SELECT COUNT(*) as cnt FROM memories
+           WHERE org_id = ?1 AND archived_at IS NULL
+           GROUP BY LOWER(TRIM(SUBSTR(content, 1, 200)))
+           HAVING cnt > 1
+         )",
+        [org_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(crate::models::types::MemoryHealth {
+        total_memories,
+        duplicate_count,
+        stale_count,
+        untagged_count,
+    })
+}
+
 /// Merges two memories: appends `merge_id`'s content to `keep_id`'s content (separated by
 /// `\n\n---\n\n`), then deletes `merge_id`. Both must belong to the given org.
 /// Returns the updated `keep_id` memory on success, or an error if either memory is not found.
