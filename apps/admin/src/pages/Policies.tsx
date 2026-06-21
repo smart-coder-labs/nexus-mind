@@ -180,7 +180,7 @@ export default function Policies() {
               </div>
 
               {/* Rule type */}
-              <span className="bg-white/[0.06] rounded-[5px] text-[10px] text-text-quaternary px-1.5 py-0.5 self-start">
+              <span className="bg-white/[0.06] rounded-[5px] text-[10px] text-text-secondary px-1.5 py-0.5 self-start">
                 {RULE_TYPE_LABELS[policy.rule_type]}
               </span>
 
