@@ -329,8 +329,8 @@ export default function Dashboard() {
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Dashboard</h1>
-          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">
+          <h1 className="text-base font-semibold text-text-primary">Dashboard</h1>
+          <p className="text-xs text-text-tertiary mt-0.5">
             {session?.org.name} — organization overview
           </p>
         </div>
@@ -396,7 +396,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div className="flex items-center">
                 <Sparkles className="w-4 h-4 text-accent-blue" />
-                <span className="text-sm font-semibold text-text-primary ml-2">Getting started</span>
+                <span className="text-xs font-semibold text-text-primary ml-2">Getting started</span>
               </div>
               <button
                 onClick={handleDismiss}
@@ -410,7 +410,7 @@ export default function Dashboard() {
             {allDone ? (
               <div className="text-center py-2 space-y-1">
                 <CheckCircle className="w-6 h-6 text-status-success mx-auto" />
-                <p className="text-sm font-semibold text-text-primary">You're all set!</p>
+                <p className="text-xs font-semibold text-text-primary">You're all set!</p>
               </div>
             ) : (
               <>
@@ -422,7 +422,7 @@ export default function Dashboard() {
                       style={{ width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%` }}
                     />
                   </div>
-                  <span className="text-[11px] text-text-quaternary">{doneCount} of {totalCount} complete</span>
+                  <span className="text-[10px] text-text-quaternary">{doneCount} of {totalCount} complete</span>
                 </div>
 
                 {/* Items */}
@@ -437,10 +437,10 @@ export default function Dashboard() {
                         <div className="w-5 h-5 rounded-full border border-border-primary flex items-center justify-center shrink-0 mt-0.5" />
                       )}
                       <div>
-                        <p className={`text-sm leading-tight ${item.done ? 'line-through text-text-quaternary' : 'text-text-secondary'}`}>
+                        <p className={`text-xs leading-tight ${item.done ? 'line-through text-text-quaternary opacity-50' : 'text-accent-blue'}`}>
                           {item.label}
                         </p>
-                        <p className="text-xs text-text-tertiary mt-0.5">
+                        <p className="text-[10px] text-text-quaternary mt-0.5">
                           {item.description}
                         </p>
                       </div>
@@ -457,7 +457,7 @@ export default function Dashboard() {
       {isAdmin && (
         <section aria-label="Organization statistics">
           {statsError ? (
-            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error">
+            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-xs text-status-error">
               Failed to load statistics. Check your connection and try again.
             </div>
           ) : statsLoading || trendsLoading ? (
@@ -480,7 +480,7 @@ export default function Dashboard() {
       {/* Activity timeline */}
       {isAdmin && (
         <section aria-label="Recent activity">
-          <h2 className="text-[15px] font-semibold text-text-secondary mb-4 tracking-[-0.15px]">
+          <h2 className="text-xs font-semibold text-text-primary mb-4">
             Recent Activity
           </h2>
           <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] px-6 divide-y divide-border-secondary">
@@ -512,7 +512,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Usage */}
           {isVisible('usage') && <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-            <p className="text-[12px] tracking-[-0.12px] text-text-tertiary">Usage</p>
+            <p className="text-xs font-semibold text-text-primary">Usage</p>
             {usageLoading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="flex items-center justify-between animate-pulse">
@@ -545,7 +545,7 @@ export default function Dashboard() {
 
           {/* Agent Activity */}
           {isVisible('agent-activity') && <div className="rounded-[18px] bg-[#272729] border border-border-primary p-5 space-y-4">
-            <p className="text-sm font-semibold text-text-primary">Agent Activity</p>
+            <p className="text-xs font-semibold text-text-primary">Agent Activity</p>
             {agentActivityLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="space-y-1.5 animate-pulse">
@@ -634,7 +634,7 @@ export default function Dashboard() {
             </div>
           ) : trends ? (
             <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-              <p className="text-[12px] tracking-[-0.12px] text-text-tertiary mb-3">Top Projects</p>
+              <p className="text-xs font-semibold text-text-primary mb-3">Top Projects</p>
               {trends.by_project.length === 0 ? (
                 <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
               ) : (() => {
@@ -669,7 +669,7 @@ export default function Dashboard() {
             </div>
           ) : trends ? (
             <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-              <p className="text-[12px] tracking-[-0.12px] text-text-tertiary mb-3">Memory Types</p>
+              <p className="text-xs font-semibold text-text-primary mb-3">Memory Types</p>
               {trends.by_type.length === 0 ? (
                 <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
               ) : (() => {
@@ -706,7 +706,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('heatmap') && (
         <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-text-primary">Memory Activity</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Memory Activity</h3>
             <span className="text-[10px] text-text-quaternary">Last {period} days</span>
           </div>
           {heatmapData ? (
@@ -728,7 +728,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('contributors') && (
         <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-text-primary">Top Contributors</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Top Contributors</h3>
             <span className="text-[10px] text-text-quaternary">Last {period} days</span>
           </div>
           {contributorsLoading ? (
@@ -766,7 +766,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('conventions') && (
         <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm text-text-primary font-semibold">Conventions</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Conventions</h3>
             <a href="/conventions" className="text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors">
               View all →
             </a>
@@ -816,7 +816,7 @@ export default function Dashboard() {
         return (
           <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-text-primary">Getting Started</h3>
+              <h3 className="text-xs font-semibold text-text-primary">Getting Started</h3>
               <span className="text-[10px] text-text-quaternary">{completedCount}/5 completed</span>
             </div>
             {completedCount === 5 ? (
@@ -846,7 +846,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('recent-activity') && (
         <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm text-text-primary font-semibold">Recent Activity</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Recent Activity</h3>
             <span className="text-[10px] text-text-quaternary">Live · 30s</span>
           </div>
           {recentActivity && recentActivity.length > 0 ? (
@@ -878,7 +878,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('memory-trends') && (
         <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-text-primary">Memory Trends</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Memory Trends</h3>
             <span className="text-[10px] text-text-quaternary">Last {period} days</span>
           </div>
           {!trends || !trends.daily_counts || trends.daily_counts.length === 0 ? (
@@ -916,7 +916,7 @@ export default function Dashboard() {
       {isAdmin && isVisible('memory-health') && (
         <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-text-primary">Memory Health</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Memory Health</h3>
             <span className="text-[10px] text-text-quaternary">Last 30 days</span>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -926,12 +926,12 @@ export default function Dashboard() {
               { label: 'Stale (>30d)', value: healthData?.stale_count ?? '—', icon: Clock, ok: (healthData?.stale_count ?? 0) < 10 },
               { label: 'Untagged', value: healthData?.untagged_count ?? '—', icon: Tag, ok: (healthData?.untagged_count ?? 0) < 5 },
             ].map(({ label, value, icon: Icon, ok }) => (
-              <div key={label} className="rounded-[11px] bg-white/[0.03] border border-border-primary p-3">
+              <div key={label} className="rounded-[11px] bg-white/[0.04] p-3">
                 <div className="flex items-center gap-1.5 mb-1">
                   <Icon className="w-3 h-3 text-text-quaternary" />
                   <span className="text-[10px] text-text-quaternary">{label}</span>
                 </div>
-                <span className={`text-sm font-semibold ${ok ? 'text-text-primary' : 'text-status-warning'}`}>
+                <span className={`text-xl font-semibold ${ok ? 'text-text-primary' : 'text-status-warning'}`}>
                   {value}
                 </span>
               </div>
@@ -951,14 +951,14 @@ export default function Dashboard() {
         ] as const
         return (
           <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
-            <h3 className="text-sm font-semibold text-text-primary mb-4">Quick Actions</h3>
+            <h3 className="text-xs font-semibold text-text-primary mb-4">Quick Actions</h3>
             <div className="grid grid-cols-2 gap-2">
               {QUICK_ACTIONS.map(action => (
                 'href' in action ? (
                   <Link
                     key={action.label}
                     to={action.href}
-                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs text-text-secondary hover:text-text-primary transition-colors border border-border-secondary/30"
+                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs font-semibold text-text-primary transition-colors border border-border-secondary/30"
                   >
                     <action.icon className="w-4 h-4" />
                     {action.label}
@@ -967,7 +967,7 @@ export default function Dashboard() {
                   <button
                     key={action.label}
                     onClick={action.action}
-                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs text-text-secondary hover:text-text-primary transition-colors border border-border-secondary/30"
+                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs font-semibold text-text-primary transition-colors border border-border-secondary/30"
                   >
                     <action.icon className="w-4 h-4" />
                     {action.label}
@@ -981,7 +981,7 @@ export default function Dashboard() {
 
       {!isAdmin && (
         <div className="border border-white/[0.08] bg-[#272729] rounded-[18px] p-6 max-w-xl">
-          <p className="text-sm text-text-secondary leading-relaxed">
+          <p className="text-xs text-text-secondary leading-relaxed">
             Welcome to <strong>{session?.org.name}</strong> on NexusMind.
           </p>
           <p className="text-xs text-text-tertiary mt-2">

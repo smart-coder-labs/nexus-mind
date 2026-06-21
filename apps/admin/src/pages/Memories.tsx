@@ -600,6 +600,25 @@ function MemorySlideOver({
 }) {
   const qc = useQueryClient()
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [addingToCollection, setAddingToCollection] = useState(false)
+  const [collectionId, setCollectionId] = useState('')
+
+  const { data: collections = [] } = useQuery({
+    queryKey: ['collections-list'],
+    queryFn: () => client.listCollections(),
+    staleTime: 60_000,
+    enabled: !!memoryId,
+  })
+
+  const addToCollectionMut = useMutation({
+    mutationFn: ({ collectionId }: { collectionId: string }) =>
+      client.assignMemoryToCollection(memoryId!, { collection_id: collectionId }),
+    onSuccess: () => {
+      setCollectionId('')
+      setAddingToCollection(false)
+      qc.invalidateQueries({ queryKey: ['memories'] })
+    },
+  })
 
   const { data: memory, isLoading } = useQuery({
     queryKey: ['memory', memoryId],
@@ -835,6 +854,48 @@ function MemorySlideOver({
                     <p className="text-xs text-text-quaternary">No related memories found.</p>
                   )}
                 </div>
+              )}
+            </div>
+
+            {/* Add to collection */}
+            <div className="border-t border-border-primary pt-3">
+              <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold mb-2">
+                Collections
+              </p>
+              {addingToCollection ? (
+                <div className="flex items-center gap-2">
+                  <select
+                    value={collectionId}
+                    onChange={e => setCollectionId(e.target.value)}
+                    className="flex-1 bg-white/[0.04] rounded-[8px] border border-border-primary text-xs text-text-primary focus:border-accent-blue/60 focus:outline-none px-2 py-1.5"
+                  >
+                    <option value="">Select collection…</option>
+                    {collections.map((c: Collection) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => collectionId && addToCollectionMut.mutate({ collectionId })}
+                    disabled={!collectionId || addToCollectionMut.isPending}
+                    className="bg-accent-blue text-white rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => { setAddingToCollection(false); setCollectionId('') }}
+                    className="text-text-quaternary hover:text-text-secondary text-xs"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setAddingToCollection(true)}
+                  className="flex items-center gap-1.5 text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors"
+                >
+                  <Plus className="w-3 h-3" />
+                  Add to collection
+                </button>
               )}
             </div>
           </div>
