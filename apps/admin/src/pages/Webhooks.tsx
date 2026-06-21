@@ -127,7 +127,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
                     type="checkbox"
                     checked={selectedEvents.has(event)}
                     onChange={() => toggleEvent(event)}
-                    className="accent-accent-blue w-3 h-3"
+                    className="accent-accent-blue w-3.5 h-3.5 rounded border-border-primary"
                   />
                   <span className="text-xs text-text-secondary">{event}</span>
                 </label>
@@ -222,7 +222,7 @@ function DeliveryLog({ webhook }: DeliveryLogProps) {
 function DeliveryRow({ delivery }: { delivery: WebhookDelivery }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="rounded-[8px] border border-border-primary bg-white/[0.02] overflow-hidden">
+    <div className="rounded-[8px] border border-border-primary bg-white/[0.04] overflow-hidden">
       <button
         onClick={() => setExpanded(e => !e)}
         className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
@@ -341,7 +341,7 @@ export default function Webhooks() {
                 className={`w-2 h-2 rounded-full flex-shrink-0 ${webhook.active ? 'bg-status-success' : 'bg-status-error'}`}
                 title={webhook.active ? 'Active' : 'Inactive'}
               />
-              <span className="text-xs text-text-primary truncate max-w-[280px] flex-1">
+              <span className="text-xs font-mono text-text-secondary truncate max-w-[280px] flex-1">
                 {webhook.target_url}
               </span>
               <span className="rounded-[5px] bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary flex-shrink-0">

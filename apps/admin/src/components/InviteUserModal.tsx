@@ -12,6 +12,8 @@ interface Props {
   roles?: CustomRole[]
 }
 
+const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+
 export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Props) {
   const [form, setForm] = useState({ email: '', name: '', role: 'member' })
   const [projectAccess, setProjectAccess] = useState<'all' | 'specific'>('all')
@@ -19,6 +21,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [newKey, setNewKey] = useState<string | null>(null)
+  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const modalRef = useRef<HTMLDivElement>(null)
 
@@ -75,6 +78,10 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!isValidEmail(form.email)) {
+      setError('Please enter a valid email address.')
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -84,7 +91,9 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
           : { type: 'specific', project_ids: selectedProjectIds }
       const res = await client.inviteUser({ ...form, project_access: access })
       setNewKey(res.api_key)
+      setInviteSuccess(form.email)
       onSuccess()
+      setTimeout(() => setInviteSuccess(null), 3000)
     } catch {
       setError('Failed to invite user.')
     } finally {
@@ -103,6 +112,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
     setProjectAccess('all')
     setSelectedProjectIds([])
     setNewKey(null)
+    setInviteSuccess(null)
     setCopied(false)
     setError('')
     onClose()
@@ -233,6 +243,9 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             </div>
 
             {error && <p className="text-xs text-status-error/80">{error}</p>}
+            {inviteSuccess && (
+              <p className="text-status-success text-[10px]">Invitation sent to {inviteSuccess}</p>
+            )}
 
             <div className="flex gap-2 pt-1">
               <button
@@ -244,7 +257,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               </button>
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !isValidEmail(form.email)}
                 className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
               >
                 {loading ? 'Inviting…' : 'Invite'}

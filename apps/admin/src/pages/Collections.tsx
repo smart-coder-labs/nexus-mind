@@ -292,7 +292,7 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
             {searchResults?.map(memory => (
               <div
                 key={memory.id}
-                className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.02] border border-border-primary/50"
+                className="flex items-center gap-2 p-3 rounded-[8px] bg-white/[0.04]"
               >
                 <p className="text-xs text-text-secondary flex-1 truncate">{memory.content}</p>
                 <button
@@ -353,7 +353,7 @@ function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProp
 
         {collection.memory_count != null && (
           <div className="mt-2">
-            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-quaternary">
+            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">
               {collection.memory_count} {collection.memory_count === 1 ? 'memory' : 'memories'}
             </span>
           </div>
