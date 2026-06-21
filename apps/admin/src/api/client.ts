@@ -353,6 +353,10 @@ export class NexusMindClient {
     })
   }
 
+  updateProfile(data: { name?: string }): Promise<void> {
+    return this.request('/v1/users/me', { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
   changePassword(data: { current_password: string; new_password: string }): Promise<{ message: string }> {
     return this.request('/v1/admin/auth/change-password', { method: 'POST', body: JSON.stringify(data) })
   }

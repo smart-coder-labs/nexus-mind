@@ -8,11 +8,11 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { ActivityItem } from '../components/ActivityItem'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
-type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity'
-const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'recent-activity', 'agent-activity', 'usage', 'quick-actions']
+type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started'
+const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -760,6 +760,34 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      {/* Getting Started */}
+      {isAdmin && isVisible('getting-started') && (() => {
+        const checklist = [
+          { label: 'Create your first project', done: false, href: '/projects' },
+          { label: 'Invite a team member', done: (stats?.active_users_24h ?? 0) > 1, href: '/users' },
+          { label: 'Add a convention', done: (conventions?.length ?? 0) > 0, href: '/conventions' },
+          { label: 'Store your first memory', done: (stats?.total_memories ?? 0) > 0, href: '/memories' },
+          { label: 'Create an AI agent', done: false, href: '/agents' },
+        ]
+        return (
+          <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-text-primary">Getting Started</h3>
+              <span className="text-[10px] text-text-quaternary">{checklist.filter(c => c.done).length}/{checklist.length} complete</span>
+            </div>
+            {checklist.map(item => (
+              <div key={item.label} className="flex items-center gap-3 py-2 border-b border-border-secondary/20 last:border-0">
+                <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${item.done ? 'bg-status-success border-status-success' : 'border-border-primary'}`}>
+                  {item.done && <CheckCircle2 className="w-3 h-3 text-white" />}
+                </div>
+                <span className={`text-xs flex-1 ${item.done ? 'text-text-quaternary line-through' : 'text-text-secondary'}`}>{item.label}</span>
+                {!item.done && <a href={item.href} className="text-[10px] text-accent-blue hover:text-accent-blue/80">Go →</a>}
+              </div>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* Recent Activity feed */}
       {isAdmin && isVisible('recent-activity') && (

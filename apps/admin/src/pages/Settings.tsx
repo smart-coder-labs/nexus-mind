@@ -337,6 +337,20 @@ export default function Settings() {
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  const [displayName, setDisplayName] = useState(session?.user?.name ?? '')
+  const [profileSaved, setProfileSaved] = useState(false)
+
+  const updateProfileMut = useMutation({
+    mutationFn: (data: { name?: string }) => client.updateProfile(data),
+    onSuccess: () => {
+      setProfileSaved(true)
+      setTimeout(() => setProfileSaved(false), 2000)
+    },
+    onError: () => {
+      // Backend may not support this endpoint yet — surface gracefully
+    },
+  })
+
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -625,6 +639,42 @@ export default function Settings() {
         <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Settings</h1>
         <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Organization and account configuration</p>
       </div>
+
+      {/* My Profile */}
+      <section className="space-y-4">
+        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">My Profile</p>
+        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5 mb-6">
+          <h3 className="text-sm font-semibold text-text-primary mb-4">My Profile</h3>
+          <div className="space-y-4">
+            {/* Display name */}
+            <div>
+              <label className="text-[10px] text-text-quaternary uppercase tracking-wide">Display Name</label>
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  value={displayName}
+                  onChange={e => setDisplayName(e.target.value)}
+                  className="flex-1 rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60"
+                />
+                <button
+                  onClick={() => updateProfileMut.mutate({ name: displayName })}
+                  disabled={updateProfileMut.isPending}
+                  className="bg-accent-blue text-white rounded-full px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                >
+                  {updateProfileMut.isPending ? 'Saving…' : profileSaved ? 'Saved!' : 'Save'}
+                </button>
+              </div>
+              {updateProfileMut.isError && (
+                <p className="text-[10px] text-status-error mt-1">Profile update not yet supported by backend</p>
+              )}
+            </div>
+            {/* Email (read-only) */}
+            <div>
+              <label className="text-[10px] text-text-quaternary uppercase tracking-wide">Email</label>
+              <p className="text-xs text-text-secondary mt-1">{session?.user?.email}</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Organization */}
       <section className="space-y-4">
@@ -927,7 +977,7 @@ export default function Settings() {
                 className={inputCls}
               />
             </div>
-            {passwordError && <p className="text-xs text-status-error/80">{passwordError}</p>}
+            {passwordError && <p className="text-[10px] text-status-error">{passwordError}</p>}
             <div className="flex items-center gap-3">
               <button
                 type="submit"

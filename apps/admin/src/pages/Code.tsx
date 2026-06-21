@@ -969,7 +969,7 @@ function RepositoriesTab({
                       <button
                         onClick={() => reindexMut.mutate(p)}
                         disabled={isReindexing || p.index_status === 'indexing'}
-                        title="Reindex"
+                        title={(isReindexing || p.index_status === 'indexing') ? 'Syncing…' : 'Sync now'}
                         className="border border-border-primary rounded-full w-7 h-7 flex items-center justify-center text-text-quaternary hover:text-text-primary hover:border-border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {(isReindexing || p.index_status === 'indexing')
