@@ -189,8 +189,8 @@ export default function AuditLog() {
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
-  const inputCls = 'bg-white/[0.04] border border-border-secondary/40 rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
-  const selectCls = 'appearance-none bg-white/[0.04] border border-border-secondary/40 rounded-[8px] pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
+  const inputCls = 'bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const selectCls = 'appearance-none bg-white/[0.04] border border-border-primary rounded-[8px] pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
 
   const SelectWrapper = ({ children }: { children: React.ReactNode }) => (
     <div className="relative">
@@ -205,8 +205,8 @@ export default function AuditLog() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">Audit Log</h1>
-          <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">All actions performed in your organization</p>
+          <h1 className="text-base font-semibold text-text-primary">Audit Log</h1>
+          <p className="text-xs text-text-quaternary mt-0.5">All actions performed in your organization</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -253,7 +253,7 @@ export default function AuditLog() {
           placeholder="Search actions, resources…"
           value={searchRaw}
           onChange={e => setSearchRaw(e.target.value)}
-          className="bg-white/[0.04] border border-border-secondary/40 rounded-[8px] text-xs text-text-secondary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48"
+          className="bg-white/[0.04] border border-border-primary rounded-[8px] text-xs text-text-primary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48"
         />
         <SelectWrapper>
           <select value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
@@ -276,16 +276,16 @@ export default function AuditLog() {
           </select>
         </SelectWrapper>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-text-tertiary px-0.5">From</span>
+          <span className="text-[10px] text-text-quaternary px-0.5">From</span>
           <input type="date" value={draft.from} onChange={setField('from')} className={inputCls} />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] text-text-tertiary px-0.5">To</span>
+          <span className="text-[10px] text-text-quaternary px-0.5">To</span>
           <input type="date" value={draft.to}   onChange={setField('to')}   className={inputCls} />
         </label>
         <button
           onClick={applyFilters}
-          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold transition-colors"
+          className="px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
         >
           Apply
         </button>
@@ -302,16 +302,16 @@ export default function AuditLog() {
 
       {/* Query error */}
       {entriesError && (
-        <p className="text-sm text-status-error text-center py-8">Failed to load audit log. Please refresh.</p>
+        <p className="text-xs text-status-error text-center py-8">Failed to load audit log. Please refresh.</p>
       )}
 
       {/* Table */}
       <div className="border border-border-primary rounded-[18px] overflow-hidden overflow-x-auto">
-        <table className="w-full text-sm min-w-[620px]">
+        <table className="w-full min-w-[620px]">
           <thead>
             <tr className="border-b border-border-secondary">
               {['Timestamp', 'User', 'Action', 'Resource', 'ID'].map(h => (
-                <th key={h} className="text-left px-4 py-3 text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+                <th key={h} className="text-left px-4 py-3 text-[10px] font-semibold text-text-quaternary uppercase tracking-wide">
                   {h}
                 </th>
               ))}
@@ -323,7 +323,7 @@ export default function AuditLog() {
                 <tr key={i}>
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded-[5px] bg-[#272729] animate-pulse" />
+                      <div className="h-4 rounded-[5px] bg-white/[0.04] animate-pulse" />
                     </td>
                   ))}
                 </tr>
@@ -334,7 +334,7 @@ export default function AuditLog() {
                   return [
                     <tr
                       key={`group-${group.key}`}
-                      className="bg-[#1d1d1f] border-t border-border-primary cursor-pointer hover:bg-[#272729] transition-colors"
+                      className="bg-white/[0.02] border-t border-border-primary cursor-pointer hover:bg-white/[0.04] transition-colors"
                       onClick={() => toggleGroup(group.key)}
                     >
                       <td colSpan={5} className="px-4 py-2.5">
@@ -343,7 +343,7 @@ export default function AuditLog() {
                             ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
                             : <ChevronUp className="w-3.5 h-3.5 text-text-quaternary" />
                           }
-                          <span className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">{group.label}</span>
+                          <span className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wide">{group.label}</span>
                           <span className="text-[10px] text-text-secondary bg-white/[0.06] border border-border-primary rounded-[5px] px-1.5 py-0.5">
                             {group.entries.length} events
                           </span>
@@ -351,7 +351,7 @@ export default function AuditLog() {
                       </td>
                     </tr>,
                     ...(!isCollapsed ? group.entries.map(entry => (
-                      <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors duration-150">
+                      <tr key={entry.id} className="hover:bg-white/[0.04] transition-colors duration-150">
                         <td className="px-4 py-3 text-[10px] text-text-quaternary whitespace-nowrap">
                           <div className="border-l-2 border-l-accent-blue/20 ml-4 pl-4">
                             {new Date(entry.timestamp).toLocaleString()}
@@ -363,8 +363,8 @@ export default function AuditLog() {
                         <td className={`px-4 py-3 text-xs font-semibold ${actionClass(entry.action)}`}>
                           {entry.action}
                         </td>
-                        <td className="px-4 py-3 text-xs text-text-tertiary">{entry.resource_type}</td>
-                        <td className="px-4 py-3 text-xs text-text-quaternary font-mono truncate max-w-[120px]">
+                        <td className="px-4 py-3 text-xs text-text-quaternary">{entry.resource_type}</td>
+                        <td className="px-4 py-3 text-[10px] text-text-quaternary font-mono truncate max-w-[120px]">
                           {entry.resource_id ?? '—'}
                         </td>
                       </tr>
@@ -372,7 +372,7 @@ export default function AuditLog() {
                   ]
                 })
               : entries?.map(entry => (
-                <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors duration-150">
+                <tr key={entry.id} className="hover:bg-white/[0.04] transition-colors duration-150">
                   <td className="px-4 py-3 text-[10px] text-text-quaternary whitespace-nowrap">
                     {new Date(entry.timestamp).toLocaleString()}
                   </td>
@@ -382,10 +382,10 @@ export default function AuditLog() {
                   <td className={`px-4 py-3 text-xs font-semibold ${actionClass(entry.action)}`}>
                     {highlightMatch(entry.action, debouncedSearch)}
                   </td>
-                  <td className="px-4 py-3 text-xs text-text-tertiary">
+                  <td className="px-4 py-3 text-xs text-text-quaternary">
                     {highlightMatch(entry.resource_type, debouncedSearch)}
                   </td>
-                  <td className="px-4 py-3 text-xs text-text-quaternary font-mono truncate max-w-[120px]">
+                  <td className="px-4 py-3 text-[10px] text-text-quaternary font-mono truncate max-w-[120px]">
                     {entry.resource_id ?? '—'}
                   </td>
                 </tr>
@@ -396,8 +396,8 @@ export default function AuditLog() {
         {!isLoading && !entriesError && (!entries || entries.length === 0) && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <ScrollText className="w-8 h-8 text-text-quaternary" />
-            <p className="text-sm font-semibold text-text-primary">No audit events found</p>
-            <p className="text-xs text-text-tertiary max-w-xs">
+            <p className="text-xs font-semibold text-text-primary">No audit events found</p>
+            <p className="text-xs text-text-quaternary max-w-xs">
               {(Object.values(filters).some(Boolean) || debouncedSearch)
                 ? 'No events match the current filters. Try adjusting or clearing them.'
                 : 'Actions performed in your organization will appear here as they happen.'}
@@ -414,14 +414,14 @@ export default function AuditLog() {
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="p-1.5 rounded-[5px] text-text-tertiary hover:text-text-secondary hover:bg-[#272729] disabled:opacity-20 transition-colors"
+              className="p-1.5 rounded-full text-text-tertiary hover:text-text-secondary hover:bg-white/[0.04] disabled:opacity-20 transition-colors"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
               onClick={() => setPage(p => p + 1)}
               disabled={!entries || entries.length < PAGE_SIZE}
-              className="p-1.5 rounded-[5px] text-text-tertiary hover:text-text-secondary hover:bg-[#272729] disabled:opacity-20 transition-colors"
+              className="p-1.5 rounded-full text-text-tertiary hover:text-text-secondary hover:bg-white/[0.04] disabled:opacity-20 transition-colors"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
