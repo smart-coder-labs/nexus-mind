@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Trash2, Check, X } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Pencil, Trash2, Check, X, GitMerge } from 'lucide-react'
 import { createClient } from '../api/client'
 import { cn } from '@/lib/utils'
 import type { NameCount } from '../types'
@@ -13,10 +13,22 @@ export default function Tags() {
   const [renamingTag, setRenamingTag] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deletingTag, setDeletingTag] = useState<string | null>(null)
+  const [mergingTag, setMergingTag] = useState<string | null>(null)
+  const [mergeTarget, setMergeTarget] = useState('')
 
   const { data: tags = [], isLoading } = useQuery<NameCount[]>({
     queryKey: ['tag-stats'],
     queryFn: () => client.getTagStats(),
+  })
+
+  const mergeMut = useMutation({
+    mutationFn: ({ source, target }: { source: string; target: string }) =>
+      client.mergeTag(source, target),
+    onSuccess: () => {
+      setMergingTag(null)
+      setMergeTarget('')
+      queryClient.invalidateQueries({ queryKey: ['tag-stats'] })
+    },
   })
 
   const handleRenameStart = (tag: string) => {
@@ -101,9 +113,9 @@ export default function Tags() {
                 key={t.name}
                 onClick={() => setSelectedTag(selectedTag === t.name ? null : t.name)}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs border border-border-primary bg-white/[0.04] hover:bg-white/[0.08] cursor-pointer transition-colors text-text-secondary',
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs border border-border-primary bg-white/[0.06] hover:bg-white/[0.08] cursor-pointer transition-colors text-text-secondary',
                   selectedTag === t.name &&
-                    'border-accent-blue/60 bg-accent-blue/10 text-accent-blue',
+                    'ring-1 ring-accent-blue/60 bg-accent-blue/[0.08] text-accent-blue',
                 )}
               >
                 {t.name}
@@ -149,7 +161,7 @@ export default function Tags() {
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={handleRenameKeyDown}
-                        className="bg-transparent border-b border-accent-blue/60 text-xs text-text-primary focus:outline-none min-w-0 w-32"
+                        className="bg-transparent border-b border-border-primary text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 min-w-0 w-32"
                       />
                       <button
                         onClick={handleRenameSave}
@@ -171,7 +183,7 @@ export default function Tags() {
                   )}
                 </td>
                 <td className="px-5 py-3">
-                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary">
+                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-quaternary">
                     {t.count}
                   </span>
                 </td>
@@ -179,6 +191,14 @@ export default function Tags() {
                   <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
                     {renamingTag !== t.name && (
                       <>
+                        <button
+                          onClick={() => setMergingTag(t.name)}
+                          className="text-text-quaternary hover:text-text-primary transition-colors"
+                          aria-label={`Merge tag ${t.name}`}
+                          title="Merge into another tag"
+                        >
+                          <GitMerge className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => handleRenameStart(t.name)}
                           className="text-text-quaternary hover:text-text-primary transition-colors"
@@ -199,7 +219,7 @@ export default function Tags() {
                               className="text-text-quaternary hover:text-text-primary transition-colors ml-1"
                               aria-label="Cancel delete"
                             >
-                              <X className="w-3 h-3" />
+                              <X className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         ) : (
@@ -220,6 +240,61 @@ export default function Tags() {
           </tbody>
         </table>
       </div>
+
+      {/* Merge modal */}
+      {mergingTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[#1c1c1e] border border-border-primary rounded-[18px] p-5 w-full max-w-sm shadow-xl">
+            <h2 className="text-sm font-semibold text-text-primary">Merge "{mergingTag}"</h2>
+            <p className="text-xs text-text-quaternary mt-1">
+              All memories tagged "{mergingTag}" will be retagged to the target.
+              The original tag will be removed.
+            </p>
+
+            <div className="mt-4">
+              <input
+                autoFocus
+                value={mergeTarget}
+                onChange={(e) => setMergeTarget(e.target.value)}
+                placeholder="Target tag name…"
+                list="tag-list"
+                className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+              />
+              <datalist id="tag-list">
+                {tags.filter((t) => t.name !== mergingTag).map((t) => (
+                  <option key={t.name} value={t.name} />
+                ))}
+              </datalist>
+            </div>
+
+            {mergeMut.isError && (
+              <p className="text-[10px] text-status-error mt-2">
+                {(mergeMut.error as Error)?.message ?? 'Merge failed'}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button
+                onClick={() => {
+                  setMergingTag(null)
+                  setMergeTarget('')
+                  mergeMut.reset()
+                }}
+                className="border border-border-primary rounded-full px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => mergeMut.mutate({ source: mergingTag, target: mergeTarget })}
+                disabled={!mergeTarget || mergeTarget === mergingTag || mergeMut.isPending}
+                className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold disabled:opacity-40 hover:bg-accent-blue/90 transition-colors"
+              >
+                {mergeMut.isPending ? 'Merging…' : 'Merge'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

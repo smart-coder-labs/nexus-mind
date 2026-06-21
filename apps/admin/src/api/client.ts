@@ -635,6 +635,14 @@ export class NexusMindClient {
     })
   }
 
+  mergeTag(source: string, target: string): Promise<RenameTagResponse> {
+    // No dedicated merge endpoint — rename absorbs all memories from source into target
+    return this.request('/v1/admin/tags/rename', {
+      method: 'POST',
+      body: JSON.stringify({ from: source, to: target }),
+    })
+  }
+
   retryWebhookDelivery(deliveryId: string): Promise<RetryDeliveryResponse> {
     return this.request(`/v1/webhooks/deliveries/${deliveryId}/retry`, {
       method: 'POST',
