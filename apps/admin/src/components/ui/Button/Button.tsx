@@ -23,8 +23,8 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-accent-blue-active
   `,
     secondary: `
-    bg-transparent text-accent-blue
-    border border-white/10
+    bg-transparent text-text-secondary
+    border border-border-primary
     hover:bg-white/5
     active:bg-white/10
   `,
@@ -39,8 +39,8 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-[#272729]
   `,
     outline: `
-    bg-transparent text-accent-blue
-    border border-white/10
+    bg-transparent text-text-primary
+    border border-border-primary
     hover:bg-white/5
     active:bg-white/10
   `,
@@ -52,9 +52,9 @@ const variantStyles: Record<ButtonVariant, string> = {
 };
 
 const sizeStyles: Record<ButtonSize, string> = {
-    sm: 'h-8 px-4 text-[14px] rounded-full',
-    md: 'h-[44px] px-[22px] text-[17px] rounded-full',
-    lg: 'h-[52px] px-[28px] text-[18px] font-light rounded-full',
+    sm: 'h-8 px-4 text-xs rounded-full',
+    md: 'h-[44px] px-[22px] text-xs rounded-full',
+    lg: 'h-[52px] px-[28px] text-sm rounded-full',
 };
 
 /* ========================================

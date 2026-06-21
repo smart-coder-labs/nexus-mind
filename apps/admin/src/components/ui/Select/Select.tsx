@@ -162,7 +162,7 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-white/[0.04] px-3 py-2 text-sm placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-[#272729]/50 transition-colors",
+                    "group flex h-10 w-full items-center justify-between rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-[#272729]/50 transition-colors",
                     className
                 )}
                 {...props}
@@ -342,7 +342,7 @@ const SelectItem = React.forwardRef<HTMLButtonElement, SelectItemProps>(
                 onFocus={() => setHighlightedValue(value)}
                 onClick={() => !disabled && setValue(value)}
                 className={cn(
-                    "relative flex w-full cursor-default select-none items-center rounded-[8px] py-1.5 pl-8 pr-2 text-sm outline-none transition-colors",
+                    "relative flex w-full cursor-default select-none items-center rounded-[8px] py-1.5 pl-8 pr-2 text-xs outline-none transition-colors",
                     isSelected
                         ? "bg-accent-blue text-white"
                         : isHighlighted
@@ -457,7 +457,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                 )}
             >
                 {icon || <ChevronDown className="w-4 h-4" />}
-                <span className="text-sm font-semibold">
+                <span className="text-xs font-semibold">
                     {activeLabel || label}
                 </span>
                 <ChevronDown className={cn(

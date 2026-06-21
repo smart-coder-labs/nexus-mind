@@ -211,7 +211,7 @@ export const Modal: React.FC<ModalProps> = ({
                 <div className={`fixed inset-0 z-50 flex isolate ${config.wrapper}`}>
                     {/* Overlay con blur */}
                     <motion.div
-                        className="fixed inset-0 bg-black/40 backdrop-blur-md"
+                        className="fixed inset-0 bg-black/50 backdrop-blur-sm"
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
@@ -226,7 +226,7 @@ export const Modal: React.FC<ModalProps> = ({
                     {/* Content */}
                     <motion.div
                         ref={contentRef}
-                        className={`w-full ${sizeStyles[size]} bg-[#1d1d1f] p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
+                        className={`w-full ${sizeStyles[size]} bg-[#1d1d1f] border border-border-primary p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
                         initial={variants[config.variant]?.initial}
                         animate={variants[config.variant]?.animate}
                         exit={variants[config.variant]?.exit}
@@ -272,7 +272,7 @@ export const ModalTitle: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <h2 className={`text-[21px] font-semibold text-text-primary tracking-[0.231px] ${className}`}>
+    <h2 className={`text-xs font-semibold text-text-primary ${className}`}>
         {children}
     </h2>
 );
@@ -336,8 +336,7 @@ export const ModalCloseButton: React.FC<{ className?: string }> = ({
         hover:text-text-primary
         transition-apple
         focus:outline-none
-        focus-visible:ring-2
-        focus-visible:ring-accent-blue
+        focus-visible:outline-none
         ${className}
       `}
             whileHover={{ scale: 1.05 }}

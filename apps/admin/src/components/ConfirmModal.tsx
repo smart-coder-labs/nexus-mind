@@ -61,7 +61,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
     >
       <div
         ref={modalRef}
-        className="bg-[#272729] border border-white/[0.08] rounded-[18px] p-6 w-full max-w-sm space-y-4"
+        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-sm space-y-4"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -79,14 +79,14 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
           <button
             onClick={onClose}
             disabled={loading}
-            className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors disabled:opacity-40"
+            className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors disabled:opacity-40"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
             disabled={loading}
-            className={`flex-1 py-2 rounded-full text-sm font-normal transition-colors disabled:opacity-40 ${
+            className={`flex-1 py-2 rounded-full text-xs font-semibold transition-colors disabled:opacity-40 ${
               danger
                 ? 'bg-status-error text-white hover:opacity-90'
                 : 'bg-accent-blue hover:bg-accent-blue-hover text-white'

@@ -128,7 +128,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
     >
       <div
         ref={modalRef}
-        className="bg-[#272729] border border-white/[0.08] rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -158,7 +158,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             </div>
             <button
               onClick={handleClose}
-              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal transition-colors"
+              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
             >
               Done
             </button>
@@ -170,7 +170,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               { id: 'email', label: 'Email', type: 'email',    placeholder: 'sarah@acme.com' },
             ].map(f => (
               <div key={f.id} className="space-y-1.5">
-                <label htmlFor={`invite-${f.id}`} className="text-[11px] text-text-tertiary tracking-[-0.224px]">{f.label}</label>
+                <label htmlFor={`invite-${f.id}`} className="text-[10px] text-text-quaternary">{f.label}</label>
                 <input
                   id={`invite-${f.id}`}
                   type={f.type}
@@ -178,18 +178,18 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                  className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
                 />
               </div>
             ))}
 
             <div className="space-y-1.5">
-              <label htmlFor="invite-role" className="text-[11px] text-text-tertiary tracking-[-0.224px]">Role</label>
+              <label htmlFor="invite-role" className="text-[10px] text-text-quaternary">Role</label>
               <select
                 id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -204,7 +204,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
             {/* Project access section */}
             <div className="space-y-2">
-              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Project Access</label>
+              <label className="text-[10px] text-text-quaternary">Project Access</label>
               <div className="flex gap-3">
                 {(['all', 'specific'] as const).map(opt => (
                   <label key={opt} className="flex items-center gap-1.5 cursor-pointer text-xs text-text-secondary">
@@ -224,7 +224,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               {projectAccess === 'specific' && (
                 <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-[11px] p-2 bg-[#272729]">
                   {!projects?.length ? (
-                    <p className="text-[11px] text-text-tertiary">No projects found.</p>
+                    <p className="text-[10px] text-text-quaternary">No projects found.</p>
                   ) : (
                     projects.map(p => (
                       <label key={p.id} className="flex items-center gap-2 cursor-pointer py-0.5">
@@ -251,14 +251,14 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-[#272729] transition-colors"
+                className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !isValidEmail(form.email)}
-                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-normal disabled:opacity-40 transition-colors"
+                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-40 transition-colors"
               >
                 {loading ? 'Inviting…' : 'Invite'}
               </button>

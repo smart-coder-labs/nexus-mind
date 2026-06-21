@@ -210,7 +210,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     >
       <div
         ref={modalRef}
-        className="bg-[#272729] border border-white/[0.08] rounded-[18px] w-full max-w-lg shadow-2xl overflow-hidden mx-4"
+        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] w-full max-w-lg shadow-2xl overflow-hidden mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input row */}

@@ -587,6 +587,44 @@ function BulkActionBar({
   )
 }
 
+// ── Admin Note Editor ─────────────────────────────────────────────────────────
+
+function AdminNoteEditor({ memoryId, initialNote, client }: { memoryId: string; initialNote: string; client: NexusMindClient }) {
+  const [note, setNote] = useState(initialNote)
+  const [saved, setSaved] = useState(false)
+  const qc = useQueryClient()
+
+  const saveMut = useMutation({
+    mutationFn: (note: string) => client.updateMemoryNote(memoryId, note),
+    onSuccess: () => {
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      qc.invalidateQueries({ queryKey: ['memories'] })
+    },
+  })
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        placeholder="Internal note visible only to admins…"
+        rows={3}
+        className="w-full bg-white/[0.04] rounded-[8px] border border-border-primary text-xs text-text-primary placeholder:text-text-quaternary focus:border-accent-blue/60 focus:outline-none resize-none p-2.5"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => saveMut.mutate(note)}
+          disabled={saveMut.isPending || note === initialNote}
+          className="bg-accent-blue text-white rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
+        >
+          {saveMut.isPending ? 'Saving…' : saved ? 'Saved!' : 'Save note'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Memory Detail Slide-over ──────────────────────────────────────────────────
 
 function MemorySlideOver({
@@ -897,6 +935,14 @@ function MemorySlideOver({
                   Add to collection
                 </button>
               )}
+            </div>
+
+            {/* Admin note section */}
+            <div className="border-t border-border-primary pt-3">
+              <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold mb-2">
+                Admin note
+              </p>
+              <AdminNoteEditor memoryId={memory.id} initialNote={(memory as any).admin_note ?? ''} client={client} />
             </div>
           </div>
         ) : null}

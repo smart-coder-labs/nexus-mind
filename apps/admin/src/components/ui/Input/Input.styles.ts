@@ -16,14 +16,14 @@ export const baseInputStyles = `
 `;
 
 export const inputSizeStyles = {
-    sm: 'h-8 px-3 text-sm rounded-[11px]',
-    md: 'h-10 px-4 text-base rounded-[11px]',
-    lg: 'h-12 px-5 text-lg rounded-[11px]',
+    sm: 'h-8 px-3 text-xs rounded-[8px]',
+    md: 'h-10 px-4 text-xs rounded-[8px]',
+    lg: 'h-12 px-5 text-sm rounded-[8px]',
 };
 
 export const errorStyles = 'border-status-error focus:border-status-error/60';
 
-export const labelStyles = 'block text-sm font-normal text-text-secondary mb-1.5';
+export const labelStyles = 'block text-[10px] text-text-quaternary mb-1.5';
 
 export const helperTextStyles = 'mt-1.5 text-xs text-text-tertiary';
 
