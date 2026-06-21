@@ -94,9 +94,9 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
 };
 
 const variantClasses: Record<StatisticVariant, string> = {
-    card: "bg-surface-primary border border-border-primary rounded-[18px]",
-    soft: "bg-surface-secondary/70 border border-border-secondary/60 rounded-[18px]",
-    bordered: "bg-surface-primary border border-border-tertiary rounded-[18px]",
+    card: "bg-[#1d1d1f] border border-border-primary rounded-[18px]",
+    soft: "bg-[#272729]/70 border border-border-secondary/60 rounded-[18px]",
+    bordered: "bg-[#1d1d1f] border border-border-tertiary rounded-[18px]",
     minimal: "rounded-[18px]",
     glass: "bg-accent-blue/5 border border-accent-blue/10 backdrop-blur-xl rounded-[18px]",
 };
@@ -150,7 +150,7 @@ const trendTokens: Record<StatisticTrend, { icon: React.ComponentType<{ classNam
     neutral: {
         icon: Minus,
         text: 'text-text-tertiary',
-        bg: 'bg-surface-secondary/80',
+        bg: 'bg-[#272729]/80',
         trend: 'neutral',
     },
 };
@@ -168,7 +168,7 @@ const GoalMeter: React.FC<{ goal?: StatisticGoal }> = ({ goal }) => {
                     <span>{goal.value}</span>
                 </div>
             )}
-            <div className="h-1.5 w-full rounded-full bg-surface-secondary overflow-hidden">
+            <div className="h-1.5 w-full rounded-full bg-[#272729] overflow-hidden">
                 <div
                     className="h-full rounded-full bg-accent-blue transition-all"
                     style={{ width: `${progress * 100}%` }}
@@ -228,7 +228,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                                 'relative overflow-hidden group transition-all duration-300',
                                 variantClasses[variant],
                                 currentSize.padding,
-                                metric.subtle && 'bg-surface-secondary/60',
+                                metric.subtle && 'bg-[#272729]/60',
                                 'flex flex-col'
                             )}
                             whileHover={{ y: -4, scale: 1.01 }}
@@ -356,7 +356,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
             <MotionDiv
                 ref={ref}
                 className={cn(
-                    'w-full rounded-[18px] bg-surface-primary border border-border-primary p-6 md:p-8 relative overflow-hidden',
+                    'w-full rounded-[18px] bg-[#1d1d1f] border border-border-primary p-6 md:p-8 relative overflow-hidden',
                     className
                 )}
                 initial={{ opacity: 0, scale: 0.98 }}
@@ -388,7 +388,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                             {value}
                         </span>
                         {(change || trend) && TrendIcon && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-secondary/80 text-[11px] font-semibold">
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#272729]/80 text-[11px] font-semibold">
                                 <TrendIcon className={cn('w-4 h-4', trendTokens[resolvedTrend].text)} />
                                 {change && (
                                     <span className={trendTokens[resolvedTrend].text}>{change}</span>
@@ -416,7 +416,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                                 <span>Progress</span>
                                 <span>{Math.round(progress * 100)}%</span>
                             </div>
-                            <div className="h-1.5 bg-surface-secondary rounded-full overflow-hidden">
+                            <div className="h-1.5 bg-[#272729] rounded-full overflow-hidden">
                                 <div
                                     className="h-full bg-accent-blue rounded-full"
                                     style={{ width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }}

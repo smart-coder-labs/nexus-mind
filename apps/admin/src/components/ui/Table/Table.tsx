@@ -92,10 +92,10 @@ export function Table<T>({
         density === "compact" ? "py-2" : "py-3";
 
     return (
-        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-surface-elevated">
+        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#1d1d1f]">
             {/* TABLE */}
             <table className="w-full border-collapse text-left">
-                <thead className="bg-surface-secondary/50 border-b border-border-primary">
+                <thead className="bg-[#272729]/50 border-b border-border-primary">
                     <tr>
                         {selectable && (
                             <th className="w-10 px-4">
@@ -164,10 +164,10 @@ export function Table<T>({
                                 className={cn(
                                     "border-b border-border-primary/50 transition-colors",
                                     striped && index % 2 === 1
-                                        ? "bg-surface-secondary/40"
+                                        ? "bg-[#272729]/40"
                                         : "",
                                     hoverable &&
-                                    "hover:bg-surface-secondary/70 cursor-pointer"
+                                    "hover:bg-[#272729]/70 cursor-pointer"
                                 )}
                                 onClick={() => onRowClick?.(row)}
                             >
@@ -200,7 +200,7 @@ export function Table<T>({
             </table>
 
             {/* PAGINATION */}
-            <div className="flex items-center justify-between px-4 py-3 bg-surface-secondary/40 border-t border-border-primary">
+            <div className="flex items-center justify-between px-4 py-3 bg-[#272729]/40 border-t border-border-primary">
                 <p className="text-xs text-text-tertiary">
                     Page {page} of {totalPages}
                 </p>
@@ -242,8 +242,8 @@ function PaginationButton({
             disabled={disabled}
             onClick={onClick}
             className={cn(
-                "p-2 rounded-lg border border-border-primary text-text-secondary transition-all",
-                "hover:bg-surface-secondary hover:text-text-primary",
+                "p-2 rounded-[8px] border border-border-primary text-text-secondary transition-all",
+                "hover:bg-[#272729] hover:text-text-primary",
                 "disabled:opacity-40 disabled:cursor-not-allowed"
             )}
         >
@@ -280,7 +280,7 @@ function Checkbox({
                 }
             }}
             className={cn(
-                "h-4 w-4 rounded-md border border-border-primary bg-surface-primary flex items-center justify-center",
+                "h-4 w-4 rounded-[5px] border border-border-primary bg-transparent flex items-center justify-center",
                 "data-[state=checked]:bg-accent-blue data-[state=checked]:border-accent-blue",
                 "transition-colors",
                 disabled && "opacity-50 cursor-not-allowed"

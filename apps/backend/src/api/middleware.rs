@@ -3,20 +3,32 @@ use axum::{
     extract::State,
     http::{Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
+    Json,
 };
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower_cookies::Cookies;
 
-use crate::{auth::api_keys, db::queries};
+use crate::{auth::api_keys, db::queries, models::types::ApiError};
 
 pub async fn auth(
     cookies: Cookies,
     State(db): State<Arc<Mutex<Connection>>>,
     mut req: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, Response> {
+    let unauthorized = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "Unauthorized".to_string(),
+                code: "unauthorized".to_string(),
+            }),
+        )
+            .into_response()
+    };
+
     // Cookie-first extraction, Bearer fallback
     let token = if let Some(cookie) = cookies.get("nexusmind_session") {
         cookie.value().to_string()
@@ -26,18 +38,53 @@ pub async fn auth(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .map(|s| s.to_string())
-            .ok_or(StatusCode::UNAUTHORIZED)?
+            .ok_or_else(unauthorized)?
     };
 
     let hash = api_keys::hash_key(&token);
 
-    let ctx = {
-        let conn = db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        queries::validate_api_key(&conn, &hash)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    let validate_result = {
+        let conn = db.lock().map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
+                error: "Internal server error".to_string(),
+                code: "internal_error".to_string(),
+            })).into_response()
+        })?;
+        queries::validate_api_key(&conn, &hash).map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
+                error: "Internal server error".to_string(),
+                code: "internal_error".to_string(),
+            })).into_response()
+        })?
     };
 
-    let ctx = ctx.ok_or(StatusCode::UNAUTHORIZED)?;
+    // If key not found through normal validation, check if it's because the account is disabled
+    let ctx = match validate_result {
+        Some(ctx) => ctx,
+        None => {
+            // Check if the key exists but the account is disabled
+            let is_disabled = {
+                let conn = db.lock().map_err(|_| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
+                        error: "Internal server error".to_string(),
+                        code: "internal_error".to_string(),
+                    })).into_response()
+                })?;
+                queries::is_key_account_disabled(&conn, &hash).map_err(|_| unauthorized())?
+            };
+            if is_disabled {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(ApiError {
+                        error: "Account disabled".to_string(),
+                        code: "account_disabled".to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+            return Err(unauthorized());
+        }
+    };
 
     req.extensions_mut().insert(ctx);
     Ok(next.run(req).await)
@@ -55,7 +102,8 @@ mod tests {
     };
     use tower::util::ServiceExt;
 
-    use crate::db::{connection::connect, migrations};
+    use crate::db::{connection::connect, migrations, queries as q};
+    use crate::auth::api_keys;
 
     fn make_db() -> Arc<Mutex<Connection>> {
         let conn = connect(":memory:").unwrap();
@@ -102,5 +150,36 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn disabled_account_returns_401_with_account_disabled_code() {
+        let db = make_db();
+
+        let raw_key = {
+            let conn = db.lock().unwrap();
+            let (_org, user, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            // Disable the user
+            q::disable_user(&conn, &user.org_id, &user.id).unwrap();
+            key
+        };
+
+        let response = app(db)
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {raw_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // Parse body to confirm the error code
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "account_disabled");
     }
 }

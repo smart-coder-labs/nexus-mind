@@ -125,11 +125,11 @@ fn store_memory_org_isolation() {
     legacy_store(&conn, &org1.id, &user1.id, "proj", "claude-code", "org1 secret content", &tags);
 
     // Org2 must see nothing.
-    let org2_memories = queries::list_memories(&conn, &org2_id, None, None, None, None, None, 10, 0).unwrap();
+    let org2_memories = queries::list_memories(&conn, &org2_id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap();
     assert!(org2_memories.is_empty(), "org2 must not see org1 memories");
 
     // Org1 must see its own memory.
-    let org1_memories = queries::list_memories(&conn, &org1.id, None, None, None, None, None, 10, 0).unwrap();
+    let org1_memories = queries::list_memories(&conn, &org1.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap();
     assert_eq!(org1_memories.len(), 1);
     assert_eq!(org1_memories[0].content, "org1 secret content");
 
@@ -167,7 +167,7 @@ fn audit_log_captures_events() {
 
     queries::log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
 
-    let entries = queries::list_audit(&conn, &org.id, None, None, None, None, None, 50, 0).unwrap();
+    let entries = queries::list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].org_id, org.id);
     assert_eq!(entries[0].action, "store");
@@ -320,9 +320,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version is the current max (13 as of v13 migration)
+    // Verify user_version is the current max (35 as of v35 migration)
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 35);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
@@ -346,12 +346,14 @@ fn fts_backfill_after_migration() {
         [],
     ).unwrap();
 
-    // Now run v2 migration (backfill must include the pre-existing row)
+    // Now run remaining migrations (backfill must include the pre-existing row)
     migrations::run_v2(&conn).unwrap();
     migrations::run_v3(&conn).unwrap();
     migrations::run_v4(&conn).unwrap();
     migrations::run_v5(&conn).unwrap();
     migrations::run_v6(&conn).unwrap();
+    // Run remaining migrations so all columns (including archived_at from v17) exist
+    migrations::run_all(&conn).unwrap();
 
     // The pre-existing row must be searchable
     let results = queries::search_memories(&conn, "org1", "authentication", 10).unwrap();
@@ -444,4 +446,72 @@ fn project_role_overrides_integration() {
 
     // Dev fails permissions check again
     assert!(nexusmind::api::helpers::require_permission(&conn, &dev_ctx, Some("payments"), "memory:write").is_err());
+}
+
+/// v32 — update_user_note: patch sets note, list_users returns it.
+#[test]
+fn update_user_note_persists_and_list_users_returns_it() {
+    let conn = setup();
+    let (org, admin, _) = queries::bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Invite a regular user
+    let (member, _) = queries::invite_user(&conn, &org.id, "vip@acme.com", "VIP User", "member").unwrap();
+
+    // Initially no note
+    let users = queries::list_users(&conn, &org.id).unwrap();
+    let u = users.iter().find(|u| u.id == member.id).unwrap();
+    assert!(u.admin_note.is_none(), "admin_note must be NULL initially");
+
+    // Set note
+    let found = queries::update_user_admin_note(&conn, &org.id, &member.id, Some("VIP user")).unwrap();
+    assert!(found, "update_user_admin_note must return true for existing user");
+
+    // List again — note must appear
+    let users_after = queries::list_users(&conn, &org.id).unwrap();
+    let u2 = users_after.iter().find(|u| u.id == member.id).unwrap();
+    assert_eq!(u2.admin_note.as_deref(), Some("VIP user"), "admin_note must be returned by list_users");
+
+    // Clear note by passing None
+    let found2 = queries::update_user_admin_note(&conn, &org.id, &member.id, None).unwrap();
+    assert!(found2);
+    let users_cleared = queries::list_users(&conn, &org.id).unwrap();
+    let u3 = users_cleared.iter().find(|u| u.id == member.id).unwrap();
+    assert!(u3.admin_note.is_none(), "admin_note must be NULL after clearing");
+
+    // Admin user is present too (not the member we just changed)
+    assert!(users_after.iter().any(|u| u.id == admin.id));
+}
+
+/// v34 — exclude_patterns: create project, PATCH exclude_patterns, GET project and verify patterns returned.
+#[test]
+fn code_project_exclude_patterns_roundtrip() {
+    let conn = setup();
+
+    // Bootstrap org
+    let (org, _admin, _key) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Create code project
+    let project_id = queries::upsert_code_project(&conn, &org.id, "myapp", "/ws/myapp").unwrap();
+
+    // Initially exclude_patterns must be empty
+    let project = queries::get_code_project_by_id(&conn, &org.id, project_id)
+        .unwrap()
+        .expect("project must exist");
+    assert!(project.exclude_patterns.is_empty(), "exclude_patterns must start empty");
+
+    // PATCH exclude_patterns
+    let patterns = vec!["*.lock".to_string(), "node_modules/*".to_string()];
+    let updated = queries::update_code_project_exclude_patterns(&conn, &org.id, project_id, &patterns).unwrap();
+    assert!(updated, "update must return true for existing project");
+
+    // GET project and verify patterns
+    let project_after = queries::get_code_project_by_id(&conn, &org.id, project_id)
+        .unwrap()
+        .expect("project must still exist");
+    assert_eq!(project_after.exclude_patterns, patterns, "exclude_patterns must be persisted and returned");
+
+    // Also verify via list
+    let projects = queries::list_code_projects(&conn, &org.id).unwrap();
+    let listed = projects.iter().find(|p| p.name == "myapp").expect("myapp must appear in list");
+    assert_eq!(listed.exclude_patterns, patterns, "list_code_projects must include exclude_patterns");
 }

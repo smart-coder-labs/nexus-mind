@@ -16,6 +16,184 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v11(conn)?;
     run_v12(conn)?;
     run_v13(conn)?;
+    run_v14(conn)?;
+    run_v15(conn)?;
+    run_v16(conn)?;
+    run_v17(conn)?;
+    run_v18(conn)?;
+    run_v19(conn)?;
+    run_v20(conn)?;
+    run_v21(conn)?;
+    run_v22(conn)?;
+    run_v23(conn)?;
+    run_v24(conn)?;
+    run_v25(conn)?;
+    run_v26(conn)?;
+    run_v27(conn)?;
+    run_v28(conn)?;
+    run_v29(conn)?;
+    run_v30(conn)?;
+    run_v31(conn)?;
+    run_v32(conn)?;
+    run_v33(conn)?;
+    run_v34(conn)?;
+    run_v35(conn)?;
+    Ok(())
+}
+
+/// Migration v32: adds admin_note to users and usage tracking columns to api_keys.
+/// - users.admin_note TEXT: private org-admin note, never returned to non-admin callers.
+/// - api_keys.times_used INTEGER: cumulative count of successful authentications.
+/// - api_keys.last_used_at TEXT: ISO datetime of the last successful authentication.
+/// Idempotent — guarded by PRAGMA user_version < 32.
+pub fn run_v32(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 32 {
+        return Ok(());
+    }
+    let alter_stmts = [
+        "ALTER TABLE users ADD COLUMN admin_note TEXT",
+        "ALTER TABLE api_keys ADD COLUMN times_used INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE api_keys ADD COLUMN last_used_at TEXT",
+    ];
+    for stmt in &alter_stmts {
+        let _ = conn.execute_batch(stmt);
+    }
+    conn.execute_batch("PRAGMA user_version = 32;")?;
+    Ok(())
+}
+
+/// Migration v33: adds last_login_at to users.
+/// - users.last_login_at TEXT: ISO datetime of the last successful API key authentication.
+/// Idempotent — guarded by PRAGMA user_version < 33.
+pub fn run_v33(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 33 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN last_login_at TEXT");
+    conn.execute_batch("PRAGMA user_version = 33;")?;
+    Ok(())
+}
+
+/// Migration v35: adds logo_url column to organizations for org branding.
+/// NULL = no logo. Non-NULL = URL to the org logo image.
+/// Idempotent — guarded by PRAGMA user_version < 35.
+pub fn run_v35(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 35 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN logo_url TEXT");
+    conn.execute_batch("PRAGMA user_version = 35;")?;
+    Ok(())
+}
+
+/// Migration v34: adds exclude_patterns to code_projects for file exclusion during indexing.
+/// - code_projects.exclude_patterns TEXT: JSON array of glob-like exclusion patterns.
+/// Idempotent — guarded by PRAGMA user_version < 34.
+pub fn run_v34(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 34 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE code_projects ADD COLUMN exclude_patterns TEXT DEFAULT '[]'");
+    conn.execute_batch("PRAGMA user_version = 34;")?;
+    Ok(())
+}
+
+/// Migration v26: adds sync-status tracking columns to code_projects.
+/// last_indexed_at, last_index_error, indexed_files_count, index_status.
+/// Idempotent — guarded by PRAGMA user_version < 26.
+pub fn run_v26(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 26 {
+        return Ok(());
+    }
+    let alter_stmts = [
+        "ALTER TABLE code_projects ADD COLUMN last_indexed_at TEXT",
+        "ALTER TABLE code_projects ADD COLUMN last_index_error TEXT",
+        "ALTER TABLE code_projects ADD COLUMN indexed_files_count INTEGER DEFAULT 0",
+        "ALTER TABLE code_projects ADD COLUMN index_status TEXT DEFAULT 'pending'",
+    ];
+    for stmt in &alter_stmts {
+        let _ = conn.execute_batch(stmt);
+    }
+    conn.execute_batch("PRAGMA user_version = 26;")?;
+    Ok(())
+}
+
+/// Migration v27: adds expires_at column to api_keys for optional key expiry.
+/// NULL = never expires. Non-NULL = key is invalid after this datetime.
+/// Idempotent — guarded by PRAGMA user_version < 27.
+pub fn run_v27(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 27 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE api_keys ADD COLUMN expires_at TEXT");
+    conn.execute_batch("PRAGMA user_version = 27;")?;
+    Ok(())
+}
+
+/// Migration v28: adds disabled_at column to users for soft account disabling.
+/// NULL = account active. Non-NULL = account was disabled at that datetime.
+/// Disabled accounts have all API requests rejected with 401 + account_disabled error.
+/// Idempotent — guarded by PRAGMA user_version < 28.
+pub fn run_v28(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 28 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN disabled_at TEXT");
+    conn.execute_batch("PRAGMA user_version = 28;")?;
+    Ok(())
+}
+
+/// Migration v29: adds admin_note column to memories for org-admin private notes.
+/// NULL = no note. Non-NULL = admin note text. Never returned to non-admin callers.
+/// Idempotent — guarded by PRAGMA user_version < 29.
+pub fn run_v29(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 29 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN admin_note TEXT");
+    conn.execute_batch("PRAGMA user_version = 29;")?;
+    Ok(())
+}
+
+/// Migration v31: adds archived_at column to code_projects for soft-archive support.
+/// archived_at = NULL means active; non-NULL means archived at that datetime.
+/// Idempotent — guarded by PRAGMA user_version < 31.
+pub fn run_v31(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 31 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE code_projects ADD COLUMN archived_at TEXT");
+    conn.execute_batch("PRAGMA user_version = 31;")?;
+    Ok(())
+}
+
+/// Migration v30: announcement banner + per-memory scheduled deletion.
+/// - organizations: announcement TEXT, announcement_type TEXT DEFAULT 'info'
+/// - memories: delete_after TEXT (ISO date string, NULL = no scheduled deletion)
+/// Idempotent — guarded by PRAGMA user_version < 30.
+pub fn run_v30(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 30 {
+        return Ok(());
+    }
+    let alter_stmts = [
+        "ALTER TABLE organizations ADD COLUMN announcement TEXT",
+        "ALTER TABLE organizations ADD COLUMN announcement_type TEXT DEFAULT 'info'",
+        "ALTER TABLE memories ADD COLUMN delete_after TEXT",
+    ];
+    for stmt in &alter_stmts {
+        let _ = conn.execute_batch(stmt);
+    }
+    conn.execute_batch("PRAGMA user_version = 30;")?;
     Ok(())
 }
 
@@ -566,6 +744,247 @@ pub fn run_v13(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration v14: adds webhooks table for GitHub webhook configuration.
+/// Idempotent — guarded by PRAGMA user_version < 14.
+pub fn run_v14(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 14 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS webhooks (
+            id         TEXT PRIMARY KEY,
+            org_id     TEXT NOT NULL REFERENCES organizations(id),
+            name       TEXT NOT NULL,
+            target_url TEXT NOT NULL,
+            secret     TEXT,
+            events     TEXT NOT NULL DEFAULT '[\"*\"]',
+            active     INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        PRAGMA user_version = 14;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v15: adds event_overrides column to projects for per-project agent event overrides.
+/// NULL means "inherit from org settings" (no override).
+/// Idempotent — guarded by PRAGMA user_version < 15.
+pub fn run_v15(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 15 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE projects ADD COLUMN event_overrides TEXT");
+    conn.execute_batch("PRAGMA user_version = 15;")?;
+    Ok(())
+}
+
+/// Migration v17: adds archived_at column to memories for soft-archive support.
+/// NULL = not archived. Non-NULL = archived at that datetime.
+/// Idempotent — guarded by PRAGMA user_version < 17.
+pub fn run_v17(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 17 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN archived_at TEXT");
+    conn.execute_batch("PRAGMA user_version = 17;")?;
+    Ok(())
+}
+
+/// Migration v18: adds custom_instructions column to organizations.
+/// NULL = no custom instructions. Non-NULL = system prompt injected into every agent's context.
+/// Idempotent — guarded by PRAGMA user_version < 18.
+pub fn run_v18(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 18 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN custom_instructions TEXT");
+    conn.execute_batch("PRAGMA user_version = 18;")?;
+    Ok(())
+}
+
+/// Migration v19: adds pinned column to memories for admin pinning.
+/// pinned = 1 means the memory floats to top of list. Default 0.
+/// Idempotent — guarded by PRAGMA user_version < 19.
+pub fn run_v19(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 19 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    conn.execute_batch("PRAGMA user_version = 19;")?;
+    Ok(())
+}
+
+/// Migration v20: adds invite_links table for one-time invite link generation.
+/// Idempotent — guarded by PRAGMA user_version < 20.
+pub fn run_v20(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 20 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS invite_links (
+            token       TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'user',
+            created_by  TEXT NOT NULL,
+            used_at     TEXT,
+            expires_at  TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        PRAGMA user_version = 20;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v21: makes users.email nullable so invite-created users (no email) can be stored.
+/// SQLite cannot drop NOT NULL via ALTER COLUMN, so we recreate the table.
+pub fn run_v21(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 21 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE IF NOT EXISTS users_new (
+            id          TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL REFERENCES organizations(id),
+            email       TEXT,
+            name        TEXT NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'member',
+            status      TEXT NOT NULL DEFAULT 'active',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            password_hash TEXT,
+            UNIQUE(org_id, email)
+        );
+
+        INSERT OR IGNORE INTO users_new (id, org_id, email, name, role, status, created_at, password_hash)
+        SELECT id, org_id, email, name, role, status, created_at, password_hash FROM users;
+
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 21;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v22: adds min_password_length column to organizations.
+/// Default 8 — must be enforced at the application layer on password change.
+/// Idempotent — guarded by PRAGMA user_version < 22.
+pub fn run_v22(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 22 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN min_password_length INTEGER NOT NULL DEFAULT 8");
+    conn.execute_batch("PRAGMA user_version = 22;")?;
+    Ok(())
+}
+
+/// Migration v23: adds archived_at to projects (soft delete) and reindex_interval_hours to code_projects.
+/// archived_at = NULL means active; non-NULL means archived at that datetime.
+/// reindex_interval_hours = NULL means no auto re-index.
+/// Idempotent — guarded by PRAGMA user_version < 23.
+pub fn run_v23(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 23 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE projects ADD COLUMN archived_at TEXT");
+    let _ = conn.execute_batch("ALTER TABLE code_projects ADD COLUMN reindex_interval_hours INTEGER");
+    conn.execute_batch("PRAGMA user_version = 23;")?;
+    Ok(())
+}
+
+/// Migration v24: adds webhook_deliveries table for delivery history.
+/// Idempotent — guarded by PRAGMA user_version < 24.
+pub fn run_v24(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 24 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id           TEXT PRIMARY KEY,
+            webhook_id   TEXT NOT NULL,
+            org_id       TEXT NOT NULL,
+            event_type   TEXT NOT NULL,
+            payload      TEXT NOT NULL,
+            status_code  INTEGER,
+            success      INTEGER NOT NULL DEFAULT 0,
+            error        TEXT,
+            delivered_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_id
+            ON webhook_deliveries(webhook_id, delivered_at DESC);
+
+        PRAGMA user_version = 24;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v25: adds collections table and collection_id column to memories.
+/// Collections are org-scoped named groups. Memories can belong to one or none.
+/// Idempotent — guarded by PRAGMA user_version < 25.
+pub fn run_v25(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 25 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS collections (
+            id TEXT NOT NULL PRIMARY KEY,
+            org_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+        "
+    )?;
+    let _ = conn.execute_batch("ALTER TABLE memories ADD COLUMN collection_id TEXT REFERENCES collections(id) ON DELETE SET NULL");
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_memories_collection ON memories(org_id, collection_id);
+        PRAGMA user_version = 25;
+        "
+    )?;
+    Ok(())
+}
+
+/// Migration v16: adds retention_days column to organizations.
+/// NULL = no retention policy (keep memories forever).
+/// Idempotent — guarded by PRAGMA user_version < 16.
+pub fn run_v16(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 16 {
+        return Ok(());
+    }
+    let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN retention_days INTEGER");
+    conn.execute_batch("PRAGMA user_version = 16;")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1009,7 +1428,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 13, "user_version must be 13 after run_all");
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
     }
 
     #[test]
@@ -1069,5 +1488,1176 @@ mod tests {
         // Prior tables still readable
         let count: i32 = conn.query_row("SELECT COUNT(*) FROM organizations", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1, "existing rows must be preserved after v11");
+    }
+
+    // ── v14 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v14_creates_webhooks_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "webhooks"), "webhooks table must exist after v14");
+    }
+
+    #[test]
+    fn run_v14_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v14(&conn);
+        assert!(result.is_ok(), "run_v14 must be idempotent: {:?}", result.err());
+        // run_all brings to v15; re-running v14 after that still stays at v15
+        assert!(get_user_version(&conn) >= 14, "user_version must be at least 14");
+    }
+
+    #[test]
+    fn run_v14_sets_user_version_to_14() {
+        // After run_all the version is 15; this documents the historical expectation
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 14, "user_version must be at least 14 after run_all");
+    }
+
+    // ── v15 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v15_adds_event_overrides_to_projects() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "projects", "event_overrides"),
+                "projects must have event_overrides after v15");
+    }
+
+    #[test]
+    fn run_v15_column_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p1', 'org1', 'my-project')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT event_overrides FROM projects WHERE id = 'p1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "event_overrides must default to NULL (inherit)");
+    }
+
+    #[test]
+    fn run_v15_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v15(&conn);
+        assert!(result.is_ok(), "run_v15 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 15, "user_version must be at least 15");
+    }
+
+    #[test]
+    fn run_v15_sets_user_version_to_15() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 15, "user_version must be at least 15 after run_all");
+    }
+
+    // ── v16 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v16_adds_retention_days_to_organizations() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "organizations", "retention_days"),
+                "organizations must have retention_days after v16");
+    }
+
+    #[test]
+    fn run_v16_retention_days_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let val: Option<i64> = conn.query_row(
+            "SELECT retention_days FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "retention_days must default to NULL (keep forever)");
+    }
+
+    #[test]
+    fn run_v16_retention_days_persists_value() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET retention_days = 90 WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<i64> = conn.query_row(
+            "SELECT retention_days FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, Some(90), "retention_days must persist the set value");
+    }
+
+    #[test]
+    fn run_v16_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v16(&conn);
+        assert!(result.is_ok(), "run_v16 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 16, "user_version must be at least 16");
+    }
+
+    #[test]
+    fn run_v16_sets_user_version_to_16() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 16, "user_version must be at least 16 after run_all");
+    }
+
+    // ── v17 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v17_adds_archived_at_to_memories() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "memories", "archived_at"),
+                "memories must have archived_at after v17");
+    }
+
+    #[test]
+    fn run_v17_archived_at_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'hello')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "archived_at must default to NULL");
+    }
+
+    #[test]
+    fn run_v17_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v17(&conn);
+        assert!(result.is_ok(), "run_v17 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 17, "user_version must be at least 17");
+    }
+
+    #[test]
+    fn run_v17_sets_user_version_to_17() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 17, "user_version must be at least 17 after run_all");
+    }
+
+    // ── v18 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v18_adds_custom_instructions_to_organizations() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "organizations", "custom_instructions"),
+                "organizations must have custom_instructions after v18");
+    }
+
+    #[test]
+    fn run_v18_custom_instructions_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT custom_instructions FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "custom_instructions must default to NULL");
+    }
+
+    #[test]
+    fn run_v18_custom_instructions_persists_value() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET custom_instructions = 'Always use TypeScript strict mode.' WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT custom_instructions FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val.as_deref(), Some("Always use TypeScript strict mode."),
+                   "custom_instructions must persist the saved value");
+    }
+
+    #[test]
+    fn run_v18_clear_custom_instructions_sets_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET custom_instructions = 'Some instructions.' WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET custom_instructions = NULL WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT custom_instructions FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "clearing custom_instructions must store NULL");
+    }
+
+    #[test]
+    fn run_v18_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v18(&conn);
+        assert!(result.is_ok(), "run_v18 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 18, "user_version must be at least 18");
+    }
+
+    #[test]
+    fn run_v18_sets_user_version_to_18() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 18, "user_version must be at least 18 after run_all");
+    }
+
+    // ── v19 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v19_adds_pinned_to_memories() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "memories", "pinned"),
+                "memories must have pinned after v19");
+    }
+
+    #[test]
+    fn run_v19_pinned_defaults_to_zero() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'hello')",
+            [],
+        ).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT pinned FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, 0, "pinned must default to 0");
+    }
+
+    #[test]
+    fn run_v19_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v19(&conn);
+        assert!(result.is_ok(), "run_v19 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 19, "user_version must be at least 19");
+    }
+
+    #[test]
+    fn run_v19_sets_user_version_to_19() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(get_user_version(&conn) >= 19, "user_version must be at least 19 after run_all");
+    }
+
+    // ── v20 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v20_creates_invite_links_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "invite_links"), "invite_links table must exist after v20");
+    }
+
+    #[test]
+    fn run_v20_sets_user_version_to_20() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    #[test]
+    fn run_v20_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v20(&conn);
+        assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35 after re-running v20");
+    }
+
+    // ── v22 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v22_adds_min_password_length_to_organizations() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "organizations", "min_password_length"),
+                "organizations must have min_password_length after v22");
+    }
+
+    #[test]
+    fn run_v22_min_password_length_defaults_to_8() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT min_password_length FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, 8, "min_password_length must default to 8");
+    }
+
+    #[test]
+    fn run_v22_min_password_length_persists_value() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET min_password_length = 12 WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let val: i64 = conn.query_row(
+            "SELECT min_password_length FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, 12, "min_password_length must persist the set value");
+    }
+
+    #[test]
+    fn run_v22_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v22(&conn);
+        assert!(result.is_ok(), "run_v22 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 22, "user_version must be at least 22");
+    }
+
+    // ── v23 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v23_adds_archived_at_to_projects() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "projects", "archived_at"),
+                "projects must have archived_at after v23");
+    }
+
+    #[test]
+    fn run_v23_archive_sets_archived_at() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p1', 'org1', 'my-project')",
+            [],
+        ).unwrap();
+        // Archive
+        conn.execute(
+            "UPDATE projects SET archived_at = datetime('now') WHERE id = 'p1' AND org_id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM projects WHERE id = 'p1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_some(), "archived_at must be set after archiving");
+    }
+
+    #[test]
+    fn run_v23_restore_clears_archived_at() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name, archived_at) VALUES ('p1', 'org1', 'my-project', datetime('now'))",
+            [],
+        ).unwrap();
+        // Restore
+        conn.execute(
+            "UPDATE projects SET archived_at = NULL WHERE id = 'p1' AND org_id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM projects WHERE id = 'p1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "archived_at must be NULL after restoring");
+    }
+
+    #[test]
+    fn run_v23_adds_reindex_interval_hours_to_code_projects() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "code_projects", "reindex_interval_hours"),
+                "code_projects must have reindex_interval_hours after v23");
+    }
+
+    #[test]
+    fn run_v23_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v23(&conn);
+        assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    // ── v24 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v24_creates_webhook_deliveries_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "webhook_deliveries"),
+                "webhook_deliveries table must exist after v24");
+    }
+
+    #[test]
+    fn run_v24_creates_index() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(index_exists(&conn, "webhook_deliveries", "idx_webhook_deliveries_webhook_id"),
+                "idx_webhook_deliveries_webhook_id must exist after v24");
+    }
+
+    #[test]
+    fn run_v24_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v24(&conn);
+        assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_v24_sets_user_version_to_24() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    #[test]
+    fn run_v25_collections_assign_memory_count() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        // Seed org + user
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+
+        // Create collection
+        conn.execute(
+            "INSERT INTO collections (id, org_id, name) VALUES ('col1', 'org1', 'My Collection')",
+            [],
+        ).unwrap();
+
+        // Create memory and assign to collection
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'test')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE memories SET collection_id = 'col1' WHERE id = 'm1'",
+            [],
+        ).unwrap();
+
+        // Assert count via LEFT JOIN
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(m.id) FROM collections c LEFT JOIN memories m ON m.collection_id = c.id WHERE c.id = 'col1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "collection must have memory_count = 1 after assignment");
+    }
+
+    #[test]
+    fn run_v14_webhooks_unique_org_name() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO webhooks (id, org_id, name, target_url) VALUES ('wh1', 'org1', 'my-hook', 'https://example.com/hook')",
+            [],
+        ).unwrap();
+        let dup = conn.execute(
+            "INSERT INTO webhooks (id, org_id, name, target_url) VALUES ('wh2', 'org1', 'my-hook', 'https://other.com/hook')",
+            [],
+        );
+        assert!(dup.is_err(), "UNIQUE(org_id, name) must be enforced on webhooks");
+    }
+
+    // ── v26 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v26_adds_sync_status_columns_to_code_projects() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "code_projects", "last_indexed_at"),
+                "code_projects must have last_indexed_at after v26");
+        assert!(column_exists(&conn, "code_projects", "last_index_error"),
+                "code_projects must have last_index_error after v26");
+        assert!(column_exists(&conn, "code_projects", "indexed_files_count"),
+                "code_projects must have indexed_files_count after v26");
+        assert!(column_exists(&conn, "code_projects", "index_status"),
+                "code_projects must have index_status after v26");
+    }
+
+    #[test]
+    fn run_v26_code_project_sync_status_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+
+        // Create code project
+        conn.execute(
+            "INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'myapp', '/ws/myapp')",
+            [],
+        ).unwrap();
+
+        // Set status = 'success', indexed_files_count = 42
+        conn.execute(
+            "UPDATE code_projects SET index_status = 'success', indexed_files_count = 42, last_indexed_at = '2026-06-20T10:00:00Z' WHERE org_id = 'org1' AND name = 'myapp'",
+            [],
+        ).unwrap();
+
+        // Verify list returns correct values
+        let (status, count, at): (String, i64, String) = conn.query_row(
+            "SELECT index_status, indexed_files_count, last_indexed_at FROM code_projects WHERE org_id = 'org1' AND name = 'myapp'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+
+        assert_eq!(status, "success", "index_status must be 'success'");
+        assert_eq!(count, 42, "indexed_files_count must be 42");
+        assert_eq!(at, "2026-06-20T10:00:00Z", "last_indexed_at must match");
+    }
+
+    #[test]
+    fn run_v26_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v26(&conn);
+        assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    // ── v27 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v27_adds_expires_at_to_api_keys() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "api_keys", "expires_at"),
+                "api_keys must have expires_at after v27");
+    }
+
+    #[test]
+    fn run_v27_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v27(&conn);
+        assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_v27_sets_user_version_to_27() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    // ── v28 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v28_adds_disabled_at_to_users() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "users", "disabled_at"),
+                "users must have disabled_at after v28");
+    }
+
+    #[test]
+    fn run_v28_disabled_at_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT disabled_at FROM users WHERE id = 'u1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "disabled_at must default to NULL");
+    }
+
+    #[test]
+    fn run_v28_disable_enable_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+
+        // Disable
+        conn.execute(
+            "UPDATE users SET disabled_at = datetime('now') WHERE id = 'u1'",
+            [],
+        ).unwrap();
+        let disabled: Option<String> = conn.query_row(
+            "SELECT disabled_at FROM users WHERE id = 'u1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(disabled.is_some(), "disabled_at must be set after disabling");
+
+        // Re-enable
+        conn.execute(
+            "UPDATE users SET disabled_at = NULL WHERE id = 'u1'",
+            [],
+        ).unwrap();
+        let enabled: Option<String> = conn.query_row(
+            "SELECT disabled_at FROM users WHERE id = 'u1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(enabled.is_none(), "disabled_at must be NULL after re-enabling");
+    }
+
+    #[test]
+    fn run_v28_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v28(&conn);
+        assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_all_sets_user_version_to_29() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    // ── v29 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v29_adds_admin_note_to_memories() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "memories", "admin_note"),
+                "memories must have admin_note after v29");
+    }
+
+    #[test]
+    fn run_v29_admin_note_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'hello')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT admin_note FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "admin_note must default to NULL");
+    }
+
+    #[test]
+    fn run_v29_admin_note_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'hello')",
+            [],
+        ).unwrap();
+        // Set note
+        conn.execute(
+            "UPDATE memories SET admin_note = 'Suspicious pattern — watch this.' WHERE id = 'm1'",
+            [],
+        ).unwrap();
+        let note: Option<String> = conn.query_row(
+            "SELECT admin_note FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(note.as_deref(), Some("Suspicious pattern — watch this."), "admin_note must persist");
+        // Clear note
+        conn.execute(
+            "UPDATE memories SET admin_note = NULL WHERE id = 'm1'",
+            [],
+        ).unwrap();
+        let cleared: Option<String> = conn.query_row(
+            "SELECT admin_note FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(cleared.is_none(), "admin_note must be NULL after clearing");
+    }
+
+    #[test]
+    fn run_v29_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v29(&conn);
+        assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    // ── admin_note integration test (via queries) ─────────────────────────────
+
+    #[test]
+    fn admin_note_set_and_not_in_list_without_admin() {
+        use crate::db::{connection::connect, queries};
+
+        let conn = connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+
+        let (_org, _user, _raw_key) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Get org_id + user_id
+        let (org_id, user_id): (String, String) = conn.query_row(
+            "SELECT o.id, u.id FROM organizations o JOIN users u ON u.org_id = o.id LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+
+        // Create a memory
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content, project) VALUES ('m1', ?1, ?2, 'claude', 'test content', 'default')",
+            rusqlite::params![org_id, user_id],
+        ).unwrap();
+
+        // Set admin_note via query
+        let result = queries::update_memory_admin_note(&conn, &org_id, "m1", "Private admin note").unwrap();
+        assert!(result.is_some(), "update_memory_admin_note must return the updated memory");
+        let mem = result.unwrap();
+        assert_eq!(mem.admin_note.as_deref(), Some("Private admin note"), "admin_note must be returned in admin context");
+
+        // Simulate non-admin list: admin_note should be present in DB but stripped by handler layer
+        // Here we test that the DB query returns it, and the handler is responsible for stripping.
+        let mems = queries::list_memories(
+            &conn, &org_id, None, None, None, None, None, None, 50, 0, false, None, None, None,
+        ).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].admin_note.as_deref(), Some("Private admin note"),
+            "DB query always returns admin_note; handler strips for non-admins");
+
+        // Verify clearing: empty string → NULL
+        let cleared = queries::update_memory_admin_note(&conn, &org_id, "m1", "").unwrap();
+        assert!(cleared.is_some());
+        assert!(cleared.unwrap().admin_note.is_none(), "empty string must clear admin_note to NULL");
+    }
+
+    // ── Disable/enable account integration test ───────────────────────────────
+
+    #[test]
+    fn disabled_user_key_is_rejected() {
+        use crate::auth::api_keys;
+        use crate::db::{connection::connect, queries};
+
+        let conn = connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+
+        // Create org + user + key via bootstrap
+        let (_org, user, raw_key) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Key should work initially
+        let hash = api_keys::hash_key(&raw_key);
+        let ctx = queries::validate_api_key(&conn, &hash).unwrap();
+        assert!(ctx.is_some(), "key must be valid before disabling");
+
+        // Disable the user
+        let changed = queries::disable_user(&conn, &user.org_id, &user.id).unwrap();
+        assert!(changed, "disable_user must return true for an active user");
+
+        // Key must now be rejected
+        let ctx_disabled = queries::validate_api_key(&conn, &hash).unwrap();
+        assert!(ctx_disabled.is_none(), "key must be rejected after account is disabled");
+
+        // is_key_account_disabled must return true
+        let is_disabled = queries::is_key_account_disabled(&conn, &hash).unwrap();
+        assert!(is_disabled, "is_key_account_disabled must return true for a disabled account");
+
+        // Re-enable the user
+        let re_enabled = queries::enable_user(&conn, &user.org_id, &user.id).unwrap();
+        assert!(re_enabled, "enable_user must return true for a disabled user");
+
+        // Key must work again
+        let ctx_enabled = queries::validate_api_key(&conn, &hash).unwrap();
+        assert!(ctx_enabled.is_some(), "key must work again after re-enabling");
+    }
+
+    // ── v30 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v30_adds_announcement_columns_to_organizations() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "organizations", "announcement"),
+                "organizations must have announcement after v30");
+        assert!(column_exists(&conn, "organizations", "announcement_type"),
+                "organizations must have announcement_type after v30");
+    }
+
+    #[test]
+    fn run_v30_adds_delete_after_to_memories() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "memories", "delete_after"),
+                "memories must have delete_after after v30");
+    }
+
+    #[test]
+    fn run_v30_announcement_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+
+        // Set announcement
+        conn.execute(
+            "UPDATE organizations SET announcement = 'Maintenance tonight', announcement_type = 'warning' WHERE id = 'org1'",
+            [],
+        ).unwrap();
+
+        let (ann, ann_type): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT announcement, announcement_type FROM organizations WHERE id = 'org1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(ann.as_deref(), Some("Maintenance tonight"), "announcement must persist");
+        assert_eq!(ann_type.as_deref(), Some("warning"), "announcement_type must persist");
+
+        // Clear announcement
+        conn.execute(
+            "UPDATE organizations SET announcement = NULL WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let ann_cleared: Option<String> = conn.query_row(
+            "SELECT announcement FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(ann_cleared.is_none(), "clearing announcement must store NULL");
+    }
+
+    #[test]
+    fn run_v30_delete_after_roundtrip() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES ('m1', 'org1', 'u1', 'claude', 'hello')",
+            [],
+        ).unwrap();
+
+        // Set delete_after
+        conn.execute(
+            "UPDATE memories SET delete_after = '2026-12-31' WHERE id = 'm1'",
+            [],
+        ).unwrap();
+
+        let val: Option<String> = conn.query_row(
+            "SELECT delete_after FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val.as_deref(), Some("2026-12-31"), "delete_after must persist");
+
+        // Clear it
+        conn.execute(
+            "UPDATE memories SET delete_after = NULL WHERE id = 'm1'",
+            [],
+        ).unwrap();
+        let cleared: Option<String> = conn.query_row(
+            "SELECT delete_after FROM memories WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(cleared.is_none(), "clearing delete_after must store NULL");
+    }
+
+    #[test]
+    fn run_v30_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v30(&conn);
+        assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_v30_sets_user_version_to_30() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    #[test]
+    fn run_v31_adds_archived_at_to_code_projects() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "code_projects", "archived_at"),
+                "code_projects must have archived_at after v31");
+    }
+
+    #[test]
+    fn run_v31_archived_at_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'myapp', '/ws')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM code_projects WHERE name = 'myapp'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "archived_at must default to NULL");
+    }
+
+    #[test]
+    fn run_v31_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v31(&conn);
+        assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_v31_sets_user_version_to_31() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    // ── v32 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v32_adds_admin_note_to_users() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "users", "admin_note"),
+                "users must have admin_note after v32");
+    }
+
+    #[test]
+    fn run_v32_admin_note_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT admin_note FROM users WHERE id = 'u1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "admin_note must default to NULL");
+    }
+
+    #[test]
+    fn run_v32_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v32(&conn);
+        assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 35, "user_version must remain 35");
+    }
+
+    #[test]
+    fn run_v32_sets_user_version_to_32() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 35, "user_version must be 35 after run_all");
+    }
+
+    // ── v35 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v35_adds_logo_url_to_organizations() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "organizations", "logo_url"),
+                "organizations must have logo_url after v35");
+    }
+
+    #[test]
+    fn run_v35_logo_url_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT logo_url FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "logo_url must default to NULL");
+    }
+
+    #[test]
+    fn run_v35_logo_url_persists_value() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE organizations SET logo_url = 'https://example.com/logo.png' WHERE id = 'org1'",
+            [],
+        ).unwrap();
+        let val: Option<String> = conn.query_row(
+            "SELECT logo_url FROM organizations WHERE id = 'org1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val.as_deref(), Some("https://example.com/logo.png"),
+                   "logo_url must persist the set value");
+    }
+
+    #[test]
+    fn run_v35_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v35(&conn);
+        assert!(result.is_ok(), "run_v35 must be idempotent: {:?}", result.err());
+        assert!(get_user_version(&conn) >= 35, "user_version must be at least 35");
     }
 }

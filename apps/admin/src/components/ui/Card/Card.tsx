@@ -13,7 +13,7 @@ const baseStyles = `
 
 const variantStyles: Record<CardVariant, string> = {
     elevated: `
-    bg-surface-primary
+    bg-[#1d1d1f]
     border border-white/[0.08]
   `,
     glass: `
@@ -21,11 +21,11 @@ const variantStyles: Record<CardVariant, string> = {
     border border-white/[0.08]
   `,
     outlined: `
-    bg-surface-primary
+    bg-[#1d1d1f]
     border border-white/[0.08]
   `,
     flat: `
-    bg-surface-secondary
+    bg-[#272729]
   `,
 };
 

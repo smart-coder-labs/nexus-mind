@@ -43,9 +43,24 @@ pub fn index_project(
         db_queries::upsert_code_project(&conn, org_id, project_name, root_path)?
     };
 
+    // Mark as indexing
+    {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let _ = db_queries::set_code_project_indexing(&conn, code_project_id);
+    }
+
     let stored_hashes: HashMap<String, String> = {
         let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         db_queries::list_indexed_files_with_hashes(&conn, code_project_id)?
+    };
+
+    // Fetch exclude_patterns for this project
+    let exclude_patterns: Vec<String> = {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        db_queries::get_code_project(org_id, project_name, &conn)
+            .unwrap_or(None)
+            .map(|p| p.exclude_patterns)
+            .unwrap_or_default()
     };
 
     let mut total_chunks = 0i64;
@@ -58,6 +73,11 @@ pub fn index_project(
             .unwrap_or(&file_meta.path)
             .trim_start_matches('/')
             .to_string();
+
+        // Check exclude patterns (simple substring match)
+        if exclude_patterns.iter().any(|pat| rel_path.contains(pat.as_str())) {
+            continue;
+        }
 
         let stored_hash = stored_hashes.get(&rel_path);
 
@@ -122,7 +142,7 @@ pub fn index_project(
         files_indexed += 1;
     }
 
-    // Update project stats
+    // Update project stats and mark success
     let last_indexed = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
@@ -135,6 +155,7 @@ pub fn index_project(
             total_chunks,
             &last_indexed,
         )?;
+        let _ = db_queries::set_code_project_success(&conn, code_project_id, files_indexed, &last_indexed);
     }
 
     Ok(IndexProjectResponse {

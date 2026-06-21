@@ -19,7 +19,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       }}
       className={`
         flex flex-col items-center justify-center text-center p-8
-        bg-surface-primary/50 rounded-[18px]
+        bg-[#1d1d1f]/50 rounded-[18px]
         ${className}
       `.trim().replace(/\s+/g, ' ')}
     >

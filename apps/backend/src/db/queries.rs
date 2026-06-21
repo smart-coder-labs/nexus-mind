@@ -7,18 +7,23 @@ use crate::auth::api_keys;
 use crate::models::types::{
     AuthContext, AuditEntry, CodeChunk, CodeProject, CreateSessionRequest, CustomRole,
     GlobalMetrics, Memory, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
-    Session, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
+    Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
+    ProjectEventOverrides, Webhook, CreateWebhookRequest, UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser,
+    OnboardingItem, OnboardingStatus, InviteLink,
 };
 
 /// Looks up an API key by its SHA-256 hash.
-/// Returns AuthContext if the key exists, is not revoked, and the user is active.
+/// Returns AuthContext if the key exists, is not revoked, the user is active,
+/// and the account has not been disabled.
 /// Also updates `last_used` on the api_keys row.
 pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<AuthContext>> {
     let result = conn.query_row(
-        "SELECT ak.org_id, ak.user_id, u.role, u.status
+        "SELECT ak.org_id, ak.user_id, u.role, u.status, u.disabled_at
          FROM api_keys ak
          JOIN users u ON u.id = ak.user_id
-         WHERE ak.key_hash = ?1 AND ak.revoked = 0",
+         WHERE ak.key_hash = ?1 AND ak.revoked = 0
+           AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))
+           AND u.disabled_at IS NULL",
         [key_hash],
         |row| {
             Ok((
@@ -26,12 +31,13 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         },
     );
 
     match result {
-        Ok((org_id, user_id, role_str, status)) => {
+        Ok((org_id, user_id, role_str, status, _disabled_at)) => {
             if status != "active" {
                 return Ok(None);
             }
@@ -40,8 +46,12 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
                 Err(_) => return Ok(None),
             };
             conn.execute(
-                "UPDATE api_keys SET last_used = datetime('now') WHERE key_hash = ?1",
+                "UPDATE api_keys SET last_used = datetime('now'), times_used = COALESCE(times_used, 0) + 1, last_used_at = datetime('now') WHERE key_hash = ?1",
                 [key_hash],
+            )?;
+            conn.execute(
+                "UPDATE users SET last_login_at = datetime('now') WHERE id = ?1",
+                [&user_id],
             )?;
             Ok(Some(AuthContext {
                 org_id,
@@ -52,6 +62,22 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Checks whether a key exists and its associated user account is disabled.
+/// Returns true if the key exists, is not revoked, has not expired, but the user's
+/// disabled_at IS NOT NULL. Used by auth middleware to return a specific error code.
+pub fn is_key_account_disabled(conn: &Connection, key_hash: &str) -> Result<bool> {
+    let result: Option<Option<String>> = conn.query_row(
+        "SELECT u.disabled_at
+         FROM api_keys ak
+         JOIN users u ON u.id = ak.user_id
+         WHERE ak.key_hash = ?1 AND ak.revoked = 0
+           AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))",
+        [key_hash],
+        |row| row.get(0),
+    ).optional()?;
+    Ok(result.map(|d| d.is_some()).unwrap_or(false))
 }
 
 /// Creates the first organization + admin user + admin API key.
@@ -102,6 +128,10 @@ pub fn create_org(
         role: "admin".to_string(),
         status: "active".to_string(),
         created_at: now,
+        last_active: None,
+        disabled_at: None,
+        admin_note: None,
+        last_login_at: None,
     };
 
     Ok((org, user, raw_key))
@@ -185,10 +215,11 @@ pub fn search_memories(
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
-                m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash, m.project_id
+                m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash, m.project_id,
+                m.archived_at, m.pinned, m.collection_id, m.admin_note, m.delete_after
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
-         WHERE memories_fts MATCH ?1 AND m.org_id = ?2
+         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL
          ORDER BY rank
          LIMIT ?3",
     )?;
@@ -212,13 +243,19 @@ pub fn search_memories(
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
             row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, i64>(17).unwrap_or(0),
+            row.get::<_, Option<String>>(18)?,
+            row.get::<_, Option<String>>(19)?,
+            row.get::<_, Option<String>>(20)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -237,12 +274,20 @@ pub fn search_memories(
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
             project_id,
+            archived_at,
+            pinned: pinned_i64 != 0,
+            collection_id,
+            admin_note,
+            delete_after,
         });
     }
     Ok(memories)
 }
 
 /// Lists memories for an org with optional filters.
+/// When `include_archived` is false (default), archived memories (archived_at IS NOT NULL) are excluded.
+/// `from_date` / `to_date` are ISO 8601 date strings ("YYYY-MM-DD"). When provided they bound
+/// `created_at` as: `created_at >= from_date` and `created_at < date(to_date, '+1 day')`.
 #[allow(clippy::too_many_arguments)]
 pub fn list_memories(
     conn: &Connection,
@@ -252,17 +297,27 @@ pub fn list_memories(
     project: Option<&str>,
     type_filter: Option<&str>,
     scope_filter: Option<&str>,
+    session_id_filter: Option<&str>,
     limit: i64,
     offset: i64,
+    include_archived: bool,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+    collection_id_filter: Option<&str>,
 ) -> Result<Vec<Memory>> {
     let mut sql = String::from(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned, collection_id, admin_note, delete_after
          FROM memories
          WHERE org_id = ?1",
     );
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
+
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
 
     if let Some(u) = user_id {
         sql.push_str(&format!(" AND user_id = ?{param_idx}"));
@@ -289,8 +344,28 @@ pub fn list_memories(
         extra_params.push(sc.to_string());
         param_idx += 1;
     }
+    if let Some(sid) = session_id_filter {
+        sql.push_str(&format!(" AND session_id = ?{param_idx}"));
+        extra_params.push(sid.to_string());
+        param_idx += 1;
+    }
+    if let Some(fd) = from_date {
+        sql.push_str(&format!(" AND created_at >= ?{param_idx}"));
+        extra_params.push(fd.to_string());
+        param_idx += 1;
+    }
+    if let Some(td) = to_date {
+        sql.push_str(&format!(" AND created_at < date(?{param_idx}, '+1 day')"));
+        extra_params.push(td.to_string());
+        param_idx += 1;
+    }
+    if let Some(cid) = collection_id_filter {
+        sql.push_str(&format!(" AND collection_id = ?{param_idx}"));
+        extra_params.push(cid.to_string());
+        param_idx += 1;
+    }
     sql.push_str(&format!(
-        " ORDER BY created_at DESC LIMIT ?{param_idx} OFFSET ?{}",
+        " ORDER BY pinned DESC, created_at DESC LIMIT ?{param_idx} OFFSET ?{}",
         param_idx + 1
     ));
 
@@ -326,13 +401,19 @@ pub fn list_memories(
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
             row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, i64>(17).unwrap_or(0),
+            row.get::<_, Option<String>>(18)?,
+            row.get::<_, Option<String>>(19)?,
+            row.get::<_, Option<String>>(20)?,
         ))
     })?;
 
     let mut memories = Vec::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         memories.push(Memory {
             id,
@@ -351,9 +432,52 @@ pub fn list_memories(
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
             project_id,
+            archived_at,
+            pinned: pinned_i64 != 0,
+            collection_id,
+            admin_note,
+            delete_after,
         });
     }
     Ok(memories)
+}
+
+/// Archives a memory (sets archived_at = now). No-op if already archived.
+/// Returns Ok(true) if the row was updated, Ok(false) if not found / already archived.
+pub fn archive_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE memories SET archived_at = datetime('now') WHERE id = ?1 AND org_id = ?2 AND archived_at IS NULL",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Restores a memory (clears archived_at). No-op if not archived.
+/// Returns Ok(true) if the row was updated, Ok(false) if not found / not archived.
+pub fn restore_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE memories SET archived_at = NULL WHERE id = ?1 AND org_id = ?2 AND archived_at IS NOT NULL",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Pins a memory (sets pinned = 1). Returns true if updated, false if not found.
+pub fn pin_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE memories SET pinned = 1 WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Unpins a memory (sets pinned = 0). Returns true if updated, false if not found.
+pub fn unpin_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE memories SET pinned = 0 WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(affected > 0)
 }
 
 /// Returns the user_id of the memory owner, scoped to org. Returns None if not found.
@@ -379,26 +503,150 @@ pub fn delete_memory(conn: &Connection, org_id: &str, memory_id: &str) -> Result
     Ok(affected > 0)
 }
 
+/// Bulk-deletes a set of memories scoped to the org.
+///
+/// For admins (`is_admin = true`) any memory belonging to the org is deleted.
+/// For non-admins only memories owned by `caller_user_id` are deleted.
+///
+/// Returns the count of rows actually deleted.
+pub fn bulk_delete_memories(
+    conn: &Connection,
+    org_id: &str,
+    ids: &[String],
+    is_admin: bool,
+    caller_user_id: &str,
+) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Build a parameterised placeholder list: (?2, ?3, … ?N)
+    // ?1 = org_id, ?2..?N+1 = ids, ?N+2 = caller_user_id (non-admin path only)
+    let placeholders: Vec<String> = (2..=ids.len() + 1)
+        .map(|i| format!("?{i}"))
+        .collect();
+    let in_clause = placeholders.join(", ");
+
+    let sql = if is_admin {
+        format!(
+            "DELETE FROM memories WHERE org_id = ?1 AND id IN ({in_clause})"
+        )
+    } else {
+        let user_param = ids.len() + 2;
+        format!(
+            "DELETE FROM memories WHERE org_id = ?1 AND id IN ({in_clause}) AND user_id = ?{user_param}"
+        )
+    };
+
+    // Build the parameter list
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    params.push(Box::new(org_id.to_string()));
+    for id in ids {
+        params.push(Box::new(id.clone()));
+    }
+    if !is_admin {
+        params.push(Box::new(caller_user_id.to_string()));
+    }
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let affected = conn.execute(&sql, refs.as_slice())?;
+    Ok(affected)
+}
+
+/// Bulk-adds or removes a tag from a set of memories, scoped to org_id.
+///
+/// For each id in `ids`:
+/// - Fetch current `tags` JSON from the row (org-scoped).
+/// - Parse as `Vec<String>`.
+/// - Add or remove `tag` (case-insensitive match; add deduplicates).
+/// - Write the updated array back.
+///
+/// All updates run inside a single transaction for atomicity.
+/// Memories not belonging to `org_id` are silently skipped.
+/// Returns the count of rows actually updated.
+pub fn bulk_tag_memories(
+    conn: &Connection,
+    org_id: &str,
+    ids: &[String],
+    action: &str,
+    tag: &str,
+) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let tag_lower = tag.to_lowercase();
+    let tx = conn.unchecked_transaction()?;
+    let mut updated = 0usize;
+
+    for id in ids {
+        // Fetch current tags, scoped to org.
+        let result: rusqlite::Result<String> = tx.query_row(
+            "SELECT tags FROM memories WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![id, org_id],
+            |row| row.get(0),
+        );
+
+        let tags_str = match result {
+            Ok(s) => s,
+            Err(rusqlite::Error::QueryReturnedNoRows) => continue, // wrong org or not found
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+
+        match action {
+            "add" => {
+                let already = tags.iter().any(|t| t.to_lowercase() == tag_lower);
+                if !already {
+                    tags.push(tag.to_string());
+                }
+            }
+            "remove" => {
+                tags.retain(|t| t.to_lowercase() != tag_lower);
+            }
+            _ => {} // unknown action — skip
+        }
+
+        let new_tags_json = serde_json::to_string(&tags)?;
+        let affected = tx.execute(
+            "UPDATE memories SET tags = ?1 WHERE id = ?2 AND org_id = ?3",
+            rusqlite::params![new_tags_json, id, org_id],
+        )?;
+        updated += affected;
+    }
+
+    tx.commit()?;
+    Ok(updated)
+}
+
 // ── User queries ──────────────────────────────────────────────────────────────
 
 /// Returns all users in the org.
 pub fn list_users(conn: &Connection, org_id: &str) -> Result<Vec<User>> {
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, email, name, role, status, created_at
-         FROM users
-         WHERE org_id = ?1
-         ORDER BY created_at ASC",
+        "SELECT u.id, u.org_id, u.email, u.name, u.role, u.status, u.created_at,
+                MAX(ak.last_used) AS last_active, u.disabled_at, u.admin_note, u.last_login_at
+         FROM users u
+         LEFT JOIN api_keys ak ON ak.user_id = u.id AND ak.revoked = 0
+         WHERE u.org_id = ?1
+         GROUP BY u.id
+         ORDER BY u.created_at ASC",
     )?;
 
     let rows = stmt.query_map([org_id], |row| {
         Ok(User {
             id: row.get(0)?,
             org_id: row.get(1)?,
-            email: row.get(2)?,
+            email: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
             name: row.get(3)?,
             role: row.get(4)?,
             status: row.get(5)?,
             created_at: row.get(6)?,
+            last_active: row.get(7)?,
+            disabled_at: row.get(8)?,
+            admin_note: row.get(9)?,
+            last_login_at: row.get(10)?,
         })
     })?;
 
@@ -443,6 +691,10 @@ pub fn invite_user(
         role: role.to_string(),
         status: "active".to_string(),
         created_at: now,
+        last_active: None,
+        disabled_at: None,
+        admin_note: None,
+        last_login_at: None,
     };
 
     Ok((user, raw_key))
@@ -468,6 +720,28 @@ pub fn suspend_user(conn: &Connection, org_id: &str, user_id: &str) -> Result<bo
     Ok(true)
 }
 
+/// Disables a user account by setting disabled_at to the current datetime.
+/// Disabled accounts have all API requests rejected.
+/// Does not revoke keys — re-enabling restores access without key rotation.
+/// Returns true if the user was found and is not already disabled, false if not found or already disabled.
+pub fn disable_user(conn: &Connection, org_id: &str, user_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE users SET disabled_at = datetime('now') WHERE id = ?1 AND org_id = ?2 AND disabled_at IS NULL",
+        [user_id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Re-enables a user account by clearing disabled_at.
+/// Returns true if the user was found and was disabled, false if not found or already active.
+pub fn enable_user(conn: &Connection, org_id: &str, user_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE users SET disabled_at = NULL WHERE id = ?1 AND org_id = ?2 AND disabled_at IS NOT NULL",
+        [user_id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
 /// Revokes all current keys for a user and issues a new one.
 /// Returns the raw new API key.
 pub fn rotate_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<String> {
@@ -489,6 +763,55 @@ pub fn rotate_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<Stri
     Ok(raw_key)
 }
 
+/// Admin-only reset: generates a new API key for a user, revoking their current non-demo key.
+/// Returns the raw new key (only time it is visible) or an error string for callers to map.
+/// Error values:
+///   "not_found"    → user does not exist in the org
+///   "demo_key"     → user's active key has the demo label and must not be reset
+pub fn reset_user_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<std::result::Result<String, &'static str>> {
+    // Check whether the user exists in this org.
+    let user_exists: bool = conn.query_row(
+        "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![user_id, org_id],
+        |row| row.get::<_, i32>(0),
+    )? > 0;
+
+    if !user_exists {
+        return Ok(Err("not_found"));
+    }
+
+    // Check whether the user's active key is a demo key (label starts with 'demo').
+    let has_demo_key: bool = conn.query_row(
+        "SELECT count(*) FROM api_keys
+         WHERE user_id = ?1 AND org_id = ?2 AND revoked = 0 AND label LIKE 'demo%'",
+        rusqlite::params![user_id, org_id],
+        |row| row.get::<_, i32>(0),
+    )? > 0;
+
+    if has_demo_key {
+        return Ok(Err("demo_key"));
+    }
+
+    // Revoke all current keys for the user in this org.
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE user_id = ?1 AND org_id = ?2",
+        rusqlite::params![user_id, org_id],
+    )?;
+
+    // Generate and insert a fresh key.
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'admin-reset', ?5)",
+        rusqlite::params![key_id, user_id, org_id, key_hash, now],
+    )?;
+
+    Ok(Ok(raw_key))
+}
+
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 /// Lists audit log entries for an org with optional filters.
@@ -501,6 +824,24 @@ pub fn list_audit(
     resource_type: Option<&str>,
     from: Option<&str>,
     to: Option<&str>,
+    search: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<crate::models::types::AuditEntry>> {
+    list_audit_with_resource(conn, org_id, user_id, action, resource_type, None, from, to, search, limit, offset)
+}
+
+/// Extended audit query that also supports filtering by resource_id.
+pub fn list_audit_with_resource(
+    conn: &Connection,
+    org_id: &str,
+    user_id: Option<&str>,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    resource_id: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    search: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<crate::models::types::AuditEntry>> {
@@ -528,6 +869,11 @@ pub fn list_audit(
         extra_params.push(rt.to_string());
         param_idx += 1;
     }
+    if let Some(rid) = resource_id {
+        sql.push_str(&format!(" AND resource_id = ?{param_idx}"));
+        extra_params.push(rid.to_string());
+        param_idx += 1;
+    }
     if let Some(f) = from {
         sql.push_str(&format!(" AND timestamp >= ?{param_idx}"));
         extra_params.push(f.to_string());
@@ -536,6 +882,18 @@ pub fn list_audit(
     if let Some(t) = to {
         sql.push_str(&format!(" AND timestamp <= ?{param_idx}"));
         extra_params.push(t.to_string());
+        param_idx += 1;
+    }
+    if let Some(s) = search {
+        sql.push_str(&format!(
+            " AND (\
+              action LIKE '%' || ?{param_idx} || '%'\
+              OR resource_type LIKE '%' || ?{param_idx} || '%'\
+              OR COALESCE(resource_id, '') LIKE '%' || ?{param_idx} || '%'\
+              OR metadata LIKE '%' || ?{param_idx} || '%'\
+            )"
+        ));
+        extra_params.push(s.to_string());
         param_idx += 1;
     }
     sql.push_str(&format!(
@@ -731,23 +1089,75 @@ pub fn update_org_name(conn: &Connection, org_id: &str, name: &str) -> Result<Or
 }
 
 pub fn get_org_settings(conn: &Connection, org_id: &str) -> Result<OrgSettings> {
-    let raw: String = conn.query_row(
-        "SELECT COALESCE(settings, '{}') FROM organizations WHERE id = ?1",
+    let (raw, retention_days, custom_instructions, min_password_length, announcement, announcement_type, logo_url): (String, Option<i64>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT COALESCE(settings, '{}'), retention_days, custom_instructions, min_password_length, announcement, announcement_type, logo_url FROM organizations WHERE id = ?1",
         [org_id],
-        |r| r.get(0),
-    ).unwrap_or_else(|_| "{}".to_string());
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    ).unwrap_or_else(|_| ("{}".to_string(), None, None, None, None, None, None));
 
-    let settings: OrgSettings = serde_json::from_str(&raw).unwrap_or_default();
+    let mut settings: OrgSettings = serde_json::from_str(&raw).unwrap_or_default();
+    settings.retention_days = retention_days;
+    settings.custom_instructions = custom_instructions;
+    settings.min_password_length = min_password_length;
+    settings.announcement = announcement;
+    settings.announcement_type = announcement_type;
+    settings.logo_url = logo_url;
     Ok(settings)
 }
 
 pub fn update_org_settings(conn: &Connection, org_id: &str, settings: &OrgSettings) -> Result<OrgSettings> {
-    let raw = serde_json::to_string(settings)?;
+    // Strip direct-column fields from the JSON blob — they live in their own columns.
+    let blob_settings = OrgSettings { retention_days: None, custom_instructions: None, min_password_length: None, announcement: None, announcement_type: None, ..settings.clone() };
+    let raw = serde_json::to_string(&blob_settings)?;
     conn.execute(
-        "UPDATE organizations SET settings = ?1 WHERE id = ?2",
-        rusqlite::params![raw, org_id],
+        "UPDATE organizations SET settings = ?1, retention_days = ?2, custom_instructions = ?3, min_password_length = ?4 WHERE id = ?5",
+        rusqlite::params![raw, settings.retention_days, settings.custom_instructions, settings.min_password_length, org_id],
     )?;
     get_org_settings(conn, org_id)
+}
+
+/// Set (or clear) the announcement banner for an org.
+/// Empty `announcement` string → NULL (clears the banner).
+pub fn update_announcement(conn: &Connection, org_id: &str, announcement: &str, announcement_type: &str) -> Result<OrgSettings> {
+    let ann: Option<&str> = if announcement.is_empty() { None } else { Some(announcement) };
+    conn.execute(
+        "UPDATE organizations SET announcement = ?1, announcement_type = ?2 WHERE id = ?3",
+        rusqlite::params![ann, announcement_type, org_id],
+    )?;
+    get_org_settings(conn, org_id)
+}
+
+/// Set (or clear) the logo URL for an org.
+/// None = clear the logo (sets logo_url = NULL).
+pub fn update_org_logo(conn: &Connection, org_id: &str, logo_url: Option<&str>) -> Result<OrgSettings> {
+    conn.execute(
+        "UPDATE organizations SET logo_url = ?1 WHERE id = ?2",
+        rusqlite::params![logo_url, org_id],
+    )?;
+    get_org_settings(conn, org_id)
+}
+
+/// Set (or clear) the scheduled-deletion date for a single memory.
+/// `delete_after` = None → clears the schedule.
+pub fn schedule_memory_delete(conn: &Connection, org_id: &str, memory_id: &str, delete_after: Option<&str>) -> Result<()> {
+    let affected = conn.execute(
+        "UPDATE memories SET delete_after = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![delete_after, memory_id, org_id],
+    )?;
+    if affected == 0 {
+        return Err(anyhow::anyhow!("memory_not_found"));
+    }
+    Ok(())
+}
+
+/// Delete all memories whose `delete_after` date has passed (on or before today).
+/// Should be called alongside the retention-policy cleanup.
+pub fn apply_scheduled_deletes(conn: &Connection, org_id: &str) -> Result<u64> {
+    let n = conn.execute(
+        "DELETE FROM memories WHERE org_id = ?1 AND delete_after IS NOT NULL AND delete_after <= date('now')",
+        [org_id],
+    )?;
+    Ok(n as u64)
 }
 
 /// Returns aggregate stats for the org.
@@ -793,6 +1203,266 @@ pub fn get_stats(conn: &Connection, org_id: &str) -> Result<OrgStats> {
         active_users_24h,
         searches_today,
         top_tools,
+    })
+}
+
+// ── Org usage stats ───────────────────────────────────────────────────────────
+
+/// Returns org-level entity counts (memories, sessions, users, projects, code_repos).
+pub fn get_usage_stats(conn: &Connection, org_id: &str) -> Result<crate::models::types::UsageStats> {
+    let memories: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    let sessions: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE org_id = ?1",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    let users: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE org_id = ?1 AND status != 'suspended'",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    let projects: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM projects WHERE org_id = ?1",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    let code_repos: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_projects WHERE org_id = ?1",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    Ok(crate::models::types::UsageStats { memories, sessions, users, projects, code_repos })
+}
+
+// ── Memory facets ─────────────────────────────────────────────────────────────
+
+/// Returns distinct facet counts (type, scope, project) for an org's memories.
+/// Each facet bucket is ordered by count descending, limited to 50 values.
+pub fn get_memory_facets(conn: &Connection, org_id: &str) -> Result<crate::models::types::MemoryFacets> {
+    // Types
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(type, ''), COUNT(*) as cnt
+         FROM memories
+         WHERE org_id = ?1 AND type IS NOT NULL AND type != ''
+         GROUP BY type
+         ORDER BY cnt DESC
+         LIMIT 50",
+    )?;
+    let types: Vec<crate::models::types::FacetCount> = stmt
+        .query_map([org_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    // Scopes
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(scope, 'project'), COUNT(*) as cnt
+         FROM memories
+         WHERE org_id = ?1
+         GROUP BY COALESCE(scope, 'project')
+         ORDER BY cnt DESC
+         LIMIT 50",
+    )?;
+    let scopes: Vec<crate::models::types::FacetCount> = stmt
+        .query_map([org_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    // Projects
+    let mut stmt = conn.prepare(
+        "SELECT project, COUNT(*) as cnt
+         FROM memories
+         WHERE org_id = ?1
+         GROUP BY project
+         ORDER BY cnt DESC
+         LIMIT 50",
+    )?;
+    let projects: Vec<crate::models::types::FacetCount> = stmt
+        .query_map([org_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    Ok(crate::models::types::MemoryFacets { types, scopes, projects })
+}
+
+// ── Tag stats ─────────────────────────────────────────────────────────────────
+
+/// Returns tag usage counts across all memories for the org.
+/// `memories.tags` is stored as a JSON array string like '["tag1","tag2"]'.
+/// SQLite's `json_each` expands the array so we can GROUP BY individual tag values.
+pub fn get_tag_stats(conn: &Connection, org_id: &str) -> Result<Vec<crate::models::types::NameCount>> {
+    use crate::models::types::NameCount;
+
+    let mut stmt = conn.prepare(
+        "SELECT value as name, COUNT(*) as count
+         FROM memories, json_each(memories.tags)
+         WHERE memories.org_id = ?1
+           AND memories.tags != '[]'
+           AND memories.tags IS NOT NULL
+         GROUP BY value
+         ORDER BY count DESC
+         LIMIT 50",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(NameCount {
+            name: row.get(0)?,
+            count: row.get(1)?,
+        })
+    })?;
+    let mut tags = Vec::new();
+    for r in rows {
+        tags.push(r?);
+    }
+    Ok(tags)
+}
+
+// ── Tag rename ───────────────────────────────────────────────────────────────
+
+/// Renames a tag across all memories in the org.
+/// Returns the number of memories updated.
+pub fn rename_tag(conn: &Connection, org_id: &str, from: &str, to: &str) -> Result<i64> {
+    // Step 1: find all memory IDs where the tag array contains `from`
+    let mut stmt = conn.prepare(
+        "SELECT id FROM memories
+         WHERE org_id = ?1
+           AND tags IS NOT NULL
+           AND json_type(tags) = 'array'
+           AND EXISTS (
+             SELECT 1 FROM json_each(tags) WHERE value = ?2
+           )",
+    )?;
+
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params![org_id, from], |row| row.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Step 2: for each memory, rewrite the tags JSON replacing `from` with `to`
+    let tx = conn.unchecked_transaction()?;
+    let mut updated = 0i64;
+
+    for id in &ids {
+        let affected = tx.execute(
+            "UPDATE memories
+             SET tags = (
+               SELECT json_group_array(CASE WHEN value = ?1 THEN ?2 ELSE value END)
+               FROM json_each(tags)
+             )
+             WHERE id = ?3 AND org_id = ?4",
+            rusqlite::params![from, to, id, org_id],
+        )?;
+        updated += affected as i64;
+    }
+
+    tx.commit()?;
+    Ok(updated)
+}
+
+// ── Memory trends ─────────────────────────────────────────────────────────────
+
+/// Returns memory trend data for the last 30 days scoped to the org.
+pub fn get_memory_trends(conn: &Connection, org_id: &str, days: i64) -> Result<crate::models::types::MemoryTrends> {
+    use crate::models::types::{DailyCount, NameCount, MemoryTrends};
+
+    // Daily counts for the requested period
+    let mut stmt = conn.prepare(
+        "SELECT date(created_at) as date, COUNT(*) as count
+         FROM memories
+         WHERE org_id = ?1 AND created_at >= datetime('now', '-' || ?2 || ' days')
+         GROUP BY date
+         ORDER BY date ASC",
+    )?;
+    let daily_counts: Vec<DailyCount> = stmt
+        .query_map(rusqlite::params![org_id, days], |row| {
+            Ok(DailyCount {
+                date: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    // By type — top 5
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(type, 'untyped') as name, COUNT(*) as count
+         FROM memories
+         WHERE org_id = ?1
+         GROUP BY type
+         ORDER BY count DESC
+         LIMIT 5",
+    )?;
+    let by_type: Vec<NameCount> = stmt
+        .query_map([org_id], |row| {
+            Ok(NameCount {
+                name: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    // By project — top 5
+    let mut stmt = conn.prepare(
+        "SELECT project as name, COUNT(*) as count
+         FROM memories
+         WHERE org_id = ?1
+         GROUP BY project
+         ORDER BY count DESC
+         LIMIT 5",
+    )?;
+    let by_project: Vec<NameCount> = stmt
+        .query_map([org_id], |row| {
+            Ok(NameCount {
+                name: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
+    // Total
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+        [org_id],
+        |r| r.get(0),
+    )?;
+
+    // This week (last 7 days)
+    let this_week: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND created_at >= date('now', '-7 days')",
+        [org_id],
+        |r| r.get(0),
+    )?;
+
+    // This month (last 30 days)
+    let this_month: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND created_at >= date('now', '-30 days')",
+        [org_id],
+        |r| r.get(0),
+    )?;
+
+    Ok(MemoryTrends {
+        daily_counts,
+        by_type,
+        by_project,
+        total,
+        this_week,
+        this_month,
     })
 }
 
@@ -862,6 +1532,11 @@ pub fn upsert_memory(
                     revision_count: new_revision,
                     normalized_hash: Some(normalized_hash),
                     project_id: Some(project_id),
+                    archived_at: None,
+                    pinned: false,
+                    collection_id: None,
+                    admin_note: None,
+                    delete_after: None,
                 });
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -901,6 +1576,11 @@ pub fn upsert_memory(
         revision_count: 1,
         normalized_hash: Some(normalized_hash),
         project_id: Some(project_id),
+        archived_at: None,
+        pinned: false,
+        collection_id: None,
+        admin_note: None,
+        delete_after: None,
     })
 }
 
@@ -1006,6 +1686,35 @@ pub fn get_session(conn: &Connection, org_id: &str, session_id: &str) -> Result<
     }
 }
 
+/// Lists all sessions for an org, with their memory count, ordered by started_at DESC.
+pub fn list_sessions(conn: &Connection, org_id: &str) -> Result<Vec<SessionWithCount>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.org_id, s.project, s.directory, s.started_at, s.ended_at, s.summary,
+                COUNT(m.id) as memory_count
+         FROM sessions s
+         LEFT JOIN memories m ON m.session_id = s.id AND m.org_id = s.org_id
+         WHERE s.org_id = ?1
+         GROUP BY s.id
+         ORDER BY s.started_at DESC
+         LIMIT 100",
+    )?;
+
+    let rows = stmt.query_map(rusqlite::params![org_id], |row| {
+        Ok(SessionWithCount {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            project: row.get(2)?,
+            directory: row.get(3)?,
+            started_at: row.get(4)?,
+            ended_at: row.get(5)?,
+            summary: row.get(6)?,
+            memory_count: row.get(7)?,
+        })
+    })?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 /// Validates that a session_id belongs to the given org.
 pub fn validate_session_ownership(conn: &Connection, org_id: &str, session_id: &str) -> Result<bool> {
     let count: i64 = conn.query_row(
@@ -1045,11 +1754,15 @@ pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(Use
                 User {
                     id: row.get(0)?,
                     org_id: row.get(1)?,
-                    email: row.get(2)?,
+                    email: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     name: row.get(3)?,
                     role: row.get(4)?,
                     status: row.get(5)?,
                     created_at: row.get(6)?,
+                    last_active: None,
+                    disabled_at: None,
+                    admin_note: None,
+                    last_login_at: None,
                 },
                 row.get::<_, Option<String>>(7)?,
             ))
@@ -1066,17 +1779,21 @@ pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(Use
 /// Fetches a user by ID.
 pub fn get_user_by_id(conn: &Connection, user_id: &str) -> Result<Option<User>> {
     let result = conn.query_row(
-        "SELECT id, org_id, email, name, role, status, created_at FROM users WHERE id = ?1",
+        "SELECT id, org_id, email, name, role, status, created_at, disabled_at, admin_note, last_login_at FROM users WHERE id = ?1",
         [user_id],
         |row| {
             Ok(User {
                 id: row.get(0)?,
                 org_id: row.get(1)?,
-                email: row.get(2)?,
+                email: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 name: row.get(3)?,
                 role: row.get(4)?,
                 status: row.get(5)?,
                 created_at: row.get(6)?,
+                last_active: None,
+                disabled_at: row.get(7)?,
+                admin_note: row.get(8)?,
+                last_login_at: row.get(9)?,
             })
         },
     );
@@ -1194,7 +1911,8 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
 
     let sql = format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned, collection_id, admin_note, delete_after
          FROM memories
          WHERE org_id = ?1 AND id IN ({placeholders})"
     );
@@ -1225,6 +1943,11 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
             row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, i64>(17).unwrap_or(0),
+            row.get::<_, Option<String>>(18)?,
+            row.get::<_, Option<String>>(19)?,
+            row.get::<_, Option<String>>(20)?,
         ))
     })?;
 
@@ -1232,7 +1955,8 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
     let mut map = std::collections::HashMap::new();
     for row in rows {
         let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         map.insert(id.clone(), Memory {
             id,
@@ -1251,6 +1975,11 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
             project_id,
+            archived_at,
+            pinned: pinned_i64 != 0,
+            collection_id,
+            admin_note,
+            delete_after,
         });
     }
 
@@ -1265,6 +1994,82 @@ pub fn revoke_key_by_hash(conn: &Connection, key_hash: &str) -> Result<()> {
         [key_hash],
     )?;
     Ok(())
+}
+
+// ── Collections ───────────────────────────────────────────────────────────────
+
+/// Lists all collections for an org with memory count.
+pub fn list_collections(conn: &Connection, org_id: &str) -> Result<Vec<crate::models::types::Collection>> {
+    use crate::models::types::Collection;
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.org_id, c.name, c.description, c.created_at,
+                COUNT(m.id) as memory_count
+         FROM collections c
+         LEFT JOIN memories m ON m.collection_id = c.id AND m.org_id = c.org_id
+         WHERE c.org_id = ?1
+         GROUP BY c.id
+         ORDER BY c.created_at ASC",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(Collection {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at: row.get(4)?,
+            memory_count: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Creates a collection for an org.
+pub fn create_collection(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<crate::models::types::Collection> {
+    use crate::models::types::Collection;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO collections (id, org_id, name, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, org_id, name, description, now],
+    )?;
+    Ok(Collection {
+        id,
+        org_id: org_id.to_string(),
+        name: name.to_string(),
+        description: description.map(String::from),
+        created_at: now,
+        memory_count: Some(0),
+    })
+}
+
+/// Deletes a collection by ID, scoped to org. Memories in collection get collection_id = NULL (via FK ON DELETE SET NULL).
+/// Returns true if deleted, false if not found.
+pub fn delete_collection(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM collections WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Assigns or unassigns a memory to a collection. `collection_id = None` unassigns.
+/// Returns true if updated, false if memory not found.
+pub fn assign_memory_collection(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    collection_id: Option<&str>,
+) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE memories SET collection_id = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![collection_id, memory_id, org_id],
+    )?;
+    Ok(affected > 0)
 }
 
 /// Creates a "web-session" API key for the user, revoking any previous ones.
@@ -1486,9 +2291,16 @@ pub fn project_name_exists(conn: &Connection, org_id: &str, name: &str) -> Resul
 }
 
 pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, description, created_at, parent_id FROM projects WHERE org_id = ?1 ORDER BY name ASC",
-    )?;
+    list_projects_filtered(conn, org_id, false)
+}
+
+pub fn list_projects_filtered(conn: &Connection, org_id: &str, include_archived: bool) -> Result<Vec<Project>> {
+    let sql = if include_archived {
+        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE org_id = ?1 ORDER BY name ASC"
+    } else {
+        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE org_id = ?1 AND archived_at IS NULL ORDER BY name ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([org_id], |row| {
         Ok(Project {
             id: row.get(0)?,
@@ -1497,6 +2309,7 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
             description: row.get(3)?,
             created_at: row.get(4)?,
             parent_id: row.get(5)?,
+            archived_at: row.get(6)?,
         })
     })?;
     let mut projects = Vec::new();
@@ -1504,6 +2317,22 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
         projects.push(row?);
     }
     Ok(projects)
+}
+
+pub fn archive_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE projects SET archived_at = datetime('now') WHERE id = ?1 AND org_id = ?2",
+        [id, org_id],
+    )?;
+    Ok(rows > 0)
+}
+
+pub fn restore_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE projects SET archived_at = NULL WHERE id = ?1 AND org_id = ?2",
+        [id, org_id],
+    )?;
+    Ok(rows > 0)
 }
 
 pub fn list_project_ids_for_org(conn: &Connection, org_id: &str) -> Result<Vec<String>> {
@@ -1530,6 +2359,7 @@ pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: 
         description: description.map(String::from),
         created_at: now,
         parent_id: parent_id.map(String::from),
+        archived_at: None,
     })
 }
 
@@ -1561,7 +2391,7 @@ pub fn list_project_members(conn: &Connection, _org_id: &str, project_id: &str) 
             id: row.get(0)?,
             project_id: row.get(1)?,
             user_id: row.get(2)?,
-            email: row.get(3)?,
+            email: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
             name: row.get(4)?,
             role: row.get(5)?,
             created_at: row.get(6)?,
@@ -1633,7 +2463,8 @@ pub fn get_memory_owner_and_project(conn: &Connection, org_id: &str, memory_id: 
 pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<Memory>> {
     let result = conn.query_row(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned, collection_id, admin_note, delete_after
          FROM memories WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![memory_id, org_id],
         |row| {
@@ -1655,13 +2486,19 @@ pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str
                 row.get::<_, Option<i64>>(13)?,
                 row.get::<_, Option<String>>(14)?,
                 row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
+                row.get::<_, i64>(17).unwrap_or(0),
+                row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
+                row.get::<_, Option<String>>(20)?,
             ))
         },
     );
 
     match result {
         Ok((id, org_id, user_id, project, tool, content, tags_str, created_at,
-            title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)) => {
+            title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+            archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
             Ok(Some(Memory {
                 id,
@@ -1680,11 +2517,70 @@ pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str
                 revision_count: revision_count.unwrap_or(1),
                 normalized_hash,
                 project_id,
+                archived_at,
+                pinned: pinned_i64 != 0,
+                collection_id,
+                admin_note,
+                delete_after,
             }))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Updates the `content` field of a memory.
+/// Returns `Some(Memory)` on success, `None` if the memory does not belong to this org.
+pub fn update_memory_content(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    content: &str,
+) -> Result<Option<Memory>> {
+    let rows_changed = conn.execute(
+        "UPDATE memories SET content = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![content, memory_id, org_id],
+    )?;
+    if rows_changed == 0 {
+        return Ok(None);
+    }
+    get_memory_by_id_for_org(conn, org_id, memory_id)
+}
+
+/// Updates the `admin_note` field of a memory (admin-only).
+/// Empty string clears the note (sets admin_note = NULL).
+/// Returns `Some(Memory)` on success, `None` if the memory does not belong to this org.
+pub fn update_memory_admin_note(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    note: &str,
+) -> Result<Option<Memory>> {
+    let note_value: Option<&str> = if note.is_empty() { None } else { Some(note) };
+    let rows_changed = conn.execute(
+        "UPDATE memories SET admin_note = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![note_value, memory_id, org_id],
+    )?;
+    if rows_changed == 0 {
+        return Ok(None);
+    }
+    get_memory_by_id_for_org(conn, org_id, memory_id)
+}
+
+/// Updates the `admin_note` field of a user (admin-only).
+/// `None` clears the note (sets admin_note = NULL).
+/// Returns `true` if the user was found and updated, `false` if not found.
+pub fn update_user_admin_note(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    note: Option<&str>,
+) -> Result<bool> {
+    let rows_changed = conn.execute(
+        "UPDATE users SET admin_note = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![note, user_id, org_id],
+    )?;
+    Ok(rows_changed > 0)
 }
 
 /// Returns aggregated project context for `org_id` + `project` name:
@@ -1694,13 +2590,14 @@ pub fn get_project_context(
     org_id: &str,
     project: &str,
 ) -> Result<crate::models::types::ProjectContext> {
-    // Query 1: recent memories (last 20, DESC).
+    // Query 1: recent memories (last 20, DESC) — exclude archived.
     let mut stmt = conn.prepare(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned
          FROM memories
-         WHERE org_id = ?1 AND project = ?2
-         ORDER BY created_at DESC
+         WHERE org_id = ?1 AND project = ?2 AND archived_at IS NULL
+         ORDER BY pinned DESC, created_at DESC
          LIMIT 20",
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, project], |row| {
@@ -1722,13 +2619,16 @@ pub fn get_project_context(
             row.get::<_, Option<i64>>(13)?,
             row.get::<_, Option<String>>(14)?,
             row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, i64>(17).unwrap_or(0),
         ))
     })?;
 
     let mut recent_memories = Vec::new();
     for row in rows {
         let (id, org_id_col, user_id, proj, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id) = row?;
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+             archived_at, pinned_i64) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         recent_memories.push(Memory {
             id,
@@ -1747,6 +2647,11 @@ pub fn get_project_context(
             revision_count: revision_count.unwrap_or(1),
             normalized_hash,
             project_id,
+            archived_at,
+            pinned: pinned_i64 != 0,
+            collection_id: None,
+            admin_note: None,
+            delete_after: None,
         });
     }
 
@@ -1832,6 +2737,10 @@ pub fn list_all_users(conn: &Connection) -> Result<Vec<User>> {
             role: r.get(4)?,
             status: r.get(5)?,
             created_at: r.get(6)?,
+            last_active: None,
+            disabled_at: None,
+            admin_note: None,
+            last_login_at: None,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -2131,6 +3040,54 @@ pub fn update_code_project_stats(
     Ok(())
 }
 
+/// Mark a code project as currently indexing.
+pub fn set_code_project_indexing(conn: &Connection, code_project_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET index_status = 'indexing' WHERE id = ?1",
+        rusqlite::params![code_project_id],
+    )?;
+    Ok(())
+}
+
+/// Mark a code project as successfully indexed.
+pub fn set_code_project_success(
+    conn: &Connection,
+    code_project_id: i64,
+    indexed_files_count: i64,
+    last_indexed_at: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects
+         SET index_status = 'success',
+             last_indexed_at = ?1,
+             indexed_files_count = ?2,
+             last_index_error = NULL
+         WHERE id = ?3",
+        rusqlite::params![last_indexed_at, indexed_files_count, code_project_id],
+    )?;
+    Ok(())
+}
+
+/// Mark a code project as failed with an error message.
+pub fn set_code_project_error(
+    conn: &Connection,
+    code_project_id: i64,
+    error_msg: &str,
+    last_indexed_at: &str,
+) -> Result<()> {
+    // Truncate error to 500 chars to avoid unbounded storage
+    let truncated = if error_msg.len() > 500 { &error_msg[..500] } else { error_msg };
+    conn.execute(
+        "UPDATE code_projects
+         SET index_status = 'error',
+             last_indexed_at = ?1,
+             last_index_error = ?2
+         WHERE id = ?3",
+        rusqlite::params![last_indexed_at, truncated, code_project_id],
+    )?;
+    Ok(())
+}
+
 /// Delete all code_chunks for a specific file within a project.
 /// Called before re-indexing a changed file.
 pub fn delete_chunks_for_file(
@@ -2265,10 +3222,13 @@ pub fn get_code_project(
     conn: &Connection,
 ) -> Result<Option<CodeProject>> {
     let result = conn.query_row(
-        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at
+        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at,
+                reindex_interval_hours, last_indexed_at, last_index_error, indexed_files_count, index_status, archived_at,
+                exclude_patterns
          FROM code_projects WHERE org_id = ?1 AND name = ?2",
         rusqlite::params![org_id, name],
         |row| {
+            let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
             Ok(CodeProject {
                 id: row.get::<_, i64>(0)?.to_string(),
                 org_id: row.get(1)?,
@@ -2279,6 +3239,13 @@ pub fn get_code_project(
                 chunk_count: row.get(6)?,
                 last_indexed: row.get(7)?,
                 created_at: row.get(8)?,
+                reindex_interval_hours: row.get(9)?,
+                last_indexed_at: row.get(10)?,
+                last_index_error: row.get(11)?,
+                indexed_files_count: row.get(12)?,
+                index_status: row.get(13)?,
+                archived_at: row.get(14)?,
+                exclude_patterns: serde_json::from_str(&patterns_json).unwrap_or_default(),
             })
         },
     );
@@ -2290,13 +3257,66 @@ pub fn get_code_project(
     }
 }
 
+/// Get a code project by numeric id and org_id (used for reindex endpoint).
+pub fn get_code_project_by_id(
+    conn: &Connection,
+    org_id: &str,
+    project_id: i64,
+) -> Result<Option<CodeProject>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at,
+                reindex_interval_hours, last_indexed_at, last_index_error, indexed_files_count, index_status, archived_at,
+                exclude_patterns
+         FROM code_projects WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, project_id],
+        |row| {
+            let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
+            Ok(CodeProject {
+                id: row.get::<_, i64>(0)?.to_string(),
+                org_id: row.get(1)?,
+                name: row.get(2)?,
+                root_path: row.get(3)?,
+                repo_url: row.get(4)?,
+                file_count: row.get(5)?,
+                chunk_count: row.get(6)?,
+                last_indexed: row.get(7)?,
+                created_at: row.get(8)?,
+                reindex_interval_hours: row.get(9)?,
+                last_indexed_at: row.get(10)?,
+                last_index_error: row.get(11)?,
+                indexed_files_count: row.get(12)?,
+                index_status: row.get(13)?,
+                archived_at: row.get(14)?,
+                exclude_patterns: serde_json::from_str(&patterns_json).unwrap_or_default(),
+            })
+        },
+    );
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// List all code projects for an org, ordered by creation date (newest first).
 pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodeProject>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at
-         FROM code_projects WHERE org_id = ?1 ORDER BY created_at DESC",
-    )?;
+    list_code_projects_filtered(conn, org_id, false)
+}
+
+/// When `include_archived` is false (default), archived code projects (archived_at IS NOT NULL) are excluded.
+pub fn list_code_projects_filtered(conn: &Connection, org_id: &str, include_archived: bool) -> Result<Vec<CodeProject>> {
+    let base = "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at,
+                reindex_interval_hours, last_indexed_at, last_index_error, indexed_files_count, index_status, archived_at,
+                exclude_patterns
+         FROM code_projects WHERE org_id = ?1";
+    let sql = if include_archived {
+        format!("{base} ORDER BY created_at DESC")
+    } else {
+        format!("{base} AND archived_at IS NULL ORDER BY created_at DESC")
+    };
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([org_id], |row| {
+        let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
         Ok(CodeProject {
             id: row.get::<_, i64>(0)?.to_string(),
             org_id: row.get(1)?,
@@ -2307,9 +3327,59 @@ pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodePro
             chunk_count: row.get(6)?,
             last_indexed: row.get(7)?,
             created_at: row.get(8)?,
+            reindex_interval_hours: row.get(9)?,
+            last_indexed_at: row.get(10)?,
+            last_index_error: row.get(11)?,
+            indexed_files_count: row.get(12)?,
+            index_status: row.get(13)?,
+            archived_at: row.get(14)?,
+            exclude_patterns: serde_json::from_str(&patterns_json).unwrap_or_default(),
         })
     })?;
     rows.map(|r| r.map_err(Into::into)).collect()
+}
+
+/// Update exclude_patterns for a code project. Returns true if the project was found and updated.
+pub fn update_code_project_exclude_patterns(
+    conn: &Connection,
+    org_id: &str,
+    project_id: i64,
+    patterns: &[String],
+) -> Result<bool> {
+    let json = serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string());
+    let rows = conn.execute(
+        "UPDATE code_projects SET exclude_patterns = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![json, project_id, org_id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Archives a code project (sets archived_at = now). Admin only.
+/// Returns Ok(true) if updated, Ok(false) if not found.
+pub fn archive_code_project(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE code_projects SET archived_at = datetime('now') WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Restores a code project (clears archived_at). Returns Ok(true) if updated.
+pub fn restore_code_project(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE code_projects SET archived_at = NULL WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Update the auto re-index interval for a code project. hours = None disables auto re-index.
+pub fn update_reindex_interval(conn: &Connection, org_id: &str, project_id: i64, hours: Option<i64>) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE code_projects SET reindex_interval_hours = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![hours, project_id, org_id],
+    )?;
+    Ok(rows > 0)
 }
 
 /// Set the repo_url for an existing code project.
@@ -2428,6 +3498,337 @@ pub fn get_chunk_context(
     }
 
     Ok(chunks)
+}
+
+// ── Webhook queries ────────────────────────────────────────────────────────────
+
+fn row_to_webhook(row: &rusqlite::Row<'_>) -> rusqlite::Result<Webhook> {
+    let events_json: String = row.get(5)?;
+    let events: Vec<String> = serde_json::from_str(&events_json).unwrap_or_else(|_| vec!["*".to_string()]);
+    let active_int: i64 = row.get(6)?;
+    Ok(Webhook {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        name: row.get(2)?,
+        target_url: row.get(3)?,
+        secret: row.get(4)?,
+        events,
+        active: active_int != 0,
+        created_at: row.get(7)?,
+    })
+}
+
+/// Returns all webhooks for an org ordered by creation date DESC.
+pub fn list_webhooks(conn: &Connection, org_id: &str) -> Result<Vec<Webhook>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, target_url, secret, events, active, created_at
+         FROM webhooks WHERE org_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], row_to_webhook)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Returns a single webhook by id + org_id, or None (hides cross-org existence).
+pub fn get_webhook(conn: &Connection, id: &str, org_id: &str) -> Result<Option<Webhook>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, name, target_url, secret, events, active, created_at
+         FROM webhooks WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+        row_to_webhook,
+    );
+    match result {
+        Ok(w) => Ok(Some(w)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Inserts a new webhook and returns the created row.
+pub fn create_webhook(conn: &Connection, org_id: &str, req: &CreateWebhookRequest) -> Result<Webhook> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let events = req.events.clone().unwrap_or_else(|| vec!["*".to_string()]);
+    let events_json = serde_json::to_string(&events)?;
+    conn.execute(
+        "INSERT INTO webhooks (id, org_id, name, target_url, secret, events, active, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+        rusqlite::params![id, org_id, req.name, req.target_url, req.secret, events_json, now],
+    )?;
+    get_webhook(conn, &id, org_id)?
+        .ok_or_else(|| anyhow::anyhow!("create_webhook: row not found after insert"))
+}
+
+/// Updates active/secret/events for a webhook. Returns None if not found in this org.
+pub fn update_webhook(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    req: &UpdateWebhookRequest,
+) -> Result<Option<Webhook>> {
+    let active_int: Option<i64> = req.active.map(|b| if b { 1 } else { 0 });
+    let events_json: Option<String> = match &req.events {
+        Some(evts) => Some(serde_json::to_string(evts)?),
+        None => None,
+    };
+    // secret: None means "don't change", Some(None) is not representable in this API;
+    // we treat Some(s) as update. The field is Option<String> in req.
+    let rows_affected = conn.execute(
+        "UPDATE webhooks
+         SET active = COALESCE(?3, active),
+             secret = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE secret END,
+             events = COALESCE(?5, events)
+         WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id, active_int, req.secret, events_json],
+    )?;
+    if rows_affected == 0 {
+        return Ok(None);
+    }
+    get_webhook(conn, id, org_id)
+}
+
+/// Deletes a webhook scoped to org_id. Returns true if a row was deleted.
+pub fn delete_webhook(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM webhooks WHERE id = ?1 AND org_id = ?2",
+        [id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+// ── Webhook delivery log queries ───────────────────────────────────────────────
+
+/// Inserts a delivery attempt record into webhook_deliveries.
+pub fn log_webhook_delivery(
+    conn: &Connection,
+    org_id: &str,
+    webhook_id: &str,
+    event_type: &str,
+    payload: &str,
+    status_code: Option<i64>,
+    success: bool,
+    error: Option<&str>,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+    let success_int: i64 = if success { 1 } else { 0 };
+    conn.execute(
+        "INSERT INTO webhook_deliveries
+             (id, webhook_id, org_id, event_type, payload, status_code, success, error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![id, webhook_id, org_id, event_type, payload, status_code, success_int, error],
+    )?;
+    Ok(())
+}
+
+/// Returns the last `limit` deliveries for a webhook, ordered newest-first.
+pub fn list_webhook_deliveries(
+    conn: &Connection,
+    org_id: &str,
+    webhook_id: &str,
+    limit: i64,
+) -> Result<Vec<WebhookDelivery>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, webhook_id, org_id, event_type, payload, status_code, success, error, delivered_at
+         FROM webhook_deliveries
+         WHERE org_id = ?1 AND webhook_id = ?2
+         ORDER BY delivered_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, webhook_id, limit], |row| {
+        let success_int: i64 = row.get(6)?;
+        Ok(WebhookDelivery {
+            id: row.get(0)?,
+            webhook_id: row.get(1)?,
+            org_id: row.get(2)?,
+            event_type: row.get(3)?,
+            payload: row.get(4)?,
+            status_code: row.get(5)?,
+            success: success_int != 0,
+            error: row.get(7)?,
+            delivered_at: row.get(8)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Fetches a single webhook delivery by ID, scoped to the org.
+pub fn get_webhook_delivery(
+    conn: &Connection,
+    org_id: &str,
+    delivery_id: &str,
+) -> Result<Option<WebhookDelivery>> {
+    conn.query_row(
+        "SELECT id, webhook_id, org_id, event_type, payload, status_code, success, error, delivered_at
+         FROM webhook_deliveries
+         WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, delivery_id],
+        |row| {
+            let success_int: i64 = row.get(6)?;
+            Ok(WebhookDelivery {
+                id: row.get(0)?,
+                webhook_id: row.get(1)?,
+                org_id: row.get(2)?,
+                event_type: row.get(3)?,
+                payload: row.get(4)?,
+                status_code: row.get(5)?,
+                success: success_int != 0,
+                error: row.get(7)?,
+                delivered_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Searches users by name or email (case-insensitive LIKE), org-scoped.
+pub fn search_users_by_query(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::UserSummary>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT id, email, name, role
+         FROM users
+         WHERE org_id = ?1
+           AND (LOWER(name) LIKE ?2 OR LOWER(email) LIKE ?2)
+         ORDER BY name ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+        Ok(crate::models::types::UserSummary {
+            id: row.get(0)?,
+            email: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            name: row.get(2)?,
+            role: row.get(3)?,
+        })
+    })?;
+    let mut users = Vec::new();
+    for row in rows {
+        users.push(row?);
+    }
+    Ok(users)
+}
+
+/// Searches projects by name (case-insensitive LIKE), org-scoped.
+pub fn search_projects_by_query(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::Project>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, description, created_at, parent_id
+         FROM projects
+         WHERE org_id = ?1
+           AND LOWER(name) LIKE ?2
+         ORDER BY name ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+        Ok(crate::models::types::Project {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at: row.get(4)?,
+            parent_id: row.get(5)?,
+            archived_at: None,
+        })
+    })?;
+    let mut projects = Vec::new();
+    for row in rows {
+        projects.push(row?);
+    }
+    Ok(projects)
+}
+
+/// Lists all non-revoked API keys for an org, joined with user info. Admin-only.
+pub fn list_all_org_keys(conn: &Connection, org_id: &str) -> Result<Vec<ApiKeyWithUser>> {
+    let mut stmt = conn.prepare(
+        "SELECT ak.id, ak.user_id, u.name, u.email, ak.label, ak.last_used, ak.created_at, ak.revoked, ak.expires_at,
+                COALESCE(ak.times_used, 0), ak.last_used_at
+         FROM api_keys ak
+         JOIN users u ON u.id = ak.user_id
+         WHERE ak.org_id = ?1 AND ak.revoked = 0
+         ORDER BY ak.created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(ApiKeyWithUser {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            user_name: row.get(2)?,
+            user_email: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            label: row.get(4)?,
+            last_used: row.get(5)?,
+            created_at: row.get(6)?,
+            revoked: row.get::<_, i64>(7)? != 0,
+            expires_at: row.get(8)?,
+            times_used: row.get::<_, i64>(9).unwrap_or(0),
+            last_used_at: row.get(10)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Revokes a specific API key in the org. Returns true if a row was updated.
+pub fn revoke_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
+        [key_id, org_id],
+    )?;
+    Ok(affected > 0)
+}
+
+// ── Per-project event overrides ───────────────────────────────────────────────
+
+/// Returns the per-project agent event overrides for a project.
+/// Returns `ProjectEventOverrides::default()` (all `None`) when the column is NULL,
+/// which means "inherit from org settings".
+pub fn get_project_event_overrides(
+    conn: &Connection,
+    org_id: &str,
+    project_id: &str,
+) -> Result<ProjectEventOverrides> {
+    let result: Option<String> = conn
+        .query_row(
+            "SELECT event_overrides FROM projects WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![project_id, org_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    match result {
+        None => Ok(ProjectEventOverrides::default()),
+        Some(json_str) => {
+            let overrides: ProjectEventOverrides = serde_json::from_str(&json_str)
+                .unwrap_or_default();
+            Ok(overrides)
+        }
+    }
+}
+
+/// Persists per-project agent event overrides. Serializes to JSON and writes to
+/// the `event_overrides` column.  Returns the saved overrides or an error if the
+/// project does not exist for `org_id`.
+pub fn update_project_event_overrides(
+    conn: &Connection,
+    org_id: &str,
+    project_id: &str,
+    overrides: ProjectEventOverrides,
+) -> Result<ProjectEventOverrides> {
+    let json = serde_json::to_string(&overrides)?;
+    let affected = conn.execute(
+        "UPDATE projects SET event_overrides = ?1 WHERE id = ?2 AND org_id = ?3",
+        rusqlite::params![json, project_id, org_id],
+    )?;
+    if affected == 0 {
+        return Err(anyhow::anyhow!("project not found"));
+    }
+    Ok(overrides)
 }
 
 #[cfg(test)]
@@ -2634,15 +4035,15 @@ mod tests {
         legacy_store(&conn, &org.id, &user.id, "proj-a", "cursor", "mem 3", &[]);
 
         // filter by tool
-        let cursor_mems = list_memories(&conn, &org.id, None, Some("cursor"), None, None, None, 10, 0).unwrap();
+        let cursor_mems = list_memories(&conn, &org.id, None, Some("cursor"), None, None, None, None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(cursor_mems.len(), 2);
 
         // filter by project
-        let proj_a = list_memories(&conn, &org.id, None, None, Some("proj-a"), None, None, 10, 0).unwrap();
+        let proj_a = list_memories(&conn, &org.id, None, None, Some("proj-a"), None, None, None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(proj_a.len(), 2);
 
         // filter by both
-        let filtered = list_memories(&conn, &org.id, None, Some("cursor"), Some("proj-a"), None, None, 10, 0).unwrap();
+        let filtered = list_memories(&conn, &org.id, None, Some("cursor"), Some("proj-a"), None, None, None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(filtered.len(), 1);
     }
 
@@ -2656,7 +4057,7 @@ mod tests {
         assert!(!deleted, "delete with wrong org must return false");
 
         // original should still exist
-        let still_there = list_memories(&conn, &org.id, None, None, None, None, None, 10, 0).unwrap();
+        let still_there = list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(still_there.len(), 1);
     }
 
@@ -2719,7 +4120,7 @@ mod tests {
         log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
         log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, 50, 0).unwrap();
+        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
     }
 
@@ -2742,10 +4143,10 @@ mod tests {
         ).unwrap();
         log_audit(&conn, &org2_id, &user2_id, "store", "memory", None, serde_json::json!({})).unwrap();
 
-        let org1_entries = list_audit(&conn, &org1.id, None, None, None, None, None, 50, 0).unwrap();
+        let org1_entries = list_audit(&conn, &org1.id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(org1_entries.len(), 1, "org1 must not see org2 audit entries");
 
-        let org2_entries = list_audit(&conn, &org2_id, None, None, None, None, None, 50, 0).unwrap();
+        let org2_entries = list_audit(&conn, &org2_id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(org2_entries.len(), 1, "org2 must not see org1 audit entries");
     }
 
@@ -2758,12 +4159,26 @@ mod tests {
         log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
         log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
 
-        let store_entries = list_audit(&conn, &org.id, None, Some("store"), None, None, None, 50, 0).unwrap();
+        let store_entries = list_audit(&conn, &org.id, None, Some("store"), None, None, None, None, 50, 0).unwrap();
         assert_eq!(store_entries.len(), 2);
         assert!(store_entries.iter().all(|e| e.action == "store"));
 
-        let search_entries = list_audit(&conn, &org.id, None, Some("search"), None, None, None, 50, 0).unwrap();
+        let search_entries = list_audit(&conn, &org.id, None, Some("search"), None, None, None, None, 50, 0).unwrap();
         assert_eq!(search_entries.len(), 1);
+    }
+
+    #[test]
+    fn list_audit_full_text_search_filters_by_action_substring() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        log_audit(&conn, &org.id, &user.id, "memory.created", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(&conn, &org.id, &user.id, "user.updated", "user", None, serde_json::json!({})).unwrap();
+        log_audit(&conn, &org.id, &user.id, "project.archived", "project", None, serde_json::json!({})).unwrap();
+
+        let results = list_audit(&conn, &org.id, None, None, None, None, None, Some("memory"), 50, 0).unwrap();
+        assert_eq!(results.len(), 1, "search for 'memory' must return exactly 1 result");
+        assert_eq!(results[0].action, "memory.created");
     }
 
     // ── T-04 tests ────────────────────────────────────────────────────────────
@@ -2779,7 +4194,7 @@ mod tests {
 
         log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, 10, 0).unwrap();
+        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
         assert_eq!(entries.len(), 1);
 
         // The SELECT now includes previous_hash and current_hash columns.
@@ -3102,7 +4517,7 @@ mod tests {
         upsert_memory(&conn, &org.id, &user.id, &req_bugfix).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_decision).unwrap();
 
-        let bugfix_mems = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), None, 10, 0).unwrap();
+        let bugfix_mems = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), None, None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(bugfix_mems.len(), 1);
         assert_eq!(bugfix_mems[0].memory_type.as_deref(), Some("bugfix"));
     }
@@ -3138,12 +4553,43 @@ mod tests {
         upsert_memory(&conn, &org.id, &user.id, &req_personal).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_project).unwrap();
 
-        let personal_mems = list_memories(&conn, &org.id, None, None, None, None, Some("personal"), 10, 0).unwrap();
+        let personal_mems = list_memories(&conn, &org.id, None, None, None, None, Some("personal"), None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(personal_mems.len(), 1);
         assert_eq!(personal_mems[0].scope, "personal");
 
-        let combined = list_memories(&conn, &org.id, None, None, None, None, Some("project"), 10, 0).unwrap();
+        let combined = list_memories(&conn, &org.id, None, None, None, None, Some("project"), None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(combined.len(), 1);
+    }
+
+    #[test]
+    fn list_memories_filter_by_session_id() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Create a session to use as the session_id reference
+        let session_id = "test-session-abc";
+        conn.execute(
+            "INSERT INTO sessions (id, org_id, project, directory, started_at)
+             VALUES (?1, ?2, 'proj', '/tmp', datetime('now'))",
+            rusqlite::params![session_id, org.id],
+        ).unwrap();
+
+        let req_with_session = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "session memory".into(),
+            tags: None, title: None, memory_type: None, scope: None, topic_key: None,
+            session_id: Some(session_id.into()),
+        };
+        let req_without_session = crate::models::types::StoreMemoryRequest {
+            project: Some("proj".into()), tool: "claude".into(), content: "other memory".into(),
+            tags: None, title: None, memory_type: None, scope: None, topic_key: None,
+            session_id: None,
+        };
+        upsert_memory(&conn, &org.id, &user.id, &req_with_session).unwrap();
+        upsert_memory(&conn, &org.id, &user.id, &req_without_session).unwrap();
+
+        let session_mems = list_memories(&conn, &org.id, None, None, None, None, None, Some(session_id), 50, 0, false, None, None, None).unwrap();
+        assert_eq!(session_mems.len(), 1, "only memories matching session_id should be returned");
+        assert_eq!(session_mems[0].content, "session memory");
     }
 
     #[test]
@@ -3170,7 +4616,7 @@ mod tests {
             scope: Some("project".into()), topic_key: None, session_id: None,
         }).unwrap();
 
-        let results = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), Some("project"), 10, 0).unwrap();
+        let results = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), Some("project"), None, 10, 0, false, None, None, None).unwrap();
         assert_eq!(results.len(), 1, "combined filter must return only bugfix+project memories");
     }
 
@@ -3185,7 +4631,7 @@ mod tests {
             scope: None, topic_key: None, session_id: None,
         }).unwrap();
 
-        let results = list_memories(&conn, &org.id, None, None, None, Some("config"), None, 10, 0).unwrap();
+        let results = list_memories(&conn, &org.id, None, None, None, Some("config"), None, None, 10, 0, false, None, None, None).unwrap();
         assert!(results.is_empty(), "unknown type filter must return empty list");
     }
 
@@ -3437,7 +4883,7 @@ mod tests {
 
         // Verify chain integrity: at least one row has a non-null current_hash,
         // and the chain links correctly (the second row's previous_hash = first row's current_hash).
-        let entries = list_audit(&guard, &org_id, None, None, None, None, None, 50, 0).unwrap();
+        let entries = list_audit(&guard, &org_id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().all(|e| e.current_hash.is_some()), "both rows must have current_hash");
 
@@ -3459,7 +4905,7 @@ mod tests {
 
         log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, 10, 0).unwrap();
+        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0].current_hash.is_some(),
@@ -3815,5 +5261,1515 @@ mod tests {
 
         let context = get_chunk_context(&conn, project_id, "src/auth.rs", "nonexistent_fn", 1).unwrap();
         assert!(context.is_empty(), "must return empty vec for unknown symbol");
+    }
+
+    // ── get_memory_facets tests ───────────────────────────────────────────────
+
+    #[test]
+    fn get_memory_facets_empty_org_returns_empty_vecs() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let facets = get_memory_facets(&conn, &org.id).unwrap();
+        assert!(facets.types.is_empty(), "no memories => no type facets");
+        assert!(facets.projects.is_empty(), "no memories => no project facets");
+        // scope may be empty too (no rows)
+        assert!(facets.scopes.is_empty(), "no memories => no scope facets");
+    }
+
+    #[test]
+    fn get_memory_facets_counts_types_correctly() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Insert 2 bugfix + 1 decision
+        for i in 0..2 {
+            upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+                project: Some("p".into()),
+                tool: "claude".into(),
+                content: format!("bugfix content {i}"),
+                tags: None,
+                title: None,
+                memory_type: Some("bugfix".into()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            }).unwrap();
+        }
+        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: Some("p".into()),
+            tool: "claude".into(),
+            content: "decision content".into(),
+            tags: None,
+            title: None,
+            memory_type: Some("decision".into()),
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        }).unwrap();
+
+        let facets = get_memory_facets(&conn, &org.id).unwrap();
+
+        let bugfix = facets.types.iter().find(|f| f.value == "bugfix");
+        let decision = facets.types.iter().find(|f| f.value == "decision");
+
+        assert!(bugfix.is_some(), "bugfix facet must be present");
+        assert_eq!(bugfix.unwrap().count, 2);
+        assert!(decision.is_some(), "decision facet must be present");
+        assert_eq!(decision.unwrap().count, 1);
+    }
+
+    #[test]
+    fn get_memory_facets_counts_projects_and_scopes() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: Some("proj-a".into()),
+            tool: "claude".into(),
+            content: "content a".into(),
+            tags: None, title: None,
+            memory_type: None,
+            scope: Some("personal".into()),
+            topic_key: None, session_id: None,
+        }).unwrap();
+        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: Some("proj-b".into()),
+            tool: "claude".into(),
+            content: "content b".into(),
+            tags: None, title: None,
+            memory_type: None,
+            scope: Some("project".into()),
+            topic_key: None, session_id: None,
+        }).unwrap();
+
+        let facets = get_memory_facets(&conn, &org.id).unwrap();
+
+        // Projects
+        assert_eq!(facets.projects.len(), 2);
+        let names: Vec<&str> = facets.projects.iter().map(|f| f.value.as_str()).collect();
+        assert!(names.contains(&"proj-a"));
+        assert!(names.contains(&"proj-b"));
+
+        // Scopes
+        let personal = facets.scopes.iter().find(|f| f.value == "personal");
+        let project  = facets.scopes.iter().find(|f| f.value == "project");
+        assert!(personal.is_some(), "personal scope must appear");
+        assert!(project.is_some(), "project scope must appear");
+    }
+
+    #[test]
+    fn get_memory_facets_scoped_to_org() {
+        let conn = setup();
+        let (org_a, user_a, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Second org inserted directly
+        let org_b_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'OrgB', 'orgb')",
+            [&org_b_id],
+        ).unwrap();
+        let user_b_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES (?1, ?2, 'b@b.com', 'B', 'admin', 'active')",
+            rusqlite::params![user_b_id, org_b_id],
+        ).unwrap();
+
+        upsert_memory(&conn, &org_a.id, &user_a.id, &StoreMemoryRequest {
+            project: Some("proj-a".into()),
+            tool: "claude".into(), content: "a content".into(),
+            tags: None, title: None, memory_type: Some("bugfix".into()),
+            scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+        upsert_memory(&conn, &org_b_id, &user_b_id, &StoreMemoryRequest {
+            project: Some("proj-b".into()),
+            tool: "claude".into(), content: "b content".into(),
+            tags: None, title: None, memory_type: Some("decision".into()),
+            scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+
+        // Facets for org_a must not see org_b's memories
+        let facets_a = get_memory_facets(&conn, &org_a.id).unwrap();
+        assert_eq!(facets_a.projects.len(), 1);
+        assert_eq!(facets_a.projects[0].value, "proj-a");
+        assert!(facets_a.types.iter().all(|f| f.value != "decision"),
+            "org_a must not see org_b type 'decision'");
+    }
+
+    // ── bulk_delete_memories tests ────────────────────────────────────────────
+
+    #[test]
+    fn bulk_delete_admin_deletes_any_org_memory() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let m1 = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content1", &[]);
+        let m2 = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content2", &[]);
+        let m3 = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content3", &[]);
+
+        // Admin deletes m1 and m2
+        let ids = vec![m1.id.clone(), m2.id.clone()];
+        let deleted = bulk_delete_memories(&conn, &org.id, &ids, true, &user.id).unwrap();
+        assert_eq!(deleted, 2, "admin should delete exactly 2 memories");
+
+        // m3 must still exist
+        let owner = get_memory_owner(&conn, &org.id, &m3.id).unwrap();
+        assert!(owner.is_some(), "m3 must still be present");
+
+        // m1 and m2 must be gone
+        assert!(get_memory_owner(&conn, &org.id, &m1.id).unwrap().is_none());
+        assert!(get_memory_owner(&conn, &org.id, &m2.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn bulk_delete_non_admin_only_deletes_own_memories() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Create a second user (member)
+        let member_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, 'member@acme.com', 'Member', 'member', 'active', datetime('now'))",
+            rusqlite::params![member_id, org.id],
+        ).unwrap();
+
+        let admin_mem = legacy_store(&conn, &org.id, &admin.id, "proj", "claude", "admin content", &[]);
+        let member_mem = legacy_store(&conn, &org.id, &member_id, "proj", "claude", "member content", &[]);
+
+        // Member tries to bulk-delete both (is_admin = false)
+        let ids = vec![admin_mem.id.clone(), member_mem.id.clone()];
+        let deleted = bulk_delete_memories(&conn, &org.id, &ids, false, &member_id).unwrap();
+
+        // Only the member's own memory should be deleted
+        assert_eq!(deleted, 1, "non-admin should only delete own memory");
+        assert!(get_memory_owner(&conn, &org.id, &admin_mem.id).unwrap().is_some(),
+            "admin memory must survive");
+        assert!(get_memory_owner(&conn, &org.id, &member_mem.id).unwrap().is_none(),
+            "member's own memory must be deleted");
+    }
+
+    #[test]
+    fn bulk_delete_empty_ids_returns_zero() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let deleted = bulk_delete_memories(&conn, &org.id, &[], true, "anyone").unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn bulk_delete_cross_org_isolation() {
+        // Use two separate in-memory databases to avoid bootstrap's single-org
+        // constraint on the same connection.
+        let conn_a = setup();
+        let (org_a, user_a, _) = bootstrap(&conn_a, "OrgA", "orga", "admin@a.com", "AdminA").unwrap();
+
+        let conn_b = setup();
+        let (org_b, user_b, _) = bootstrap(&conn_b, "OrgB", "orgb", "admin@b.com", "AdminB").unwrap();
+
+        // Store a memory in org A's DB
+        let mem_a = legacy_store(&conn_a, &org_a.id, &user_a.id, "proj", "claude", "a content", &[]);
+
+        // Org B (admin) tries to delete org A's memory ID via org B's connection.
+        // The WHERE clause filters by org_b.id so nothing in org_a is touched.
+        let deleted = bulk_delete_memories(&conn_b, &org_b.id, &[mem_a.id.clone()], true, &user_b.id).unwrap();
+        assert_eq!(deleted, 0, "cross-org deletion must not succeed");
+
+        // Org A's memory must still exist in org A's DB
+        assert!(get_memory_owner(&conn_a, &org_a.id, &mem_a.id).unwrap().is_some(),
+            "org A memory must be untouched");
+    }
+
+    #[test]
+    fn bulk_delete_nonexistent_ids_returns_zero() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let _ = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "real", &[]);
+
+        let deleted = bulk_delete_memories(
+            &conn, &org.id,
+            &["ghost-1".to_string(), "ghost-2".to_string()],
+            true, &user.id,
+        ).unwrap();
+        assert_eq!(deleted, 0, "deleting nonexistent IDs should return 0");
+    }
+
+    // ── bulk_tag_memories tests ───────────────────────────────────────────────
+
+    #[test]
+    fn bulk_tag_add_to_two_memories() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let m1 = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content1", &[]);
+        let m2 = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content2", &[]);
+
+        let ids = vec![m1.id.clone(), m2.id.clone()];
+        let updated = bulk_tag_memories(&conn, &org.id, &ids, "add", "important").unwrap();
+        assert_eq!(updated, 2, "should update both memories");
+
+        let mems = get_memories_by_ids(&conn, &org.id, &ids).unwrap();
+        assert!(mems.iter().all(|m| m.tags.contains(&"important".to_string())),
+            "both memories must have the 'important' tag");
+    }
+
+    #[test]
+    fn bulk_tag_remove_from_memory() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let m = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content",
+            &["keep".to_string(), "drop".to_string()]);
+
+        let updated = bulk_tag_memories(&conn, &org.id, &[m.id.clone()], "remove", "drop").unwrap();
+        assert_eq!(updated, 1);
+
+        let remaining = get_memories_by_ids(&conn, &org.id, &[m.id]).unwrap();
+        let tags = &remaining[0].tags;
+        assert!(tags.contains(&"keep".to_string()), "'keep' tag must survive");
+        assert!(!tags.contains(&"drop".to_string()), "'drop' tag must be removed");
+    }
+
+    #[test]
+    fn bulk_tag_wrong_org_memories_are_skipped() {
+        let conn_a = setup();
+        let (org_a, user_a, _) = bootstrap(&conn_a, "OrgA", "orga", "a@a.com", "AdminA").unwrap();
+
+        let conn_b = setup();
+        let (org_b, _, _) = bootstrap(&conn_b, "OrgB", "orgb", "b@b.com", "AdminB").unwrap();
+
+        let mem_a = legacy_store(&conn_a, &org_a.id, &user_a.id, "proj", "claude", "content", &[]);
+
+        // Attempt to tag org_a's memory using org_b's org_id on conn_b
+        let updated = bulk_tag_memories(&conn_b, &org_b.id, &[mem_a.id.clone()], "add", "hacked").unwrap();
+        assert_eq!(updated, 0, "cross-org tag must not succeed");
+
+        // Original memory in org_a must be untouched
+        let orig = get_memories_by_ids(&conn_a, &org_a.id, &[mem_a.id]).unwrap();
+        assert!(orig[0].tags.is_empty(), "org_a memory tags must be unchanged");
+    }
+
+    // ── webhook query tests ───────────────────────────────────────────────────
+
+    fn make_create_webhook_req(name: &str, url: &str) -> CreateWebhookRequest {
+        CreateWebhookRequest {
+            name: name.to_string(),
+            target_url: url.to_string(),
+            secret: None,
+            events: None,
+        }
+    }
+
+    #[test]
+    fn list_webhooks_returns_empty_for_new_org() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let hooks = list_webhooks(&conn, &org.id).unwrap();
+        assert!(hooks.is_empty(), "new org must have no webhooks");
+    }
+
+    #[test]
+    fn create_webhook_and_list_roundtrip() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = make_create_webhook_req("my-hook", "https://example.com/hook");
+        let created = create_webhook(&conn, &org.id, &req).unwrap();
+
+        assert_eq!(created.name, "my-hook");
+        assert_eq!(created.target_url, "https://example.com/hook");
+        assert!(created.active, "new webhook must be active by default");
+        assert_eq!(created.events, vec!["*"], "default events must be [\"*\"]");
+        assert!(created.secret.is_none());
+
+        let hooks = list_webhooks(&conn, &org.id).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].id, created.id);
+    }
+
+    #[test]
+    fn create_webhook_with_custom_events() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = CreateWebhookRequest {
+            name: "pr-hook".to_string(),
+            target_url: "https://example.com/pr".to_string(),
+            secret: Some("s3cr3t".to_string()),
+            events: Some(vec!["pull_request".to_string(), "push".to_string()]),
+        };
+        let created = create_webhook(&conn, &org.id, &req).unwrap();
+
+        assert_eq!(created.events, vec!["pull_request", "push"]);
+        assert_eq!(created.secret.as_deref(), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn update_webhook_toggles_active() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = make_create_webhook_req("hook", "https://example.com");
+        let created = create_webhook(&conn, &org.id, &req).unwrap();
+
+        let update = UpdateWebhookRequest { active: Some(false), ..Default::default() };
+        let updated = update_webhook(&conn, &org.id, &created.id, &update).unwrap().unwrap();
+        assert!(!updated.active, "webhook must be inactive after update");
+    }
+
+    #[test]
+    fn update_webhook_returns_none_for_missing_id() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let update = UpdateWebhookRequest { active: Some(false), ..Default::default() };
+        let result = update_webhook(&conn, &org.id, "nonexistent", &update).unwrap();
+        assert!(result.is_none(), "must return None for nonexistent webhook");
+    }
+
+    #[test]
+    fn delete_webhook_removes_row() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = make_create_webhook_req("hook", "https://example.com");
+        let created = create_webhook(&conn, &org.id, &req).unwrap();
+
+        let deleted = delete_webhook(&conn, &org.id, &created.id).unwrap();
+        assert!(deleted, "delete must return true for existing webhook");
+
+        let hooks = list_webhooks(&conn, &org.id).unwrap();
+        assert!(hooks.is_empty(), "webhook must be gone after delete");
+    }
+
+    #[test]
+    fn delete_webhook_cross_org_returns_false() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = make_create_webhook_req("hook", "https://example.com");
+        let created = create_webhook(&conn, &org.id, &req).unwrap();
+
+        // Another org tries to delete org1's webhook
+        let deleted = delete_webhook(&conn, "other-org", &created.id).unwrap();
+        assert!(!deleted, "cross-org deletion must not succeed");
+
+        // Original must still exist
+        let hook = get_webhook(&conn, &created.id, &org.id).unwrap();
+        assert!(hook.is_some(), "webhook must survive cross-org delete attempt");
+    }
+
+    #[test]
+    fn list_webhooks_org_isolation() {
+        let conn = setup();
+        let (org_a, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Create a second org directly
+        let org_b_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Beta', 'beta')",
+            [&org_b_id],
+        ).unwrap();
+
+        let req = make_create_webhook_req("hook", "https://example.com");
+        create_webhook(&conn, &org_a.id, &req).unwrap();
+
+        let hooks_b = list_webhooks(&conn, &org_b_id).unwrap();
+        assert!(hooks_b.is_empty(), "org_b must not see org_a webhooks");
+    }
+
+    #[test]
+    fn list_all_org_keys_returns_active_keys() {
+        let conn = setup();
+        let (org, _, _raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        // The bootstrap creates one active key
+        let keys = list_all_org_keys(&conn, &org.id).unwrap();
+        assert_eq!(keys.len(), 1, "bootstrap creates exactly one active key");
+        assert!(!keys[0].revoked, "key must not be revoked");
+        assert_eq!(keys[0].user_email, "admin@acme.com");
+    }
+
+    #[test]
+    fn revoke_key_admin_marks_key_revoked() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let keys_before = list_all_org_keys(&conn, &org.id).unwrap();
+        assert_eq!(keys_before.len(), 1);
+        let key_id = keys_before[0].id.clone();
+
+        let revoked = revoke_key_admin(&conn, &org.id, &key_id).unwrap();
+        assert!(revoked, "must return true for existing key");
+
+        let keys_after = list_all_org_keys(&conn, &org.id).unwrap();
+        assert!(keys_after.is_empty(), "revoked key must not appear in list");
+    }
+
+    // ── get_memory_trends tests ───────────────────────────────────────────────
+
+    #[test]
+    fn trends_empty_org_returns_zeros() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let trends = get_memory_trends(&conn, &org.id, 30).unwrap();
+        assert_eq!(trends.total, 0);
+        assert_eq!(trends.this_week, 0);
+        assert_eq!(trends.this_month, 0);
+        assert!(trends.daily_counts.is_empty());
+        assert!(trends.by_type.is_empty());
+        assert!(trends.by_project.is_empty());
+    }
+
+    #[test]
+    fn trends_single_memory_appears_in_all_buckets() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let req = crate::models::types::StoreMemoryRequest {
+            project: Some("myproject".to_string()),
+            tool: "claude".to_string(),
+            content: "test content".to_string(),
+            tags: None,
+            title: Some("Test".to_string()),
+            memory_type: Some("decision".to_string()),
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+        upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+
+        let trends = get_memory_trends(&conn, &org.id, 30).unwrap();
+        assert_eq!(trends.total, 1);
+        assert_eq!(trends.this_week, 1);
+        assert_eq!(trends.this_month, 1);
+        assert_eq!(trends.daily_counts.len(), 1);
+        assert_eq!(trends.daily_counts[0].count, 1);
+        assert_eq!(trends.by_type.len(), 1);
+        assert_eq!(trends.by_type[0].name, "decision");
+        assert_eq!(trends.by_project.len(), 1);
+        assert_eq!(trends.by_project[0].name, "myproject");
+    }
+
+    #[test]
+    fn trends_multiple_memories_aggregated_correctly() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        for (project, mem_type, content) in &[
+            ("proj-a", "decision", "content a1"),
+            ("proj-a", "bugfix", "content a2"),
+            ("proj-b", "decision", "content b1"),
+        ] {
+            let req = crate::models::types::StoreMemoryRequest {
+                project: Some(project.to_string()),
+                tool: "claude".to_string(),
+                content: content.to_string(),
+                tags: None,
+                title: None,
+                memory_type: Some(mem_type.to_string()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            };
+            upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+        }
+
+        let trends = get_memory_trends(&conn, &org.id, 30).unwrap();
+        assert_eq!(trends.total, 3);
+        assert_eq!(trends.this_week, 3);
+        assert_eq!(trends.this_month, 3);
+
+        // by_type: decision=2, bugfix=1
+        let decision_count = trends.by_type.iter().find(|x| x.name == "decision").map(|x| x.count);
+        assert_eq!(decision_count, Some(2));
+        let bugfix_count = trends.by_type.iter().find(|x| x.name == "bugfix").map(|x| x.count);
+        assert_eq!(bugfix_count, Some(1));
+
+        // by_project: proj-a=2, proj-b=1
+        let proj_a_count = trends.by_project.iter().find(|x| x.name == "proj-a").map(|x| x.count);
+        assert_eq!(proj_a_count, Some(2));
+        let proj_b_count = trends.by_project.iter().find(|x| x.name == "proj-b").map(|x| x.count);
+        assert_eq!(proj_b_count, Some(1));
+    }
+
+    // ── project event override tests ──────────────────────────────────────────
+
+    fn setup_project(conn: &Connection) -> (String, String) {
+        let (org, _, _) = bootstrap(conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project = create_project(conn, &org.id, "my-project", None, None).unwrap();
+        (org.id, project.id)
+    }
+
+    #[test]
+    fn get_project_event_overrides_returns_default_when_null() {
+        let conn = setup();
+        let (org_id, project_id) = setup_project(&conn);
+        let overrides = get_project_event_overrides(&conn, &org_id, &project_id).unwrap();
+        // All fields must be None (inherit)
+        assert!(overrides.resolve_issues.is_none());
+        assert!(overrides.review_prs.is_none());
+        assert!(overrides.respond_comments.is_none());
+        assert!(overrides.auto_index.is_none());
+        assert!(overrides.scanner.is_none());
+    }
+
+    #[test]
+    fn update_project_event_overrides_persists_values() {
+        let conn = setup();
+        let (org_id, project_id) = setup_project(&conn);
+
+        let new_overrides = ProjectEventOverrides {
+            resolve_issues: Some(false),
+            review_prs: Some(true),
+            respond_comments: None,
+            auto_index: Some(false),
+            scanner: None,
+        };
+        let saved = update_project_event_overrides(&conn, &org_id, &project_id, new_overrides).unwrap();
+        assert_eq!(saved.resolve_issues, Some(false));
+        assert_eq!(saved.review_prs, Some(true));
+        assert!(saved.respond_comments.is_none());
+        assert_eq!(saved.auto_index, Some(false));
+        assert!(saved.scanner.is_none());
+
+        // Read back
+        let read = get_project_event_overrides(&conn, &org_id, &project_id).unwrap();
+        assert_eq!(read.resolve_issues, Some(false));
+        assert_eq!(read.review_prs, Some(true));
+    }
+
+    #[test]
+    fn update_project_event_overrides_cross_org_returns_err() {
+        let conn = setup();
+        let (_, project_id) = setup_project(&conn);
+        // Use a different org_id — should fail (no rows affected)
+        let result = update_project_event_overrides(
+            &conn,
+            "other-org",
+            &project_id,
+            ProjectEventOverrides::default(),
+        );
+        // update returns Err when project not found for that org
+        assert!(result.is_err(), "cross-org update must return error");
+    }
+
+    #[test]
+    fn update_then_clear_event_overrides() {
+        let conn = setup();
+        let (org_id, project_id) = setup_project(&conn);
+
+        // Set some overrides
+        update_project_event_overrides(&conn, &org_id, &project_id, ProjectEventOverrides {
+            resolve_issues: Some(true),
+            ..Default::default()
+        }).unwrap();
+
+        // Clear by saving empty overrides (all None = inherit)
+        let cleared = update_project_event_overrides(&conn, &org_id, &project_id, ProjectEventOverrides::default()).unwrap();
+        // With all-None, the JSON stored is "{}", which deserializes back as all-None
+        assert!(cleared.resolve_issues.is_none());
+    }
+
+    // ── Duplicate detection tests ─────────────────────────────────────────────
+
+    #[test]
+    fn get_duplicate_groups_returns_empty_when_no_duplicates() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        // Store two distinct memories
+        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "unique content one", &[]);
+        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "unique content two", &[]);
+
+        let groups = get_duplicate_groups(&conn, &org.id).unwrap();
+        assert!(groups.is_empty(), "expected no duplicate groups when all memories are distinct");
+    }
+
+    #[test]
+    fn get_duplicate_groups_groups_identical_memories() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Insert two memories with identical content (but different IDs — no topic_key so always INSERT)
+        let content = "use snake_case for all identifiers";
+        legacy_store(&conn, &org.id, &user.id, "proj", "claude", content, &[]);
+        legacy_store(&conn, &org.id, &user.id, "proj", "cursor", content, &[]);
+
+        let groups = get_duplicate_groups(&conn, &org.id).unwrap();
+        assert_eq!(groups.len(), 1, "expected exactly one duplicate group");
+        assert_eq!(groups[0].len(), 2, "group must contain both memories");
+
+        // All memories in the group share the same normalized_hash
+        let hashes: Vec<_> = groups[0].iter().map(|m| m.normalized_hash.as_deref().unwrap_or("")).collect();
+        assert_eq!(hashes[0], hashes[1], "both entries must have the same hash");
+    }
+
+    // ── v17 archive/restore unit tests ────────────────────────────────────────
+
+    #[test]
+    fn archive_memory_sets_archived_at() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let mem = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: None,
+            tool: "claude".to_string(),
+            content: "archive me".to_string(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        }).unwrap();
+
+        assert!(mem.archived_at.is_none(), "new memory must not be archived");
+
+        let updated = archive_memory(&conn, &org.id, &mem.id).unwrap();
+        assert!(updated, "archive_memory must return true on first archive");
+
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM memories WHERE id = ?1",
+            [&mem.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_some(), "archived_at must be set after archive_memory");
+    }
+
+    #[test]
+    fn restore_memory_clears_archived_at() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let mem = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: None,
+            tool: "claude".to_string(),
+            content: "archive then restore".to_string(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        }).unwrap();
+
+        archive_memory(&conn, &org.id, &mem.id).unwrap();
+
+        let restored = restore_memory(&conn, &org.id, &mem.id).unwrap();
+        assert!(restored, "restore_memory must return true when memory was archived");
+
+        let val: Option<String> = conn.query_row(
+            "SELECT archived_at FROM memories WHERE id = ?1",
+            [&mem.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "archived_at must be NULL after restore_memory");
+    }
+
+    #[test]
+    fn list_memories_excludes_archived_by_default() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let mem1 = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: None,
+            tool: "claude".to_string(),
+            content: "active memory".to_string(),
+            tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+        let mem2 = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            project: None,
+            tool: "claude".to_string(),
+            content: "archived memory".to_string(),
+            tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+        }).unwrap();
+
+        archive_memory(&conn, &org.id, &mem2.id).unwrap();
+
+        // Default (include_archived=false) must exclude archived
+        let active = list_memories(&conn, &org.id, None, None, None, None, None, None, 50, 0, false, None, None, None).unwrap();
+        let ids: Vec<_> = active.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&mem1.id.as_str()), "active memory must appear");
+        assert!(!ids.contains(&mem2.id.as_str()), "archived memory must be excluded by default");
+
+        // include_archived=true must include both
+        let all = list_memories(&conn, &org.id, None, None, None, None, None, None, 50, 0, true, None, None, None).unwrap();
+        let all_ids: Vec<_> = all.iter().map(|m| m.id.as_str()).collect();
+        assert!(all_ids.contains(&mem1.id.as_str()), "active memory must appear when include_archived=true");
+        assert!(all_ids.contains(&mem2.id.as_str()), "archived memory must appear when include_archived=true");
+    }
+}
+
+// ── Duplicate detection ───────────────────────────────────────────────────────
+
+/// Fetches all memories for an org that share the given `normalized_hash`.
+fn list_memories_by_hash(conn: &Connection, org_id: &str, hash: &str) -> Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
+                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned
+         FROM memories
+         WHERE org_id = ?1 AND normalized_hash = ?2
+         ORDER BY created_at DESC",
+    )?;
+
+    let rows = stmt.query_map(rusqlite::params![org_id, hash], |row| {
+        let tags_str: String = row.get(6)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            tags_str,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<String>>(14)?,
+            row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, i64>(17).unwrap_or(0),
+        ))
+    })?;
+
+    let mut memories = Vec::new();
+    for row in rows {
+        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
+             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+             archived_at, pinned_i64) = row?;
+        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        memories.push(Memory {
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags,
+            created_at,
+            title,
+            memory_type,
+            scope: scope.unwrap_or_else(|| "project".to_string()),
+            topic_key,
+            session_id,
+            revision_count: revision_count.unwrap_or(1),
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned: pinned_i64 != 0,
+            collection_id: None,
+            admin_note: None,
+            delete_after: None,
+        });
+    }
+    Ok(memories)
+}
+
+/// Returns groups of memories that share the same `normalized_hash` within an org.
+/// Each inner `Vec<Memory>` contains 2+ identical memories, ordered by `created_at DESC`
+/// (newest first). Groups with only one member are excluded.
+pub fn get_duplicate_groups(conn: &Connection, org_id: &str) -> Result<Vec<Vec<Memory>>> {
+    let hashes: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT normalized_hash FROM memories
+             WHERE org_id = ?1 AND normalized_hash IS NOT NULL
+             GROUP BY normalized_hash HAVING COUNT(*) > 1",
+        )?;
+        let result = stmt.query_map([org_id], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        result
+    };
+
+    let mut groups = Vec::new();
+    for hash in hashes {
+        let memories = list_memories_by_hash(conn, org_id, &hash)?;
+        if memories.len() > 1 {
+            groups.push(memories);
+        }
+    }
+    Ok(groups)
+}
+
+/// Merges two memories: appends `merge_id`'s content to `keep_id`'s content (separated by
+/// `\n\n---\n\n`), then deletes `merge_id`. Both must belong to the given org.
+/// Returns the updated `keep_id` memory on success, or an error if either memory is not found.
+pub fn merge_memories(conn: &Connection, org_id: &str, keep_id: &str, merge_id: &str) -> Result<Memory> {
+    // Validate both memories exist in the org
+    let keep_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM memories WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![keep_id, org_id],
+        |r| r.get(0),
+    )?;
+    if !keep_exists {
+        anyhow::bail!("keep memory not found");
+    }
+    let merge_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM memories WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![merge_id, org_id],
+        |r| r.get(0),
+    )?;
+    if !merge_exists {
+        anyhow::bail!("merge memory not found");
+    }
+
+    // Append merge_id content to keep_id content
+    conn.execute(
+        "UPDATE memories
+         SET content = (SELECT content FROM memories WHERE id = ?1 AND org_id = ?3)
+                       || '\n\n---\n\n'
+                       || (SELECT content FROM memories WHERE id = ?2 AND org_id = ?3)
+         WHERE id = ?1 AND org_id = ?3",
+        rusqlite::params![keep_id, merge_id, org_id],
+    )?;
+
+    // Delete the merged memory
+    conn.execute(
+        "DELETE FROM memories WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![merge_id, org_id],
+    )?;
+
+    // Return the updated kept memory
+    get_memory_by_id_for_org(conn, org_id, keep_id)?
+        .ok_or_else(|| anyhow::anyhow!("keep memory disappeared after merge"))
+}
+
+/// Returns agent/tool activity for the last 30 days — ordered by `memories_last_7d DESC`.
+pub fn get_agent_activity(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::AgentActivity>> {
+    use crate::models::types::AgentActivity;
+
+    let mut stmt = conn.prepare(
+        "SELECT
+           COALESCE(tool, 'unknown') as tool,
+           COUNT(*) as total_memories,
+           SUM(CASE WHEN created_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) as memories_last_24h,
+           SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as memories_last_7d,
+           MAX(created_at) as last_seen
+         FROM memories
+         WHERE org_id = ?1 AND created_at >= datetime('now', '-' || ?2 || ' days')
+         GROUP BY COALESCE(tool, 'unknown')
+         ORDER BY memories_last_7d DESC
+         LIMIT 20",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
+        Ok(AgentActivity {
+            tool: row.get(0)?,
+            total_memories: row.get(1)?,
+            memories_last_24h: row.get(2)?,
+            memories_last_7d: row.get(3)?,
+            last_seen: row.get(4)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for r in rows {
+        result.push(r?);
+    }
+    Ok(result)
+}
+
+/// Returns the onboarding checklist status for an org.
+/// All checks are computed dynamically from existing tables — no schema changes needed.
+pub fn get_onboarding_status(conn: &Connection, org_id: &str) -> Result<OnboardingStatus> {
+    let has_members: bool = conn.query_row(
+        "SELECT COUNT(*) > 1 FROM users WHERE org_id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    )?;
+
+    let has_repository: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM code_projects WHERE org_id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    )?;
+
+    let has_project: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM projects WHERE org_id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    )?;
+
+    let has_memories: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM memories WHERE org_id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    )?;
+
+    let has_webhook: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM webhooks WHERE org_id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    )?;
+
+    let events_configured: bool = conn.query_row(
+        "SELECT COALESCE(settings, '{}') != '{}' FROM organizations WHERE id = ?1",
+        [org_id],
+        |r| r.get::<_, bool>(0),
+    ).unwrap_or(false);
+
+    let items = vec![
+        OnboardingItem {
+            key: "has_members".to_string(),
+            label: "Invite a team member".to_string(),
+            description: "Add at least one more person to your organization.".to_string(),
+            done: has_members,
+        },
+        OnboardingItem {
+            key: "has_project".to_string(),
+            label: "Create a project".to_string(),
+            description: "Organize your work by creating a project.".to_string(),
+            done: has_project,
+        },
+        OnboardingItem {
+            key: "has_repository".to_string(),
+            label: "Connect a code repository".to_string(),
+            description: "Index a repository so the agent can search your codebase.".to_string(),
+            done: has_repository,
+        },
+        OnboardingItem {
+            key: "has_memories".to_string(),
+            label: "Store your first memory".to_string(),
+            description: "Start capturing decisions, bugs, and discoveries.".to_string(),
+            done: has_memories,
+        },
+        OnboardingItem {
+            key: "has_webhook".to_string(),
+            label: "Configure a webhook".to_string(),
+            description: "Connect NexusMind to GitHub or other tools via webhooks.".to_string(),
+            done: has_webhook,
+        },
+        OnboardingItem {
+            key: "events_configured".to_string(),
+            label: "Customize agent events".to_string(),
+            description: "Tune which events the agent should react to for your org.".to_string(),
+            done: events_configured,
+        },
+    ];
+
+    Ok(OnboardingStatus { items })
+}
+
+// ── Invite link queries ───────────────────────────────────────────────────────
+
+/// Creates a new invite link and returns it.
+/// The token is a 32-character hex string derived from two UUIDs.
+/// The link expires 7 days from now.
+pub fn create_invite_link(
+    conn: &Connection,
+    org_id: &str,
+    role: &str,
+    created_by: &str,
+) -> Result<InviteLink> {
+    // 32-char hex token (strip dashes from two UUIDs, take first 32 chars)
+    let raw = format!(
+        "{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    let token = &raw[..32];
+
+    conn.execute(
+        "INSERT INTO invite_links (token, org_id, role, created_by, expires_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now', '+7 days'))",
+        rusqlite::params![token, org_id, role, created_by],
+    )?;
+
+    let invite = conn.query_row(
+        "SELECT token, org_id, role, created_by, used_at, expires_at, created_at
+         FROM invite_links WHERE token = ?1",
+        [token],
+        |row| {
+            Ok(InviteLink {
+                token:      row.get(0)?,
+                org_id:     row.get(1)?,
+                role:       row.get(2)?,
+                created_by: row.get(3)?,
+                used_at:    row.get(4)?,
+                expires_at: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )?;
+
+    Ok(invite)
+}
+
+/// Validates and marks an invite link as used in one operation.
+/// Fails if the token does not exist, is already used, or has expired.
+pub fn use_invite_link(conn: &Connection, token: &str) -> Result<InviteLink> {
+    let invite = get_invite_link(conn, token)?;
+
+    if invite.used_at.is_some() {
+        return Err(anyhow::anyhow!("invite_already_used"));
+    }
+
+    conn.execute(
+        "UPDATE invite_links SET used_at = datetime('now') WHERE token = ?1",
+        [token],
+    )?;
+
+    // Return the updated record
+    let updated = conn.query_row(
+        "SELECT token, org_id, role, created_by, used_at, expires_at, created_at
+         FROM invite_links WHERE token = ?1",
+        [token],
+        |row| {
+            Ok(InviteLink {
+                token:      row.get(0)?,
+                org_id:     row.get(1)?,
+                role:       row.get(2)?,
+                created_by: row.get(3)?,
+                used_at:    row.get(4)?,
+                expires_at: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )?;
+
+    Ok(updated)
+}
+
+/// Returns invite link metadata without marking it as used.
+/// Validates that the token exists, is not used, and is not expired.
+pub fn get_invite_link(conn: &Connection, token: &str) -> Result<InviteLink> {
+    let invite = conn
+        .query_row(
+            "SELECT token, org_id, role, created_by, used_at, expires_at, created_at
+             FROM invite_links WHERE token = ?1",
+            [token],
+            |row| {
+                Ok(InviteLink {
+                    token:      row.get(0)?,
+                    org_id:     row.get(1)?,
+                    role:       row.get(2)?,
+                    created_by: row.get(3)?,
+                    used_at:    row.get(4)?,
+                    expires_at: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("invite_not_found"))?;
+
+    if invite.used_at.is_some() {
+        return Err(anyhow::anyhow!("invite_already_used"));
+    }
+
+    // Check expiry using SQLite — compare stored expires_at with current time
+    let expired: bool = conn.query_row(
+        "SELECT expires_at < datetime('now') FROM invite_links WHERE token = ?1",
+        [token],
+        |row| row.get::<_, bool>(0),
+    )?;
+
+    if expired {
+        return Err(anyhow::anyhow!("invite_expired"));
+    }
+
+    Ok(invite)
+}
+
+/// Redeems an invite link: validates the token, creates a new user with the given
+/// name and hashed password, creates a Personal API key, and marks the invite as used.
+///
+/// Returns `(user, raw_api_key)` on success.
+/// Errors with `invite_not_found`, `invite_already_used`, or `invite_expired` via the
+/// same semantics as `get_invite_link`.
+pub fn redeem_invite(
+    conn: &Connection,
+    token: &str,
+    name: &str,
+    password_hash: &str,
+) -> Result<(User, String)> {
+    // Validate the invite (errors if not found / used / expired)
+    let invite = get_invite_link(conn, token)?;
+
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let user_id = Uuid::new_v4().to_string();
+
+    // Create the user — no email for invite-created users
+    conn.execute(
+        "INSERT INTO users (id, org_id, email, name, role, status, password_hash, created_at)
+         VALUES (?1, ?2, NULL, ?3, ?4, 'active', ?5, ?6)",
+        rusqlite::params![user_id, invite.org_id, name, invite.role, password_hash, now],
+    )?;
+
+    // Create a Personal API key
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'Personal key', ?5)",
+        rusqlite::params![key_id, user_id, invite.org_id, key_hash, now],
+    )?;
+
+    // Mark the invite as used
+    conn.execute(
+        "UPDATE invite_links SET used_at = datetime('now') WHERE token = ?1",
+        [token],
+    )?;
+
+    let user = User {
+        id: user_id,
+        org_id: invite.org_id,
+        email: String::new(),
+        name: name.to_string(),
+        role: invite.role,
+        status: "active".to_string(),
+        created_at: now,
+        last_active: None,
+        disabled_at: None,
+        admin_note: None,
+        last_login_at: None,
+    };
+
+    Ok((user, raw_key))
+}
+
+/// Returns memory statistics for a project by project ID.
+/// Looks up the project name first, then queries memories by org_id + project name.
+pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> Result<crate::models::types::ProjectStats> {
+    // Look up the project name from ID
+    let project_name: Option<String> = conn.query_row(
+        "SELECT name FROM projects WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![project_id, org_id],
+        |row| row.get(0),
+    ).optional()?;
+
+    let project_name = project_name.ok_or_else(|| anyhow::anyhow!("project_not_found"))?;
+
+    // Aggregate stats
+    let (total_memories, memories_this_week, last_memory_at) = conn.query_row(
+        "SELECT
+            COUNT(*) as total_memories,
+            SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as memories_this_week,
+            MAX(created_at) as last_memory_at
+         FROM memories
+         WHERE org_id = ?1 AND project = ?2 AND archived_at IS NULL",
+        rusqlite::params![org_id, &project_name],
+        |row| Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        )),
+    )?;
+
+    // Top 5 tags
+    let mut stmt = conn.prepare(
+        "SELECT value as tag, COUNT(*) as cnt
+         FROM memories, json_each(memories.tags)
+         WHERE org_id = ?1 AND project = ?2 AND archived_at IS NULL
+           AND tags IS NOT NULL AND tags != '[]' AND tags != 'null'
+         GROUP BY value ORDER BY cnt DESC LIMIT 5",
+    )?;
+    let tags = stmt.query_map(rusqlite::params![org_id, &project_name], |row| {
+        row.get::<_, String>(0)
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(crate::models::types::ProjectStats {
+        total_memories,
+        memories_this_week,
+        last_memory_at,
+        top_tags: tags,
+    })
+}
+
+/// Returns memory creation counts per day for the last 90 days (non-archived only).
+/// Used by `GET /v1/admin/stats/memory-heatmap`.
+/// Returns the top contributing agents (by memory count) in the last 30 days.
+/// Groups by user_id (the agent/user that stored the memory).
+/// Returned by `GET /v1/admin/stats/top-contributors`.
+pub fn get_top_contributors(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::ContributorStat>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           COALESCE(user_id, 'unknown') as agent_id,
+           COUNT(*) as memory_count,
+           MAX(created_at) as last_activity
+         FROM memories
+         WHERE org_id = ?1
+           AND archived_at IS NULL
+           AND created_at >= datetime('now', '-' || ?2 || ' days')
+         GROUP BY user_id
+         ORDER BY memory_count DESC
+         LIMIT 8",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
+        Ok(crate::models::types::ContributorStat {
+            agent_id:      row.get(0)?,
+            memory_count:  row.get(1)?,
+            last_activity: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub fn get_memory_heatmap(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::HeatmapDay>> {
+    let mut stmt = conn.prepare(
+        "SELECT date(created_at) as day, COUNT(*) as count
+         FROM memories
+         WHERE org_id = ?1
+           AND created_at >= datetime('now', '-' || ?2 || ' days')
+           AND archived_at IS NULL
+         GROUP BY date(created_at)
+         ORDER BY day ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
+        Ok(crate::models::types::HeatmapDay {
+            day:   row.get(0)?,
+            count: row.get(1)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+#[cfg(test)]
+mod invite_link_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+
+    fn setup() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        // Seed org and user required by FK-less invite_links table
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_returns_token() {
+        let conn = setup();
+        let invite = create_invite_link(&conn, "org1", "user", "u1").unwrap();
+        assert_eq!(invite.token.len(), 32, "token must be 32 chars");
+        assert_eq!(invite.role, "user");
+        assert_eq!(invite.org_id, "org1");
+        assert!(invite.used_at.is_none(), "new invite must not be used");
+    }
+
+    #[test]
+    fn expired_token_rejected() {
+        let conn = setup();
+        // Insert an already-expired invite directly
+        conn.execute(
+            "INSERT INTO invite_links (token, org_id, role, created_by, expires_at)
+             VALUES ('expiredtoken12345678901234567890', 'org1', 'user', 'u1', datetime('now', '-1 day'))",
+            [],
+        )
+        .unwrap();
+
+        let result = get_invite_link(&conn, "expiredtoken12345678901234567890");
+        assert!(result.is_err(), "expired token must be rejected");
+        assert!(result.unwrap_err().to_string().contains("invite_expired"));
+    }
+
+    #[test]
+    fn used_token_rejected() {
+        let conn = setup();
+        let invite = create_invite_link(&conn, "org1", "user", "u1").unwrap();
+        // Mark it used
+        conn.execute(
+            "UPDATE invite_links SET used_at = datetime('now') WHERE token = ?1",
+            [&invite.token],
+        )
+        .unwrap();
+
+        let result = get_invite_link(&conn, &invite.token);
+        assert!(result.is_err(), "used token must be rejected");
+        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+    }
+
+    #[test]
+    fn redeem_invite_creates_user_and_key() {
+        let conn = setup();
+        let invite = create_invite_link(&conn, "org1", "member", "u1").unwrap();
+
+        let (user, raw_key) = redeem_invite(&conn, &invite.token, "Alice", "hashed_pw").unwrap();
+
+        assert_eq!(user.name, "Alice");
+        assert_eq!(user.role, "member");
+        assert_eq!(user.status, "active");
+        assert_eq!(user.org_id, "org1");
+        assert!(raw_key.starts_with("nm_"), "api key must have nm_ prefix");
+
+        // The invite must now be marked as used
+        let result = get_invite_link(&conn, &invite.token);
+        assert!(result.is_err(), "redeemed invite must be rejected on re-use");
+        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+    }
+
+    #[test]
+    fn redeem_invite_rejects_already_used_token() {
+        let conn = setup();
+        let invite = create_invite_link(&conn, "org1", "member", "u1").unwrap();
+
+        // First redeem succeeds
+        redeem_invite(&conn, &invite.token, "Bob", "pw1").unwrap();
+
+        // Second redeem must fail
+        let result = redeem_invite(&conn, &invite.token, "Carol", "pw2");
+        assert!(result.is_err(), "second redeem must fail");
+        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+    }
+}
+
+#[cfg(test)]
+mod memory_heatmap_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+
+    fn setup() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn heatmap_returns_correct_counts_for_today_and_yesterday() {
+        let conn = setup();
+
+        // Insert 5 memories today
+        for i in 0..5 {
+            let id = format!("today_{i}");
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1, 'org1', 'u1', 'p', 'claude', 'content', '[]', datetime('now'), 'project')",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        // Insert 3 memories yesterday
+        for i in 0..3 {
+            let id = format!("yesterday_{i}");
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1, 'org1', 'u1', 'p', 'claude', 'content', '[]', datetime('now', '-1 day'), 'project')",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        let days = get_memory_heatmap(&conn, "org1", 90).unwrap();
+
+        let today_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let yesterday_str = (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let today = days.iter().find(|d| d.day == today_str).expect("today must be present");
+        let yesterday = days.iter().find(|d| d.day == yesterday_str).expect("yesterday must be present");
+
+        assert_eq!(today.count, 5, "today must have 5 memories");
+        assert_eq!(yesterday.count, 3, "yesterday must have 3 memories");
+    }
+}
+
+#[cfg(test)]
+mod top_contributors_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+
+    fn setup() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        // Two distinct users (agents)
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('alice', 'org1', 'alice@acme.com', 'Alice', 'member', 'active')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('bob', 'org1', 'bob@acme.com', 'Bob', 'member', 'active')",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn top_contributors_ranks_by_memory_count() {
+        let conn = setup();
+
+        // Insert 5 memories attributed to user "alice"
+        for i in 0..5 {
+            let id = format!("alice_{i}");
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1, 'org1', 'alice', 'p', 'claude', 'content', '[]', datetime('now'), 'project')",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        // Insert 2 memories attributed to user "bob"
+        for i in 0..2 {
+            let id = format!("bob_{i}");
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1, 'org1', 'bob', 'p', 'claude', 'content', '[]', datetime('now'), 'project')",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        let contributors = get_top_contributors(&conn, "org1", 30).unwrap();
+
+        assert!(!contributors.is_empty(), "must return contributors");
+        assert_eq!(contributors[0].agent_id, "alice", "alice must rank first");
+        assert_eq!(contributors[0].memory_count, 5, "alice must have count=5");
+
+        let bob = contributors.iter().find(|c| c.agent_id == "bob")
+            .expect("bob must be present");
+        assert_eq!(bob.memory_count, 2, "bob must have 2 memories");
+    }
+}
+
+#[cfg(test)]
+mod project_stats_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+
+    fn setup() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn project_stats_returns_correct_counts() {
+        let conn = setup();
+
+        // Create a project
+        let project = create_project(&conn, "org1", "test-project", None, None).unwrap();
+
+        // Insert 3 memories for this project
+        for i in 0..3 {
+            let id = format!("mem{i}");
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1, 'org1', 'u1', 'test-project', 'claude-code', 'content', '[]', ?2, 'project')",
+                rusqlite::params![id, now],
+            ).unwrap();
+        }
+
+        let stats = get_project_stats(&conn, "org1", &project.id).unwrap();
+        assert_eq!(stats.total_memories, 3, "total_memories should be 3");
+        assert_eq!(stats.memories_this_week, 3, "memories_this_week should be 3 (just inserted)");
+        assert!(stats.last_memory_at.is_some(), "last_memory_at should be set");
     }
 }

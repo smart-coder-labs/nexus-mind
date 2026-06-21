@@ -29,7 +29,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-full max-w-sm bg-surface-primary border border-border-primary rounded-[18px] p-8 space-y-5">
+      <div className="w-full max-w-sm bg-[#1d1d1f] border border-border-primary rounded-[18px] p-8 space-y-5">
         <div className="flex items-center gap-3">
           <Key className="w-5 h-5 text-accent-blue" />
           <h2 className="text-base font-semibold text-text-primary">Superuser access required</h2>
@@ -46,7 +46,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
                 value={key}
                 onChange={e => setKey(e.target.value)}
                 placeholder="sk_…"
-                className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus pr-10"
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus pr-10"
                 autoFocus
               />
               <button
@@ -116,10 +116,10 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-[18px] p-6 space-y-5">
+      <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-text-primary">Create organization</h2>
-          <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-xl leading-none">×</button>
+          <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-[18px] leading-none">×</button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           {fields.map(({ key, label, placeholder, type }) => (
@@ -131,7 +131,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
                 onChange={set(key)}
                 placeholder={placeholder}
                 required
-                className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus"
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-border-focus"
               />
             </div>
           ))}
@@ -167,7 +167,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-surface-primary border border-border-primary rounded-[18px] p-6 space-y-4">
+      <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-status-success" />
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
@@ -178,7 +178,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </p>
         <div className="space-y-1.5">
           <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Admin API key</label>
-          <div className="flex items-center gap-2 bg-surface-secondary border border-border-secondary rounded-lg px-3 py-2">
+          <div className="flex items-center gap-2 bg-[#272729] border border-border-secondary rounded-[11px] px-3 py-2">
             <code className="flex-1 text-xs text-text-primary font-mono break-all">{apiKey}</code>
             <button onClick={copy} className="flex-shrink-0 text-text-tertiary hover:text-accent-blue transition-colors">
               {copied ? <Check className="w-4 h-4 text-status-success" /> : <Copy className="w-4 h-4" />}
@@ -235,7 +235,7 @@ export default function Orgs() {
       <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border-secondary bg-surface-secondary/50">
+            <tr className="border-b border-border-secondary bg-[#272729]/50">
               <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Name</th>
               <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Slug</th>
               <th className="px-4 py-3 text-left text-[11px] text-text-tertiary tracking-[-0.12px] font-normal">Created</th>
@@ -247,7 +247,7 @@ export default function Orgs() {
                 <tr key={i}>
                   {Array.from({ length: 3 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded bg-surface-secondary animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
+                      <div className="h-4 rounded-[5px] bg-[#272729] animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
                     </td>
                   ))}
                 </tr>
@@ -269,10 +269,10 @@ export default function Orgs() {
               </tr>
             )}
             {orgs.map(org => (
-              <tr key={org.id} className="hover:bg-surface-secondary/40 transition-colors">
+              <tr key={org.id} className="hover:bg-[#272729]/40 transition-colors">
                 <td className="px-4 py-3 text-text-primary font-semibold">{org.name}</td>
                 <td className="px-4 py-3">
-                  <span className="font-mono text-xs bg-surface-secondary px-2 py-0.5 rounded text-text-secondary">{org.slug}</span>
+                  <span className="font-mono text-xs bg-[#272729] px-2 py-0.5 rounded-[5px] text-text-secondary">{org.slug}</span>
                 </td>
                 <td className="px-4 py-3 text-text-tertiary">
                   {new Date(org.created_at).toLocaleDateString()}

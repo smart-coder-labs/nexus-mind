@@ -113,6 +113,10 @@ mod tests {
                         role: "admin".to_string(),
                         status: "active".to_string(),
                         created_at: "".to_string(),
+                        last_active: None,
+                        disabled_at: None,
+                        admin_note: None,
+                        last_login_at: None,
                     }, admin_key.clone())
                 });
             drop((user, conn));

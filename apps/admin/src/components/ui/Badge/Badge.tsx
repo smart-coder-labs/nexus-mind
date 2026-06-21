@@ -16,7 +16,7 @@ const baseStyles = `
 
 const variantStyles: Record<BadgeVariant, string> = {
   default: `
-    bg-surface-secondary
+    bg-[#272729]
     text-text-primary
     border border-border-primary
   `,

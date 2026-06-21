@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import type { NexusMindClient } from '../api/client'
@@ -20,6 +20,41 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
   const [error, setError] = useState('')
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const modalRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    document.body.style.overflow = 'hidden'
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.body.style.overflow = ''
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [open, onClose])
+
+  // Focus trap
+  useEffect(() => {
+    if (!open) return
+    const modal = modalRef.current
+    if (!modal) return
+    const focusable = modal.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    first?.focus()
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last?.focus() }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first?.focus() }
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => document.removeEventListener('keydown', trap)
+  }, [open])
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
@@ -74,11 +109,25 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={newKey ? 'User invited' : 'Invite user'}
+      onClick={handleClose}
+    >
+      <div
+        ref={modalRef}
+        className="bg-[#272729] border border-white/[0.08] rounded-[18px] p-6 w-full max-w-md space-y-5"
+        onClick={e => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <p className="text-text-primary font-semibold">{newKey ? 'User invited' : 'Invite user'}</p>
-          <button onClick={handleClose} className="text-text-tertiary hover:text-text-primary transition-colors">
+          <button
+            onClick={handleClose}
+            aria-label="Close invite user modal"
+            className="text-text-tertiary hover:text-text-primary transition-colors"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -88,7 +137,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             <p className="text-xs text-text-tertiary">
               User created. Share this API key — it will only be shown once.
             </p>
-            <div className="flex items-center gap-2 bg-surface-secondary rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2 bg-[#272729] rounded-[11px] px-3 py-2">
               <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
               <button
                 onClick={handleCopy}
@@ -111,8 +160,9 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               { id: 'email', label: 'Email', type: 'email',    placeholder: 'sarah@acme.com' },
             ].map(f => (
               <div key={f.id} className="space-y-1.5">
-                <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">{f.label}</label>
+                <label htmlFor={`invite-${f.id}`} className="text-[11px] text-text-tertiary tracking-[-0.224px]">{f.label}</label>
                 <input
+                  id={`invite-${f.id}`}
                   type={f.type}
                   value={form[f.id as 'name' | 'email']}
                   onChange={set(f.id)}
@@ -124,11 +174,12 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             ))}
 
             <div className="space-y-1.5">
-              <label className="text-[11px] text-text-tertiary tracking-[-0.224px]">Role</label>
+              <label htmlFor="invite-role" className="text-[11px] text-text-tertiary tracking-[-0.224px]">Role</label>
               <select
+                id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-surface-primary border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors"
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-border-focus transition-colors"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -161,7 +212,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               </div>
 
               {projectAccess === 'specific' && (
-                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-[11px] p-2 bg-surface-secondary">
+                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-[11px] p-2 bg-[#272729]">
                   {!projects?.length ? (
                     <p className="text-[11px] text-text-tertiary">No projects found.</p>
                   ) : (
@@ -187,7 +238,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-surface-secondary transition-colors"
+                className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-[#272729] transition-colors"
               >
                 Cancel
               </button>

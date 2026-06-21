@@ -6,14 +6,47 @@ import type {
   Memory,
   AuditEntry,
   OrgStats,
+  MemoryFacets,
+  MemoryTrends,
+  NameCount,
   MemoryFilters,
   AuditFilters,
   CustomRole,
   Project,
   ProjectMember,
   ProjectAccess,
+  ProjectEventOverrides,
+  UpdateProjectEventOverridesRequest,
   CodeProject,
   CodeIndexResponse,
+  BulkDeleteResponse,
+  BulkTagResponse,
+  CodeSearchResult,
+  SessionSummary,
+  Webhook,
+  CreateWebhookRequest,
+  UpdateWebhookRequest,
+  WebhookDelivery,
+  GlobalSearchResult,
+  ApiKeyWithUser,
+  OnboardingStatus,
+  WebhookTestResult,
+  UsageStats,
+  InviteLinkResponse,
+  ImportMemory,
+  ImportMemoriesResponse,
+  AgentActivity,
+  HeatmapDay,
+  ContributorStat,
+  MergeMemoriesRequest,
+  NotificationItem,
+  ProjectStats,
+  Collection,
+  AssignCollectionRequest,
+  RenameTagResponse,
+  RetryDeliveryResponse,
+  RetentionPreview,
+  ImportConfigResponse,
 } from '../types'
 
 export class NexusMindClient {
@@ -55,6 +88,19 @@ export class NexusMindClient {
     return this.request('/v1/admin/stats')
   }
 
+  getMemoryFacets(): Promise<MemoryFacets> {
+    return this.request('/v1/admin/stats/memory-facets')
+  }
+
+  getMemoryTrends(days?: number): Promise<MemoryTrends> {
+    const qs = days != null ? `?days=${days}` : ''
+    return this.request(`/v1/admin/stats/trends${qs}`)
+  }
+
+  getTagStats(): Promise<NameCount[]> {
+    return this.request('/v1/admin/stats/tags')
+  }
+
   getOrg(): Promise<Org> {
     return this.request('/v1/admin/org')
   }
@@ -69,6 +115,31 @@ export class NexusMindClient {
 
   updateOrgSettings(data: OrgSettings): Promise<OrgSettings> {
     return this.request('/v1/admin/org/settings', { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  updateAnnouncement(announcement: string, announcement_type: string): Promise<OrgSettings> {
+    return this.request('/v1/admin/org/announcement', {
+      method: 'PATCH',
+      body: JSON.stringify({ announcement, announcement_type }),
+    })
+  }
+
+  updateOrgLogo(logo_url: string | null): Promise<void> {
+    return this.request('/v1/admin/org/logo', {
+      method: 'PATCH',
+      body: JSON.stringify({ logo_url }),
+    })
+  }
+
+  scheduleMemoryDelete(id: string, delete_after: string | null): Promise<void> {
+    return this.request(`/v1/admin/memories/${id}/schedule-delete`, {
+      method: 'PATCH',
+      body: JSON.stringify({ delete_after }),
+    })
+  }
+
+  getRetentionPreview(): Promise<RetentionPreview> {
+    return this.request('/v1/admin/settings/retention-preview')
   }
 
   listUsers(): Promise<User[]> {
@@ -92,10 +163,29 @@ export class NexusMindClient {
     return this.request(`/v1/users/${userId}/rotate-key`, { method: 'POST' })
   }
 
+  resetUserKey(userId: string): Promise<{ new_key: string }> {
+    return this.request(`/v1/admin/users/${userId}/reset-key`, { method: 'POST' })
+  }
+
   updateUserRole(userId: string, role: string): Promise<void> {
     return this.request(`/v1/users/${userId}/role`, {
       method: 'PATCH',
       body: JSON.stringify({ role }),
+    })
+  }
+
+  disableUser(userId: string): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/disable`, { method: 'POST' })
+  }
+
+  enableUser(userId: string): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/enable`, { method: 'POST' })
+  }
+
+  updateUserNote(userId: string, note: string | null): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}/note`, {
+      method: 'PATCH',
+      body: JSON.stringify({ note }),
     })
   }
 
@@ -119,8 +209,17 @@ export class NexusMindClient {
     return this.request(`/v1/roles/${id}`, { method: 'DELETE' })
   }
 
-  listProjects(): Promise<Project[]> {
-    return this.request('/v1/projects')
+  listProjects(params: { include_archived?: boolean } = {}): Promise<Project[]> {
+    const qs = params.include_archived ? '?include_archived=true' : ''
+    return this.request(`/v1/projects${qs}`)
+  }
+
+  archiveProject(id: string): Promise<void> {
+    return this.request(`/v1/projects/${id}/archive`, { method: 'POST' })
+  }
+
+  restoreProject(id: string): Promise<void> {
+    return this.request(`/v1/projects/${id}/restore`, { method: 'POST' })
   }
 
   createProject(data: { name: string; description?: string; parent_id?: string }): Promise<Project> {
@@ -156,6 +255,18 @@ export class NexusMindClient {
     return this.request(`/v1/projects/${projectId}/members/${userId}`, { method: 'DELETE' })
   }
 
+  getProjectSettings(projectId: string): Promise<ProjectEventOverrides> {
+    return this.request(`/v1/projects/${projectId}/settings`)
+  }
+
+  updateProjectSettings(projectId: string, overrides: ProjectEventOverrides): Promise<ProjectEventOverrides> {
+    const body: UpdateProjectEventOverridesRequest = { overrides }
+    return this.request(`/v1/projects/${projectId}/settings`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  }
+
   listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {
     const params = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))
@@ -173,6 +284,47 @@ export class NexusMindClient {
     return this.request(`/v1/memory/${id}`, { method: 'DELETE' })
   }
 
+  archiveMemory(id: string): Promise<void> {
+    return this.request(`/v1/memory/${id}/archive`, { method: 'POST' })
+  }
+
+  restoreMemory(id: string): Promise<void> {
+    return this.request(`/v1/memory/${id}/restore`, { method: 'POST' })
+  }
+
+  pinMemory(id: string): Promise<void> {
+    return this.request(`/v1/memory/${id}/pin`, { method: 'POST' })
+  }
+
+  unpinMemory(id: string): Promise<void> {
+    return this.request(`/v1/memory/${id}/unpin`, { method: 'POST' })
+  }
+
+  updateMemory(id: string, content: string): Promise<Memory> {
+    return this.request(`/v1/memory/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    })
+  }
+
+  updateMemoryNote(id: string, note: string): Promise<Memory> {
+    return this.request(`/v1/admin/memories/${id}/note`, {
+      method: 'PATCH',
+      body: JSON.stringify({ note }),
+    })
+  }
+
+  listSessions(): Promise<SessionSummary[]> {
+    return this.request('/v1/sessions')
+  }
+
+  bulkDeleteMemories(ids: string[]): Promise<BulkDeleteResponse> {
+    return this.request('/v1/memory/bulk', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+    })
+  }
+
   changePassword(data: { current_password: string; new_password: string }): Promise<{ message: string }> {
     return this.request('/v1/admin/auth/change-password', { method: 'POST', body: JSON.stringify(data) })
   }
@@ -183,8 +335,17 @@ export class NexusMindClient {
     return this.request(`/v1/audit?${params}`)
   }
 
-  listCodeProjects(): Promise<CodeProject[]> {
-    return this.request('/v1/code/projects')
+  listCodeProjects(params: { include_archived?: boolean } = {}): Promise<CodeProject[]> {
+    const qs = params.include_archived ? '?include_archived=true' : ''
+    return this.request(`/v1/code/projects${qs}`)
+  }
+
+  archiveCodeProject(id: string): Promise<void> {
+    return this.request(`/v1/code/projects/${id}/archive`, { method: 'POST' })
+  }
+
+  restoreCodeProject(id: string): Promise<void> {
+    return this.request(`/v1/code/projects/${id}/restore`, { method: 'POST' })
   }
 
   indexProject(data: { project: string; repo_url?: string; root_path?: string }): Promise<CodeIndexResponse> {
@@ -193,6 +354,203 @@ export class NexusMindClient {
 
   deleteCodeProject(name: string): Promise<void> {
     return this.request(`/v1/code/projects/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  }
+
+  updateCodeProjectSchedule(id: string, interval_hours: number | null): Promise<void> {
+    return this.request(`/v1/code/projects/${id}/schedule`, {
+      method: 'PATCH',
+      body: JSON.stringify({ interval_hours }),
+    })
+  }
+
+  reindexCodeProject(projectId: string): Promise<{ status: string; project_id: string }> {
+    return this.request(`/v1/code/projects/${projectId}/reindex`, { method: 'POST' })
+  }
+
+  updateCodeProject(id: string, data: { exclude_patterns?: string[] }): Promise<void> {
+    return this.request(`/v1/code/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  searchCode(project: string, query: string, topK = 10, extension?: string): Promise<CodeSearchResult[]> {
+    return this.request('/v1/code/search', {
+      method: 'POST',
+      body: JSON.stringify({ project, query, top_k: topK, extension }),
+    })
+  }
+
+  listWebhooks(): Promise<{ webhooks: Webhook[] }> {
+    return this.request('/v1/webhooks')
+  }
+
+  createWebhook(data: CreateWebhookRequest): Promise<Webhook> {
+    return this.request('/v1/webhooks', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  updateWebhook(id: string, data: UpdateWebhookRequest): Promise<Webhook> {
+    return this.request(`/v1/webhooks/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  deleteWebhook(id: string): Promise<void> {
+    return this.request(`/v1/webhooks/${id}`, { method: 'DELETE' })
+  }
+
+  testWebhook(id: string): Promise<WebhookTestResult> {
+    return this.request(`/v1/webhooks/${id}/test`, { method: 'POST' })
+  }
+
+  listWebhookDeliveries(webhookId: string, limit = 20): Promise<{ deliveries: WebhookDelivery[] }> {
+    return this.request(`/v1/webhooks/${webhookId}/deliveries?limit=${limit}`)
+  }
+
+  listOrgKeys(): Promise<ApiKeyWithUser[]> {
+    return this.request('/v1/admin/keys')
+  }
+
+  revokeOrgKey(keyId: string): Promise<void> {
+    return this.request(`/v1/admin/keys/${keyId}`, { method: 'DELETE' })
+  }
+
+  getOnboarding(): Promise<OnboardingStatus> {
+    return this.request('/v1/admin/onboarding')
+  }
+
+  getDuplicates(): Promise<Memory[][]> {
+    return this.request('/v1/admin/stats/duplicates')
+  }
+
+  getUsageStats(): Promise<UsageStats> {
+    return this.request('/v1/admin/stats/usage')
+  }
+
+  createInviteLink(role = 'user'): Promise<InviteLinkResponse> {
+    return this.request('/v1/admin/invites', {
+      method: 'POST',
+      body: JSON.stringify({ role }),
+    })
+  }
+
+  validateInvite(token: string): Promise<{ valid: boolean; role?: string; org_id?: string; org_name?: string; reason?: string }> {
+    return this.request(`/v1/invites/${token}`)
+  }
+
+  redeemInvite(token: string, name: string, password: string): Promise<{ api_key: string }> {
+    return this.request(`/v1/invites/${token}/redeem`, {
+      method: 'POST',
+      body: JSON.stringify({ name, password }),
+    })
+  }
+
+  globalSearch(q: string, limit = 10): Promise<GlobalSearchResult> {
+    const params = new URLSearchParams({ q, limit: String(limit) })
+    return this.request(`/v1/search?${params}`)
+  }
+
+  importMemories(memories: ImportMemory[]): Promise<ImportMemoriesResponse> {
+    return this.request('/v1/admin/memories/import', {
+      method: 'POST',
+      body: JSON.stringify({ memories }),
+    })
+  }
+
+  getAgentActivity(days?: number): Promise<AgentActivity[]> {
+    const qs = days != null ? `?days=${days}` : ''
+    return this.request(`/v1/admin/stats/agent-activity${qs}`)
+  }
+
+  getMemoryHeatmap(days?: number): Promise<HeatmapDay[]> {
+    const qs = days != null ? `?days=${days}` : ''
+    return this.request(`/v1/admin/stats/memory-heatmap${qs}`)
+  }
+
+  getTopContributors(days?: number): Promise<ContributorStat[]> {
+    const qs = days != null ? `?days=${days}` : ''
+    return this.request(`/v1/admin/stats/top-contributors${qs}`)
+  }
+
+  mergeMemories(keepId: string, mergeId: string): Promise<Memory> {
+    const body: MergeMemoriesRequest = { keep_id: keepId, merge_id: mergeId }
+    return this.request('/v1/admin/memories/merge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  }
+
+  bulkTagMemories(ids: string[], action: 'add' | 'remove', tag: string): Promise<BulkTagResponse> {
+    return this.request('/v1/admin/memories/bulk-tag', {
+      method: 'POST',
+      body: JSON.stringify({ ids, action, tag }),
+    })
+  }
+
+  getNotifications(limit = 15): Promise<NotificationItem[]> {
+    return this.request(`/v1/admin/notifications?limit=${limit}`)
+  }
+
+  getProjectStats(projectId: string): Promise<ProjectStats> {
+    return this.request(`/v1/projects/${projectId}/stats`)
+  }
+
+  importOrgConfig(data: object): Promise<ImportConfigResponse> {
+    return this.request('/v1/admin/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async exportOrgConfig(): Promise<Blob> {
+    const res = await fetch(`${this.baseUrl}/v1/admin/export`, {
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw Object.assign(new Error(body.error ?? res.statusText), {
+        code: body.code,
+        status: res.status,
+      })
+    }
+    return res.blob()
+  }
+
+  // ── Collections ─────────────────────────────────────────────────────────────
+
+  async listCollections(): Promise<Collection[]> {
+    return this.request<Collection[]>('/v1/admin/collections')
+  }
+
+  async createCollection(data: { name: string; description?: string }): Promise<Collection> {
+    return this.request<Collection>('/v1/admin/collections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteCollection(id: string): Promise<void> {
+    await this.request<void>(`/v1/admin/collections/${id}`, { method: 'DELETE' })
+  }
+
+  async assignMemoryToCollection(memoryId: string, req: AssignCollectionRequest): Promise<void> {
+    await this.request<void>(`/v1/memories/${memoryId}/collection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    })
+  }
+
+  renameTag(from: string, to: string): Promise<RenameTagResponse> {
+    return this.request('/v1/admin/tags/rename', {
+      method: 'POST',
+      body: JSON.stringify({ from, to }),
+    })
+  }
+
+  retryWebhookDelivery(deliveryId: string): Promise<RetryDeliveryResponse> {
+    return this.request(`/v1/webhooks/deliveries/${deliveryId}/retry`, {
+      method: 'POST',
+    })
   }
 }
 

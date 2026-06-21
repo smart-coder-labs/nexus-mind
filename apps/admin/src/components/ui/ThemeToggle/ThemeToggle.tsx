@@ -122,7 +122,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
     return (
         <div
             className={cn(
-                'flex w-full items-center justify-between gap-4 rounded-[18px] border border-border-primary bg-surface-secondary/80 px-4 py-3 backdrop-blur-sm',
+                'flex w-full items-center justify-between gap-4 rounded-[18px] border border-border-primary bg-[#272729]/80 px-4 py-3 backdrop-blur-sm',
                 className
             )}
         >
@@ -154,7 +154,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
                         onClick={handleAuto}
                         className={cn(
                             'group inline-flex items-center gap-1.5 rounded-full border border-border-secondary px-3 py-1 text-xs font-normal text-text-secondary transition-apple hover:border-border-primary hover:text-text-primary',
-                            mode === 'system' && 'bg-surface-primary text-text-primary'
+                            mode === 'system' && 'bg-[#1d1d1f] text-text-primary'
                         )}
                     >
                         <Monitor className="h-3.5 w-3.5" />

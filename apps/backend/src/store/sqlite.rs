@@ -131,8 +131,13 @@ impl MemoryStore for SqliteStore {
             filters.project,
             filters.memory_type,
             filters.scope,
+            filters.session_id,
             filters.limit,
             filters.offset,
+            filters.include_archived,
+            filters.from_date,
+            filters.to_date,
+            filters.collection_id,
         )
     }
 
@@ -140,7 +145,8 @@ impl MemoryStore for SqliteStore {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let result = conn.query_row(
             "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                    title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id
+                    title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                    archived_at, pinned, collection_id, admin_note, delete_after
              FROM memories WHERE id = ?1 AND org_id = ?2",
             rusqlite::params![memory_id, org_id],
             |row| {
@@ -162,13 +168,19 @@ impl MemoryStore for SqliteStore {
                     row.get::<_, Option<i64>>(13)?,
                     row.get::<_, Option<String>>(14)?,
                     row.get::<_, Option<String>>(15)?,
+                    row.get::<_, Option<String>>(16)?,
+                    row.get::<_, i64>(17).unwrap_or(0),
+                    row.get::<_, Option<String>>(18)?,
+                    row.get::<_, Option<String>>(19)?,
+                    row.get::<_, Option<String>>(20)?,
                 ))
             },
         );
 
         match result {
             Ok((id, org_id, user_id, project, tool, content, tags_str, created_at,
-                title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)) => {
+                title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
                 Ok(Some(Memory {
                     id,
@@ -187,6 +199,11 @@ impl MemoryStore for SqliteStore {
                     revision_count: revision_count.unwrap_or(1),
                     normalized_hash,
                     project_id,
+                    archived_at,
+                    pinned: pinned_i64 != 0,
+                    collection_id,
+                    admin_note,
+                    delete_after,
                 }))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -363,7 +380,8 @@ mod tests {
         store.store(&org_id, &user_id, &req("b")).unwrap();
         let filters = MemoryFilters {
             user_id: None, tool: None, project: None,
-            memory_type: None, scope: None, limit: 50, offset: 0,
+            memory_type: None, scope: None, session_id: None, limit: 50, offset: 0, include_archived: false,
+            from_date: None, to_date: None, collection_id: None,
         };
         let mems = store.list(&org_id, &filters).unwrap();
         assert_eq!(mems.len(), 2);
@@ -392,5 +410,57 @@ mod tests {
         let created = store.store(&org_id, &user_id, &req("to delete")).unwrap();
         assert!(store.delete(&org_id, &user_id, &created.id).unwrap());
         assert!(!store.delete(&org_id, &user_id, &created.id).unwrap());
+    }
+
+    #[test]
+    fn list_date_range_filter_returns_only_matching_memories() {
+        use crate::db::{connection::connect, migrations};
+        use crate::db::queries;
+
+        // Use direct DB access so we can control created_at timestamps precisely.
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        let (org, user, _) = queries::bootstrap(&conn, "TestOrg", "testorg", "t@t.com", "Admin").unwrap();
+
+        // Insert two memories with known dates via raw SQL.
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count)
+             VALUES ('m1', ?1, ?2, 'proj', 'claude', 'old memory', '[]', '2025-01-10T10:00:00Z', 'project', 1)",
+            rusqlite::params![org.id, user.id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count)
+             VALUES ('m2', ?1, ?2, 'proj', 'claude', 'new memory', '[]', '2025-03-15T10:00:00Z', 'project', 1)",
+            rusqlite::params![org.id, user.id],
+        ).unwrap();
+
+        // Filter: from 2025-02-01 to 2025-12-31 — should return only m2.
+        let results = queries::list_memories(
+            &conn, &org.id,
+            None, None, None, None, None, None,
+            50, 0, false,
+            Some("2025-02-01"), Some("2025-12-31"), None,
+        ).unwrap();
+        assert_eq!(results.len(), 1, "expected 1 memory in range, got {}", results.len());
+        assert_eq!(results[0].id, "m2");
+
+        // Filter: from 2025-01-01 to 2025-01-31 — should return only m1.
+        let results = queries::list_memories(
+            &conn, &org.id,
+            None, None, None, None, None, None,
+            50, 0, false,
+            Some("2025-01-01"), Some("2025-01-31"), None,
+        ).unwrap();
+        assert_eq!(results.len(), 1, "expected 1 memory in range, got {}", results.len());
+        assert_eq!(results[0].id, "m1");
+
+        // No date filter — should return both.
+        let results = queries::list_memories(
+            &conn, &org.id,
+            None, None, None, None, None, None,
+            50, 0, false,
+            None, None, None,
+        ).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

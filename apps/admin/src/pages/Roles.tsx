@@ -32,6 +32,9 @@ export default function Roles() {
     queryFn: () => client.listRoles(),
   })
 
+  const [roleSaved, setRoleSaved] = useState(false)
+  const [deleteErrorMsg, setDeleteErrorMsg] = useState('')
+
   const createMut = useMutation({
     mutationFn: (data: { name: string; display_name: string; permissions: string[]; description?: string }) =>
       client.createRole(data),
@@ -42,6 +45,8 @@ export default function Roles() {
       setDescription('')
       setSelectedPermissions([])
       setErrorMsg('')
+      setRoleSaved(true)
+      setTimeout(() => setRoleSaved(false), 2000)
     },
     onError: (err: any) => {
       setErrorMsg(err.message || 'Failed to create role')
@@ -52,6 +57,10 @@ export default function Roles() {
     mutationFn: (id: string) => client.deleteRole(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['roles'] })
+    },
+    onError: (err: any) => {
+      setDeleteErrorMsg(err.message || 'Failed to delete role')
+      setTimeout(() => setDeleteErrorMsg(''), 3000)
     },
   })
 
@@ -87,64 +96,80 @@ export default function Roles() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Roles List */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-[#272729]">
-            <div className="px-4 py-3 border-b border-border-secondary bg-surface-secondary/40">
-              <span className="text-xs font-semibold text-text-secondary">Active Roles</span>
-            </div>
-            <div className="divide-y divide-border-secondary">
-              {isLoading ? (
-                <div className="p-4 text-center text-sm text-text-tertiary">Loading roles...</div>
-              ) : roles?.length === 0 ? (
-                <div className="p-4 text-center text-sm text-text-tertiary">No roles defined yet.</div>
-              ) : (
-                roles?.map(role => (
-                  <div key={role.id} className="p-4 flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-text-primary">{role.display_name}</span>
-                        <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
-                        {role.is_template ? (
-                          <span className="text-[10px] bg-accent-blue/10 text-accent-blue px-1.5 py-0.5 rounded font-semibold">
-                            Template
-                          </span>
-                        ) : (
-                          <span className="text-[10px] bg-status-success/15 text-status-success px-1.5 py-0.5 rounded font-semibold">
-                            Custom
-                          </span>
-                        )}
-                      </div>
-                      {role.description && (
-                        <p className="text-xs text-text-tertiary">{role.description}</p>
-                      )}
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {role.permissions.map(p => (
-                          <span
-                            key={p}
-                            className="text-[10px] border border-border-secondary bg-surface-secondary text-text-secondary px-1.5 py-0.5 rounded"
-                          >
-                            {p}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-
-                    {!role.is_template && (
-                      <button
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to delete the role "${role.display_name}"?`)) {
-                            deleteMut.mutate(role.id)
-                          }
-                        }}
-                        className="p-1.5 rounded-lg text-text-tertiary hover:text-status-error hover:bg-surface-secondary/60 transition-colors"
-                        title="Delete Role"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+          <div className="space-y-3">
+            <span className="text-xs font-semibold text-text-secondary">Active Roles</span>
+            {deleteErrorMsg && (
+              <div className="p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
+                {deleteErrorMsg}
+              </div>
+            )}
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="bg-[#272729] rounded-[18px] p-5 border border-border-primary space-y-2 animate-pulse">
+                  <div className="h-3.5 rounded-[5px] bg-[#1d1d1f] w-1/3" />
+                  <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] w-2/3" />
+                  <div className="flex gap-1">
+                    {Array.from({ length: 3 }).map((_, j) => (
+                      <div key={j} className="h-4 w-16 rounded-[5px] bg-[#1d1d1f]" />
+                    ))}
                   </div>
-                ))
-              )}
-            </div>
+                </div>
+              ))
+            ) : roles?.length === 0 ? (
+              <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex flex-col items-center gap-2 py-12 text-center">
+                <Shield className="w-6 h-6 text-text-quaternary/50" />
+                <p className="text-sm font-semibold text-text-secondary">No custom roles yet</p>
+                <p className="text-xs text-text-quaternary max-w-xs">Create a custom role on the right to define fine-grained permission sets for your team.</p>
+              </div>
+            ) : (
+              roles?.map(role => (
+                <div key={role.id} className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-text-primary">{role.display_name}</span>
+                      <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
+                      {role.is_template ? (
+                        <span className="text-[10px] bg-white/[0.06] text-text-quaternary px-1.5 py-0.5 rounded-[5px]">
+                          System
+                        </span>
+                      ) : (
+                        <span className="text-[10px] bg-status-success/15 text-status-success px-1.5 py-0.5 rounded-[5px] font-semibold">
+                          Custom
+                        </span>
+                      )}
+                    </div>
+                    {role.description && (
+                      <p className="text-xs text-text-tertiary">{role.description}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {role.permissions.map(p => (
+                        <span
+                          key={p}
+                          className="text-[10px] border border-border-secondary bg-[#272729] text-text-secondary px-1.5 py-0.5 rounded-[5px]"
+                        >
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {!role.is_template && (
+                    <button
+                      onClick={() => {
+                        if (confirm(`Are you sure you want to delete the role "${role.display_name}"?`)) {
+                          deleteMut.mutate(role.id)
+                        }
+                      }}
+                      aria-label={`Delete role ${role.display_name}`}
+                      disabled={deleteMut.isPending}
+                      className="p-1.5 rounded-[8px] text-text-tertiary hover:text-status-error hover:bg-[#272729]/60 transition-colors disabled:opacity-40"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -160,7 +185,7 @@ export default function Roles() {
             </div>
 
             {errorMsg && (
-              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-lg">
+              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
                 {errorMsg}
               </div>
             )}
@@ -175,7 +200,7 @@ export default function Roles() {
                   placeholder="e.g. security-officer"
                   value={name}
                   onChange={e => setName(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
                   required
                 />
               </div>
@@ -189,7 +214,7 @@ export default function Roles() {
                   placeholder="e.g. Security Officer"
                   value={displayName}
                   onChange={e => setDisplayName(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
                   required
                 />
               </div>
@@ -202,7 +227,7 @@ export default function Roles() {
                   placeholder="What is this role for?"
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/40 h-20 resize-none"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors h-20 resize-none"
                 />
               </div>
 
@@ -210,14 +235,14 @@ export default function Roles() {
                 <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] block">
                   Permissions
                 </label>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto border border-border-secondary p-2 rounded-lg bg-surface-secondary/20">
+                <div className="space-y-1.5 max-h-48 overflow-y-auto border border-border-secondary p-2 rounded-[11px] bg-[#272729]/20">
                   {AVAILABLE_PERMISSIONS.map(perm => (
-                    <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded hover:bg-surface-secondary/40 cursor-pointer">
+                    <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-[8px] hover:bg-[#272729]/40 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={selectedPermissions.includes(perm.key)}
                         onChange={() => handlePermissionToggle(perm.key)}
-                        className="mt-0.5 rounded border-border-primary text-accent-blue focus:ring-accent-blue/30"
+                        className="mt-0.5 rounded border-border-primary text-accent-blue focus:outline-none"
                       />
                       <div>
                         <div className="font-semibold text-text-secondary text-[11px]">{perm.name}</div>
@@ -231,10 +256,10 @@ export default function Roles() {
               <button
                 type="submit"
                 disabled={createMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-normal transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Plus className="w-4 h-4" />
-                Create Role
+                {createMut.isPending ? 'Creating…' : roleSaved ? 'Created!' : 'Create Role'}
               </button>
             </form>
           </div>

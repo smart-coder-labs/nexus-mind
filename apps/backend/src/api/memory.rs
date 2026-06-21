@@ -4,11 +4,11 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::require_permission,
 };
@@ -91,8 +91,13 @@ pub async fn export(
         project: None,
         memory_type: None,
         scope: None,
+        session_id: None,
         limit: EXPORT_HARD_CAP,
         offset: 0,
+        include_archived: false,
+        from_date: None,
+        to_date: None,
+        collection_id: None,
     };
     let memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
 
@@ -151,8 +156,19 @@ pub struct ListParams {
     #[serde(rename = "type")]
     pub type_filter: Option<String>,
     pub scope: Option<String>,
+    pub session_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    #[serde(default)]
+    pub include_archived: bool,
+    /// ISO 8601 date string (e.g. "2025-01-01"). When set, only memories created on or after
+    /// this date are returned.
+    pub from_date: Option<String>,
+    /// ISO 8601 date string (e.g. "2025-01-31"). When set, only memories created on or before
+    /// this date (inclusive) are returned.
+    pub to_date: Option<String>,
+    /// When set, only memories belonging to this collection are returned.
+    pub collection_id: Option<String>,
 }
 
 fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
@@ -224,9 +240,15 @@ pub async fn search(
 
     let limit = input.limit.unwrap_or(20);
     let mode = input.mode.as_deref().unwrap_or("keyword").parse::<SearchMode>().unwrap_or(SearchMode::Keyword);
-    let memories = store
+    let mut memories = store
         .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
         .map_err(store_err)?;
+    // Strip admin_note — never exposed to agents or non-admin callers.
+    if !auth.role.is_admin() {
+        for m in &mut memories {
+            m.admin_note = None;
+        }
+    }
     Ok(Json(memories))
 }
 
@@ -253,10 +275,21 @@ pub async fn list(
         project: params.project.as_deref(),
         memory_type: params.type_filter.as_deref(),
         scope: params.scope.as_deref(),
+        session_id: params.session_id.as_deref(),
         limit: params.limit.unwrap_or(50),
         offset: params.offset.unwrap_or(0),
+        include_archived: params.include_archived,
+        from_date: params.from_date.as_deref(),
+        to_date: params.to_date.as_deref(),
+        collection_id: params.collection_id.as_deref(),
     };
-    let memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
+    let mut memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
+    // Strip admin_note — never exposed to agents or non-admin callers.
+    if !auth.role.is_admin() {
+        for m in &mut memories {
+            m.admin_note = None;
+        }
+    }
     Ok(Json(memories))
 }
 
@@ -279,9 +312,13 @@ pub async fn get_by_id(
                 code: "not_found".to_string(),
             }),
         )),
-        Some(m) => {
+        Some(mut m) => {
             // Permission check: requires memory:read for the memory's project.
             require_permission(&conn, &auth, Some(&m.project.clone()), "memory:read")?;
+            // Strip admin_note — never exposed to agents or non-admin callers.
+            if !auth.role.is_admin() {
+                m.admin_note = None;
+            }
             Ok(Json(m))
         }
     }
@@ -345,6 +382,278 @@ pub async fn delete(
     }
 }
 
+// ── Bulk delete ───────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct BulkDeleteInput {
+    pub ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct BulkDeleteResponse {
+    pub deleted: usize,
+}
+
+pub async fn bulk_delete(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<BulkDeleteInput>,
+) -> Result<Json<BulkDeleteResponse>, (StatusCode, Json<ApiError>)> {
+    if input.ids.is_empty() {
+        return Ok(Json(BulkDeleteResponse { deleted: 0 }));
+    }
+
+    const MAX_BULK: usize = 500;
+    if input.ids.len() > MAX_BULK {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("Too many IDs — maximum is {MAX_BULK} per request"),
+                code: "too_many_ids".to_string(),
+            }),
+        ));
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    // Require memory:delete on the default project as the gate.
+    // Per-item ownership is enforced inside bulk_delete_memories.
+    require_permission(&conn, &auth, None, "memory:delete")?;
+
+    let is_admin = auth.role.is_admin();
+    let deleted = db_queries::bulk_delete_memories(&conn, &auth.org_id, &input.ids, is_admin, &auth.user_id)
+        .map_err(|e| store_err(anyhow::anyhow!(e)))?;
+
+    Ok(Json(BulkDeleteResponse { deleted }))
+}
+
+pub async fn update(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateMemoryRequest>,
+) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
+    if input.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "content must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    // Fetch the memory to check org ownership and project permissions
+    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    match details {
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        Some((_, ref project_name)) => {
+            require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+
+            let updated = db_queries::update_memory_content(&conn, &auth.org_id, &id, &input.content)
+                .map_err(store_err)?;
+
+            match updated {
+                Some(m) => {
+                    let _ = db_queries::log_audit(
+                        &conn,
+                        &auth.org_id,
+                        &auth.user_id,
+                        "memory.updated",
+                        "memory",
+                        Some(&id),
+                        serde_json::json!({}),
+                    );
+                    Ok(Json(m))
+                }
+                None => Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "Memory not found".to_string(),
+                        code: "not_found".to_string(),
+                    }),
+                )),
+            }
+        }
+    }
+}
+
+// ── Archive / Restore ─────────────────────────────────────────────────────────
+
+pub async fn archive(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    // Verify ownership / permission (same pattern as delete)
+    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    match details {
+        None => return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        Some((_, ref project_name)) => {
+            require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+        }
+    }
+
+    let updated = db_queries::archive_memory(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found or already archived".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+pub async fn restore(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    // Verify ownership / permission
+    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    match details {
+        None => return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        Some((_, ref project_name)) => {
+            require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+        }
+    }
+
+    let updated = db_queries::restore_memory(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found or not archived".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+pub async fn pin(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    match details {
+        None => return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        Some((_, ref project_name)) => {
+            require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+        }
+    }
+
+    let updated = db_queries::pin_memory(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+pub async fn unpin(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    match details {
+        None => return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        Some((_, ref project_name)) => {
+            require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+        }
+    }
+
+    let updated = db_queries::unpin_memory(&conn, &auth.org_id, &id)
+        .map_err(store_err)?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,7 +661,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{get, post},
+        routing::{delete, get, patch, post},
         Router,
     };
     use tower::util::ServiceExt;
@@ -374,7 +683,10 @@ mod tests {
         Router::new()
             .route("/v1/memory/store", post(super::store))
             .route("/v1/memory/search", post(search))
-            .route("/v1/memory/:id", get(super::get_by_id).delete(super::delete))
+            .route("/v1/memory/bulk", delete(super::bulk_delete))
+            .route("/v1/memory/:id", get(super::get_by_id).delete(super::delete).patch(super::update))
+            .route("/v1/memory/:id/pin", post(super::pin))
+            .route("/v1/memory/:id/unpin", post(super::unpin))
             .route("/v1/memory", get(list))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -898,5 +1210,336 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── bulk delete HTTP handler tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn bulk_delete_admin_deletes_selected_memories() {
+        let (store, admin_key, _) = setup_org();
+
+        // Seed 3 memories
+        let id1 = seed_memory(&store, &admin_key).await;
+        let id2 = seed_memory(&store, &admin_key).await;
+        let id3 = seed_memory(&store, &admin_key).await;
+
+        // Bulk delete the first two
+        let body = serde_json::json!({ "ids": [id1, id2] });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/memory/bulk")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(result["deleted"], 2);
+
+        // Verify id3 still exists via GET
+        let get_resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/memory/{id3}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_empty_ids_returns_zero() {
+        let (store, admin_key, _) = setup_org();
+        let body = serde_json::json!({ "ids": [] });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/memory/bulk")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(result["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_viewer_returns_403() {
+        let (store, admin_key, org_id) = setup_org();
+        let viewer_key = create_test_user(&store, &org_id, "viewer");
+        let id = seed_memory(&store, &admin_key).await;
+
+        let body = serde_json::json!({ "ids": [id] });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/memory/bulk")
+                    .header("Authorization", format!("Bearer {viewer_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_unauthenticated_returns_401() {
+        let store = make_store();
+        let body = serde_json::json!({ "ids": ["some-id"] });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/memory/bulk")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── PATCH /v1/memory/:id tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn update_memory_content_returns_200() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        let body = serde_json::json!({ "content": "updated content" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["content"].as_str().unwrap(), "updated content");
+        assert_eq!(mem["id"].as_str().unwrap(), mem_id);
+    }
+
+    #[tokio::test]
+    async fn update_memory_wrong_org_returns_404() {
+        let (store_a, key_a, _) = setup_org();
+        let mem_id = seed_memory(&store_a, &key_a).await;
+
+        // Org B gets its own store — memory belongs to org A
+        let store_b = make_store();
+        let key_b = {
+            let db = store_b.conn();
+            let conn = db.lock().unwrap();
+            let (_, _, key) = q::bootstrap(&conn, "OrgB", "orgb", "admin@b.com", "AdminB").unwrap();
+            key
+        };
+
+        let body = serde_json::json!({ "content": "should not update" });
+        let resp = app(store_b)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {key_b}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /v1/memory/:id/pin + /unpin tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn pin_sets_pinned_true() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        // Pin it
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/memory/{mem_id}/pin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify pinned = true via GET
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["pinned"].as_bool().unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn unpin_sets_pinned_false() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        // Pin then unpin
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/memory/{mem_id}/pin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/memory/{mem_id}/unpin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify pinned = false via GET
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn list_returns_pinned_first() {
+        let (store, admin_key, _) = setup_org();
+
+        // Store two memories — first one will be pinned
+        let body1 = serde_json::json!({ "tool": "claude", "content": "unpinned memory" });
+        let body2 = serde_json::json!({ "tool": "claude", "content": "pinned memory" });
+
+        let r1 = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body1.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(r1.into_body(), usize::MAX).await.unwrap();
+        let m1: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id1 = m1["id"].as_str().unwrap().to_string();
+
+        let r2 = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body2.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(r2.into_body(), usize::MAX).await.unwrap();
+        let m2: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id2 = m2["id"].as_str().unwrap().to_string();
+
+        // Pin id1 (created first, so normally would appear after id2)
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/memory/{id1}/pin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // List — pinned memory must be first
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/memory?limit=10")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let memories: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = memories.as_array().unwrap();
+        assert!(!memories.is_empty(), "should have memories");
+        assert_eq!(memories[0]["id"].as_str().unwrap(), id1, "pinned memory must be first");
+        assert_eq!(memories[1]["id"].as_str().unwrap(), id2, "unpinned memory must follow");
     }
 }

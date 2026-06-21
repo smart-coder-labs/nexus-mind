@@ -131,6 +131,47 @@ impl Default for AgentEventSettings {
 pub struct OrgSettings {
     #[serde(default)]
     pub events: AgentEventSettings,
+    /// Auto-delete memories older than this many days. NULL = keep forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<i64>,
+    /// System prompt injected into every agent's context for this org. NULL = no custom instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_instructions: Option<String>,
+    /// Minimum password length enforced for this org. NULL = use default (8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_password_length: Option<i64>,
+    /// Announcement banner text. Empty string or NULL = no banner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement: Option<String>,
+    /// Announcement type: "info" | "warning" | "error". Defaults to "info".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement_type: Option<String>,
+    /// URL to the org's logo image. NULL = no logo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+}
+
+/// Request body for `PATCH /v1/admin/org/logo`.
+/// None = clear the logo (sets logo_url = NULL).
+#[derive(Debug, Deserialize)]
+pub struct UpdateOrgLogoRequest {
+    pub logo_url: Option<String>,
+}
+
+/// Response for `POST /v1/admin/import`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ImportConfigResponse {
+    pub applied_fields: Vec<String>,
+    pub skipped_fields: Vec<String>,
+}
+
+/// Response for `GET /v1/admin/settings/retention-preview`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RetentionPreview {
+    /// Number of memories that would be deleted given current retention settings.
+    pub would_delete: i64,
+    /// The current retention_days setting. None means no policy is configured.
+    pub retention_days: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -150,6 +191,24 @@ pub struct User {
     pub role: String,
     pub status: String,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_active: Option<String>,
+    /// Non-null when the account has been disabled. NULL = active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_at: Option<String>,
+    /// Private admin note for this user account. Never returned to non-admin callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_note: Option<String>,
+    /// ISO datetime of the last successful API key authentication for this user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_login_at: Option<String>,
+}
+
+/// Request body for `PATCH /v1/admin/users/:id/note`.
+/// None = clear the note (sets admin_note = NULL).
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserNoteRequest {
+    pub note: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -200,6 +259,22 @@ pub struct Memory {
     pub revision_count: i64,
     pub normalized_hash: Option<String>,
     pub project_id: Option<String>,
+    /// Non-null when the memory has been soft-archived. NULL = active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// Pinned memories float to the top of the list. false = not pinned.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Collection this memory belongs to. None = no collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
+    /// Private admin note. Never returned to agents or non-admin callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_note: Option<String>,
+    /// ISO date string (YYYY-MM-DD). Memory will be auto-deleted on or after this date.
+    /// NULL = no scheduled deletion (only org-wide retention policy applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after: Option<String>,
 }
 
 fn default_revision_count() -> i64 {
@@ -232,6 +307,19 @@ pub struct Session {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub summary: Option<String>,
+}
+
+/// Session with memory count — returned by `GET /v1/sessions`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SessionWithCount {
+    pub id: String,
+    pub org_id: String,
+    pub project: String,
+    pub directory: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub summary: Option<String>,
+    pub memory_count: i64,
 }
 
 /// Request body for `POST /v1/sessions`.
@@ -295,6 +383,22 @@ pub struct ApiError {
     pub code: String,
 }
 
+/// A single facet value with its memory count.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct FacetCount {
+    pub value: String,
+    pub count: i64,
+}
+
+/// Aggregated facet counts for the memory corpus of an org.
+/// Returned by `GET /v1/admin/stats/memory-facets`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct MemoryFacets {
+    pub types:    Vec<FacetCount>,
+    pub scopes:   Vec<FacetCount>,
+    pub projects: Vec<FacetCount>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ToolUsage {
     pub tool: String,
@@ -328,6 +432,15 @@ pub struct OrgWithStats {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UsageStats {
+    pub memories: i64,
+    pub sessions: i64,
+    pub users: i64,
+    pub projects: i64,
+    pub code_repos: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Project {
     pub id: String,
     pub org_id: String,
@@ -335,6 +448,9 @@ pub struct Project {
     pub description: Option<String>,
     pub created_at: String,
     pub parent_id: Option<String>,
+    /// Non-null when the project has been soft-archived. NULL = active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -346,6 +462,14 @@ pub struct ProjectMember {
     pub name: String,
     pub role: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectStats {
+    pub total_memories: i64,
+    pub memories_this_week: i64,
+    pub last_memory_at: Option<String>,
+    pub top_tags: Vec<String>,
 }
 
 // ── Policy types ──────────────────────────────────────────────────────────────
@@ -445,6 +569,46 @@ pub struct CodeProject {
     pub chunk_count: i64,
     pub last_indexed: Option<String>,
     pub created_at: String,
+    /// Auto re-index interval in hours. NULL = no auto re-index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reindex_interval_hours: Option<i64>,
+    /// Timestamp of the last completed index run (success or error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_indexed_at: Option<String>,
+    /// Last indexing error message, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_index_error: Option<String>,
+    /// Number of files indexed in the last successful run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_files_count: Option<i64>,
+    /// Current index status: "pending" | "indexing" | "success" | "error".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_status: Option<String>,
+    /// Soft-archive timestamp. NULL = active; non-NULL = archived at that datetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// Glob-like patterns to exclude from indexing (e.g. "*.lock", "node_modules/*").
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+}
+
+/// Request body for `PATCH /v1/code/projects/:id`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UpdateCodeProjectRequest {
+    pub exclude_patterns: Option<Vec<String>>,
+}
+
+/// Request body for `PATCH /v1/code/projects/:id/schedule`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateReindexScheduleRequest {
+    pub interval_hours: Option<i64>,
+}
+
+/// Response body for `POST /v1/code/projects/:id/reindex`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReindexProjectResponse {
+    pub status: String,
+    pub project_id: String,
 }
 
 /// A single chunk of source code with its embedding metadata.
@@ -486,6 +650,29 @@ pub struct SearchCodeRequest {
     pub project: String,
     pub query: String,
     pub top_k: Option<i64>,
+    /// Optional file extension filter (e.g. "ts", "rs"). Only results whose
+    /// `file_path` ends with `.{extension}` are returned.
+    pub extension: Option<String>,
+}
+
+/// API key with joined user info — returned by `GET /v1/admin/keys`.
+#[derive(Debug, Serialize, Clone)]
+pub struct ApiKeyWithUser {
+    pub id: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub label: String,
+    pub last_used: Option<String>,
+    pub created_at: String,
+    pub revoked: bool,
+    pub expires_at: Option<String>,
+    /// Total number of times this key has been used for authentication.
+    #[serde(default)]
+    pub times_used: i64,
+    /// ISO datetime of the last successful authentication (may differ from last_used by a few ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
 }
 
 /// A single result from a code semantic search.
@@ -510,6 +697,321 @@ pub struct CodeStatusResponse {
     pub file_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_count: Option<i64>,
+}
+
+// ── Project event override types ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ProjectEventOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolve_issues: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_prs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respond_comments: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_index: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scanner: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateProjectEventOverridesRequest {
+    pub overrides: ProjectEventOverrides,
+}
+
+// ── Webhook types ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Webhook {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub target_url: String,
+    pub secret: Option<String>,
+    pub events: Vec<String>,
+    pub active: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWebhookRequest {
+    pub name: String,
+    pub target_url: String,
+    pub secret: Option<String>,
+    pub events: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateWebhookRequest {
+    pub active: Option<bool>,
+    pub secret: Option<String>,
+    pub events: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UserSummary {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+}
+
+// ── Webhook delivery log ─────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WebhookDelivery {
+    pub id: String,
+    pub webhook_id: String,
+    pub org_id: String,
+    pub event_type: String,
+    pub payload: String,
+    pub status_code: Option<i64>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub delivered_at: String,
+}
+
+// ── Webhook test result ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct WebhookTestResult {
+    pub success: bool,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GlobalSearchResult {
+    pub memories: Vec<Memory>,
+    pub users: Vec<UserSummary>,
+    pub projects: Vec<Project>,
+}
+
+/// Daily memory count — one entry per calendar day.
+#[derive(Debug, Serialize, Clone)]
+pub struct DailyCount {
+    pub date: String,  // "YYYY-MM-DD"
+    pub count: i64,
+}
+
+/// Name + count pair used for type/project breakdowns.
+#[derive(Debug, Serialize, Clone)]
+pub struct NameCount {
+    pub name: String,
+    pub count: i64,
+}
+
+/// Memory trend data for the last 30 days — returned by `GET /v1/admin/stats/trends`.
+#[derive(Debug, Serialize, Clone)]
+pub struct MemoryTrends {
+    pub daily_counts: Vec<DailyCount>,  // last 30 days
+    pub by_type: Vec<NameCount>,        // top 5 types
+    pub by_project: Vec<NameCount>,     // top 5 projects
+    pub total: i64,
+    pub this_week: i64,                 // last 7 days
+    pub this_month: i64,                // last 30 days
+}
+
+// ── Onboarding types ──────────────────────────────────────────────────────────
+
+/// A single onboarding checklist item.
+#[derive(Debug, Serialize, Clone)]
+pub struct OnboardingItem {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub done: bool,
+}
+
+/// Onboarding status returned by `GET /v1/admin/onboarding`.
+#[derive(Debug, Serialize, Clone)]
+pub struct OnboardingStatus {
+    pub items: Vec<OnboardingItem>,
+}
+
+/// Request body for `PATCH /v1/memory/:id`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateMemoryRequest {
+    pub content: String,
+}
+
+/// Returned by `POST /v1/admin/users/:user_id/reset-key`.
+/// The new key is only visible once — callers must show it immediately.
+#[derive(Debug, Serialize, Clone)]
+pub struct ResetKeyResponse {
+    pub new_key: String,
+}
+
+// ── Invite link types ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InviteLink {
+    pub token: String,
+    pub org_id: String,
+    pub role: String,
+    pub created_by: String,
+    pub used_at: Option<String>,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInviteLinkRequest {
+    /// Role to assign to the user who accepts the invite. Defaults to "user".
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InviteLinkResponse {
+    pub token: String,
+    pub invite_url: String,
+    pub expires_at: String,
+    pub role: String,
+}
+
+// ── Memory import types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMemory {
+    pub content: String,
+    pub project: Option<String>,
+    pub scope: Option<String>,
+    #[serde(rename = "type")]
+    pub memory_type: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMemoriesRequest {
+    pub memories: Vec<ImportMemory>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportMemoriesResponse {
+    pub imported: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}
+
+/// Request body for `PATCH /v1/admin/memories/:id/note`.
+/// Empty string clears the note (sets admin_note = NULL).
+#[derive(Debug, Deserialize)]
+pub struct UpdateNoteRequest {
+    pub note: String,
+}
+
+/// Request body for `PATCH /v1/admin/org/announcement`.
+/// Empty string = clear the announcement.
+#[derive(Debug, Deserialize)]
+pub struct UpdateAnnouncementRequest {
+    pub announcement: String,
+    pub announcement_type: Option<String>,
+}
+
+/// Request body for `PATCH /v1/admin/memories/:id/schedule-delete`.
+/// None = clear the scheduled deletion date.
+#[derive(Debug, Deserialize)]
+pub struct ScheduleDeleteRequest {
+    pub delete_after: Option<String>,
+}
+
+/// Request body for `POST /v1/admin/memories/merge`.
+#[derive(Debug, Deserialize)]
+pub struct MergeMemoriesRequest {
+    pub keep_id: String,
+    pub merge_id: String,
+}
+
+/// Request body for `POST /v1/admin/memories/bulk-tag`.
+#[derive(Debug, Deserialize)]
+pub struct BulkTagRequest {
+    pub ids: Vec<String>,
+    pub action: String,
+    pub tag: String,
+}
+
+/// Response body for `POST /v1/admin/memories/bulk-tag`.
+#[derive(Debug, Serialize)]
+pub struct BulkTagResponse {
+    pub updated: usize,
+}
+
+/// Request body for `POST /v1/admin/tags/rename`.
+#[derive(Debug, Deserialize)]
+pub struct RenameTagRequest {
+    pub from: String,
+    pub to: String,
+}
+
+/// Response body for `POST /v1/admin/tags/rename`.
+#[derive(Debug, Serialize)]
+pub struct RenameTagResponse {
+    pub updated_count: i64,
+}
+
+/// A single contributor entry — returned by `GET /v1/admin/stats/top-contributors`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ContributorStat {
+    pub agent_id: String,
+    pub memory_count: i64,
+    pub last_activity: String,
+}
+
+/// A single day entry in the memory creation heatmap.
+/// Returned by `GET /v1/admin/stats/memory-heatmap`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct HeatmapDay {
+    pub day: String,   // "YYYY-MM-DD"
+    pub count: i64,
+}
+
+/// Agent/tool activity summary — returned by `GET /v1/admin/stats/agent-activity`.
+#[derive(Debug, Serialize, Clone)]
+pub struct AgentActivity {
+    pub tool: String,
+    pub total_memories: i64,
+    pub memories_last_24h: i64,
+    pub memories_last_7d: i64,
+    pub last_seen: String,
+}
+
+// ── Notification types ────────────────────────────────────────────────────────
+
+/// A single derived notification item — computed from recent audit log events.
+/// Returned by `GET /v1/admin/notifications`.
+#[derive(Debug, Serialize, Clone)]
+pub struct NotificationItem {
+    pub id: String,
+    pub message: String,
+    pub action: String,
+    pub resource_type: Option<String>,
+    pub created_at: String,
+    pub actor: Option<String>,
+}
+
+// ── Collections ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+    pub memory_count: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCollectionRequest {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignCollectionRequest {
+    pub collection_id: Option<String>, // null to unassign
 }
 
 #[cfg(test)]
@@ -592,6 +1094,11 @@ mod tests {
             revision_count: 1,
             normalized_hash: None,
             project_id: None,
+            archived_at: None,
+            pinned: false,
+            collection_id: None,
+            admin_note: None,
+            delete_after: None,
         };
         assert!(m.tags.is_empty());
         assert_eq!(m.scope, "project");
@@ -716,6 +1223,11 @@ mod tests {
             revision_count: 2,
             normalized_hash: Some("abc123".into()),
             project_id: Some("proj_1".into()),
+            archived_at: None,
+            pinned: false,
+            collection_id: None,
+            admin_note: None,
+            delete_after: None,
         };
         let json_val: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(json_val["title"], "My title");
@@ -917,6 +1429,13 @@ mod tests {
             chunk_count: 42,
             last_indexed: Some("2026-06-19T12:00:00Z".into()),
             created_at: "2026-06-19T12:00:00Z".into(),
+            reindex_interval_hours: None,
+            last_indexed_at: None,
+            last_index_error: None,
+            indexed_files_count: None,
+            index_status: None,
+            archived_at: None,
+            exclude_patterns: vec![],
         };
         let s = serde_json::to_string(&p).unwrap();
         let back: CodeProject = serde_json::from_str(&s).unwrap();

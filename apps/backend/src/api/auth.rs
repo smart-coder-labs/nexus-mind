@@ -259,12 +259,19 @@ pub async fn change_password(
     Extension(auth): Extension<AuthContext>,
     Json(input): Json<ChangePasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    if input.new_password.len() < 8 {
-        return Err(bad_request("New password must be at least 8 characters", "password_too_short"));
-    }
-
     let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
+
+    // Enforce org-level minimum password length (default 8 if not set)
+    let org_settings = queries::get_org_settings(&conn, &auth.org_id)
+        .unwrap_or_default();
+    let min_len = org_settings.min_password_length.unwrap_or(8) as usize;
+    if input.new_password.len() < min_len {
+        return Err(bad_request(
+            &format!("Password must be at least {} characters", min_len),
+            "password_too_short",
+        ));
+    }
 
     let current_hash = queries::get_user_password_hash(&conn, &auth.user_id)
         .map_err(|_| internal_err("db error"))?

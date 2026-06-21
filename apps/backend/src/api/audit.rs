@@ -97,6 +97,7 @@ pub async fn export(
         params.resource_type.as_deref(),
         params.from.as_deref(),
         params.to.as_deref(),
+        None,
         EXPORT_HARD_CAP,
         0,
     )
@@ -149,8 +150,10 @@ pub struct AuditParams {
     pub user_id: Option<String>,
     pub action: Option<String>,
     pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub search: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -187,14 +190,18 @@ pub async fn query(
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0).max(0);
 
-    let entries = queries::list_audit(
+    let search = params.search.as_deref().filter(|s| !s.is_empty());
+
+    let entries = queries::list_audit_with_resource(
         &conn,
         &ctx.org_id,
         params.user_id.as_deref(),
         params.action.as_deref(),
         params.resource_type.as_deref(),
+        params.resource_id.as_deref(),
         params.from.as_deref(),
         params.to.as_deref(),
+        search,
         limit,
         offset,
     )
@@ -635,8 +642,10 @@ mod tests {
             user_id: None,
             action: None,
             resource_type: None,
+            resource_id: None,
             from: None,
             to: None,
+            search: None,
             limit: None,
             offset: None,
         };
@@ -652,8 +661,10 @@ mod tests {
             user_id: None,
             action: None,
             resource_type: None,
+            resource_id: None,
             from: None,
             to: None,
+            search: None,
             limit: Some(999),
             offset: Some(0),
         };
@@ -669,7 +680,7 @@ mod tests {
         log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
         log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
 
-        let entries = queries::list_audit(&conn, &org.id, None, None, None, None, None, 50, 0).unwrap();
+        let entries = queries::list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().all(|e| e.org_id == org.id));
     }

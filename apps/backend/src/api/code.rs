@@ -4,6 +4,7 @@ use axum::{
     Extension, Json,
 };
 use serde::Deserialize;
+use chrono::Utc;
 
 use crate::{
     api::helpers::require_permission,
@@ -12,7 +13,8 @@ use crate::{
     indexer,
     models::types::{
         ApiError, AuthContext, CodeProject, CodeStatusResponse, IndexProjectRequest,
-        IndexProjectResponse, SearchCodeRequest, SearchCodeResult,
+        IndexProjectResponse, ReindexProjectResponse, SearchCodeRequest, SearchCodeResult,
+        UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
     },
     store::sqlite::SqliteStore,
 };
@@ -134,14 +136,32 @@ pub async fn post_index(
     let db = store.conn();
 
     // Run synchronously (v1) — large repos may time out
-    let response = indexer::index_project(
+    let result = indexer::index_project(
         &auth.org_id,
         &input.project,
         &effective_root_path,
         &db,
         embed_svc.as_ref(),
-    )
-    .map_err(db_err)?;
+    );
+
+    // On error, persist the error status before returning
+    let response = match result {
+        Ok(r) => r,
+        Err(e) => {
+            let now = Utc::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            // Best-effort: look up the project id to record the error
+            if let Ok(conn) = db.lock() {
+                if let Ok(Some(proj)) = db_queries::get_code_project(&auth.org_id, &input.project, &conn) {
+                    if let Ok(pid) = proj.id.parse::<i64>() {
+                        let _ = db_queries::set_code_project_error(&conn, pid, &e.to_string(), &now);
+                    }
+                }
+            }
+            return Err(db_err(e));
+        }
+    };
 
     // Save repo_url if provided
     if let Some(url) = &input.repo_url {
@@ -239,7 +259,7 @@ pub async fn post_search(
         db_queries::get_chunks_by_ids(&conn, &ids).map_err(db_err)?
     };
 
-    let results: Vec<SearchCodeResult> = chunks
+    let mut results: Vec<SearchCodeResult> = chunks
         .into_iter()
         .map(|c| SearchCodeResult {
             file_path: c.file_path.clone(),
@@ -250,6 +270,14 @@ pub async fn post_search(
             score: score_map.get(&c.id).copied().unwrap_or(0.0),
         })
         .collect();
+
+    // Post-filter by extension if provided
+    if let Some(ext) = &input.extension {
+        if !ext.is_empty() {
+            let suffix = format!(".{}", ext);
+            results.retain(|r| r.file_path.ends_with(&suffix));
+        }
+    }
 
     Ok(Json(results))
 }
@@ -385,17 +413,80 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+/// Query params for `GET /v1/code/projects`.
+#[derive(Deserialize)]
+pub struct ListCodeProjectsParams {
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
 /// `GET /v1/code/projects`
 ///
-/// Returns all code projects for the authenticated org.
+/// Returns code projects for the authenticated org.
+/// Pass `?include_archived=true` to include archived projects.
 pub async fn list_projects(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
+    Query(params): Query<ListCodeProjectsParams>,
 ) -> Result<Json<Vec<CodeProject>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let projects = db_queries::list_code_projects(&conn, &auth.org_id).map_err(db_err)?;
+    let projects = db_queries::list_code_projects_filtered(&conn, &auth.org_id, params.include_archived).map_err(db_err)?;
     Ok(Json(projects))
+}
+
+/// `POST /v1/code/projects/:id/archive`
+///
+/// Soft-archives a code project by setting archived_at. Admin only.
+pub async fn archive_project(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let found = db_queries::archive_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Code project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+/// `POST /v1/code/projects/:id/restore`
+///
+/// Restores a soft-archived code project (clears archived_at).
+pub async fn restore_project(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let found = db_queries::restore_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Code project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
 }
 
 /// `DELETE /v1/code/projects/:name`
@@ -423,6 +514,178 @@ pub async fn delete_project(
             }),
         ))
     }
+}
+
+/// `PATCH /v1/code/projects/:id/schedule`
+///
+/// Sets or clears the auto re-index interval for a code project. Admin only.
+/// Body: `{ "interval_hours": 6 }` — null clears the schedule.
+pub async fn update_schedule(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateReindexScheduleRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "Admin access required".to_string(),
+                code: "forbidden".to_string(),
+            }),
+        ));
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let found = db_queries::update_reindex_interval(&conn, &auth.org_id, id, body.interval_hours)
+        .map_err(db_err)?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Code project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+/// `PATCH /v1/code/projects/:id`
+///
+/// Updates mutable settings for a code project (currently: exclude_patterns). Admin only.
+pub async fn update_code_project(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+    Json(body): Json<UpdateCodeProjectRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let id: i64 = id_str.parse().map_err(|_| (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ApiError {
+            error: "Invalid project id".to_string(),
+            code: "validation_error".to_string(),
+        }),
+    ))?;
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let patterns = body.exclude_patterns.unwrap_or_default();
+    // Enforce maximum 20 patterns
+    if patterns.len() > 20 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "Maximum 20 exclude patterns allowed".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+    let found = db_queries::update_code_project_exclude_patterns(&conn, &auth.org_id, id, &patterns)
+        .map_err(db_err)?;
+    if found {
+        Ok(axum::Json(serde_json::json!({ "ok": true })))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Code project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+/// `POST /v1/code/projects/:id/reindex`
+///
+/// Triggers an immediate background reindex of the code project. Admin only.
+/// Sets `index_status = 'indexing'` synchronously, then spawns a background task.
+pub async fn post_reindex(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<i64>,
+) -> Result<Json<ReindexProjectResponse>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    // Look up the project
+    let project = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        db_queries::get_code_project_by_id(&conn, &auth.org_id, id)
+            .map_err(db_err)?
+    };
+
+    let project = match project {
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Code project not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ));
+        }
+        Some(p) => p,
+    };
+
+    // Set status to indexing immediately
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        db_queries::set_code_project_indexing(&conn, id).map_err(db_err)?;
+    }
+
+    // Spawn background indexing task
+    let db = store.conn();
+    let embed_svc = store.embed_service();
+    let org_id = auth.org_id.clone();
+    let project_name = project.name.clone();
+    let root_path = project.root_path.clone();
+    let repo_url = project.repo_url.clone();
+
+    tokio::spawn(async move {
+        // If repo_url is set, git pull first
+        if let Some(ref url) = repo_url {
+            let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);
+            let path = std::path::Path::new(&clone_dir);
+            if path.join(".git").exists() {
+                let _ = git_cmd()
+                    .args(["-C", &clone_dir, "pull", "--rebase", "--quiet"])
+                    .output();
+            } else {
+                let _ = std::fs::create_dir_all(&clone_dir);
+                let _ = git_cmd()
+                    .args(["clone", "--depth=1", "--quiet", url.trim(), &clone_dir])
+                    .output();
+            }
+            let effective_path = clone_dir;
+            let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref());
+            if let Err(e) = result {
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                if let Ok(conn) = db.lock() {
+                    let _ = db_queries::set_code_project_error(&conn, id, &e.to_string(), &now);
+                }
+            }
+        } else {
+            let result = indexer::index_project(&org_id, &project_name, &root_path, &db, embed_svc.as_ref());
+            if let Err(e) = result {
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                if let Ok(conn) = db.lock() {
+                    let _ = db_queries::set_code_project_error(&conn, id, &e.to_string(), &now);
+                }
+            }
+        }
+    });
+
+    Ok(Json(ReindexProjectResponse {
+        status: "indexing_started".to_string(),
+        project_id: id.to_string(),
+    }))
 }
 
 #[cfg(test)]

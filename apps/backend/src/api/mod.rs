@@ -13,3 +13,5 @@ pub mod admin;
 pub mod auth;
 pub mod sessions;
 pub mod internal;
+pub mod webhooks;
+pub mod search;

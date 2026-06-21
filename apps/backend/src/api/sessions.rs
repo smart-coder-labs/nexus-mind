@@ -72,6 +72,18 @@ pub async fn patch_session_handler(
     }
 }
 
+pub async fn list_sessions_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<crate::models::types::SessionWithCount>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let sessions = queries::list_sessions(&conn, &auth.org_id).map_err(db_err)?;
+
+    Ok(Json(sessions))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,7 +91,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{patch, post},
+        routing::{get, patch, post},
         Router,
     };
     use tower::util::ServiceExt;
@@ -98,7 +110,7 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/sessions", post(create_session_handler))
+            .route("/v1/sessions", get(list_sessions_handler).post(create_session_handler))
             .route("/v1/sessions/:id", patch(patch_session_handler))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -230,6 +242,71 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_empty_for_new_org() {
+        let (store, key) = setup_with_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_created_sessions_with_memory_count() {
+        let (store, key) = setup_with_key();
+
+        // Create a session
+        let body = serde_json::json!({ "project": "nexusmind" });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+        // List sessions
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["project"], "nexusmind");
+        assert_eq!(arr[0]["memory_count"], 0);
     }
 
     #[tokio::test]

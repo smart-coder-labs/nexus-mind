@@ -8,13 +8,13 @@ function Skeleton({
     return (
         <div
             className={cn(
-                "relative overflow-hidden rounded-md bg-surface-secondary",
+                "relative overflow-hidden rounded-[5px] bg-[#272729]",
                 className
             )}
             {...props}
         >
             <motion.div
-                className="absolute inset-0 bg-gradient-to-r from-transparent via-surface-primary/50 to-transparent"
+                className="absolute inset-0 bg-gradient-to-r from-transparent via-[#1d1d1f]/50 to-transparent"
                 initial={{ translateX: "-100%" }}
                 animate={{ translateX: "100%" }}
                 transition={{

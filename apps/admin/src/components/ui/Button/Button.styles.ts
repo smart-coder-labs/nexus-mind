@@ -6,8 +6,8 @@ import type { ButtonVariant, ButtonSize } from './Button.types';
 
 export const buttonBaseStyles = `
   inline-flex items-center justify-center gap-2
-  font-medium transition-apple
-  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue focus-visible:ring-offset-2
+  font-semibold transition-apple
+  focus-visible:outline-none
   cursor-pointer
   disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none
   select-none
@@ -21,10 +21,10 @@ export const buttonVariantStyles: Record<ButtonVariant, string> = {
     shadow-sm
   `,
     secondary: `
-    bg-surface-secondary text-text-primary
+    bg-[#272729] text-text-primary
     border border-border-primary
-    hover:bg-surface-primary hover:border-border-primary
-    active:bg-surface-secondary
+    hover:bg-[#1d1d1f] hover:border-border-primary
+    active:bg-[#272729]
     shadow-xs
   `,
     ghost: `
@@ -33,26 +33,26 @@ export const buttonVariantStyles: Record<ButtonVariant, string> = {
     active:bg-accent-blue-tint
   `,
     subtle: `
-    bg-surface-secondary text-text-primary
-    hover:bg-surface-primary
-    active:bg-surface-secondary
+    bg-[#272729] text-text-primary
+    hover:bg-[#1d1d1f]
+    active:bg-[#272729]
   `,
     outline: `
     bg-transparent text-text-primary
     border border-border-primary
-    hover:bg-surface-secondary hover:border-border-secondary
-    active:bg-surface-tertiary
+    hover:bg-[#272729] hover:border-border-secondary
+    active:bg-[#1d1d1f]
   `,
     destructive: `
     bg-status-error text-white
-    hover:bg-red-600
-    active:bg-red-700
+    hover:bg-status-error/80
+    active:bg-status-error/70
     shadow-sm
   `,
 };
 
 export const buttonSizeStyles: Record<ButtonSize, string> = {
-    sm: 'h-8 px-3 text-sm rounded-lg',
-    md: 'h-10 px-4 text-base rounded-xl',
-    lg: 'h-12 px-6 text-lg rounded-xl',
+    sm: 'h-8 px-3 text-sm rounded-full',
+    md: 'h-10 px-4 text-base rounded-full',
+    lg: 'h-12 px-6 text-lg rounded-full',
 };

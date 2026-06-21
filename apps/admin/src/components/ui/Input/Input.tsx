@@ -47,7 +47,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       ${sizeStyles[inputSize]}
       ${leftIcon ? withIconPadding.left[inputSize] : ''}
       ${rightIcon ? withIconPadding.right[inputSize] : ''}
-      ${hasError ? 'border-status-error focus:border-status-error focus:ring-status-error/20' : ''}
+      ${hasError ? 'border-status-error focus:border-status-error/60' : ''}
       ${className}
     `.trim().replace(/\s+/g, ' ');
 
@@ -73,7 +73,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-sm font-normal text-text-primary mb-2">
+                    <label className="block text-sm font-normal text-text-secondary mb-2">
                         {label}
                     </label>
                 )}
@@ -179,14 +179,14 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       rounded-[11px]
       min-h-[100px]
       resize-${resize}
-      ${hasError ? 'border-status-error focus:border-status-error focus:ring-status-error/20' : ''}
+      ${hasError ? 'border-status-error focus:border-status-error/60' : ''}
       ${className}
     `.trim().replace(/\s+/g, ' ');
 
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-sm font-normal text-text-primary mb-2">
+                    <label className="block text-sm font-normal text-text-secondary mb-2">
                         {label}
                     </label>
                 )}

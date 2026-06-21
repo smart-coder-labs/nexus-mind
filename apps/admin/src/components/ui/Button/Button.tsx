@@ -9,8 +9,8 @@ import type { ButtonProps, ButtonVariant, ButtonSize } from './Button.types';
 
 const baseStyles = `
   inline-flex items-center justify-center gap-2
-  font-normal transition-apple
-  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue focus-visible:ring-offset-2
+  font-semibold transition-apple
+  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40 focus-visible:ring-offset-2
   cursor-pointer
   disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none
   select-none
@@ -34,9 +34,9 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-[rgba(0,102,204,0.12)]
   `,
     subtle: `
-    bg-surface-secondary text-text-primary
-    hover:bg-surface-primary
-    active:bg-surface-secondary
+    bg-[#272729] text-text-primary
+    hover:bg-[#1d1d1f]
+    active:bg-[#272729]
   `,
     outline: `
     bg-transparent text-[#2997ff]
@@ -46,8 +46,8 @@ const variantStyles: Record<ButtonVariant, string> = {
   `,
     destructive: `
     bg-status-error text-white
-    hover:bg-red-600
-    active:bg-red-700
+    hover:opacity-90
+    active:opacity-80
   `,
 };
 

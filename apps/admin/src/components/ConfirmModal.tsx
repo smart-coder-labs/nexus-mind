@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 
 interface Props {
@@ -12,14 +13,64 @@ interface Props {
 }
 
 export function ConfirmModal({ open, title, description, confirmLabel, danger, loading, onConfirm, onClose }: Props) {
+  const modalRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    document.body.style.overflow = 'hidden'
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.body.style.overflow = ''
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [open, onClose])
+
+  // Focus trap
+  useEffect(() => {
+    if (!open) return
+    const modal = modalRef.current
+    if (!modal) return
+    const focusable = modal.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    first?.focus()
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last?.focus() }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first?.focus() }
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => document.removeEventListener('keydown', trap)
+  }, [open])
+
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-primary border border-border-primary rounded-[18px] p-6 w-full max-w-sm space-y-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        ref={modalRef}
+        className="bg-[#272729] border border-white/[0.08] rounded-[18px] p-6 w-full max-w-sm space-y-4"
+        onClick={e => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <p className="text-text-primary font-semibold">{title}</p>
-          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary transition-colors">
+          <button
+            onClick={onClose}
+            aria-label={`Close ${title} dialog`}
+            className="text-text-tertiary hover:text-text-primary transition-colors"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -28,7 +79,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
           <button
             onClick={onClose}
             disabled={loading}
-            className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors disabled:opacity-40"
+            className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors disabled:opacity-40"
           >
             Cancel
           </button>

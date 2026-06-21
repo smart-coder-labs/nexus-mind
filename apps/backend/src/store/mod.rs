@@ -6,13 +6,24 @@ use crate::models::types::{Memory, StoreMemoryRequest};
 
 /// Filters for listing memories.
 pub struct MemoryFilters<'a> {
-    pub user_id:     Option<&'a str>,
-    pub tool:        Option<&'a str>,
-    pub project:     Option<&'a str>,
-    pub memory_type: Option<&'a str>,
-    pub scope:       Option<&'a str>,
-    pub limit:       i64,
-    pub offset:      i64,
+    pub user_id:          Option<&'a str>,
+    pub tool:             Option<&'a str>,
+    pub project:          Option<&'a str>,
+    pub memory_type:      Option<&'a str>,
+    pub scope:            Option<&'a str>,
+    pub session_id:       Option<&'a str>,
+    pub limit:            i64,
+    pub offset:           i64,
+    /// When true, include archived memories in results. Default: false (exclude archived).
+    pub include_archived: bool,
+    /// ISO 8601 date string (e.g. "2025-01-01"). When set, only memories created on or after
+    /// this date are returned. Compared against `created_at`.
+    pub from_date:        Option<&'a str>,
+    /// ISO 8601 date string (e.g. "2025-01-31"). When set, only memories created on or before
+    /// this date (inclusive, i.e. before start of next day) are returned.
+    pub to_date:          Option<&'a str>,
+    /// When set, only memories belonging to this collection are returned.
+    pub collection_id:    Option<&'a str>,
 }
 
 /// Controls how the `search` method retrieves memories.

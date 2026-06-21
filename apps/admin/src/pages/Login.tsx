@@ -30,6 +30,10 @@ export default function Login() {
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!email.trim() || !password.trim()) return
+    if (!email.includes('@')) {
+      setError('Please enter a valid email address.')
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -52,6 +56,10 @@ export default function Login() {
   const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!forgotEmail.trim()) return
+    if (!forgotEmail.includes('@')) {
+      setForgotError('Please enter a valid email address.')
+      return
+    }
     setForgotLoading(true)
     setForgotError('')
     try {
@@ -91,7 +99,7 @@ export default function Login() {
     <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-[34px] font-semibold text-white tracking-[-0.374px]">NexusMind</h1>
+          <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">NexusMind</h1>
           <p className="text-text-secondary mt-2 text-[14px] tracking-[-0.224px]">Enterprise Memory Control Plane</p>
         </div>
 
@@ -103,7 +111,7 @@ export default function Login() {
               onClick={() => { setMode('email'); setError('') }}
               className={`flex-1 py-2 transition-colors ${
                 mode === 'email'
-                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-semibold'
+                  ? 'bg-accent-blue/10 text-accent-blue font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -114,7 +122,7 @@ export default function Login() {
               onClick={() => { setMode('apikey'); setError('') }}
               className={`flex-1 py-2 transition-colors border-l border-border-primary ${
                 mode === 'apikey'
-                  ? 'bg-[#0066cc]/10 text-[#2997ff] font-semibold'
+                  ? 'bg-accent-blue/10 text-accent-blue font-semibold'
                   : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
@@ -171,7 +179,7 @@ export default function Login() {
                   <p className="text-xs text-text-tertiary">If that address exists, a reset link has been sent.</p>
                   <button
                     onClick={() => { setMode('email'); setForgotSent(false) }}
-                    className="text-xs text-[#2997ff] hover:underline transition-colors"
+                    className="text-xs text-accent-blue hover:underline transition-colors"
                   >
                     Back to sign in
                   </button>

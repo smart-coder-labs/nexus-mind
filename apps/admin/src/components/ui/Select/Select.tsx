@@ -162,7 +162,7 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-surface-primary px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-surface-secondary/50 transition-colors",
+                    "group flex h-10 w-full items-center justify-between rounded-[11px] border border-border-primary bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-[#272729]/50 transition-colors",
                     className
                 )}
                 {...props}
@@ -342,11 +342,11 @@ const SelectItem = React.forwardRef<HTMLButtonElement, SelectItemProps>(
                 onFocus={() => setHighlightedValue(value)}
                 onClick={() => !disabled && setValue(value)}
                 className={cn(
-                    "relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-8 pr-2 text-sm outline-none transition-colors",
+                    "relative flex w-full cursor-default select-none items-center rounded-[8px] py-1.5 pl-8 pr-2 text-sm outline-none transition-colors",
                     isSelected
                         ? "bg-accent-blue text-white"
                         : isHighlighted
-                            ? "bg-surface-secondary text-text-primary"
+                            ? "bg-[#272729] text-text-primary"
                             : "text-text-primary",
                     disabled && "pointer-events-none opacity-50",
                     className
@@ -453,7 +453,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                     "border transition-all",
                     activeLabel
                         ? "bg-accent-blue/10 border-accent-blue/30 text-accent-blue"
-                        : "bg-surface-secondary border-border-primary text-text-primary hover:bg-surface-tertiary"
+                        : "bg-[#272729] border-border-primary text-text-primary hover:bg-[#1d1d1f]"
                 )}
             >
                 {icon || <ChevronDown className="w-4 h-4" />}
@@ -472,7 +472,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                         className="fixed inset-0 z-10"
                         onClick={() => setIsOpen(false)}
                     />
-                    <div className="absolute top-full left-0 mt-2 w-64 bg-surface-primary border border-border-primary rounded-[18px] z-20 overflow-hidden">
+                    <div className="absolute top-full left-0 mt-2 w-64 bg-[#1d1d1f] border border-border-primary rounded-[18px] z-20 overflow-hidden">
                         <div className="max-h-80 overflow-y-auto p-2">
                             {options.map((option) => {
                                 const isActive = isOptionActive(option.value);
@@ -482,11 +482,11 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                                         key={option.id}
                                         onClick={() => handleOptionClick(option)}
                                         className={cn(
-                                            "w-full flex items-center justify-between px-3 py-2 rounded-lg",
+                                            "w-full flex items-center justify-between px-3 py-2 rounded-[8px]",
                                             "text-sm transition-colors",
                                             isActive
                                                 ? "bg-accent-blue/10 text-accent-blue"
-                                                : "text-text-primary hover:bg-surface-secondary"
+                                                : "text-text-primary hover:bg-[#272729]"
                                         )}
                                     >
                                         <div className="flex items-center gap-2">
