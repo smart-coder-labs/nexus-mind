@@ -865,7 +865,7 @@ export default function Projects() {
               ) : !projects?.length ? (
                 <div className="flex flex-col items-center gap-2 py-12 text-center">
                   <FolderOpen className="w-6 h-6 text-text-quaternary/50" />
-                  <p className="text-sm font-semibold text-text-secondary">No projects yet</p>
+                  <p className="text-xs font-semibold text-text-secondary">No projects yet</p>
                   <p className="text-xs text-text-quaternary max-w-xs">Create your first project using the form on the right to organize memories by workspace scope.</p>
                 </div>
               ) : (
@@ -1056,7 +1056,7 @@ export default function Projects() {
                 </h2>
               </div>
               {selectedProject.description && (
-                <p className="text-sm text-text-tertiary mb-3">{selectedProject.description}</p>
+                <p className="text-xs text-text-tertiary mb-3">{selectedProject.description}</p>
               )}
 
               {/* Parent selector */}
@@ -1096,9 +1096,9 @@ export default function Projects() {
             {/* Memories list */}
             <div className="flex-1 overflow-y-auto min-h-0 space-y-2">
               {memoriesLoading ? (
-                <div className="text-center py-8 text-sm text-text-tertiary">Loading memories...</div>
+                <div className="text-center py-8 text-xs text-text-tertiary">Loading memories...</div>
               ) : !projectMemories?.length ? (
-                <div className="text-center py-8 text-sm text-text-tertiary border border-dashed border-border-secondary rounded-[18px]">
+                <div className="text-center py-8 text-xs text-text-tertiary border border-dashed border-border-secondary rounded-[18px]">
                   No memories stored for this project.
                 </div>
               ) : (

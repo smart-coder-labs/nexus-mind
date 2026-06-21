@@ -226,7 +226,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             aria-label="Search memories, users, and projects"
             aria-autocomplete="list"
             aria-controls="command-palette-results"
-            className="w-full bg-transparent pl-10 pr-16 py-3.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none"
+            className="w-full bg-transparent pl-10 pr-16 py-3.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none"
           />
           <kbd className="absolute right-4 text-[10px] text-text-quaternary bg-[#1d1d1f] border border-border-secondary rounded-[5px] px-1.5 py-0.5 pointer-events-none">
             ESC
@@ -237,7 +237,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         <div id="command-palette-results" role="listbox" aria-label="Search results" className="max-h-80 overflow-y-auto">
           {/* Initial state — history or prompt */}
           {!query.trim() && !loading && history.length === 0 && (
-            <p className="text-sm text-text-tertiary text-center py-8">
+            <p className="text-xs text-text-tertiary text-center py-8">
               Type to search memories, users, and projects…
             </p>
           )}
@@ -279,7 +279,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
           {/* No results */}
           {!loading && isEmpty && (
-            <p className="text-sm text-text-tertiary text-center py-8">
+            <p className="text-xs text-text-tertiary text-center py-8">
               No results for "{query}"
             </p>
           )}

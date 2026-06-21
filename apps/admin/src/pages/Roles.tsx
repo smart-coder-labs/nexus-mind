@@ -153,7 +153,7 @@ export default function Roles() {
             ) : roles?.length === 0 ? (
               <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex flex-col items-center gap-2 py-12 text-center">
                 <Shield className="w-6 h-6 text-text-quaternary/50" />
-                <p className="text-sm font-semibold text-text-secondary">No custom roles yet</p>
+                <p className="text-xs font-semibold text-text-secondary">No custom roles yet</p>
                 <p className="text-xs text-text-quaternary max-w-xs">Create a custom role on the right to define fine-grained permission sets for your team.</p>
               </div>
             ) : (

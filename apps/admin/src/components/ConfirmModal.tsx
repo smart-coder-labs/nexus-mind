@@ -74,7 +74,7 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-text-secondary">{description}</p>
+        <p className="text-xs text-text-secondary">{description}</p>
         <div className="flex gap-2">
           <button
             onClick={onClose}

@@ -142,7 +142,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
                     </AnimatePresence>
                 </div>
                 <div className="space-y-0.5">
-                    <p className="text-sm font-semibold text-text-primary">{label}</p>
+                    <p className="text-xs font-semibold text-text-primary">{label}</p>
                     <p className="text-xs text-text-secondary">{statusText}</p>
                 </div>
             </div>

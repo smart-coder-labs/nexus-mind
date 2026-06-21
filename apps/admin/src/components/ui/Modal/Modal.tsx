@@ -281,7 +281,7 @@ export const ModalDescription: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <p className={`text-sm text-text-secondary mt-2 ${className}`}>
+    <p className={`text-xs text-text-secondary mt-2 ${className}`}>
         {children}
     </p>
 );

@@ -189,7 +189,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">Import from Markdown</h2>
+          <h2 className="text-xs font-semibold text-text-primary">Import from Markdown</h2>
           <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -316,7 +316,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">
+          <h2 className="text-xs font-semibold text-text-primary">
             New Convention
           </h2>
           <div className="flex items-center gap-2">
@@ -453,6 +453,7 @@ function ConventionCard({
   const [viewMode, setViewMode] = useState<'raw' | 'preview'>('raw')
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [editingWeight, setEditingWeight] = useState<string | null>(null)
 
   // Edit state
   const [editTitle, setEditTitle] = useState(conv.title ?? '')
@@ -490,6 +491,16 @@ function ConventionCard({
     if (e.key === 'Escape') cancelEdit()
   }
 
+  const handleWeightSave = async (val: string) => {
+    const weight = parseInt(val) || 0
+    try {
+      await client.updateConvention(conv.id, { weight })
+      onSaved()
+    } finally {
+      setEditingWeight(null)
+    }
+  }
+
   return (
     <div
       className={`bg-[#272729] rounded-[18px] border border-border-primary p-5 group ${isArchived ? 'opacity-60' : ''}`}
@@ -501,18 +512,35 @@ function ConventionCard({
             autoFocus
             value={editTitle}
             onChange={e => setEditTitle(e.target.value)}
-            className="rounded-[8px] bg-white/[0.04] border border-accent-blue/60 text-sm text-text-primary font-semibold focus:outline-none px-2 py-0.5 w-full"
+            className="rounded-[8px] bg-white/[0.04] border border-accent-blue/60 text-xs text-text-primary font-semibold focus:outline-none px-2 py-0.5 w-full"
             placeholder="Convention title"
           />
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-text-primary font-semibold">{conv.title}</span>
+            <span className="text-xs text-text-primary font-semibold">{conv.title}</span>
             <span className="text-[10px] bg-white/[0.06] text-text-secondary rounded-[5px] px-1.5 py-0.5 capitalize">
               {conv.category}
             </span>
-            {conv.weight > 100 && (
-              <span className="text-[10px] bg-accent-blue/10 text-accent-blue rounded-[5px] px-1.5 py-0.5">
-                weight {conv.weight}
+            {editingWeight !== null ? (
+              <input
+                autoFocus
+                type="number"
+                value={editingWeight}
+                onChange={e => setEditingWeight(e.target.value)}
+                onBlur={() => handleWeightSave(editingWeight)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleWeightSave(editingWeight)
+                  if (e.key === 'Escape') setEditingWeight(null)
+                }}
+                className="w-12 bg-white/[0.04] rounded-[5px] text-[10px] font-mono text-text-primary focus:outline-none focus:border-accent-blue/60 border border-border-primary text-center"
+              />
+            ) : (
+              <span
+                className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-mono text-text-secondary cursor-pointer hover:bg-accent-blue/10 hover:text-accent-blue transition-colors"
+                title="Click to edit weight"
+                onClick={() => !isArchived && setEditingWeight(String(conv.weight))}
+              >
+                w:{conv.weight}
               </span>
             )}
             {isArchived && (
@@ -643,9 +671,9 @@ function ConventionCard({
             <div className="text-xs text-text-secondary prose-convention">
               <ReactMarkdown
                 components={{
-                  h1: ({ children }) => <h3 className="text-sm text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
-                  h2: ({ children }) => <h3 className="text-sm text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
-                  h3: ({ children }) => <h3 className="text-sm text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
+                  h1: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
+                  h2: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
+                  h3: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
                   p: ({ children }) => <p className="text-xs text-text-secondary mb-2 last:mb-0">{children}</p>,
                   ul: ({ children }) => <ul className="mb-2 space-y-0.5 list-none last:mb-0">{children}</ul>,
                   ol: ({ children }) => <ol className="mb-2 ml-4 space-y-0.5 list-decimal last:mb-0">{children}</ol>,
@@ -931,7 +959,7 @@ export default function Conventions() {
           {!isLoading && filtered.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <BookMarked className="w-8 h-8 text-text-quaternary mb-3" />
-              <p className="text-sm text-text-secondary font-semibold">No conventions yet</p>
+              <p className="text-xs text-text-secondary font-semibold">No conventions yet</p>
               <p className="text-xs text-text-quaternary mt-1">
                 Create your first convention to define team-wide rules for agents.
               </p>

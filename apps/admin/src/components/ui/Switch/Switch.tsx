@@ -114,7 +114,7 @@ export const Switch: React.FC<SwitchProps> = ({
                     }}
                 >
                     {label && (
-                        <p className="text-sm font-normal text-text-primary">{label}</p>
+                        <p className="text-xs font-normal text-text-primary">{label}</p>
                     )}
                     {description && (
                         <p className="text-xs text-text-secondary mt-0.5">{description}</p>

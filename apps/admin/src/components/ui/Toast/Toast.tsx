@@ -145,7 +145,7 @@ const ToastAction = React.forwardRef<HTMLButtonElement, ToastActionProps>(functi
             ref={ref}
             type="button"
             className={cn(
-                "inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent px-3 text-sm font-normal transition-colors hover:bg-white/[0.06] focus:outline-none disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-status-error/30 group-[.destructive]:hover:bg-status-error/20",
+                "inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent px-3 text-xs font-normal transition-colors hover:bg-white/[0.06] focus:outline-none disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-status-error/30 group-[.destructive]:hover:bg-status-error/20",
                 className
             )}
             aria-label={ariaLabel ?? altText}
@@ -185,7 +185,7 @@ const ToastTitle = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
     { className, ...props },
     ref
 ) {
-    return <div ref={ref} className={cn("text-sm font-semibold", className)} {...props} />;
+    return <div ref={ref} className={cn("text-xs font-semibold", className)} {...props} />;
 });
 ToastTitle.displayName = "ToastTitle";
 
@@ -193,7 +193,7 @@ const ToastDescription = React.forwardRef<HTMLDivElement, React.HTMLAttributes<H
     { className, ...props },
     ref
 ) {
-    return <div ref={ref} className={cn("text-sm opacity-90", className)} {...props} />;
+    return <div ref={ref} className={cn("text-xs opacity-90", className)} {...props} />;
 });
 ToastDescription.displayName = "ToastDescription";
 

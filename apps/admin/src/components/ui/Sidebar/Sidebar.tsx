@@ -29,7 +29,7 @@ export const Sidebar = React.forwardRef<HTMLDivElement, SidebarProps>(
       flex flex-col space-y-1 p-4 bg-[#272729] rounded-[18px]`
             ;
         const itemBase = `
-      flex items-center gap-2 px-3 py-2 rounded-[8px] text-sm font-normal
+      flex items-center gap-2 px-3 py-2 rounded-[8px] text-xs font-normal
       transition-apple focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-accent-blue/60
     `;
         const itemActive = `text-text-primary bg-[#1d1d1f]`;

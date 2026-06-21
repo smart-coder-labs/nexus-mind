@@ -418,12 +418,12 @@ export default function ApiKeys() {
 
       {/* Error notifications */}
       {revokeError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
+        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-xs text-status-error">
           {revokeError}
         </div>
       )}
       {bulkError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
+        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-xs text-status-error">
           {bulkError}
         </div>
       )}
@@ -431,7 +431,7 @@ export default function ApiKeys() {
       {/* Table */}
       <div className="rounded-[18px] border border-border-primary overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border-primary bg-[#272729]/40">
                 <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">User</th>
@@ -450,7 +450,7 @@ export default function ApiKeys() {
                   <td colSpan={6} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <KeyIcon />
-                      <p className="text-sm font-semibold text-text-tertiary">No active API keys</p>
+                      <p className="text-xs font-semibold text-text-tertiary">No active API keys</p>
                       <p className="text-xs text-text-quaternary">
                         API keys created by organization members will appear here.
                       </p>
@@ -471,14 +471,14 @@ export default function ApiKeys() {
                         {key.user_name?.charAt(0).toUpperCase() ?? '?'}
                       </div>
                       <div>
-                        <div className="text-sm text-text-primary font-semibold">{key.user_name}</div>
+                        <div className="text-xs text-text-primary font-semibold">{key.user_name}</div>
                         <div className="text-xs text-text-tertiary mt-0.5">{key.user_email}</div>
                       </div>
                     </div>
                   </td>
 
                   {/* Label cell */}
-                  <td className="px-4 py-3 text-sm text-text-secondary">
+                  <td className="px-4 py-3 text-xs text-text-secondary">
                     {key.label}
                   </td>
 

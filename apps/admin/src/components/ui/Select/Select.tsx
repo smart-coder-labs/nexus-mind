@@ -296,7 +296,7 @@ SelectContent.displayName = "SelectContent";
 
 type SelectLabelProps = React.HTMLAttributes<HTMLDivElement>;
 const SelectLabel = React.forwardRef<HTMLDivElement, SelectLabelProps>(({ className, ...props }, ref) => (
-    <div ref={ref} className={cn("py-1.5 pl-8 pr-2 text-sm font-semibold", className)} {...props} />
+    <div ref={ref} className={cn("py-1.5 pl-8 pr-2 text-xs font-semibold", className)} {...props} />
 ));
 SelectLabel.displayName = "SelectLabel";
 
@@ -483,7 +483,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                                         onClick={() => handleOptionClick(option)}
                                         className={cn(
                                             "w-full flex items-center justify-between px-3 py-2 rounded-[8px]",
-                                            "text-sm transition-colors",
+                                            "text-xs transition-colors",
                                             isActive
                                                 ? "bg-accent-blue/10 text-accent-blue"
                                                 : "text-text-primary hover:bg-[#272729]"

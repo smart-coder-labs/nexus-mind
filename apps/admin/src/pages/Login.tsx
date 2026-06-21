@@ -105,7 +105,7 @@ export default function Login() {
 
         <div className="bg-[#272729] border border-border-primary rounded-[18px] p-8 space-y-6">
           {/* Mode toggle */}
-          <div className="flex rounded-[11px] border border-border-primary overflow-hidden text-sm">
+          <div className="flex rounded-[11px] border border-border-primary overflow-hidden text-xs">
             <button
               type="button"
               onClick={() => { setMode('email'); setError('') }}
@@ -175,7 +175,7 @@ export default function Login() {
             <div className="space-y-4">
               {forgotSent ? (
                 <div className="text-center space-y-3 py-2">
-                  <p className="text-sm text-text-primary font-semibold">Check your email</p>
+                  <p className="text-xs text-text-primary font-semibold">Check your email</p>
                   <p className="text-xs text-text-tertiary">If that address exists, a reset link has been sent.</p>
                   <button
                     onClick={() => { setMode('email'); setForgotSent(false) }}

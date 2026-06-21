@@ -322,8 +322,15 @@ export default function Dashboard() {
         value: trends.this_month.toLocaleString(),
       },
     ] : []
-    return [...base, ...extra]
-  }, [stats, trends])
+    const sessionMetric = usageStats ? [
+      {
+        id: 'total-sessions',
+        label: 'Sessions',
+        value: usageStats.sessions.toLocaleString(),
+      },
+    ] : []
+    return [...base, ...sessionMetric, ...extra]
+  }, [stats, trends, usageStats])
 
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto">
@@ -460,9 +467,9 @@ export default function Dashboard() {
             <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-xs text-status-error">
               Failed to load statistics. Check your connection and try again.
             </div>
-          ) : statsLoading || trendsLoading ? (
+          ) : statsLoading || trendsLoading || usageLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {Array.from({ length: 6 }).map((_, i) => (
+              {Array.from({ length: 7 }).map((_, i) => (
                 <Skeleton key={i} className="h-32 rounded-[18px]" />
               ))}
             </div>

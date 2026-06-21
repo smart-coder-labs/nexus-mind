@@ -70,13 +70,13 @@ function MemoryMarkdown({ content }: { content: string }) {
           <h1 className="text-base font-semibold text-text-primary mt-6 mb-2 first:mt-0">{children}</h1>
         ),
         h2: ({ children }) => (
-          <h2 className="text-sm font-semibold text-text-primary mt-5 mb-1.5 pb-1.5 border-b border-border-secondary first:mt-0">{children}</h2>
+          <h2 className="text-xs font-semibold text-text-primary mt-5 mb-1.5 pb-1.5 border-b border-border-secondary first:mt-0">{children}</h2>
         ),
         h3: ({ children }) => (
           <h3 className="text-[13px] font-semibold text-accent-blue mt-4 mb-1 first:mt-0">{children}</h3>
         ),
         p: ({ children }) => (
-          <p className="text-sm text-text-secondary leading-relaxed mb-3 last:mb-0">{children}</p>
+          <p className="text-xs text-text-secondary leading-relaxed mb-3 last:mb-0">{children}</p>
         ),
         ul: ({ children }) => (
           <ul className="mb-3 ml-4 space-y-1 list-none last:mb-0">{children}</ul>
@@ -85,7 +85,7 @@ function MemoryMarkdown({ content }: { content: string }) {
           <ol className="mb-3 ml-4 space-y-1 list-decimal last:mb-0">{children}</ol>
         ),
         li: ({ children }) => (
-          <li className="text-sm text-text-secondary leading-relaxed flex gap-2">
+          <li className="text-xs text-text-secondary leading-relaxed flex gap-2">
             <span className="text-accent-blue/50 mt-1.5 shrink-0 w-1 h-1 rounded-full bg-accent-blue/40 inline-block" />
             <span>{children}</span>
           </li>
@@ -238,7 +238,7 @@ function CreateMemoryModal({
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">New memory</h2>
+          <h2 className="text-xs font-semibold text-text-primary">New memory</h2>
           <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -247,7 +247,7 @@ function CreateMemoryModal({
         {flash ? (
           <div className="flex items-center gap-2 py-6 justify-center text-status-success">
             <CheckCircle2 className="w-5 h-5" />
-            <span className="text-sm font-semibold">Memory created</span>
+            <span className="text-xs font-semibold">Memory created</span>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -368,7 +368,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
         <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4 shrink-0 border-b border-border-secondary">
           <div className="space-y-2 min-w-0">
             {memory.title && (
-              <p className="text-sm font-semibold text-text-primary leading-snug">{memory.title}</p>
+              <p className="text-xs font-semibold text-text-primary leading-snug">{memory.title}</p>
             )}
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] font-semibold border border-border-primary rounded-[5px] px-2 py-0.5 text-text-tertiary bg-[#272729]">
@@ -733,7 +733,7 @@ function MemorySlideOver({
         <div className="px-5 py-4 border-b border-border-primary flex items-start justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             {memory && <TypeBadge type={memory.type} />}
-            <p className="text-sm font-semibold text-text-primary leading-snug truncate">
+            <p className="text-xs font-semibold text-text-primary leading-snug truncate">
               {memory?.content?.slice(0, 60) ?? (isLoading ? 'Loading…' : '—')}
             </p>
           </div>

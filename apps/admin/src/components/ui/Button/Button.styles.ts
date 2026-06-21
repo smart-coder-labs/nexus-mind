@@ -54,5 +54,5 @@ export const buttonVariantStyles: Record<ButtonVariant, string> = {
 export const buttonSizeStyles: Record<ButtonSize, string> = {
     sm: 'h-8 px-3 text-xs rounded-full',
     md: 'h-10 px-4 text-xs rounded-full',
-    lg: 'h-12 px-6 text-sm rounded-full',
+    lg: 'h-12 px-6 text-xs rounded-full',
 };

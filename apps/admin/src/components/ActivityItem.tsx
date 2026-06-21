@@ -45,7 +45,7 @@ export function ActivityItem({ entry, userName }: ActivityItemProps) {
         {initials}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-text-primary truncate">
+        <p className="text-xs text-text-primary truncate">
           <span className="font-semibold">{displayName}</span>
           <span className="text-text-tertiary mx-1">·</span>
           <Badge variant={actionVariant(entry.action)} size="sm">{entry.action}</Badge>

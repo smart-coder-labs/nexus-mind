@@ -22,7 +22,7 @@ export const badgeVariantStyles: Record<BadgeVariant, string> = {
 export const badgeSizeStyles: Record<BadgeSize, string> = {
     sm: 'text-[10px] px-2 py-0.5 rounded-[5px]',
     md: 'text-xs px-2.5 py-1 rounded-[5px]',
-    lg: 'text-sm px-3 py-1.5 rounded-[5px]',
+    lg: 'text-xs px-3 py-1.5 rounded-[5px]',
 };
 
 export const badgeDotStyles = 'w-1.5 h-1.5 rounded-full';

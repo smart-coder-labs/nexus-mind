@@ -76,14 +76,14 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
     md: {
         label: "text-[10px]",
         value: "text-2xl font-semibold",
-        meta: "text-sm",
+        meta: "text-xs",
         padding: "p-5",
         gap: "space-y-4",
         icon: "w-10 h-10",
         sparkline: { width: 120, height: 38 },
     },
     lg: {
-        label: "text-sm",
+        label: "text-xs",
         value: "text-[40px] font-semibold tracking-[-0.4px]",
         meta: "text-base",
         padding: "p-6",

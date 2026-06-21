@@ -18,7 +18,7 @@ export const baseInputStyles = `
 export const inputSizeStyles = {
     sm: 'h-8 px-3 text-xs rounded-[8px]',
     md: 'h-10 px-4 text-xs rounded-[8px]',
-    lg: 'h-12 px-5 text-sm rounded-[8px]',
+    lg: 'h-12 px-5 text-xs rounded-[8px]',
 };
 
 export const errorStyles = 'border-status-error focus:border-status-error/60';

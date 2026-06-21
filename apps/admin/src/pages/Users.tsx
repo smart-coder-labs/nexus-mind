@@ -172,14 +172,14 @@ export default function Users() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setInviteLinkOpen(true)}
-              className="border border-border-primary rounded-full px-4 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
+              className="border border-border-primary rounded-full px-4 py-2 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
             >
               <Link className="w-4 h-4" />
               Invite link
             </button>
             <button
               onClick={() => setInviteOpen(true)}
-              className="flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold transition-colors"
+              className="flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
             >
               <UserPlus className="w-4 h-4" />
               Invite user
@@ -189,7 +189,7 @@ export default function Users() {
       </div>
 
       <div className="border border-border-primary rounded-[18px] overflow-hidden overflow-x-auto">
-        <table className="w-full text-sm min-w-[520px]">
+        <table className="w-full text-xs min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
               {session?.user.role === 'admin' && (
@@ -363,7 +363,7 @@ export default function Users() {
         {!isLoading && users?.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <UserPlus className="w-6 h-6 text-text-quaternary/50" />
-            <p className="text-sm font-semibold text-text-secondary">No team members yet</p>
+            <p className="text-xs font-semibold text-text-secondary">No team members yet</p>
             <p className="text-xs text-text-quaternary max-w-xs">Invite your first user to start collaborating on memories and projects.</p>
             {session?.user.role === 'admin' && (
               <button
@@ -753,7 +753,7 @@ function NewKeyModal({ userName, apiKey, copied, onCopy, onClose }: { userName: 
           {userName ? `New API key for ${userName}` : 'New API key generated'}
         </p>
         <p className="text-xs text-status-warning">Copy this key now — it won't be shown again.</p>
-        <div className="font-mono text-sm bg-[#1d1d1f] rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
+        <div className="font-mono text-xs bg-[#1d1d1f] rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={() => onCopy(apiKey)}
@@ -764,7 +764,7 @@ function NewKeyModal({ userName, apiKey, copied, onCopy, onClose }: { userName: 
         </div>
         <button
           onClick={onClose}
-          className="w-full py-2 rounded-full bg-accent-blue text-white text-sm font-semibold hover:bg-accent-blue-hover transition-colors"
+          className="w-full py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue-hover transition-colors"
         >
           Done
         </button>
