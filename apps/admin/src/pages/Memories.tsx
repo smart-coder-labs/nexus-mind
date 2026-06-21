@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../auth/AuthContext'
@@ -936,12 +937,23 @@ export default function Memories() {
   const qc = useQueryClient()
   const client = useMemo(() => createClient(), [session])
 
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections'>('memories')
   const [createMemoryOpen, setCreateMemoryOpen] = useState(false)
+
+  // Open create modal when navigated here with ?new=1 (e.g. via Cmd+N from Layout)
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setCreateMemoryOpen(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)

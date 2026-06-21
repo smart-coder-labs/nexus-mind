@@ -55,6 +55,7 @@ function relativeTime(isoString: string): string {
 
 const SHORTCUTS = [
   { keys: ['⌘', 'K'], description: 'Open command palette' },
+  { keys: ['⌘', 'N'], description: 'New memory' },
   { keys: ['?'], description: 'Open keyboard shortcuts' },
   { keys: ['Esc'], description: 'Close panels / cancel' },
   { keys: ['↑', '↓'], description: 'Navigate suggestions' },
@@ -399,6 +400,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         navigate('/search')
+      }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key === 'n' &&
+        !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName) &&
+        !(e.target as HTMLElement).isContentEditable
+      ) {
+        e.preventDefault()
+        navigate('/memories?new=1')
       }
       if (e.key === '?' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
         setShowShortcuts((prev) => !prev)

@@ -140,7 +140,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
     >
       <div
         ref={modalRef}
-        className="bg-[#272729] border border-white/[0.08] rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -436,8 +436,8 @@ function AgentActivitySection() {
           </p>
           <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
             {topAgents.map((agent, idx) => (
-              <div key={agent.name} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
-                <span className="text-xs text-text-secondary truncate">{idx + 1}. {agent.name}</span>
+              <div key={agent.name} className="flex items-center justify-between py-1.5 border-b border-border-primary last:border-0">
+                <span className="text-xs font-semibold text-text-primary truncate">{idx + 1}. {agent.name}</span>
                 <span className="text-xs text-text-quaternary shrink-0 ml-4">{agent.count}</span>
               </div>
             ))}
@@ -526,10 +526,10 @@ export default function Agents() {
             <button
               key={filter}
               onClick={() => setStatusFilter(filter)}
-              className={`px-3 py-1 rounded-full text-xs transition-colors ${
+              className={`px-3 py-1 rounded-full text-xs transition-colors border ${
                 statusFilter === filter
-                  ? 'bg-[#272729] text-text-primary font-semibold shadow-sm'
-                  : 'text-text-quaternary'
+                  ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40 font-semibold'
+                  : 'text-text-quaternary border-transparent'
               }`}
             >
               {filter}
