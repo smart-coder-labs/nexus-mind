@@ -100,21 +100,21 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
           </div>
 
           {error && (
-            <p className="text-xs text-status-error">{error}</p>
+            <p className="text-[10px] text-status-error">{error}</p>
           )}
 
           <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="text-xs px-4 py-2 rounded-[8px] border border-border-primary text-text-secondary hover:text-text-primary transition-colors"
+              className="border border-border-primary rounded-full px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="text-xs px-4 py-2 rounded-[8px] bg-accent-blue text-white hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
+              className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
             >
               {submitting ? 'Creating…' : 'Create'}
             </button>
@@ -191,12 +191,12 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
               className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 resize-none"
             />
           </div>
-          {error && <p className="text-xs text-status-error">{error}</p>}
+          {error && <p className="text-[10px] text-status-error">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="text-xs px-4 py-2 rounded-[8px] border border-border-primary text-text-secondary hover:text-text-primary transition-colors">
+            <button type="button" onClick={onClose} className="border border-border-primary rounded-full px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={submitting} className="text-xs px-4 py-2 rounded-[8px] bg-accent-blue text-white hover:bg-accent-blue/90 transition-colors disabled:opacity-50">
+            <button type="submit" disabled={submitting} className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:bg-accent-blue/90 transition-colors disabled:opacity-50">
               {submitting ? 'Saving…' : 'Save'}
             </button>
           </div>
@@ -276,7 +276,7 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
             />
           </div>
 
-          {addError && <p className="text-xs text-status-error">{addError}</p>}
+          {addError && <p className="text-[10px] text-status-error">{addError}</p>}
 
           <div className="max-h-64 overflow-y-auto space-y-1">
             {searching && (
@@ -339,21 +339,21 @@ function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProp
               className="p-1 rounded-[5px] text-text-quaternary hover:text-text-secondary hover:bg-white/[0.06] transition-colors"
               aria-label="Rename"
             >
-              <Pencil className="w-3 h-3" />
+              <Pencil className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={e => { e.stopPropagation(); onDeleted() }}
               className="p-1 rounded-[5px] text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors"
               aria-label="Delete"
             >
-              <Trash2 className="w-3 h-3" />
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
         {collection.memory_count != null && (
           <div className="mt-2">
-            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">
+            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-quaternary">
               {collection.memory_count} {collection.memory_count === 1 ? 'memory' : 'memories'}
             </span>
           </div>

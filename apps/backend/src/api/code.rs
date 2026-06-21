@@ -599,6 +599,33 @@ pub async fn update_code_project(
     }
 }
 
+/// `GET /v1/code/projects/:id/files`
+///
+/// Returns a sorted list of distinct file paths indexed for the given code project.
+pub async fn get_project_files(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    // Verify the project belongs to this org
+    let project = db_queries::get_code_project_by_id(&conn, &auth.org_id, id).map_err(db_err)?;
+    if project.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Code project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+    let file_map = db_queries::list_indexed_files_with_hashes(&conn, id).map_err(db_err)?;
+    let mut files: Vec<String> = file_map.into_keys().collect();
+    files.sort();
+    Ok(Json(files))
+}
+
 /// `POST /v1/code/projects/:id/reindex`
 ///
 /// Triggers an immediate background reindex of the code project. Admin only.

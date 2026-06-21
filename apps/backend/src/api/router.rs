@@ -100,6 +100,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/code/projects", get(code::list_projects))
         .route("/v1/code/projects/:id", delete(code::delete_project).patch(code::update_code_project))
         .route("/v1/code/projects/:id/schedule", patch(code::update_schedule))
+        .route("/v1/code/projects/:id/files", get(code::get_project_files))
         .route("/v1/code/projects/:id/reindex", post(code::post_reindex))
         .route("/v1/code/projects/:id/archive", post(code::archive_project))
         .route("/v1/code/projects/:id/restore", post(code::restore_project))

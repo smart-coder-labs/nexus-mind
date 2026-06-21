@@ -244,7 +244,7 @@ export default function Tags() {
       {/* Merge modal */}
       {mergingTag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[#1c1c1e] border border-border-primary rounded-[18px] p-5 w-full max-w-sm shadow-xl">
+          <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md shadow-xl">
             <h2 className="text-sm font-semibold text-text-primary">Merge "{mergingTag}"</h2>
             <p className="text-xs text-text-quaternary mt-1">
               All memories tagged "{mergingTag}" will be retagged to the target.

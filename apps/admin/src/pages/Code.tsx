@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus } from 'lucide-react'
+import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject, CodeSearchResult } from '../types'
@@ -677,6 +677,13 @@ function RepositoriesTab({
   const [projectMode, setProjectMode] = useState<'existing' | 'new'>('existing')
   const [newProjectName, setNewProjectName] = useState('')
   const [indexError, setIndexError] = useState<string | null>(null)
+  const [expandedFiles, setExpandedFiles] = useState<string | null>(null)
+
+  const { data: files, isLoading: filesLoading } = useQuery({
+    queryKey: ['code-project-files', expandedFiles],
+    queryFn: () => client.getCodeProjectFiles(expandedFiles!),
+    enabled: !!expandedFiles,
+  })
 
   const { data: memProjects } = useQuery({
     queryKey: ['projects'],
@@ -893,8 +900,8 @@ function RepositoriesTab({
           {projects.map(p => {
             const isReindexing = reindexMut.isPending && reindexMut.variables?.id === p.id
             return (
+              <div key={p.id}>
               <div
-                key={p.id}
                 className="group bg-[#272729] border border-border-primary rounded-[18px] p-5 flex items-start justify-between gap-4"
               >
                 <div className="min-w-0 flex-1 space-y-1">
@@ -965,6 +972,13 @@ function RepositoriesTab({
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0 opacity-0 group-hover:opacity-100 sm:opacity-100 transition-opacity">
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setExpandedFiles(expandedFiles === p.id ? null : p.id)}
+                      className="border border-border-primary rounded-full px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-primary transition-colors flex items-center gap-1"
+                    >
+                      <FileText className="w-3 h-3" />
+                      Files
+                    </button>
                     {!p.archived_at && (
                       <button
                         onClick={() => reindexMut.mutate(p)}
@@ -1031,6 +1045,25 @@ function RepositoriesTab({
                     </p>
                   )}
                 </div>
+              </div>
+              {expandedFiles === p.id && (
+                <div className="mt-2 rounded-[11px] border border-border-primary bg-white/[0.02] p-3">
+                  {filesLoading ? (
+                    <p className="text-[10px] text-text-quaternary text-center py-2">Loading…</p>
+                  ) : (
+                    <ul className="space-y-0.5 max-h-48 overflow-y-auto">
+                      {(files ?? []).map((f: string) => (
+                        <li key={f} className="text-[10px] text-text-secondary font-mono py-0.5 px-1 rounded hover:bg-white/[0.04]">
+                          {f}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {(files ?? []).length === 0 && !filesLoading && (
+                    <p className="text-[10px] text-text-quaternary text-center py-2">No indexed files yet</p>
+                  )}
+                </div>
+              )}
               </div>
             )
           })}

@@ -417,6 +417,10 @@ export class NexusMindClient {
     })
   }
 
+  getCodeProjectFiles(projectId: string): Promise<string[]> {
+    return this.request(`/v1/code/projects/${encodeURIComponent(projectId)}/files`)
+  }
+
   searchCode(project: string, query: string, topK = 10, extension?: string): Promise<CodeSearchResult[]> {
     return this.request('/v1/code/search', {
       method: 'POST',
