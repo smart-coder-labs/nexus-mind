@@ -947,6 +947,8 @@ export default function Memories() {
 
   const [searchParams, setSearchParams] = useSearchParams()
 
+  const sessionIdFilter = searchParams.get('session_id')
+
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
@@ -958,7 +960,10 @@ export default function Memories() {
   useEffect(() => {
     if (searchParams.get('new') === '1') {
       setCreateMemoryOpen(true)
-      setSearchParams({}, { replace: true })
+      // Preserve session_id if present while clearing ?new=1
+      const next: Record<string, string> = {}
+      if (sessionIdFilter) next['session_id'] = sessionIdFilter
+      setSearchParams(next, { replace: true })
     }
   }, [searchParams, setSearchParams])
 
@@ -1042,7 +1047,7 @@ export default function Memories() {
   const isSearching = debouncedQuery.trim().length > 0
 
   const { data: listData, isLoading: listLoading } = useQuery({
-    queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection],
+    queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter],
     queryFn: () => client.listMemories({
       limit: 50,
       type: filterType || undefined,
@@ -1052,6 +1057,7 @@ export default function Memories() {
       from_date: fromDate || undefined,
       to_date: toDate || undefined,
       collection_id: filterCollection || undefined,
+      session_id: sessionIdFilter || undefined,
     }),
     enabled: !isSearching,
   })
@@ -1627,6 +1633,21 @@ export default function Memories() {
             Imported {importToast.imported} {importToast.imported === 1 ? 'memory' : 'memories'}
             {importToast.failed > 0 ? ` (${importToast.failed} failed)` : ''}
           </span>
+        </div>
+      )}
+
+      {/* Session filter banner */}
+      {sessionIdFilter && (
+        <div className="flex items-center gap-2 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.06] px-3 py-2">
+          <span className="text-[11px] text-accent-blue font-semibold">Filtered by session</span>
+          <span className="text-[11px] text-text-quaternary font-mono">{sessionIdFilter.slice(0, 12)}…</span>
+          <button
+            onClick={() => setSearchParams({}, { replace: true })}
+            className="ml-auto text-[11px] text-text-quaternary hover:text-text-secondary transition-colors flex items-center gap-1"
+          >
+            <X className="w-3 h-3" />
+            Clear
+          </button>
         </div>
       )}
 

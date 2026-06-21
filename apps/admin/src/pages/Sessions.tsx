@@ -1,11 +1,22 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { MessageSquare, Plus, Trash2, ChevronRight } from 'lucide-react'
+import { MessageSquare, Plus, Trash2, ChevronRight, ExternalLink } from 'lucide-react'
 import { createClient } from '../api/client'
+
+function formatDuration(start: string, end?: string | null): string {
+  const ms = new Date(end ?? new Date()).getTime() - new Date(start).getTime()
+  const h = Math.floor(ms / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m`
+  return '< 1m'
+}
 
 const client = createClient()
 
 export default function Sessions() {
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const [creating, setCreating] = useState(false)
   const [newSessionName, setNewSessionName] = useState('')
@@ -105,8 +116,19 @@ export default function Sessions() {
                   <p className="text-[10px] text-text-quaternary mt-0.5">
                     {session.memory_count ?? 0} memories
                     {session.started_at ? ` · ${new Date(session.started_at).toLocaleDateString()}` : ''}
+                    {session.started_at ? ` · ${formatDuration(session.started_at, session.ended_at)}` : ''}
                   </p>
                 </div>
+                <button
+                  onClick={e => {
+                    e.stopPropagation()
+                    navigate(`/memories?session_id=${session.id}`)
+                  }}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] text-accent-blue hover:text-accent-blue/80"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  View memories
+                </button>
                 <button
                   onClick={e => {
                     e.stopPropagation()

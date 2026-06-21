@@ -74,11 +74,11 @@ function ShortcutsPanel({ onClose }: { onClose: () => void }) {
       aria-label="Keyboard shortcuts"
     >
       <div
-        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-md w-full shadow-2xl mx-4"
+        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-md w-full shadow-2xl mx-4"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">Keyboard Shortcuts</h2>
+          <h2 className="text-xs font-semibold text-text-primary">Keyboard Shortcuts</h2>
           <button
             onClick={onClose}
             className="text-text-quaternary hover:text-text-secondary transition-colors"
@@ -98,7 +98,7 @@ function ShortcutsPanel({ onClose }: { onClose: () => void }) {
                 {keys.map((k, i) => (
                   <kbd
                     key={i}
-                    className="border border-border-primary rounded-[5px] px-1.5 py-0.5 text-[10px] text-text-quaternary font-mono bg-white/[0.04]"
+                    className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-text-quaternary border border-border-primary"
                   >
                     {k}
                   </kbd>
@@ -176,16 +176,16 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             to={href}
             onClick={onNavigate}
             className={cn(
-              'relative group flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
+              'group flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-xs transition-colors duration-150 focus-visible:outline-none',
               isActive
-                ? 'bg-accent-blue/10 text-accent-blue font-semibold before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-4 before:w-0.5 before:bg-accent-blue before:rounded-full'
-                : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04] font-normal',
+                ? 'bg-white/[0.06] text-text-primary font-semibold'
+                : 'text-text-quaternary hover:text-text-secondary hover:bg-white/[0.04] font-normal',
             )}
           >
             <Icon
               className={cn(
-                'w-[15px] h-[15px] flex-shrink-0',
-                isActive ? 'text-accent-blue' : 'text-text-quaternary group-hover:text-text-tertiary',
+                'w-4 h-4 flex-shrink-0',
+                isActive ? 'text-text-primary' : 'text-text-quaternary group-hover:text-text-secondary',
               )}
             />
             {label}
@@ -272,7 +272,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
       <div className="px-5 pt-6 pb-5">
         <div className="flex items-center gap-2">
           <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-          <p className="text-sm font-semibold text-text-primary">NexusMind</p>
+          <p className="text-xs font-semibold text-text-primary">NexusMind</p>
         </div>
         {session?.org.name && (
           <div className="mt-2 flex items-center gap-1.5">
@@ -283,7 +283,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
                 alt="org logo"
               />
             )}
-            <span className="inline-block bg-[#272729] rounded-full px-2 py-0.5 text-[11px] text-text-tertiary truncate max-w-full">
+            <span className="text-xs font-semibold text-text-primary truncate max-w-full">
               {session.org.name}
             </span>
           </div>
@@ -303,11 +303,11 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
         <div className="relative" ref={notifRef}>
           <button
             onClick={handleNotifOpen}
-            className="flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
+            className="flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-text-quaternary hover:text-text-secondary hover:bg-white/[0.04] transition-colors duration-150 focus-visible:outline-none"
             aria-label="Notifications"
           >
             <Bell className="w-4 h-4 shrink-0" />
-            <span className="text-sm">Notifications</span>
+            <span className="text-xs">Notifications</span>
             {unreadCount > 0 && (
               <span className="ml-auto w-5 h-5 rounded-full bg-status-error text-white text-[9px] font-semibold flex items-center justify-center shrink-0">
                 {unreadCount > 9 ? '9+' : unreadCount}
@@ -316,9 +316,9 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
           </button>
 
           {notifOpen && (
-            <div className="absolute bottom-full left-0 mb-2 w-72 bg-[#272729] border border-border-primary rounded-[18px] shadow-xl z-50 overflow-hidden">
+            <div className="absolute bottom-full left-0 mb-2 w-72 bg-[#1d1d1f] border border-border-primary rounded-[18px] shadow-xl z-50 overflow-hidden">
               <div className="px-4 py-3 border-b border-border-secondary/50">
-                <p className="text-sm font-semibold text-text-primary">Notifications</p>
+                <p className="text-xs font-semibold text-text-primary">Notifications</p>
               </div>
               <div className="max-h-80 overflow-y-auto">
                 {visibleItems.length === 0 && (
@@ -360,9 +360,9 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
         <div className="flex items-center gap-1">
           <button
             onClick={handleLogout}
-            className="flex flex-1 items-center gap-3 px-3 py-2 rounded-[8px] text-sm text-text-secondary hover:text-status-error hover:bg-[#272729]/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40"
+            className="flex flex-1 items-center gap-3 px-3 py-2 rounded-[8px] text-xs text-text-quaternary hover:text-status-error hover:bg-white/[0.04] transition-colors duration-150 focus-visible:outline-none"
           >
-            <LogOut className="w-[15px] h-[15px] flex-shrink-0 text-text-tertiary" />
+            <LogOut className="w-4 h-4 flex-shrink-0 text-text-quaternary" />
             Sign out
           </button>
           <button
@@ -470,10 +470,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <div className="flex items-center gap-2">
             <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-            <p className="text-sm font-semibold text-text-primary">NexusMind</p>
+            <p className="text-xs font-semibold text-text-primary">NexusMind</p>
           </div>
           {session?.org.name && (
-            <span className="ml-1 text-[11px] text-text-tertiary truncate">{session.org.name}</span>
+            <span className="ml-1 text-[10px] text-text-quaternary truncate">{session.org.name}</span>
           )}
         </header>
 
@@ -481,7 +481,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {announcement && !dismissed && (
             <div className="mx-6 mt-4 mb-0 flex items-start gap-3 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.08] px-4 py-3">
               <Megaphone className="w-4 h-4 text-accent-blue mt-0.5 shrink-0" />
-              <p className="flex-1 text-xs text-text-primary leading-relaxed">{announcement}</p>
+              <p className="flex-1 text-xs text-text-secondary leading-relaxed">{announcement}</p>
               <button
                 onClick={() => {
                   setDismissed(true)
