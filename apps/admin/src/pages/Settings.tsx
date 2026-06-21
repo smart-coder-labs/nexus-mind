@@ -95,7 +95,7 @@ function MemoryTemplatesSection() {
     setEditingId(null)
   }
 
-  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
 
   return (
     <section className="space-y-4">
@@ -207,7 +207,7 @@ function MemoryTemplatesSection() {
                 type="button"
                 onClick={handleSave}
                 disabled={!formName.trim() || !formContent.trim()}
-                className="rounded-[8px] bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 {editingId ? 'Save changes' : 'Add template'}
               </button>
@@ -585,6 +585,52 @@ export default function Settings() {
     deleteWebhookMut.mutate(id)
   }
 
+  // ── Org Data Export ───────────────────────────────────────────────────────
+  const [exportingMemories, setExportingMemories] = useState(false)
+  const [exportingConventions, setExportingConventions] = useState(false)
+  const [exportingAll, setExportingAll] = useState(false)
+
+  const downloadJSON = (data: unknown, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleExportMemories = async () => {
+    setExportingMemories(true)
+    try {
+      const data = await client.listMemories({ limit: 10000 })
+      downloadJSON(data, `nexusmind-memories-${new Date().toISOString().slice(0, 10)}.json`)
+    } finally { setExportingMemories(false) }
+  }
+
+  const handleExportConventions = async () => {
+    setExportingConventions(true)
+    try {
+      const data = await client.listConventions()
+      downloadJSON(data, `nexusmind-conventions-${new Date().toISOString().slice(0, 10)}.json`)
+    } finally { setExportingConventions(false) }
+  }
+
+  const handleExportAllData = async () => {
+    setExportingAll(true)
+    try {
+      const [memories, conventions, projects] = await Promise.all([
+        client.listMemories({ limit: 10000 }).catch(() => []),
+        client.listConventions().catch(() => []),
+        client.listProjects().catch(() => []),
+      ])
+      downloadJSON(
+        { memories, conventions, projects, exported_at: new Date().toISOString() },
+        `nexusmind-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      )
+    } finally { setExportingAll(false) }
+  }
+
   const [importFlash, setImportFlash] = useState<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null)
 
   const handleImportConfig = () => {
@@ -631,7 +677,7 @@ export default function Settings() {
     a.click()
   }
 
-  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
 
   return (
     <div className="p-8 max-w-2xl mx-auto space-y-10">
@@ -713,7 +759,7 @@ export default function Settings() {
                 {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
               </button>
               {updateOrgMut.isError && (
-                <p className="text-xs text-status-error/80">Failed to save.</p>
+                <p className="text-[10px] text-status-error">Failed to save.</p>
               )}
             </div>
           )}
@@ -879,7 +925,7 @@ export default function Settings() {
               <button
                 onClick={() => updateAnnouncementMut.mutate({ text: announcementText.trim(), type: announcementType })}
                 disabled={updateAnnouncementMut.isPending}
-                className="rounded-[8px] bg-accent-blue text-white text-xs font-semibold px-3 py-1.5 hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="rounded-full bg-accent-blue text-white text-xs font-semibold px-3 py-1.5 hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 {updateAnnouncementMut.isPending ? 'Saving…' : 'Save'}
               </button>
@@ -1250,7 +1296,7 @@ export default function Settings() {
                     ))}
                   </div>
                 </div>
-                {webhookError && <p className="text-xs text-status-error/80">{webhookError}</p>}
+                {webhookError && <p className="text-[10px] text-status-error">{webhookError}</p>}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -1279,6 +1325,45 @@ export default function Settings() {
                 + Add Webhook
               </button>
             )}
+          </div>
+        </section>
+      )}
+
+      {/* Org Data Export */}
+      {session?.user.role === 'admin' && (
+        <section className="space-y-4">
+          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Org Data Export</p>
+          <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
+            <h2 className="text-sm font-semibold text-text-primary mb-1">Org Data Export</h2>
+            <p className="text-xs text-text-quaternary mb-4">
+              Download all your organization's data as JSON for backup or migration.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleExportMemories}
+                disabled={exportingMemories}
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Download className="w-3 h-3" />
+                {exportingMemories ? 'Exporting…' : 'Export Memories'}
+              </button>
+              <button
+                onClick={handleExportConventions}
+                disabled={exportingConventions}
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <Download className="w-3 h-3" />
+                {exportingConventions ? 'Exporting…' : 'Export Conventions'}
+              </button>
+              <button
+                onClick={handleExportAllData}
+                disabled={exportingAll}
+                className="bg-accent-blue/10 text-accent-blue border border-accent-blue/30 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 disabled:opacity-40 hover:bg-accent-blue/20"
+              >
+                <Download className="w-3 h-3" />
+                {exportingAll ? 'Preparing…' : 'Export All Data'}
+              </button>
+            </div>
           </div>
         </section>
       )}
