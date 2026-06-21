@@ -996,6 +996,11 @@ export default function Memories() {
   // Date range filters
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  // Pinned-only toggle
+  const [pinnedOnly, setPinnedOnly] = useState(false)
+  // Sort
+  type SortBy = 'newest' | 'oldest' | 'most-used'
+  const [sortBy, setSortBy] = useState<SortBy>('newest')
   // Collections
   const [filterCollection, setFilterCollection] = useState('')
   const [newCollectionName, setNewCollectionName] = useState('')
@@ -1003,7 +1008,9 @@ export default function Memories() {
   const [collectionError, setCollectionError] = useState<string | null>(null)
   const [assigningMemory, setAssigningMemory] = useState<string | null>(null)
 
-  const hasFilters = filterType !== '' || filterScope !== '' || filterProject !== '' || fromDate !== '' || toDate !== '' || filterCollection !== ''
+  const hasFilters = filterType !== '' || filterScope !== '' || filterProject !== '' || fromDate !== '' || toDate !== '' || filterCollection !== '' || pinnedOnly
+
+  const activeFilterCount = [filterType, filterScope, filterProject, fromDate, toDate, filterCollection, pinnedOnly, query].filter(Boolean).length
 
   const { data: facets } = useQuery({
     queryKey: ['memory-facets'],
@@ -1036,9 +1043,16 @@ export default function Memories() {
   })
 
   const memoriesRaw = isSearching ? searchData : listData
-  const memories = showFavoritesOnly && memoriesRaw
-    ? memoriesRaw.filter(m => favorites.has(m.id))
-    : memoriesRaw
+  const memories = useMemo(() => {
+    if (!memoriesRaw) return memoriesRaw
+    let result = [...memoriesRaw]
+    if (showFavoritesOnly) result = result.filter(m => favorites.has(m.id))
+    if (pinnedOnly) result = result.filter(m => (m as any).pinned)
+    if (sortBy === 'oldest') result = result.sort((a, b) => a.created_at.localeCompare(b.created_at))
+    else if (sortBy === 'newest') result = result.sort((a, b) => b.created_at.localeCompare(a.created_at))
+    else if (sortBy === 'most-used') result = result.sort((a, b) => (b.revision_count ?? 0) - (a.revision_count ?? 0))
+    return result
+  }, [memoriesRaw, showFavoritesOnly, favorites, pinnedOnly, sortBy])
   const isLoading = isSearching ? searchLoading : listLoading
 
   const { data: sessions, isLoading: sessionsLoading } = useQuery({
@@ -2021,9 +2035,50 @@ export default function Memories() {
               </svg>
             </div>
           )}
-          {hasFilters && (
+          {/* Pinned only toggle */}
+          <button
+            onClick={() => setPinnedOnly(v => !v)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              pinnedOnly
+                ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40'
+                : 'border-border-primary text-text-quaternary hover:text-text-secondary'
+            }`}
+          >
+            <Pin className="w-3 h-3" />
+            Pinned
+          </button>
+
+          {/* Sort dropdown */}
+          <div className="relative">
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as SortBy)}
+              className="appearance-none bg-transparent border border-border-secondary/40 rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+              aria-label="Sort memories"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="most-used">Most revised</option>
+            </select>
+            <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
+
+          {/* Active filter badge + clear all */}
+          {activeFilterCount > 0 && (
             <button
-              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection('') }}
+              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false); setQuery('') }}
+              className="rounded-full border border-border-primary px-3 py-1.5 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors flex items-center gap-1.5"
+            >
+              <span className="bg-accent-blue/10 text-accent-blue rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{activeFilterCount}</span>
+              filters active · clear all
+            </button>
+          )}
+
+          {hasFilters && !activeFilterCount && (
+            <button
+              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false) }}
               className="text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors flex items-center gap-1"
             >
               <X className="w-3 h-3" /> Clear filters
