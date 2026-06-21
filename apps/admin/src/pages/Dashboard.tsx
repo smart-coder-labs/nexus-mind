@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { ActivityItem } from '../components/ActivityItem'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, CheckCircle2, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
 type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends' | 'memory-health'
@@ -86,7 +86,7 @@ const TYPE_COLORS = [
   'var(--color-status-success)',
   'var(--color-status-warning)',
   'var(--color-status-error)',
-  '#bf5af2',
+  'var(--color-accent-purple)',
 ]
 
 function relativeTime(isoString: string): string {
@@ -226,6 +226,20 @@ export default function Dashboard() {
     enabled: isAdmin,
   })
 
+  const { data: projects } = useQuery({
+    queryKey: ['projects-check'],
+    queryFn: () => client.listProjects(),
+    staleTime: 5 * 60_000,
+    enabled: isAdmin,
+  })
+
+  const { data: apiKeys } = useQuery({
+    queryKey: ['api-keys-check'],
+    queryFn: () => client.listOrgKeys(),
+    staleTime: 5 * 60_000,
+    enabled: isAdmin,
+  })
+
   const { data: healthData } = useQuery({
     queryKey: ['memory-health'],
     queryFn: () => client.getMemoryHealth(),
@@ -328,9 +342,9 @@ export default function Dashboard() {
                   key={d}
                   onClick={() => setPeriod(d)}
                   className={cn(
-                    'px-3 py-1 rounded-full text-xs transition-colors',
+                    'text-[10px] px-2 py-0.5 transition-colors',
                     period === d
-                      ? 'bg-[#272729] text-text-primary font-semibold shadow-sm'
+                      ? 'bg-accent-blue/10 text-accent-blue rounded-[5px]'
                       : 'text-text-quaternary hover:text-text-secondary'
                   )}
                 >
@@ -547,7 +561,7 @@ export default function Dashboard() {
               return (agentActivity as AgentActivity[]).map(agent => (
                 <div key={agent.tool} className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-text-secondary truncate">{agent.tool}</span>
+                    <span className="text-xs font-semibold text-text-primary truncate">{agent.tool}</span>
                     <div className="flex items-center gap-2 shrink-0">
                       {agent.memories_last_24h > 0 && (
                         <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
@@ -771,28 +785,59 @@ export default function Dashboard() {
 
       {/* Getting Started */}
       {isAdmin && isVisible('getting-started') && (() => {
-        const checklist = [
-          { label: 'Create your first project', done: false, href: '/projects' },
-          { label: 'Invite a team member', done: (stats?.active_users_24h ?? 0) > 1, href: '/users' },
-          { label: 'Add a convention', done: (conventions?.length ?? 0) > 0, href: '/conventions' },
-          { label: 'Store your first memory', done: (stats?.total_memories ?? 0) > 0, href: '/memories' },
-          { label: 'Create an AI agent', done: false, href: '/agents' },
+        const checklistItems = [
+          {
+            label: 'Create your first memory',
+            done: (stats?.total_memories ?? 0) > 0,
+            href: '/memories',
+          },
+          {
+            label: 'Invite a team member',
+            done: (users?.length ?? 0) > 1,
+            href: '/users',
+          },
+          {
+            label: 'Create a project',
+            done: Array.isArray(projects) ? projects.length > 0 : false,
+            href: '/projects',
+          },
+          {
+            label: 'Set team conventions',
+            done: Array.isArray(conventions) ? conventions.length > 0 : false,
+            href: '/conventions',
+          },
+          {
+            label: 'Create an API key',
+            done: Array.isArray(apiKeys) ? apiKeys.length > 0 : false,
+            href: '/api-keys',
+          },
         ]
+        const completedCount = checklistItems.filter(i => i.done).length
         return (
           <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-text-primary">Getting Started</h3>
-              <span className="text-[10px] text-text-quaternary">{checklist.filter(c => c.done).length}/{checklist.length} complete</span>
+              <span className="text-[10px] text-text-quaternary">{completedCount}/5 completed</span>
             </div>
-            {checklist.map(item => (
-              <div key={item.label} className="flex items-center gap-3 py-2 border-b border-border-secondary/20 last:border-0">
-                <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${item.done ? 'bg-status-success border-status-success' : 'border-border-primary'}`}>
-                  {item.done && <CheckCircle2 className="w-3 h-3 text-white" />}
-                </div>
-                <span className={`text-xs flex-1 ${item.done ? 'text-text-quaternary line-through' : 'text-text-secondary'}`}>{item.label}</span>
-                {!item.done && <a href={item.href} className="text-[10px] text-accent-blue hover:text-accent-blue/80">Go →</a>}
+            {completedCount === 5 ? (
+              <div className="flex flex-col items-center py-4 gap-2">
+                <CheckCircle2 className="w-8 h-8 text-status-success" />
+                <p className="text-xs text-text-secondary">All set up! Your team is ready.</p>
               </div>
-            ))}
+            ) : (
+              checklistItems.map(item => (
+                <div key={item.label} className={`flex items-center gap-2.5 py-2 border-b border-border-secondary/20 last:border-0 ${item.done ? 'opacity-50' : ''}`}>
+                  {item.done
+                    ? <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
+                    : <Circle className="w-4 h-4 text-text-quaternary shrink-0" />
+                  }
+                  {item.done
+                    ? <span className="text-xs text-text-quaternary line-through">{item.label}</span>
+                    : <Link to={item.href} className="text-xs text-accent-blue hover:text-accent-blue/80 transition-colors">{item.label}</Link>
+                  }
+                </div>
+              ))
+            )}
           </div>
         )
       })()}
@@ -851,8 +896,8 @@ export default function Dashboard() {
             const lastX = w - pad
             return (
               <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-14">
-                <polyline points={`${firstX},${h - pad} ${pts} ${lastX},${h - pad}`} fill="rgba(41,151,255,0.08)" stroke="none" />
-                <polyline points={pts} fill="none" stroke="#2997ff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <polyline points={`${firstX},${h - pad} ${pts} ${lastX},${h - pad}`} fill="var(--color-accent-blue)" fillOpacity="0.08" stroke="none" />
+                <polyline points={pts} fill="none" stroke="var(--color-accent-blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             )
           })()}

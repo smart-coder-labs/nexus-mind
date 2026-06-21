@@ -74,8 +74,8 @@ const sizeClasses: Record<StatisticSize, { label: string; value: string; meta: s
         sparkline: { width: 100, height: 32 },
     },
     md: {
-        label: "text-xs",
-        value: "text-[34px] font-semibold tracking-[-0.374px]",
+        label: "text-[10px]",
+        value: "text-2xl font-semibold",
         meta: "text-sm",
         padding: "p-5",
         gap: "space-y-4",
@@ -243,7 +243,7 @@ export const StatisticDisplay = forwardRef<HTMLDivElement, StatisticDisplayProps
                             {/* Top row: Label & Icon */}
                             <div className="flex items-center justify-between mb-4">
                                 <span className={cn(
-                                    'tracking-[-0.08px] text-text-tertiary font-semibold',
+                                    'text-text-quaternary',
                                     currentSize.label
                                 )}>
                                     {metric.label}
@@ -367,7 +367,7 @@ export const StatisticHighlight = forwardRef<HTMLDivElement, StatisticHighlightP
                 <div className="relative flex flex-col gap-4">
                     <div className="flex items-center justify-between gap-3">
                         <div>
-                            <p className={cn('tracking-[-0.08px] text-text-tertiary font-semibold', sizeClasses[size].label)}>
+                            <p className={cn('text-text-quaternary', sizeClasses[size].label)}>
                                 {label}
                             </p>
                             {description && (
