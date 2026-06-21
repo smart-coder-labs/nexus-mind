@@ -255,7 +255,7 @@ export default function Users() {
                         {user.name[0].toUpperCase()}
                       </div>
                       <div>
-                        <p className="text-text-secondary font-semibold leading-tight">{user.name}</p>
+                        <p className="text-xs text-text-secondary font-semibold leading-tight">{user.name}</p>
                         <p className="text-text-tertiary text-xs">{user.email}</p>
                       </div>
                     </div>
@@ -295,11 +295,11 @@ export default function Users() {
                       {user.disabled_at && (
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-status-error" />
-                          <span className="text-[11px] text-text-quaternary ml-1">Disabled</span>
+                          <span className="text-[10px] text-text-quaternary ml-1">Disabled</span>
                         </span>
                       )}
                       {!user.disabled_at && user.status === 'active' && (
-                        <span className="text-[11px] text-text-quaternary ml-1">Active</span>
+                        <span className="text-[10px] text-text-quaternary ml-1">Active</span>
                       )}
                     </div>
                   </td>
@@ -540,7 +540,7 @@ function UserActivityFeed({ userId, client }: { userId: string; client: NexusMin
             {entry.action}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-xs text-text-tertiary truncate">
+            <p className="text-[10px] text-text-secondary truncate">
               {entry.resource_type}{entry.resource_id ? ` · ${entry.resource_id.slice(0, 8)}` : ''}
             </p>
             <p className="text-[10px] text-text-quaternary mt-0.5">
@@ -597,7 +597,7 @@ function UserNoteSection({
   return (
     <div className="px-5 py-3 border-b border-border-secondary/30">
       <div className="flex items-center justify-between mb-1.5">
-        <p className="text-[11px] font-semibold text-text-quaternary">Admin Note</p>
+        <p className="text-[10px] font-semibold text-text-quaternary">Admin Note</p>
         <button
           onClick={() => { setNoteInput(savedNote ?? ''); setNoteOpen(v => !v) }}
           className="text-text-quaternary hover:text-text-secondary transition-colors"
@@ -663,12 +663,12 @@ function UserActivityDrawer({
         role="dialog"
         aria-modal="true"
         aria-label={`Activity for ${user.name || user.email}`}
-        className="fixed right-0 top-0 h-full w-96 bg-[#272729] border-l border-border-primary z-50 flex flex-col shadow-2xl"
+        className="fixed right-0 top-0 h-full w-96 bg-[#1d1d1f] border-l border-border-primary z-50 flex flex-col shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border-secondary/50">
           <div>
-            <p className="text-sm font-semibold text-text-primary">{user.name || user.email}</p>
+            <p className="text-xs font-semibold text-text-primary">{user.name || user.email}</p>
             <p className="text-xs text-text-tertiary mt-0.5">{user.role} · {user.email}</p>
             <div className="mt-0.5">
               <p className="text-[10px] text-text-quaternary uppercase tracking-wide">Last login</p>
@@ -691,7 +691,7 @@ function UserActivityDrawer({
 
         {/* Section label */}
         <div className="px-5 py-3 border-b border-border-secondary/30">
-          <p className="text-[11px] font-semibold text-text-quaternary">Recent Activity</p>
+          <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wide">Recent Activity</p>
         </div>
 
         {/* Feed */}

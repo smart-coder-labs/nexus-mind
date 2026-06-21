@@ -123,7 +123,7 @@ function MemoryTemplatesSection() {
               <div key={t.id} className="flex items-start gap-3 p-3 rounded-[11px] border border-border-secondary bg-[#272729]">
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-text-primary">{t.name}</span>
+                    <span className="text-xs font-semibold text-text-primary">{t.name}</span>
                     <span className={`text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 ${TYPE_BADGE_CLS[t.type]}`}>
                       {t.type}
                     </span>
@@ -153,7 +153,7 @@ function MemoryTemplatesSection() {
 
         {templates.length === 0 && !showForm && (
           <div className="text-center py-6 space-y-1">
-            <p className="text-sm font-semibold text-text-secondary">No templates yet</p>
+            <p className="text-xs font-semibold text-text-secondary">No templates yet</p>
             <p className="text-xs text-text-tertiary">Add a template to speed up memory creation.</p>
           </div>
         )}
@@ -178,7 +178,7 @@ function MemoryTemplatesSection() {
               <select
                 value={formType}
                 onChange={e => setFormType(e.target.value as TemplateType)}
-                className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full"
+                className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full"
               >
                 {TEMPLATE_TYPES.map(t => (
                   <option key={t} value={t}>{t}</option>
@@ -192,7 +192,7 @@ function MemoryTemplatesSection() {
                 onChange={e => setFormContent(e.target.value)}
                 placeholder="Template content that will pre-fill the memory..."
                 rows={5}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px]"
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px]"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -690,7 +690,7 @@ export default function Settings() {
       <section className="space-y-4">
         <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">My Profile</p>
         <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5 mb-6">
-          <h3 className="text-sm font-semibold text-text-primary mb-4">My Profile</h3>
+          <h3 className="text-xs font-semibold text-text-primary mb-4">My Profile</h3>
           <div className="space-y-4">
             {/* Display name */}
             <div>
@@ -754,7 +754,7 @@ export default function Settings() {
               <button
                 onClick={() => updateOrgMut.mutate(orgName)}
                 disabled={updateOrgMut.isPending || orgName === org?.name}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
               >
                 {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
               </button>
@@ -782,7 +782,7 @@ export default function Settings() {
                   >
                     {updateLogoMut.isPending ? 'Saving…' : 'Save'}
                   </button>
-                  {logoSaved && <span className="text-xs text-status-success">Saved</span>}
+                  {logoSaved && <span className="text-[10px] text-status-success">Saved</span>}
                 </div>
                 {logoUrl && (
                   <img
@@ -804,7 +804,7 @@ export default function Settings() {
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
             <div className="space-y-4">
               <div>
-                <p className="text-sm font-semibold text-text-primary">Data Retention</p>
+                <p className="text-xs font-semibold text-text-primary">Data Retention</p>
                 <p className="text-xs text-text-tertiary mt-0.5">
                   Automatically delete memories older than the selected period. Set to "Never" to keep all memories.
                 </p>
@@ -814,7 +814,7 @@ export default function Settings() {
                   <select
                     value={retentionDays ?? ''}
                     onChange={(e) => setRetentionDays(e.target.value ? parseInt(e.target.value) : null)}
-                    className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none pr-8"
+                    className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none pr-8"
                   >
                     <option value="">Never (keep all)</option>
                     <option value="30">30 days</option>
@@ -827,12 +827,12 @@ export default function Settings() {
                 <button
                   onClick={() => updateRetentionMut.mutate(retentionDays)}
                   disabled={updateRetentionMut.isPending}
-                  className="px-4 py-2 bg-accent-blue text-white text-sm font-semibold rounded-full hover:opacity-90 transition-opacity disabled:opacity-50"
+                  className="px-4 py-2 bg-accent-blue text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   {updateRetentionMut.isPending ? 'Saving…' : 'Save'}
                 </button>
                 {updateRetentionMut.isSuccess && (
-                  <span className="text-xs text-status-success">Saved</span>
+                  <span className="text-[10px] text-status-success">Saved</span>
                 )}
               </div>
               {orgSettings?.retention_days && (
@@ -851,7 +851,7 @@ export default function Settings() {
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Agent Instructions</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
             <div>
-              <p className="text-sm font-semibold text-text-primary">Agent Instructions</p>
+              <p className="text-xs font-semibold text-text-primary">Agent Instructions</p>
               <p className="text-xs text-text-tertiary mt-0.5 mb-3">
                 System-level instructions added to every agent's context for this organization.
                 Use this to set team conventions, coding standards, or custom behavior.
@@ -862,17 +862,17 @@ export default function Settings() {
               onChange={e => setCustomInstructions(e.target.value)}
               rows={5}
               placeholder="e.g., Always use TypeScript strict mode. Prefer functional components. Follow our naming conventions..."
-              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y min-h-[100px]"
+              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y min-h-[100px]"
             />
             <div className="flex items-center gap-3">
               <button
                 onClick={() => updateInstructionsMut.mutate(customInstructions.trim() || null)}
                 disabled={updateInstructionsMut.isPending}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
               >
                 {updateInstructionsMut.isPending ? 'Saving…' : 'Save Instructions'}
               </button>
-              {instructionsSaved && <span className="text-xs text-status-success">Saved ✓</span>}
+              {instructionsSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
             </div>
           </div>
         </section>
@@ -884,7 +884,7 @@ export default function Settings() {
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Announcement Banner</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
             <div>
-              <p className="text-sm font-semibold text-text-primary">Announcement Banner</p>
+              <p className="text-xs font-semibold text-text-primary">Announcement Banner</p>
               <p className="text-xs text-text-tertiary mt-0.5">
                 Display a banner at the top of the admin UI for all users. Leave blank to hide the banner.
               </p>
@@ -916,7 +916,7 @@ export default function Settings() {
               <select
                 value={announcementType}
                 onChange={e => setAnnouncementType(e.target.value as 'info' | 'warning' | 'error')}
-                className="bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
+                className="bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
               >
                 <option value="info">Info</option>
                 <option value="warning">Warning</option>
@@ -941,7 +941,7 @@ export default function Settings() {
                   Clear
                 </button>
               )}
-              {announcementSaved && <span className="text-xs text-status-success">Saved ✓</span>}
+              {announcementSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
             </div>
           </div>
         </section>
@@ -953,7 +953,7 @@ export default function Settings() {
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Password Policy</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
             <div>
-              <p className="text-sm font-semibold text-text-primary">Minimum password length</p>
+              <p className="text-xs font-semibold text-text-primary">Minimum password length</p>
               <p className="text-xs text-text-tertiary mt-0.5">
                 Enforce a minimum character count for all passwords in this organization.
               </p>
@@ -962,7 +962,7 @@ export default function Settings() {
               <select
                 value={minPasswordLength}
                 onChange={e => setMinPasswordLength(parseInt(e.target.value))}
-                className="rounded-[11px] bg-transparent border border-border-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
+                className="rounded-[11px] bg-transparent border border-border-primary px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
               >
                 <option value={6}>6 characters</option>
                 <option value={8}>8 characters</option>
@@ -974,11 +974,11 @@ export default function Settings() {
               <button
                 onClick={() => updatePasswordPolicyMut.mutate(minPasswordLength)}
                 disabled={updatePasswordPolicyMut.isPending}
-                className="rounded-full bg-accent-blue text-white font-semibold px-4 py-2 text-sm hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="rounded-full bg-accent-blue text-white font-semibold px-4 py-2 text-xs hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 {updatePasswordPolicyMut.isPending ? 'Saving…' : 'Save'}
               </button>
-              {passwordPolicySaved && <span className="text-xs text-status-success">Saved ✓</span>}
+              {passwordPolicySaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
             </div>
           </div>
         </section>
@@ -1028,7 +1028,7 @@ export default function Settings() {
               <button
                 type="submit"
                 disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold disabled:opacity-30 transition-colors"
+                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
               >
                 {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
               </button>
@@ -1072,14 +1072,14 @@ export default function Settings() {
               <div className="flex gap-2">
                 <button
                   onClick={() => setRotateConfirm(false)}
-                  className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary transition-colors"
+                  className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-tertiary hover:text-text-secondary transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => rotateMut.mutate()}
                   disabled={rotateMut.isPending}
-                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold disabled:opacity-40 transition-colors"
+                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-40 transition-colors"
                 >
                   {rotateMut.isPending ? 'Rotating…' : 'Rotate'}
                 </button>
@@ -1101,7 +1101,7 @@ export default function Settings() {
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">
             Agent Events
-            {eventSaved && <span className="ml-2 text-status-success text-xs">Saved</span>}
+            {eventSaved && <span className="ml-2 text-status-success text-[10px]">Saved</span>}
           </p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
             <p className="text-xs text-text-tertiary">
@@ -1117,7 +1117,7 @@ export default function Settings() {
               ] as { key: keyof AgentEventSettings; label: string; description: string }[]).map(({ key, label, description }) => (
                 <div key={key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
                   <div>
-                    <p className="text-sm text-text-secondary font-semibold">{label}</p>
+                    <p className="text-xs text-text-secondary font-semibold">{label}</p>
                     <p className="text-xs text-text-tertiary mt-0.5">{description}</p>
                   </div>
                   <Switch
@@ -1157,7 +1157,7 @@ export default function Settings() {
                   <div key={wh.id} className="border border-border-primary rounded-[18px] p-4 space-y-3">
                     {/* Header row: name + switch */}
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-text-primary truncate">{wh.name}</p>
+                      <p className="text-xs font-semibold text-text-primary truncate">{wh.name}</p>
                       <Switch
                         checked={wh.active}
                         onCheckedChange={(checked) =>
@@ -1187,8 +1187,8 @@ export default function Settings() {
                       <div className="flex items-center gap-2">
                         {testStates[wh.id]?.result && (
                           testStates[wh.id].result!.success
-                            ? <span className="text-xs text-status-success">✓ {testStates[wh.id].result!.status_code}</span>
-                            : <span className="text-xs text-status-error">✗ {testStates[wh.id].result!.error}</span>
+                            ? <span className="text-[10px] text-status-success">✓ {testStates[wh.id].result!.status_code}</span>
+                            : <span className="text-[10px] text-status-error">✗ {testStates[wh.id].result!.error}</span>
                         )}
                         <button
                           onClick={() => handleTestWebhook(wh.id)}
@@ -1229,7 +1229,7 @@ export default function Settings() {
             {/* Empty state */}
             {!webhooksLoading && webhooks.length === 0 && !showAddWebhook && (
               <div className="text-center py-6 space-y-2">
-                <p className="text-sm font-semibold text-text-primary">No webhooks configured</p>
+                <p className="text-xs font-semibold text-text-primary">No webhooks configured</p>
                 <p className="text-xs text-text-tertiary">Add a webhook to receive GitHub events.</p>
               </div>
             )}
@@ -1273,7 +1273,7 @@ export default function Settings() {
                 <div className="space-y-1.5">
                   <label className="text-xs text-text-tertiary">Events</label>
                   <div className="space-y-1.5">
-                    <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+                    <label className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
                       <input
                         type="checkbox"
                         checked={webhookEvents.includes('*')}
@@ -1283,7 +1283,7 @@ export default function Settings() {
                       All events (*)
                     </label>
                     {WEBHOOK_EVENTS.map(ev => (
-                      <label key={ev} className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+                      <label key={ev} className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
                         <input
                           type="checkbox"
                           checked={webhookEvents.includes(ev)}
@@ -1301,14 +1301,14 @@ export default function Settings() {
                   <button
                     type="button"
                     onClick={() => { setShowAddWebhook(false); setWebhookError('') }}
-                    className="rounded-full border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                    className="rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={createWebhookMut.isPending}
-                    className="rounded-full bg-accent-blue text-white px-4 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+                    className="rounded-full bg-accent-blue text-white px-4 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
                   >
                     {createWebhookMut.isPending ? 'Saving…' : 'Save webhook'}
                   </button>
@@ -1334,7 +1334,7 @@ export default function Settings() {
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Org Data Export</p>
           <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
-            <h2 className="text-sm font-semibold text-text-primary mb-1">Org Data Export</h2>
+            <h2 className="text-xs font-semibold text-text-primary mb-1">Org Data Export</h2>
             <p className="text-xs text-text-quaternary mb-4">
               Download all your organization's data as JSON for backup or migration.
             </p>
@@ -1372,10 +1372,10 @@ export default function Settings() {
       {session?.user.role === 'admin' && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Danger Zone</p>
-          <div className="border border-status-error/15 rounded-[18px] p-5 space-y-3">
+          <div className="border border-status-error/30 bg-status-error/[0.04] rounded-[18px] p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-text-secondary font-semibold">Export all data</p>
+                <p className="text-xs text-text-secondary font-semibold">Export all data</p>
                 <p className="text-xs text-text-tertiary mt-0.5">Download all memories, users, and audit logs as JSON.</p>
               </div>
               <button
@@ -1387,26 +1387,26 @@ export default function Settings() {
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-text-secondary font-semibold">Export org config</p>
+                <p className="text-xs text-text-secondary font-semibold">Export org config</p>
                 <p className="text-xs text-text-tertiary mt-0.5">Download org settings, webhooks, and project list as JSON.</p>
               </div>
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleImportConfig}
-                  className="border border-border-primary rounded-full px-4 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
+                  className="border border-border-primary rounded-full px-4 py-2 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
                 >
                   <Upload className="w-3.5 h-3.5" /> Import config
                 </button>
                 <button
                   onClick={() => client.exportOrgConfig().then(blob => downloadBlob(blob, 'nexusmind-config.json'))}
-                  className="border border-border-primary rounded-full px-4 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
+                  className="border border-border-primary rounded-full px-4 py-2 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
                 >
                   <Download className="w-3.5 h-3.5" /> Export org config
                 </button>
               </div>
             </div>
             {importFlash && (
-              <p className={`text-xs mt-1 ${importFlash.type === 'success' ? 'text-status-success' : importFlash.type === 'warning' ? 'text-status-warning' : 'text-status-error'}`}>
+              <p className={`text-[10px] mt-1 ${importFlash.type === 'success' ? 'text-status-success' : importFlash.type === 'warning' ? 'text-status-warning' : 'text-status-error'}`}>
                 {importFlash.type === 'success' ? '✓ ' : ''}{importFlash.message}
               </p>
             )}
