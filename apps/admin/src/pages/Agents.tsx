@@ -145,7 +145,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
       >
         {/* Header */}
         <div className="flex items-center justify-between">
-          <p className="text-text-primary font-semibold text-sm">
+          <p className="text-text-primary font-semibold text-xs">
             {newKey ? 'Agent created' : 'Create agent'}
           </p>
           <button
@@ -175,7 +175,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
             </div>
             <button
               onClick={handleClose}
-              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold transition-colors"
+              className="w-full py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors"
             >
               Done
             </button>
@@ -185,7 +185,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Name */}
             <div className="space-y-1.5">
-              <label htmlFor="agent-name" className="text-[11px] text-text-tertiary tracking-[-0.224px]">
+              <label htmlFor="agent-name" className="text-[10px] text-text-quaternary">
                 Agent name <span className="text-status-error">*</span>
               </label>
               <input
@@ -201,7 +201,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
 
             {/* Role */}
             <div className="space-y-1.5">
-              <label htmlFor="agent-role" className="text-[11px] text-text-tertiary tracking-[-0.224px]">Role</label>
+              <label htmlFor="agent-role" className="text-[10px] text-text-quaternary">Role</label>
               <select
                 id="agent-role"
                 value={role}
@@ -219,7 +219,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
 
             {/* Expires in */}
             <div className="space-y-1.5">
-              <label htmlFor="agent-expires" className="text-[11px] text-text-tertiary tracking-[-0.224px]">Expires in</label>
+              <label htmlFor="agent-expires" className="text-[10px] text-text-quaternary">Expires in</label>
               <select
                 id="agent-expires"
                 value={expires}
@@ -243,14 +243,14 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-full border border-border-primary text-sm text-text-tertiary hover:text-text-secondary hover:bg-white/[0.04] transition-colors"
+                className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !name.trim()}
-                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-sm font-semibold disabled:opacity-40 transition-colors"
+                className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-40 transition-colors"
               >
                 {loading ? 'Creating…' : 'Create agent'}
               </button>
@@ -316,7 +316,7 @@ function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
           {keyData.user_name?.charAt(0).toUpperCase() ?? <Bot className="w-3.5 h-3.5" />}
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-text-primary truncate">{keyData.user_name}</p>
+          <p className="text-xs font-semibold text-text-primary truncate">{keyData.user_name}</p>
           <p className="text-[11px] text-text-quaternary font-mono mt-0.5">{keyPrefix(keyData)}</p>
         </div>
       </div>
@@ -506,14 +506,14 @@ export default function Agents() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-[21px] font-semibold tracking-[0.231px] text-text-primary">Agents</h1>
-          <p className="mt-1 text-[14px] text-text-tertiary tracking-[-0.224px]">
+          <h1 className="text-base font-semibold text-text-primary">Agents</h1>
+          <p className="text-xs text-text-quaternary mt-0.5">
             AI agents connected to NexusMind via API key.
           </p>
         </div>
         <button
           onClick={() => setCreateOpen(true)}
-          className="bg-accent-blue text-white rounded-full px-4 py-2 text-sm font-semibold hover:bg-accent-blue-hover transition-colors shrink-0"
+          className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:bg-accent-blue-hover transition-colors shrink-0"
         >
           Create agent
         </button>
@@ -540,7 +540,7 @@ export default function Agents() {
 
       {/* Revoke error */}
       {revokeMut.isError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-sm text-status-error">
+        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-xs text-status-error">
           {revokeMut.error instanceof Error ? revokeMut.error.message : 'Failed to revoke key'}
         </div>
       )}
@@ -559,14 +559,14 @@ export default function Agents() {
             <div className="w-12 h-12 rounded-full bg-[#272729] flex items-center justify-center">
               <Bot className="w-6 h-6 text-text-quaternary" />
             </div>
-            <p className="text-sm font-semibold text-text-tertiary">No agents yet</p>
+            <p className="text-xs font-semibold text-text-tertiary">No agents yet</p>
             <p className="text-xs text-text-quaternary text-center max-w-xs">
               Create an agent to give an AI assistant a dedicated API key and identity.
             </p>
           </div>
         ) : filteredKeys.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-2">
-            <p className="text-sm text-text-tertiary">No {statusFilter.toLowerCase()} agents.</p>
+            <p className="text-xs text-text-tertiary">No {statusFilter.toLowerCase()} agents.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -96,8 +96,8 @@ export default function Tags() {
     <div className="flex-1 p-8 max-w-4xl">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary">Tags</h1>
-        <p className="text-sm text-text-quaternary mt-1">
+        <h1 className="text-base font-semibold text-text-primary">Tags</h1>
+        <p className="text-xs text-text-quaternary mt-0.5">
           Manage memory tags across your organization
         </p>
       </div>
@@ -179,7 +179,7 @@ export default function Tags() {
                       </button>
                     </div>
                   ) : (
-                    <span className="text-xs text-text-primary">{t.name}</span>
+                    <span className="text-xs font-semibold text-text-primary">{t.name}</span>
                   )}
                 </td>
                 <td className="px-5 py-3">
@@ -245,7 +245,7 @@ export default function Tags() {
       {mergingTag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md shadow-xl">
-            <h2 className="text-sm font-semibold text-text-primary">Merge "{mergingTag}"</h2>
+            <h2 className="text-xs font-semibold text-text-primary">Merge "{mergingTag}"</h2>
             <p className="text-xs text-text-quaternary mt-1">
               All memories tagged "{mergingTag}" will be retagged to the target.
               The original tag will be removed.

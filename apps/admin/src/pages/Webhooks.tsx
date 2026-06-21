@@ -96,7 +96,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold text-text-primary">Add webhook</h2>
+          <h2 className="text-xs font-semibold text-text-primary">Add webhook</h2>
           <button
             onClick={onClose}
             className="text-text-quaternary hover:text-text-secondary transition-colors"
@@ -108,7 +108,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">Endpoint URL</label>
+            <label className="text-[10px] text-text-quaternary">Endpoint URL</label>
             <input
               type="url"
               value={url}
@@ -119,7 +119,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs text-text-secondary">Events</label>
+            <label className="text-[10px] text-text-quaternary">Events</label>
             <div className="space-y-1.5">
               {ALL_EVENTS.map(event => (
                 <label key={event} className="flex items-center gap-2 cursor-pointer">
@@ -136,7 +136,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs text-text-secondary">
+            <label className="text-[10px] text-text-quaternary">
               Secret <span className="text-text-quaternary">(optional)</span>
             </label>
             <div className="relative">
@@ -166,14 +166,14 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
             <button
               type="button"
               onClick={onClose}
-              className="text-xs px-4 py-2 rounded-[8px] border border-border-primary text-text-secondary hover:text-text-primary transition-colors"
+              className="border border-border-primary text-text-secondary rounded-full px-4 py-1.5 text-xs hover:text-text-primary transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="text-xs px-4 py-2 rounded-[8px] bg-accent-blue text-white hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
+              className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
             >
               {submitting ? 'Adding…' : 'Add webhook'}
             </button>
@@ -286,8 +286,8 @@ export default function Webhooks() {
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div>
-        <h1 className="text-[21px] font-semibold tracking-[0.231px] text-text-primary">Webhooks</h1>
-        <p className="mt-1 text-[14px] text-text-tertiary tracking-[-0.224px]">
+        <h1 className="text-base font-semibold text-text-primary">Webhooks</h1>
+        <p className="text-xs text-text-quaternary mt-0.5">
           Receive real-time HTTP notifications when events occur in your organization.
         </p>
       </div>
@@ -296,7 +296,7 @@ export default function Webhooks() {
         {/* Webhook list */}
         <div className="flex-1 bg-[#272729] rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-text-primary">Webhooks</h2>
+            <h2 className="text-xs font-semibold text-text-primary">Webhooks</h2>
             <button
               onClick={() => setShowCreate(true)}
               className="text-xs px-3 py-1.5 rounded-full border border-border-primary text-text-secondary hover:text-text-primary hover:border-accent-blue/40 transition-colors"
@@ -316,7 +316,7 @@ export default function Webhooks() {
           {!isLoading && webhooks.length === 0 && (
             <div className="flex flex-col items-center gap-3 py-12">
               <WebhookIcon />
-              <p className="text-sm font-semibold text-text-tertiary">No webhooks configured</p>
+              <p className="text-xs font-semibold text-text-tertiary">No webhooks configured</p>
               <p className="text-xs text-text-quaternary">Add a webhook to receive event notifications.</p>
               <button
                 onClick={() => setShowCreate(true)}
@@ -372,7 +372,7 @@ export default function Webhooks() {
 
         {/* Event log */}
         <div className="w-80 bg-[#272729] rounded-[18px] border border-border-primary p-5 flex flex-col">
-          <h2 className="text-sm font-semibold text-text-primary mb-4">Event log</h2>
+          <h2 className="text-xs font-semibold text-text-primary mb-4">Event log</h2>
           {!selectedWebhook ? (
             <div className="flex flex-col items-center justify-center flex-1 gap-2 py-8">
               <Zap className="w-8 h-8 text-text-quaternary" />
