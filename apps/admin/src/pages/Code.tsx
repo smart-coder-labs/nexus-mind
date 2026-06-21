@@ -185,7 +185,7 @@ function SearchResultRow({ result, searchQuery }: { result: CodeSearchResult; se
 
       {expanded && (
         <div className="border-t border-border-secondary bg-[#1d1d1f] rounded-b-[18px]">
-          <pre className="px-4 py-3 text-[12px] font-mono text-text-secondary leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">
+          <pre className="px-4 py-3 text-[10px] font-mono text-text-secondary leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">
             {highlightCode(result.content, searchQuery)}
           </pre>
         </div>
@@ -292,8 +292,8 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
   if (indexedProjects.length === 0) {
     return (
       <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
-        <p className="text-sm font-semibold text-text-primary">No indexed repositories yet.</p>
-        <p className="text-[13px] text-text-tertiary">
+        <p className="text-xs font-semibold text-text-primary">No indexed repositories yet.</p>
+        <p className="text-xs text-text-quaternary">
           Index a repository in the Repositories tab to enable semantic search.
         </p>
       </div>
@@ -316,7 +316,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
               value={selectedProject}
               onChange={e => setSelectedProject(e.target.value)}
               required
-              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
             >
               <option value="">Select a project…</option>
               {indexedProjects.map(p => (
@@ -457,7 +457,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
             <button
               type="submit"
               disabled={isLoading || !query.trim() || !selectedProject}
-              className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
               {isLoading ? 'Searching…' : 'Search'}
@@ -470,7 +470,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
       {hasSearched && (
         <div className="space-y-3">
           {isError && (
-            <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-sm text-status-error/80">
+            <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
               {(error as Error)?.message ?? 'Search failed.'}
             </div>
           )}
@@ -480,8 +480,8 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
               {results.length === 0 ? (
                 <div className="border border-border-primary rounded-[18px] p-10 flex flex-col items-center gap-2 text-center">
                   <Search className="w-6 h-6 text-text-quaternary/50" />
-                  <p className="text-sm font-semibold text-text-secondary">No results found</p>
-                  <p className="text-[13px] text-text-tertiary max-w-xs">
+                  <p className="text-xs font-semibold text-text-secondary">No results found</p>
+                  <p className="text-xs text-text-quaternary max-w-xs">
                     Try a different query or check that the project is indexed.
                   </p>
                 </div>
@@ -777,7 +777,7 @@ function RepositoriesTab({
           </div>
           <button
             onClick={() => setShowForm(true)}
-            className="shrink-0 bg-accent-blue text-white rounded-full px-4 py-1.5 text-sm font-semibold hover:opacity-90 transition-opacity"
+            className="shrink-0 bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity"
           >
             Add Repository
           </button>
@@ -815,7 +815,7 @@ function RepositoriesTab({
                   onChange={e => setSelectedProject(e.target.value)}
                   disabled={indexMut.isPending}
                   required
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
                 >
                   <option value="">Select a project…</option>
                   {memProjects?.map(p => (
@@ -856,14 +856,14 @@ function RepositoriesTab({
                 type="button"
                 onClick={() => { setShowForm(false); setIndexError(null) }}
                 disabled={indexMut.isPending}
-                className="rounded-full border border-border-primary px-4 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                className="rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={indexMut.isPending}
-                className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
+                className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
               >
                 {indexMut.isPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                 {indexMut.isPending ? 'Cloning & indexing…' : 'Index'}
@@ -882,14 +882,14 @@ function RepositoriesTab({
         </div>
       ) : !projects || projects.length === 0 ? (
         <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
-          <p className="text-sm font-semibold text-text-primary">No repositories indexed yet.</p>
-          <p className="text-[13px] text-text-tertiary">
+          <p className="text-xs font-semibold text-text-primary">No repositories indexed yet.</p>
+          <p className="text-xs text-text-quaternary">
             Add a repository to enable semantic code search and context retrieval.
           </p>
           {!showForm && (
             <button
               onClick={() => setShowForm(true)}
-              className="mt-3 bg-accent-blue text-white rounded-full px-4 py-1.5 text-sm font-semibold hover:opacity-90 transition-opacity"
+              className="mt-3 bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity"
             >
               Add Repository
             </button>
@@ -906,7 +906,7 @@ function RepositoriesTab({
               >
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-text-primary text-sm">{p.name}</span>
+                    <span className="text-xs font-semibold text-text-primary">{p.name}</span>
                     <StatusChip project={p} />
                     {p.archived_at && (
                       <span className="bg-status-warning/10 text-status-warning text-[10px] rounded-[5px] px-1.5 py-0.5">
@@ -1099,10 +1099,10 @@ export default function Code() {
     <div className="p-8 max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">
+        <h1 className="text-base font-semibold text-text-primary">
           Code Repositories
         </h1>
-        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">
+        <p className="text-xs text-text-quaternary mt-0.5">
           Connect and index codebases for AI-assisted search and context retrieval.
         </p>
       </div>
@@ -1113,10 +1113,10 @@ export default function Code() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-[8px] transition-colors ${
+            className={`flex items-center gap-1.5 px-2 py-0.5 text-[10px] rounded-[5px] transition-colors ${
               activeTab === tab.id
-                ? 'bg-accent-blue/15 text-accent-blue font-semibold'
-                : 'font-normal text-text-quaternary hover:text-text-tertiary'
+                ? 'bg-accent-blue/10 text-accent-blue'
+                : 'text-text-quaternary hover:text-text-secondary'
             }`}
           >
             {tab.icon}
@@ -1127,7 +1127,7 @@ export default function Code() {
 
       {/* Tab content */}
       {projectsError && (
-        <p className="text-sm text-status-error text-center py-8">Failed to load repositories. Please refresh.</p>
+        <p className="text-xs text-status-error text-center py-8">Failed to load repositories. Please refresh.</p>
       )}
       {activeTab === 'repositories' && !projectsError && (
         <RepositoriesTab
