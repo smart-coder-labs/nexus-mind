@@ -11,8 +11,8 @@ import { cn } from '@/lib/utils'
 import { Sparkles, X, Check, CheckCircle, CheckCircle2, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
-type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started'
-const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'agent-activity', 'usage', 'quick-actions']
+type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends'
+const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'memory-trends', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -818,6 +818,44 @@ export default function Dashboard() {
           ) : (
             <p className="text-xs text-text-quaternary text-center py-4">No recent activity</p>
           )}
+        </div>
+      )}
+
+      {/* Memory Trends sparkline */}
+      {isAdmin && isVisible('memory-trends') && (
+        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-text-primary">Memory Trends</h3>
+            <span className="text-[10px] text-text-quaternary">Last 30 days</span>
+          </div>
+          {!trends || !trends.daily_counts || trends.daily_counts.length === 0 ? (
+            <p className="text-xs text-text-quaternary text-center py-4">No data yet</p>
+          ) : (() => {
+            const pts30 = trends.daily_counts.slice(-30)
+            const max = Math.max(...pts30.map((t: DailyCount) => t.count), 1)
+            const w = 300, h = 60, pad = 4
+            const pts = pts30.map((t: DailyCount, i: number, arr: DailyCount[]) => {
+              const x = pad + (arr.length > 1 ? (i / (arr.length - 1)) : 0.5) * (w - pad * 2)
+              const y = h - pad - ((t.count / max) * (h - pad * 2))
+              return `${x},${y}`
+            }).join(' ')
+            const firstX = pad
+            const lastX = w - pad
+            return (
+              <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-14">
+                <polyline points={`${firstX},${h - pad} ${pts} ${lastX},${h - pad}`} fill="rgba(41,151,255,0.08)" stroke="none" />
+                <polyline points={pts} fill="none" stroke="#2997ff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )
+          })()}
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[10px] text-text-quaternary">
+              {trends?.daily_counts?.slice(-7).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} this week
+            </span>
+            <span className="text-[10px] text-text-quaternary">
+              {trends?.daily_counts?.slice(-30).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} total
+            </span>
+          </div>
         </div>
       )}
 

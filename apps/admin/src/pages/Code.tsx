@@ -37,7 +37,7 @@ function downloadBlob(data: object, filename: string) {
 }
 
 const INPUT_CLS =
-  'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  'w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
 
 // ── Code highlight helper ──────────────────────────────────────────────────────
 
@@ -58,13 +58,13 @@ function StatusChip({ project }: { project: CodeProject }) {
   const indexed = project.last_indexed != null
   if (indexed) {
     return (
-      <span className="text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 text-status-success bg-status-success/10 border-status-success/20">
+      <span className="text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 text-status-success bg-status-success/10 border-status-success/20">
         indexed
       </span>
     )
   }
   return (
-    <span className="text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 text-text-quaternary bg-[#272729] border-border-secondary">
+    <span className="text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 text-text-quaternary bg-[#272729] border-border-secondary">
       not indexed
     </span>
   )
@@ -915,7 +915,7 @@ function RepositoriesTab({
                     <StatusBadge project={p} />
                     {/* Indexed files count chip */}
                     {(p.indexed_files_count ?? 0) > 0 && (
-                      <span className="text-[10px] text-text-quaternary bg-white/[0.04] rounded-[5px] px-1.5 py-0.5 border border-border-secondary/50">
+                      <span className="text-[10px] text-text-secondary bg-white/[0.06] rounded-[5px] px-1.5 py-0.5 border border-border-secondary/50">
                         {p.indexed_files_count} files
                       </span>
                     )}

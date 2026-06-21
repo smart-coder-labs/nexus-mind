@@ -6,7 +6,7 @@ import { useAuth } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
-  Archive, RotateCcw, BookMarked,
+  Archive, RotateCcw, BookMarked, Settings,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -508,6 +508,12 @@ export default function Projects() {
   // Archived toggle
   const [showArchived, setShowArchived] = useState(false)
 
+  // Project settings modal
+  const [editingProject, setEditingProject] = useState<NonNullable<typeof projects>[number] | null>(null)
+  const [settingsDescription, setSettingsDescription] = useState('')
+  const [settingsCustomInstructions, setSettingsCustomInstructions] = useState('')
+  const [settingsRetentionDays, setSettingsRetentionDays] = useState<number | ''>('')
+
   // Create Project Form
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -620,6 +626,32 @@ export default function Projects() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
   })
 
+  const updateProjectSettingsMut = useMutation({
+    mutationFn: ({ id, description, custom_instructions, retention_days }: {
+      id: string
+      description: string
+      custom_instructions: string
+      retention_days: number | ''
+    }) =>
+      client.updateProject(id, {
+        description: description || undefined,
+        custom_instructions: custom_instructions || undefined,
+        retention_days: retention_days !== '' ? Number(retention_days) : undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      setEditingProject(null)
+    },
+  })
+
+  useEffect(() => {
+    if (editingProject) {
+      setSettingsDescription(editingProject.description ?? '')
+      setSettingsCustomInstructions('')
+      setSettingsRetentionDays('')
+    }
+  }, [editingProject])
+
   const handleMemoriesClick = (projectId: string) => {
     setSelectedProjectId(projectId)
     setSheetOpen(true)
@@ -708,6 +740,16 @@ export default function Projects() {
                   className="p-1.5 rounded-[8px] text-text-tertiary hover:text-accent-blue hover:bg-[#272729]/60 transition-colors"
                 >
                   <Brain className="w-4 h-4" />
+                </button>
+
+                {/* Project settings button */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setEditingProject(project) }}
+                  aria-label={`Settings for ${project.name}`}
+                  title="Project settings"
+                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-[#272729]/60 transition-colors"
+                >
+                  <Settings className="w-3 h-3" />
                 </button>
 
                 {/* Members expand/collapse toggle */}
@@ -915,6 +957,89 @@ export default function Projects() {
           </div>
         </div>
       </div>
+
+      {/* Project Settings Modal */}
+      <Modal open={!!editingProject} onOpenChange={(open) => { if (!open) setEditingProject(null) }}>
+        <ModalCloseButton />
+        {editingProject && (
+          <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
+            <h2 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2">
+              <Settings className="w-4 h-4 text-accent-blue" />
+              Project Settings
+            </h2>
+            <p className="text-[11px] text-text-tertiary mb-5 font-mono">{editingProject.name}</p>
+
+            {updateProjectSettingsMut.isError && (
+              <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+                {(updateProjectSettingsMut.error as Error)?.message ?? 'Failed to save settings'}
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                updateProjectSettingsMut.mutate({
+                  id: editingProject.id,
+                  description: settingsDescription,
+                  custom_instructions: settingsCustomInstructions,
+                  retention_days: settingsRetentionDays,
+                })
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
+                <textarea
+                  value={settingsDescription}
+                  onChange={e => setSettingsDescription(e.target.value)}
+                  placeholder="Project description…"
+                  className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-3 resize-none h-20 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Custom AI Instructions</label>
+                <textarea
+                  value={settingsCustomInstructions}
+                  onChange={e => setSettingsCustomInstructions(e.target.value)}
+                  placeholder="Instructions injected into agent context for this project…"
+                  className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary p-3 resize-none h-28 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary w-full"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Retention Days</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={settingsRetentionDays}
+                  onChange={e => setSettingsRetentionDays(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="Inherit from org (leave blank)"
+                  className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2.5 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingProject(null)}
+                  className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={updateProjectSettingsMut.isPending}
+                  className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {updateProjectSettingsMut.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {updateProjectSettingsMut.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+      </Modal>
 
       {/* Memories Sheet */}
       <Modal open={sheetOpen} onOpenChange={setSheetOpen} position="right" size="lg">

@@ -199,6 +199,17 @@ export class NexusMindClient {
     return this.request('/v1/roles')
   }
 
+  getUsersByRole(role: string): Promise<User[]> {
+    return this.request(`/v1/admin/users?role=${encodeURIComponent(role)}`)
+  }
+
+  assignUserRole(userId: string, role: string): Promise<void> {
+    return this.request(`/v1/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    })
+  }
+
   createRole(data: {
     name: string
     display_name: string
@@ -235,7 +246,7 @@ export class NexusMindClient {
     })
   }
 
-  updateProject(id: string, data: { parent_id: string | null }): Promise<void> {
+  updateProject(id: string, data: Partial<{ parent_id: string | null; description: string; custom_instructions: string; retention_days: number }>): Promise<void> {
     return this.request(`/v1/projects/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),

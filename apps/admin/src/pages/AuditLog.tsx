@@ -27,6 +27,16 @@ function useDebounce<T>(value: T, delay: number): T {
 
 const PAGE_SIZE = 50
 
+const ACTION_TYPES = [
+  'memory.created', 'memory.updated', 'memory.deleted', 'memory.archived',
+  'convention.created', 'convention.updated', 'convention.deleted',
+  'user.invited', 'user.disabled', 'user.enabled',
+  'api_key.created', 'api_key.revoked',
+  'webhook.created', 'webhook.deleted',
+  // legacy simple actions
+  'store', 'search', 'delete', 'invite', 'revoke',
+]
+
 const ACTION_COLORS: Record<string, string> = {
   store:  'text-accent-blue',
   search: 'text-text-tertiary',
@@ -179,8 +189,8 @@ export default function AuditLog() {
   const setField = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft(d => ({ ...d, [field]: e.target.value }))
 
-  const inputCls = 'bg-transparent border border-border-secondary/40 rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
-  const selectCls = 'appearance-none bg-transparent border border-border-secondary/40 rounded-[8px] pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
+  const inputCls = 'bg-white/[0.04] border border-border-secondary/40 rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const selectCls = 'appearance-none bg-white/[0.04] border border-border-secondary/40 rounded-[8px] pl-3 pr-8 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer'
 
   const SelectWrapper = ({ children }: { children: React.ReactNode }) => (
     <div className="relative">
@@ -216,10 +226,10 @@ export default function AuditLog() {
               <button
                 onClick={handleExportCsv}
                 disabled={exporting || exportingServer}
-                className="border border-border-primary rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors disabled:opacity-40"
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
                 aria-label="Export audit log as CSV"
               >
-                <Download className="w-3.5 h-3.5" />
+                <Download className="w-3 h-3" />
                 {exporting ? 'Exporting…' : 'Export CSV'}
               </button>
               <button
@@ -243,7 +253,7 @@ export default function AuditLog() {
           placeholder="Search actions, resources…"
           value={searchRaw}
           onChange={e => setSearchRaw(e.target.value)}
-          className="bg-transparent border border-border-secondary/40 rounded-[8px] text-xs text-text-secondary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48"
+          className="bg-white/[0.04] border border-border-secondary/40 rounded-[8px] text-xs text-text-secondary placeholder:text-text-quaternary px-3 py-1.5 focus:border-accent-blue/60 focus:outline-none w-48"
         />
         <SelectWrapper>
           <select value={draft.user_id} onChange={setField('user_id')} className={selectCls}>
@@ -254,7 +264,7 @@ export default function AuditLog() {
         <SelectWrapper>
           <select value={draft.action} onChange={setField('action')} className={selectCls}>
             <option value="">All actions</option>
-            {['store', 'search', 'delete', 'invite', 'revoke'].map(a => (
+            {ACTION_TYPES.map(a => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
@@ -334,7 +344,7 @@ export default function AuditLog() {
                             : <ChevronUp className="w-3.5 h-3.5 text-text-quaternary" />
                           }
                           <span className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">{group.label}</span>
-                          <span className="text-[10px] text-text-quaternary bg-[#272729] border border-border-primary rounded-[5px] px-1.5 py-0.5">
+                          <span className="text-[10px] text-text-secondary bg-white/[0.06] border border-border-primary rounded-[5px] px-1.5 py-0.5">
                             {group.entries.length} events
                           </span>
                         </div>
@@ -342,7 +352,7 @@ export default function AuditLog() {
                     </tr>,
                     ...(!isCollapsed ? group.entries.map(entry => (
                       <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors duration-150">
-                        <td className="px-4 py-3 text-[11px] text-text-quaternary whitespace-nowrap">
+                        <td className="px-4 py-3 text-[10px] text-text-quaternary whitespace-nowrap">
                           <div className="border-l-2 border-l-accent-blue/20 ml-4 pl-4">
                             {new Date(entry.timestamp).toLocaleString()}
                           </div>
@@ -363,7 +373,7 @@ export default function AuditLog() {
                 })
               : entries?.map(entry => (
                 <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors duration-150">
-                  <td className="px-4 py-3 text-[11px] text-text-quaternary whitespace-nowrap">
+                  <td className="px-4 py-3 text-[10px] text-text-quaternary whitespace-nowrap">
                     {new Date(entry.timestamp).toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-xs text-text-secondary">

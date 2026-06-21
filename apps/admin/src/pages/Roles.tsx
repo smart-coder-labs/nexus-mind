@@ -2,7 +2,14 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { Shield, Trash2, Plus } from 'lucide-react'
+import { Shield, Trash2, Plus, Users, X, UserMinus, Search } from 'lucide-react'
+import type { CustomRole, User } from '../types'
+
+const ROLE_DESCRIPTIONS: Record<string, string> = {
+  admin: 'Full access to all settings and data',
+  member: 'Can store and search memories, view projects',
+  viewer: 'Read-only access to memories and projects',
+}
 
 const AVAILABLE_PERMISSIONS = [
   { key: 'memory:read', name: 'Read Memories', description: 'Allows viewing and reading memories.' },
