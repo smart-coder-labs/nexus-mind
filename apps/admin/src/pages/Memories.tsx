@@ -560,7 +560,7 @@ function BulkActionBar({
           <button
             onClick={onDelete}
             disabled={deleting}
-            className="text-xs text-status-error/80 hover:text-status-error transition-colors disabled:opacity-40"
+            className="text-xs text-status-error hover:text-status-error/80 transition-colors disabled:opacity-40"
             aria-label={`Delete ${count} selected memories`}
           >
             {deleting ? 'Deleting…' : 'Delete'}
@@ -912,6 +912,23 @@ function downloadBlob(data: object, filename: string) {
   const a = document.createElement('a')
   a.href = url; a.download = filename; a.click()
   URL.revokeObjectURL(url)
+}
+
+// ── CSV parser ────────────────────────────────────────────────────────────────
+
+function parseCSV(text: string): ImportMemory[] {
+  const lines = text.split('\n').filter(l => l.trim())
+  if (lines.length < 2) return []
+  const headers = lines[0].split(',')
+  return lines.slice(1).map(line => {
+    const vals = line.match(/(".*?"|[^,]+)/g) ?? []
+    const obj: Record<string, string> = {}
+    headers.forEach((h, i) => obj[h.trim()] = (vals[i] ?? '').replace(/^"|"$/g, '').trim())
+    return {
+      content: obj.content,
+      tags: obj.tags ? obj.tags.split(/[;|]/).map(t => t.trim()).filter(Boolean) : [],
+    }
+  }).filter(m => m.content)
 }
 
 export default function Memories() {
@@ -1293,6 +1310,11 @@ export default function Memories() {
   const [importState, setImportState] = useState<ImportState>('idle')
   const [importResult, setImportResult] = useState<ImportMemoriesResponse | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importToast, setImportToast] = useState<{ imported: number; failed: number } | null>(null)
+
+  // ── Drag-and-drop state ───────────────────────────────────────────────────
+  const [isDragOver, setIsDragOver] = useState(false)
 
   // Close export dropdown when clicking outside
   useEffect(() => {
@@ -1445,53 +1467,78 @@ export default function Memories() {
     }
   }, [client, debouncedQuery, filterCollection])
 
-  const handleImportFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!importFileRef.current) return
-    importFileRef.current.value = ''
-    if (!file) return
-
+  const parseAndStageFile = useCallback((file: File) => {
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
         const text = ev.target?.result as string
-        const parsed = JSON.parse(text)
-        const memories: ImportMemory[] = Array.isArray(parsed)
-          ? parsed
-          : Array.isArray(parsed?.memories)
-            ? parsed.memories
-            : null
+        const isCSV = file.name.toLowerCase().endsWith('.csv')
 
-        if (!memories) {
-          setImportPending(null)
-          setImportError('Invalid JSON: expected { memories: [...] } or [...]')
-          setImportState('error')
-          return
+        let memories: ImportMemory[] | null = null
+
+        if (isCSV) {
+          memories = parseCSV(text)
+          if (memories.length === 0) {
+            setImportPending(null)
+            setImportError('CSV file is empty or has no valid rows')
+            setImportState('error')
+            return
+          }
+        } else {
+          const parsed = JSON.parse(text)
+          memories = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed?.memories)
+              ? parsed.memories
+              : null
+
+          if (!memories) {
+            setImportPending(null)
+            setImportError('Invalid JSON: expected { memories: [...] } or [...]')
+            setImportState('error')
+            return
+          }
         }
+
         setImportPending(memories)
         setImportResult(null)
         setImportError(null)
         setImportState('idle')
       } catch {
         setImportPending(null)
-        setImportError('Could not parse JSON file')
+        setImportError('Could not parse file — make sure it is valid JSON or CSV')
         setImportState('error')
       }
     }
     reader.readAsText(file)
   }, [])
 
+  const handleImportFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!importFileRef.current) return
+    importFileRef.current.value = ''
+    if (!file) return
+    parseAndStageFile(file)
+  }, [parseAndStageFile])
+
   const handleImportConfirm = useCallback(async () => {
     if (!importPending) return
     setImportState('loading')
+    setImporting(true)
     try {
       const result = await client.importMemories(importPending)
       setImportResult(result)
       setImportState('success')
       qc.invalidateQueries({ queryKey: ['memories'] })
+      // Show toast summary and auto-close modal after a moment
+      setImportToast({ imported: result.imported, failed: result.errors?.length ?? 0 })
+      setTimeout(() => setImportToast(null), 4000)
+      setTimeout(() => handleImportClose(), 1500)
     } catch (err) {
       setImportError((err as Error)?.message ?? 'Import failed')
       setImportState('error')
+    } finally {
+      setImporting(false)
     }
   }, [importPending, client, qc])
 
@@ -1502,8 +1549,52 @@ export default function Memories() {
     setImportState('idle')
   }, [])
 
+  // ── Drag-and-drop handlers ─────────────────────────────────────────────────
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return
+    setIsDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    if (!isAdmin) return
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    const name = file.name.toLowerCase()
+    if (!name.endsWith('.json') && !name.endsWith('.csv')) return
+    parseAndStageFile(file)
+  }, [isAdmin, parseAndStageFile])
+
   return (
-    <div className="p-8 max-w-5xl mx-auto space-y-6">
+    <div
+      className="p-8 max-w-5xl mx-auto space-y-6"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag-and-drop overlay */}
+      {isDragOver && (
+        <div className="fixed inset-0 bg-accent-blue/5 border-2 border-dashed border-accent-blue/40 z-20 flex items-center justify-center pointer-events-none">
+          <p className="text-sm text-accent-blue font-semibold">Drop JSON or CSV to import memories</p>
+        </div>
+      )}
+
+      {/* Import result toast */}
+      {importToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-[#272729] border border-border-primary rounded-[11px] px-4 py-3 shadow-xl flex items-center gap-3">
+          <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
+          <span className="text-sm text-text-primary">
+            Imported {importToast.imported} {importToast.imported === 1 ? 'memory' : 'memories'}
+            {importToast.failed > 0 ? ` (${importToast.failed} failed)` : ''}
+          </span>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -1626,18 +1717,18 @@ export default function Memories() {
               <input
                 ref={importFileRef}
                 type="file"
-                accept=".json"
+                accept=".json,.csv"
                 className="hidden"
                 onChange={handleImportFileChange}
-                aria-label="Select JSON file to import"
+                aria-label="Select JSON or CSV file to import"
               />
               <button
                 onClick={() => importFileRef.current?.click()}
-                aria-label="Import memories from JSON"
+                aria-label="Import memories from JSON or CSV"
                 className="border border-border-primary rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
               >
-                <Upload className="w-3.5 h-3.5" />
-                Import
+                {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                {importing ? 'Importing…' : 'Import'}
               </button>
             </>
           )}
@@ -3009,7 +3100,7 @@ export default function Memories() {
                         <p className="text-xs text-text-quaternary py-4 text-center">No memories in this session</p>
                       ) : (
                         sessionMemories.map(mem => (
-                          <div key={mem.id} className="flex items-start gap-3 py-2.5 border-b border-border-secondary/30 last:border-b-0">
+                          <div key={mem.id} className="flex items-start gap-3 py-2.5 border-b border-border-secondary/20 last:border-b-0">
                             <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.04] text-text-quaternary border border-border-secondary/50 shrink-0 mt-0.5">
                               {mem.type ?? mem.tool}
                             </span>

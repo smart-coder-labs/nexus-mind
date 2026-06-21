@@ -353,7 +353,7 @@ function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProp
 
         {collection.memory_count != null && (
           <div className="mt-2">
-            <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary">
+            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">
               {collection.memory_count} {collection.memory_count === 1 ? 'memory' : 'memories'}
             </span>
           </div>

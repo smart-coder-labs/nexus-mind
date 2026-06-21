@@ -1,11 +1,12 @@
 import { useMemo, useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
-  Archive, RotateCcw,
+  Archive, RotateCcw, BookMarked,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -14,7 +15,7 @@ import {
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/Select/Select'
-import type { ProjectMember, ProjectEventOverrides, User as UserType } from '../types'
+import type { ProjectMember, ProjectEventOverrides, User as UserType, Convention } from '../types'
 
 // ─── Three-way toggle: null (inherit) | true (on) | false (off) ──────────────
 
@@ -493,6 +494,7 @@ function MembersPanel({
 
 export default function Projects() {
   const { session } = useAuth()
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const client = useMemo(() => createClient(), [session])
 
@@ -526,6 +528,11 @@ export default function Projects() {
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
+  })
+
+  const { data: allConventions } = useQuery({
+    queryKey: ['conventions'],
+    queryFn: () => client.listConventions(),
   })
 
   const selectedProject = useMemo(
@@ -655,12 +662,38 @@ export default function Projects() {
               {project.description && (
                 <p className="text-xs text-text-tertiary truncate">{project.description}</p>
               )}
-              <span className="text-[10px] text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
-              {isArchived && (
-                <span className="ml-2 text-[10px] bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-[5px] px-1.5 py-0.5">
-                  archived
-                </span>
-              )}
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-[10px] text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
+                {isArchived && (
+                  <span className="text-[10px] bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-[5px] px-1.5 py-0.5">
+                    archived
+                  </span>
+                )}
+                {/* Convention count badge */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigate('/conventions')
+                  }}
+                  title="View conventions"
+                  className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary flex items-center gap-1 hover:bg-white/[0.10] transition-colors"
+                >
+                  <BookMarked className="w-3 h-3" />
+                  {(allConventions ?? []).filter((c: Convention) => !c.archived_at && (c.project_id === project.id || c.project_id == null)).length} conventions
+                </button>
+                {/* Memory count badge */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleMemoriesClick(project.id)
+                  }}
+                  title="View memories"
+                  className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary flex items-center gap-1 hover:bg-white/[0.10] transition-colors"
+                >
+                  <Brain className="w-3 h-3" />
+                  memories
+                </button>
+              </div>
             </div>
           </div>
 
