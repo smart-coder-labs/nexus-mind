@@ -37,7 +37,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
     return (
       <button
         onClick={cycle}
-        className="border border-border-secondary rounded-[8px] px-2.5 py-1 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors"
+        className="border border-border-secondary rounded-[8px] px-2.5 py-1 text-[10px] text-text-quaternary hover:text-text-tertiary transition-colors"
         title="Inherits org setting — click to override"
       >
         Inherit
@@ -48,7 +48,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
     return (
       <button
         onClick={cycle}
-        className="border border-status-success/30 rounded-[8px] px-2.5 py-1 text-[11px] text-status-success bg-status-success/10 font-semibold"
+        className="border border-status-success/30 rounded-[8px] px-2.5 py-1 text-[10px] text-status-success bg-status-success/10 font-semibold"
         title="Enabled for this project — click to disable"
       >
         On
@@ -58,7 +58,7 @@ function ThreeWayToggle({ value, onChange }: ThreeWayToggleProps) {
   return (
     <button
       onClick={cycle}
-      className="border border-status-error/30 rounded-[8px] px-2.5 py-1 text-[11px] text-status-error bg-status-error/10 font-semibold"
+      className="border border-status-error/30 rounded-[8px] px-2.5 py-1 text-[10px] text-status-error bg-status-error/10 font-semibold"
       title="Disabled for this project — click to clear override"
     >
       Off
@@ -286,11 +286,11 @@ function MembersPanel({
 
                   {/* Name + email */}
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-text-primary truncate">
+                    <div className="text-xs font-semibold text-text-primary truncate">
                       {member.name || member.email}
                     </div>
                     {member.name && (
-                      <div className="text-xs text-text-tertiary truncate">{member.email}</div>
+                      <div className="text-[10px] text-text-quaternary truncate">{member.email}</div>
                     )}
                   </div>
 
@@ -396,7 +396,7 @@ function MembersPanel({
                 <div className="flex-1 h-9 rounded-[11px] bg-[#1d1d1f] animate-pulse" />
               ) : (
                 <Select value={addUserId} onValueChange={setAddUserId}>
-                  <SelectTrigger className="flex-1 h-9 text-sm bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60">
+                  <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60">
                     <SelectValue placeholder="Choose user…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -415,7 +415,7 @@ function MembersPanel({
 
               {/* Role select */}
               <Select value={addRole} onValueChange={setAddRole}>
-                <SelectTrigger className="w-32 h-9 text-sm bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
+                <SelectTrigger className="w-32 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -429,7 +429,7 @@ function MembersPanel({
               <button
                 type="submit"
                 disabled={addMut.isPending || !addUserId}
-                className="rounded-full bg-accent-blue text-white px-3 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
               >
                 {addMut.isPending
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -451,7 +451,7 @@ function MembersPanel({
       {/* Agent Event Overrides */}
       <div className="mt-4 pt-4 border-t border-border-secondary/50">
         <div className="flex items-center gap-2 mb-2">
-          <p className="text-[11px] font-semibold text-text-quaternary">Agent Event Overrides</p>
+          <p className="text-[10px] font-semibold text-text-quaternary">Agent Event Overrides</p>
           {overridesMut.isPending && (
             <span className="text-[10px] text-text-quaternary">Saving…</span>
           )}
@@ -459,7 +459,7 @@ function MembersPanel({
             <SavedBadge />
           )}
         </div>
-        <p className="text-[11px] text-text-quaternary mb-3">
+        <p className="text-[10px] text-text-quaternary mb-3">
           Override org-level event settings for this project. Leave as "Inherit" to use org defaults.
         </p>
         {overridesMut.isError && (
@@ -690,9 +690,9 @@ export default function Projects() {
               : <FolderOpen className="w-4 h-4 text-text-tertiary flex-shrink-0" />
             }
             <div className="min-w-0">
-              <span className="font-semibold text-text-primary text-sm truncate block">{project.name}</span>
+              <span className="text-xs font-semibold text-text-primary truncate block">{project.name}</span>
               {project.description && (
-                <p className="text-xs text-text-tertiary truncate">{project.description}</p>
+                <p className="text-[10px] text-text-quaternary truncate">{project.description}</p>
               )}
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <span className="text-[10px] text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
@@ -822,8 +822,8 @@ export default function Projects() {
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div>
-        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Projects & Scopes</h1>
-        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">
+        <h1 className="text-base font-semibold text-text-primary">Projects & Scopes</h1>
+        <p className="text-xs text-text-quaternary mt-0.5">
           Manage organization projects and configure dynamic per-project user role overrides.
         </p>
       </div>
@@ -886,11 +886,11 @@ export default function Projects() {
         <div>
           <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
             <div>
-              <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              <h3 className="text-xs font-semibold text-text-primary flex items-center gap-2">
                 <FolderGit className="w-4 h-4 text-accent-blue" />
                 Create Project
               </h3>
-              <p className="text-[11px] text-text-tertiary mt-0.5">
+              <p className="text-[10px] text-text-quaternary mt-0.5">
                 Register a new workspace scope inside the organization.
               </p>
             </div>
@@ -963,11 +963,11 @@ export default function Projects() {
         <ModalCloseButton />
         {editingProject && (
           <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
-            <h2 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2">
+            <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
               <Settings className="w-4 h-4 text-accent-blue" />
               Project Settings
             </h2>
-            <p className="text-[11px] text-text-tertiary mb-5 font-mono">{editingProject.name}</p>
+            <p className="text-[10px] text-text-quaternary mb-5 font-mono">{editingProject.name}</p>
 
             {updateProjectSettingsMut.isError && (
               <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">

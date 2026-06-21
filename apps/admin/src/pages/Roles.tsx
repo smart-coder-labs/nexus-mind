@@ -124,8 +124,8 @@ export default function Roles() {
     <>
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       <div>
-        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Roles & Permissions</h1>
-        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Define custom roles and manage fine-grained permissions.</p>
+        <h1 className="text-base font-semibold text-text-primary">Roles & Permissions</h1>
+        <p className="text-xs text-text-quaternary mt-0.5">Define custom roles and manage fine-grained permissions.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -164,7 +164,7 @@ export default function Roles() {
                   <div key={role.id} className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex items-start justify-between gap-4">
                     <div className="space-y-1 flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-text-primary">{role.display_name}</span>
+                        <span className="text-xs font-semibold text-text-primary">{role.display_name}</span>
                         <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
                         {role.is_template ? (
                           <span className="text-[10px] bg-white/[0.06] text-text-quaternary px-1.5 py-0.5 rounded-[5px]">
@@ -182,7 +182,7 @@ export default function Roles() {
                         </span>
                       </div>
                       {roleDescription && (
-                        <p className="text-xs text-text-quaternary">{roleDescription}</p>
+                        <p className="text-[10px] text-text-quaternary">{roleDescription}</p>
                       )}
                       <div className="flex flex-wrap gap-1 mt-2">
                         {role.permissions.map(p => (
@@ -203,7 +203,7 @@ export default function Roles() {
                           setMemberSearch('')
                           setAddSearch('')
                         }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border-primary text-[11px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border-primary text-[10px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
                       >
                         <Users className="w-3.5 h-3.5" />
                         Manage members
@@ -234,11 +234,11 @@ export default function Roles() {
         <div className="space-y-4">
           <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
             <div>
-              <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              <h3 className="text-xs font-semibold text-text-primary flex items-center gap-2">
                 <Shield className="w-4 h-4 text-accent-blue" />
                 Create Custom Role
               </h3>
-              <p className="text-[11px] text-text-tertiary mt-0.5">Customize specific access guidelines</p>
+              <p className="text-[10px] text-text-quaternary mt-0.5">Customize specific access guidelines</p>
             </div>
 
             {errorMsg && (
@@ -302,7 +302,7 @@ export default function Roles() {
                         className="mt-0.5 rounded border-border-primary text-accent-blue focus:outline-none"
                       />
                       <div>
-                        <div className="font-semibold text-text-secondary text-[11px]">{perm.name}</div>
+                        <div className="font-semibold text-text-secondary text-[10px]">{perm.name}</div>
                         <div className="text-[10px] text-text-tertiary leading-tight">{perm.description}</div>
                       </div>
                     </label>
@@ -330,7 +330,7 @@ export default function Roles() {
           <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
             {/* Header */}
             <div className="flex items-center justify-between p-5 border-b border-border-primary">
-              <h2 className="text-sm font-semibold text-text-primary">
+              <h2 className="text-xs font-semibold text-text-primary">
                 Manage {managingRole.display_name} members
               </h2>
               <button
