@@ -752,7 +752,7 @@ export default function Dashboard() {
           {conventionStats.map(cat => (
             <div key={cat.category} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
               <span className="text-xs text-text-secondary capitalize">{cat.category}</span>
-              <span className="text-xs text-text-quaternary">{cat.count}</span>
+              <span className="text-[10px] text-text-quaternary">{cat.count}</span>
             </div>
           ))}
           {conventionStats.length === 0 && (
@@ -802,7 +802,7 @@ export default function Dashboard() {
               return (
                 <div key={entry.id} className="flex items-start gap-3 py-2 border-b border-border-secondary/20 last:border-0">
                   <div className="w-6 h-6 rounded-full bg-white/[0.06] flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <Icon className="w-3 h-3 text-text-quaternary" />
+                    <Icon className="w-4 h-4 text-text-quaternary" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-text-secondary line-clamp-1">

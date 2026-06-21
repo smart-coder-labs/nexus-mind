@@ -77,6 +77,8 @@ export default function Users() {
   const [newKey, setNewKey] = useState<string | null>(null)
   const [newKeyUser, setNewKeyUser] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set())
+  const [selectMode, setSelectMode] = useState(false)
 
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
@@ -131,6 +133,28 @@ export default function Users() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }) },
   })
 
+  const bulkEnableMut = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map(id => client.enableUser(id)))
+    },
+    onSuccess: () => {
+      setSelectedUsers(new Set())
+      setSelectMode(false)
+      qc.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
+  const bulkDisableMut = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map(id => client.disableUser(id)))
+    },
+    onSuccess: () => {
+      setSelectedUsers(new Set())
+      setSelectMode(false)
+      qc.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
   const handleCopy = (key: string) => {
     navigator.clipboard.writeText(key)
     setCopied(true)
@@ -168,6 +192,19 @@ export default function Users() {
         <table className="w-full text-sm min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
+              {session?.user.role === 'admin' && (
+                <th className="px-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={selectedUsers.size === (users?.length ?? 0) && (users?.length ?? 0) > 0}
+                    onChange={e => {
+                      setSelectedUsers(e.target.checked ? new Set(users?.map((u: User) => u.id) ?? []) : new Set())
+                      setSelectMode(e.target.checked)
+                    }}
+                    className="rounded border-border-primary bg-white/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer"
+                  />
+                </th>
+              )}
               <th className="text-left px-4 py-3 text-[11px] text-text-quaternary tracking-[-0.12px] font-semibold">User</th>
               <th className="text-left px-4 py-3 text-[11px] text-text-quaternary tracking-[-0.12px] font-semibold">Role</th>
               <th className="text-left px-4 py-3 text-[11px] text-text-quaternary tracking-[-0.12px] font-semibold">Status</th>
@@ -179,6 +216,11 @@ export default function Users() {
             {isLoading
               ? Array.from({ length: 4 }).map((_, i) => (
                 <tr key={i}>
+                  {session?.user.role === 'admin' && (
+                    <td className="px-4 py-3 w-8">
+                      <div className="h-3.5 w-3.5 rounded bg-[#272729] animate-pulse" />
+                    </td>
+                  )}
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
                       <div className="h-4 rounded-[5px] bg-[#272729] animate-pulse" />
@@ -192,6 +234,21 @@ export default function Users() {
                   className={`hover:bg-white/[0.02] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
                   onClick={() => setSelectedUser(user)}
                 >
+                  {session?.user.role === 'admin' && (
+                    <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedUsers.has(user.id)}
+                        onChange={e => {
+                          const next = new Set(selectedUsers)
+                          e.target.checked ? next.add(user.id) : next.delete(user.id)
+                          setSelectedUsers(next)
+                          setSelectMode(next.size > 0)
+                        }}
+                        className="rounded border-border-primary bg-white/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer"
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 flex items-center justify-center text-xs font-semibold text-accent-blue">
@@ -320,6 +377,34 @@ export default function Users() {
           </div>
         )}
       </div>
+
+      {/* Bulk action bar */}
+      {selectMode && selectedUsers.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border-primary bg-[#1d1d1f]/90 backdrop-blur-sm px-5 py-2.5 shadow-2xl">
+          <span className="text-xs text-text-secondary">{selectedUsers.size} selected</span>
+          <div className="w-px h-4 bg-border-primary" />
+          <button
+            onClick={() => bulkEnableMut.mutate([...selectedUsers])}
+            disabled={bulkEnableMut.isPending}
+            className="text-xs text-status-success hover:text-status-success/80 transition-colors disabled:opacity-40"
+          >
+            Enable
+          </button>
+          <button
+            onClick={() => bulkDisableMut.mutate([...selectedUsers])}
+            disabled={bulkDisableMut.isPending}
+            className="text-xs text-status-error hover:text-status-error/80 transition-colors disabled:opacity-40"
+          >
+            Disable
+          </button>
+          <button
+            onClick={() => { setSelectedUsers(new Set()); setSelectMode(false) }}
+            className="text-text-quaternary hover:text-text-primary transition-colors ml-1"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Modals */}
       <InviteUserModal

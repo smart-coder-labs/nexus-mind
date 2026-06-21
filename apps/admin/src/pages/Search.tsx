@@ -19,7 +19,7 @@ const TABS: { key: Tab; label: string }[] = [
 
 function MemoryCard({ memory }: { memory: Memory }) {
   return (
-    <div className="bg-[#272729] rounded-[18px] border border-border-primary p-4 space-y-2">
+    <div className="bg-[#272729] rounded-[11px] border border-border-primary p-4 space-y-2">
       {/* Tags */}
       {memory.tags && memory.tags.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -52,14 +52,14 @@ function MemoryCard({ memory }: { memory: Memory }) {
 
 function UserCard({ user }: { user: UserSummary }) {
   return (
-    <div className="bg-[#272729] rounded-[18px] border border-border-primary p-4 flex items-center gap-3">
+    <div className="bg-[#272729] rounded-[11px] border border-border-primary p-4 flex items-center gap-3">
       <div className="w-8 h-8 rounded-full bg-accent-blue/10 border border-accent-blue/20 flex items-center justify-center shrink-0">
         <span className="text-xs font-semibold text-accent-blue">
           {user.name.charAt(0).toUpperCase()}
         </span>
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-text-primary truncate">{user.name}</p>
+        <p className="text-xs font-semibold text-text-primary truncate">{user.name}</p>
         <p className="text-xs text-text-quaternary truncate">{user.email}</p>
       </div>
       <span className="text-[10px] font-semibold bg-white/[0.06] border border-border-secondary text-text-tertiary rounded-full px-2 py-0.5 shrink-0 capitalize">
@@ -71,8 +71,8 @@ function UserCard({ user }: { user: UserSummary }) {
 
 function ProjectCard({ project }: { project: Project }) {
   return (
-    <div className="bg-[#272729] rounded-[18px] border border-border-primary p-4 space-y-1.5">
-      <p className="text-sm font-semibold text-text-primary">{project.name}</p>
+    <div className="bg-[#272729] rounded-[11px] border border-border-primary p-4 space-y-1.5">
+      <p className="text-xs font-semibold text-text-primary">{project.name}</p>
       {project.description && (
         <p className="text-xs text-text-tertiary line-clamp-2">{project.description}</p>
       )}
@@ -153,7 +153,7 @@ export default function Search() {
           value={query}
           onChange={e => setQuery(e.target.value)}
           placeholder="Search everything…"
-          className="w-full rounded-[11px] border border-border-primary bg-white/[0.04] text-sm text-text-primary pl-10 pr-16 py-3 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary transition-colors"
+          className="w-full rounded-[11px] border border-border-primary bg-white/[0.04] text-xs text-text-primary pl-8 pr-16 py-3 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary transition-colors"
         />
         <div className="absolute right-4 flex items-center gap-2">
           {query && (
@@ -173,7 +173,7 @@ export default function Search() {
 
       {/* Tabs — only visible when there are results or a query */}
       {(hasResults || loading) && debouncedQuery && (
-        <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center">
+        <div className="flex items-center gap-1.5">
           {TABS.map(({ key, label }) => (
             <button
               key={key}
@@ -181,8 +181,8 @@ export default function Search() {
               className={cn(
                 'transition-colors',
                 activeTab === key
-                  ? 'bg-[#272729] text-text-primary font-semibold rounded-full px-3 py-1 text-xs shadow-sm'
-                  : 'text-text-quaternary px-3 py-1 text-xs rounded-full hover:text-text-secondary',
+                  ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40 rounded-full px-3 py-1 text-xs border'
+                  : 'text-text-quaternary border-transparent rounded-full px-3 py-1 text-xs border hover:text-text-secondary',
               )}
             >
               {label}
@@ -200,7 +200,7 @@ export default function Search() {
       {loading && (
         <div className="space-y-3">
           {[0, 1, 2].map(i => (
-            <div key={i} className="h-20 animate-pulse bg-[#272729] rounded-[18px]" />
+            <div key={i} className="h-20 animate-pulse bg-[#272729] rounded-[11px]" />
           ))}
         </div>
       )}
