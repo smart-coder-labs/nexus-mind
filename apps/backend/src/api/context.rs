@@ -6,7 +6,7 @@ use axum::{
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, ProjectContext},
+    models::types::{ApiError, AuthContext},
     store::sqlite::SqliteStore,
     api::helpers::require_permission,
 };

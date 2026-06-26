@@ -2,7 +2,7 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
-import { todayStamp } from '../lib/download'
+import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters, AuditEntry } from '../types'
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Download, ScrollText, Layers, X } from 'lucide-react'
 
@@ -132,39 +132,15 @@ export default function AuditLog() {
   const handleExportCsv = useCallback(async () => {
     setExporting(true)
     try {
-      const all = await client.getAuditLog({ ...filters, limit: 5000, offset: 0 })
-
-      const escape = (val: unknown): string => {
-        const s = typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val ?? '')
-        return s.includes(',') || s.includes('"') || s.includes('\n')
-          ? `"${s.replace(/"/g, '""')}"`
-          : s
-      }
-
-      const header = 'timestamp,user_id,action,resource_type,resource_id,details'
-      const rows = all.map((e: AuditEntry) =>
-        [
-          escape(e.timestamp),
-          escape(e.user_id),
-          escape(e.action),
-          escape(e.resource_type),
-          escape(e.resource_id ?? ''),
-          escape(e.metadata),
-        ].join(',')
-      )
-
-      const csv = [header, ...rows].join('\n')
-      const blob = new Blob([csv], { type: 'text/csv' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `audit-log-${todayStamp()}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
+      const qs = new URLSearchParams({ format: 'csv' })
+      Object.entries(filters).forEach(([k, v]) => v && qs.set(k, String(v)))
+      if (debouncedSearch) qs.set('search', debouncedSearch)
+      const base = import.meta.env.VITE_API_URL ?? ''
+      await downloadExport(`${base}/v1/audit/export?${qs}`, `audit-${todayStamp()}.csv`)
     } finally {
       setExporting(false)
     }
-  }, [filters, client])
+  }, [filters, debouncedSearch])
 
   const handleExportServer = useCallback(async () => {
     setExportingServer(true)
