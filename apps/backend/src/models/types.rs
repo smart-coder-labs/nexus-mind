@@ -579,7 +579,8 @@ pub struct PolicyCheckRequest {
     pub model: String,
     #[serde(default)]
     pub prompt_tokens: Option<i64>,
-    #[serde(default)]
+    /// Also accepted as `content` for callers that use the memory-store field name.
+    #[serde(default, alias = "content")]
     pub prompt_preview: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
