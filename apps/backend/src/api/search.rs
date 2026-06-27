@@ -47,8 +47,7 @@ pub async fn get_global_search(
     let conn_arc = store.conn();
     let conn = conn_arc.lock().map_err(|_| lock_err())?;
 
-    require_permission(&conn, &auth, None, "memory:search")
-        .map_err(|e| e)?;
+    require_permission(&conn, &auth, None, "memory:search")?;
 
     let q = params.q.trim();
     if q.is_empty() {
@@ -59,20 +58,20 @@ pub async fn get_global_search(
         }));
     }
 
-    let limit = params.limit.min(50).max(1);
+    let limit = params.limit.clamp(1, 50);
 
     let memories = queries::search_memories(&conn, &auth.org_id, q, limit)
-        .map_err(|e| db_err(e))?;
+        .map_err(db_err)?;
 
     let users = if auth.role.is_admin() {
         queries::search_users_by_query(&conn, &auth.org_id, q, limit)
-            .map_err(|e| db_err(e))?
+            .map_err(db_err)?
     } else {
         vec![]
     };
 
     let projects = queries::search_projects_by_query(&conn, &auth.org_id, q, limit)
-        .map_err(|e| db_err(e))?;
+        .map_err(db_err)?;
 
     Ok(Json(GlobalSearchResult {
         memories,

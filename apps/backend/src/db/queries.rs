@@ -832,6 +832,7 @@ pub fn list_audit(
 }
 
 /// Extended audit query that also supports filtering by resource_id.
+#[allow(clippy::too_many_arguments)]
 pub fn list_audit_with_resource(
     conn: &Connection,
     org_id: &str,
@@ -1088,6 +1089,7 @@ pub fn update_org_name(conn: &Connection, org_id: &str, name: &str) -> Result<Or
     Ok(org)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn get_org_settings(conn: &Connection, org_id: &str) -> Result<OrgSettings> {
     let (raw, retention_days, custom_instructions, min_password_length, announcement, announcement_type, logo_url): (String, Option<i64>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>) = conn.query_row(
         "SELECT COALESCE(settings, '{}'), retention_days, custom_instructions, min_password_length, announcement, announcement_type, logo_url FROM organizations WHERE id = ?1",
@@ -3598,6 +3600,7 @@ pub fn delete_webhook(conn: &Connection, org_id: &str, id: &str) -> Result<bool>
 // ── Webhook delivery log queries ───────────────────────────────────────────────
 
 /// Inserts a delivery attempt record into webhook_deliveries.
+#[allow(clippy::too_many_arguments)]
 pub fn log_webhook_delivery(
     conn: &Connection,
     org_id: &str,

@@ -43,9 +43,11 @@ pub fn run_all(conn: &Connection) -> Result<()> {
 }
 
 /// Migration v32: adds admin_note to users and usage tracking columns to api_keys.
+///
 /// - users.admin_note TEXT: private org-admin note, never returned to non-admin callers.
 /// - api_keys.times_used INTEGER: cumulative count of successful authentications.
 /// - api_keys.last_used_at TEXT: ISO datetime of the last successful authentication.
+///
 /// Idempotent — guarded by PRAGMA user_version < 32.
 pub fn run_v32(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -65,7 +67,9 @@ pub fn run_v32(conn: &Connection) -> Result<()> {
 }
 
 /// Migration v33: adds last_login_at to users.
+///
 /// - users.last_login_at TEXT: ISO datetime of the last successful API key authentication.
+///
 /// Idempotent — guarded by PRAGMA user_version < 33.
 pub fn run_v33(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -122,7 +126,9 @@ pub fn run_v36(conn: &Connection) -> Result<()> {
 }
 
 /// Migration v34: adds exclude_patterns to code_projects for file exclusion during indexing.
+///
 /// - code_projects.exclude_patterns TEXT: JSON array of glob-like exclusion patterns.
+///
 /// Idempotent — guarded by PRAGMA user_version < 34.
 pub fn run_v34(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -209,8 +215,10 @@ pub fn run_v31(conn: &Connection) -> Result<()> {
 }
 
 /// Migration v30: announcement banner + per-memory scheduled deletion.
+///
 /// - organizations: announcement TEXT, announcement_type TEXT DEFAULT 'info'
 /// - memories: delete_after TEXT (ISO date string, NULL = no scheduled deletion)
+///
 /// Idempotent — guarded by PRAGMA user_version < 30.
 pub fn run_v30(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;

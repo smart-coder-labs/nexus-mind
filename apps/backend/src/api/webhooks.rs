@@ -369,7 +369,7 @@ pub async fn retry_delivery(
     }
 
     Ok(Json(RetryDeliveryResponse {
-        delivery_id: delivery_id,
+        delivery_id,
         status: status_str,
     }))
 }

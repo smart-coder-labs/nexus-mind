@@ -229,7 +229,7 @@ pub async fn get_memory_trends_handler(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<MemoryTrends>, (StatusCode, Json<ApiError>)> {
-    let days = params.days.unwrap_or(30).max(1).min(365);
+    let days = params.days.unwrap_or(30).clamp(1, 365);
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let trends = queries::get_memory_trends(&conn, &auth.org_id, days).map_err(db_err)?;
@@ -785,7 +785,7 @@ pub async fn get_project_settings_api(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let overrides = queries::get_project_event_overrides(&conn, &ctx.org_id, &project_id)
-        .map_err(|e| db_err(e))?;
+        .map_err(db_err)?;
     Ok(Json(overrides))
 }
 
@@ -901,7 +901,7 @@ pub async fn get_notifications(
         return Err(forbidden());
     }
 
-    let limit = params.limit.unwrap_or(15).min(50).max(1);
+    let limit = params.limit.unwrap_or(15).clamp(1, 50);
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -1109,7 +1109,7 @@ pub async fn redeem_invite(
         ));
     }
 
-    let password_hash = hash_password(&input.password).map_err(|e| db_err(e.into()))?;
+    let password_hash = hash_password(&input.password).map_err(db_err)?;
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -1159,7 +1159,7 @@ pub async fn get_memory_heatmap(
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
-    let days = params.days.unwrap_or(90).max(1).min(365);
+    let days = params.days.unwrap_or(90).clamp(1, 365);
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let heatmap = queries::get_memory_heatmap(&conn, &auth.org_id, days).map_err(db_err)?;
@@ -1176,7 +1176,7 @@ pub async fn get_top_contributors(
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
-    let days = params.days.unwrap_or(30).max(1).min(365);
+    let days = params.days.unwrap_or(30).clamp(1, 365);
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let contributors = queries::get_top_contributors(&conn, &auth.org_id, days).map_err(db_err)?;
@@ -1193,7 +1193,7 @@ pub async fn get_agent_activity(
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
-    let days = params.days.unwrap_or(30).max(1).min(365);
+    let days = params.days.unwrap_or(30).clamp(1, 365);
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let activity = queries::get_agent_activity(&conn, &auth.org_id, days).map_err(db_err)?;
@@ -2527,7 +2527,7 @@ pub async fn list_collections_api(
     }
     let conn = store.conn();
     let conn = conn.lock().map_err(|_| lock_err())?;
-    let collections = queries::list_collections(&conn, &auth.org_id).map_err(|e| db_err(e))?;
+    let collections = queries::list_collections(&conn, &auth.org_id).map_err(db_err)?;
     Ok(Json(collections))
 }
 
@@ -2543,7 +2543,7 @@ pub async fn create_collection_api(
     let conn = store.conn();
     let conn = conn.lock().map_err(|_| lock_err())?;
     let collection = queries::create_collection(&conn, &auth.org_id, &req.name, req.description.as_deref())
-        .map_err(|e| db_err(e))?;
+        .map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(collection)))
 }
 
@@ -2558,7 +2558,7 @@ pub async fn delete_collection_api(
     }
     let conn = store.conn();
     let conn = conn.lock().map_err(|_| lock_err())?;
-    let deleted = queries::delete_collection(&conn, &auth.org_id, &id).map_err(|e| db_err(e))?;
+    let deleted = queries::delete_collection(&conn, &auth.org_id, &id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -2590,7 +2590,7 @@ pub async fn assign_memory_collection_api(
         &memory_id,
         req.collection_id.as_deref(),
     )
-    .map_err(|e| db_err(e))?;
+    .map_err(db_err)?;
     if updated {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -2771,7 +2771,7 @@ pub async fn update_memory_note(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     match queries::update_memory_admin_note(&conn, &auth.org_id, &id, &body.note)
-        .map_err(|e| db_err(e))?
+        .map_err(db_err)?
     {
         Some(memory) => Ok(Json(memory)),
         None => Err((
