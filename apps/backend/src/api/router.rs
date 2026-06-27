@@ -71,6 +71,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/memory", get(memory::list))
         .route("/v1/sessions", get(sessions::list_sessions_handler).post(sessions::create_session_handler))
         .route("/v1/sessions/:id", get(sessions::get_session_handler).patch(sessions::patch_session_handler))
+        .route("/v1/sessions/:id/memories", get(sessions::list_session_memories_handler))
         .route("/v1/users", get(users::list))
         .route("/v1/users/invite", post(users::invite))
         .route("/v1/users/:id", delete(users::remove))
