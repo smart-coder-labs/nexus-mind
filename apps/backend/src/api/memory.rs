@@ -47,12 +47,17 @@ fn memory_rows_to_csv(memories: &[Memory]) -> anyhow::Result<Vec<u8>> {
         .quote_style(csv::QuoteStyle::Necessary)
         .from_writer(Vec::new());
 
-    wtr.write_record(["id", "title", "type", "scope", "project", "tool", "content", "created_at"])?;
+    wtr.write_record(["id", "title", "type", "scope", "project", "tool", "content", "tags", "topic_key", "session_id", "revision_count", "pinned", "created_at"])?;
 
     for m in memories {
         let title = m.title.as_deref().unwrap_or("");
         let memory_type = m.memory_type.as_deref().unwrap_or("");
         let content = truncate_content(&m.content);
+        let tags = m.tags.join(";");
+        let topic_key = m.topic_key.as_deref().unwrap_or("");
+        let session_id = m.session_id.as_deref().unwrap_or("");
+        let revision_count = m.revision_count.to_string();
+        let pinned = m.pinned.to_string();
         wtr.write_record([
             &m.id,
             title,
@@ -61,6 +66,11 @@ fn memory_rows_to_csv(memories: &[Memory]) -> anyhow::Result<Vec<u8>> {
             &m.project,
             &m.tool,
             &content,
+            &tags,
+            topic_key,
+            session_id,
+            &revision_count,
+            &pinned,
             &m.created_at,
         ])?;
     }
@@ -1155,7 +1165,7 @@ mod tests {
         let first_line = body.lines().next().unwrap_or("");
         assert_eq!(
             first_line,
-            "id,title,type,scope,project,tool,content,created_at",
+            "id,title,type,scope,project,tool,content,tags,topic_key,session_id,revision_count,pinned,created_at",
             "first line must be the CSV header row"
         );
     }
