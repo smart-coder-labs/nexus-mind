@@ -307,6 +307,29 @@ pub async fn list(
         require_permission(&conn, &auth, params.project.as_deref(), "memory:read")?;
     }
 
+    if let Some(offset) = params.offset {
+        if offset < 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "offset must be non-negative".to_string(),
+                    code: "validation_error".to_string(),
+                }),
+            ));
+        }
+    }
+    if let Some(limit) = params.limit {
+        if limit < 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "limit must be non-negative".to_string(),
+                    code: "validation_error".to_string(),
+                }),
+            ));
+        }
+    }
+
     let filters = MemoryFilters {
         user_id: params.user_id.as_deref(),
         tool: params.tool.as_deref(),
