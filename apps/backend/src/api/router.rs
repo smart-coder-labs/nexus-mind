@@ -8,13 +8,14 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, code, context, conventions, health, internal, memory, middleware as auth_mw, policy, rate_limit, search, sessions, users, webhooks};
+use crate::api::{admin, audit, auth, code, context, conventions, github_auth, health, internal, memory, middleware as auth_mw, policy, rate_limit, search, sessions, users, webhooks};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
 pub fn build(conn: Connection, config: Config) -> Router {
+    let config = Arc::new(config);
     let embed = if std::env::var("NEXUSMIND_EMBED_ENABLED").as_deref() == Ok("true") {
         match EmbedService::init() {
             Ok(svc) => {
@@ -151,6 +152,10 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/collections", get(admin::list_collections_api).post(admin::create_collection_api))
         .route("/v1/admin/collections/:id", delete(admin::delete_collection_api))
         .route("/v1/memories/:id/collection", post(admin::assign_memory_collection_api))
+        .route("/v1/github/auth", get(github_auth::get_auth_url))
+        .route("/v1/github/callback", post(github_auth::post_callback))
+        .route("/v1/github/status", get(github_auth::get_status))
+        .route("/v1/github/connection", delete(github_auth::delete_connection))
         // Rate limit runs after auth (inner layer = runs second at runtime).
         // Auth is outermost (last `.layer()`) so it runs first.
         .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))
@@ -210,7 +215,8 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .merge(protected)
         .merge(internal_routes)
         .layer(Extension(email_config))
-        .layer(Extension(config.superuser_key))
+        .layer(Extension(config.superuser_key.clone()))
+        .layer(Extension(Arc::clone(&config)))
         .layer(cors)
         .layer(CookieManagerLayer::new())
         .layer(TraceLayer::new_for_http())

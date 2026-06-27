@@ -16,3 +16,4 @@ pub mod internal;
 pub mod webhooks;
 pub mod search;
 pub mod conventions;
+pub mod github_auth;

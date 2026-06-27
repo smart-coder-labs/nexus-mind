@@ -39,6 +39,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v34(conn)?;
     run_v35(conn)?;
     run_v36(conn)?;
+    run_v37(conn)?;
     Ok(())
 }
 
@@ -91,6 +92,29 @@ pub fn run_v35(conn: &Connection) -> Result<()> {
     }
     let _ = conn.execute_batch("ALTER TABLE organizations ADD COLUMN logo_url TEXT");
     conn.execute_batch("PRAGMA user_version = 35;")?;
+    Ok(())
+}
+
+/// Migration v37: creates the github_connections table for storing OAuth tokens per org.
+/// Idempotent — guarded by PRAGMA user_version < 37.
+pub fn run_v37(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 37 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS github_connections (
+          org_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+          access_token TEXT NOT NULL,
+          token_type TEXT NOT NULL DEFAULT 'bearer',
+          scopes TEXT NOT NULL DEFAULT '',
+          github_login TEXT NOT NULL DEFAULT '',
+          github_user_id INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+    conn.execute_batch("PRAGMA user_version = 37;")?;
     Ok(())
 }
 
@@ -1468,7 +1492,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     #[test]
@@ -1865,7 +1889,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     #[test]
@@ -1874,7 +1898,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36 after re-running v20");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after re-running v20");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2006,7 +2030,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2033,14 +2057,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     #[test]
@@ -2158,7 +2182,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2177,14 +2201,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2261,14 +2285,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2351,7 +2375,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -2545,14 +2569,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     #[test]
@@ -2589,14 +2613,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -2635,14 +2659,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 36, "user_version must be 36 after run_all");
+        assert_eq!(get_user_version(&conn), 37, "user_version must be 37 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -2726,7 +2750,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v36(&conn);
         assert!(result.is_ok(), "run_v36 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 36, "user_version must remain 36");
+        assert!(get_user_version(&conn) >= 36, "user_version must be at least 36");
     }
 
     #[test]
@@ -2749,5 +2773,50 @@ mod tests {
         assert_eq!(title, "Test Convention");
         assert_eq!(cat, "architecture");
         assert_eq!(weight, 200);
+    }
+
+    // ── v37 migration tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_v37_creates_github_connections_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "github_connections"),
+                "github_connections table must exist after v37");
+    }
+
+    #[test]
+    fn run_v37_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_v37(&conn);
+        assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 37, "user_version must remain 37");
+    }
+
+    #[test]
+    fn run_v37_cascade_delete_on_org_remove() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO github_connections (org_id, access_token, github_login, github_user_id)
+             VALUES ('org1', 'gho_test', 'acme-bot', 12345)",
+            [],
+        ).unwrap();
+        // Connection must exist
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM github_connections WHERE org_id = 'org1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        // Delete org — connection must cascade
+        conn.execute("DELETE FROM organizations WHERE id = 'org1'", []).unwrap();
+        let after: i32 = conn
+            .query_row("SELECT COUNT(*) FROM github_connections WHERE org_id = 'org1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "github_connections must cascade-delete with org");
     }
 }

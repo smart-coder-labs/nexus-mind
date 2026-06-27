@@ -10,6 +10,7 @@ use crate::models::types::{
     Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
     ProjectEventOverrides, Webhook, CreateWebhookRequest, UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser,
     OnboardingItem, OnboardingStatus, InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest,
+    GitHubConnection,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -6943,4 +6944,58 @@ fn convention_from_row(row: &rusqlite::Row) -> rusqlite::Result<Convention> {
         updated_at: row.get(9)?,
         archived_at: row.get(10)?,
     })
+}
+
+// ── GitHub OAuth connection queries ───────────────────────────────────────────
+
+/// Upserts a GitHub OAuth connection for the given org.
+pub fn save_github_connection(
+    conn: &Connection,
+    org_id: &str,
+    access_token: &str,
+    token_type: &str,
+    scopes: &str,
+    github_login: &str,
+    github_user_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO github_connections
+         (org_id, access_token, token_type, scopes, github_login, github_user_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+           COALESCE((SELECT created_at FROM github_connections WHERE org_id = ?1), datetime('now')),
+           datetime('now'))",
+        rusqlite::params![org_id, access_token, token_type, scopes, github_login, github_user_id],
+    )?;
+    Ok(())
+}
+
+/// Returns the GitHub OAuth connection for the given org, or None if not connected.
+pub fn get_github_connection(conn: &Connection, org_id: &str) -> Result<Option<GitHubConnection>> {
+    conn.query_row(
+        "SELECT org_id, access_token, token_type, scopes, github_login, github_user_id, created_at, updated_at
+         FROM github_connections WHERE org_id = ?1",
+        [org_id],
+        |row| {
+            Ok(GitHubConnection {
+                org_id: row.get(0)?,
+                access_token: row.get(1)?,
+                token_type: row.get(2)?,
+                scopes: row.get(3)?,
+                github_login: row.get(4)?,
+                github_user_id: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        },
+    ).optional().map_err(Into::into)
+}
+
+/// Deletes the GitHub OAuth connection for the given org.
+/// Returns true if a row was deleted, false if no connection existed.
+pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM github_connections WHERE org_id = ?1",
+        [org_id],
+    )?;
+    Ok(n > 0)
 }

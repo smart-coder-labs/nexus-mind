@@ -41,4 +41,13 @@ pub struct Config {
 
     #[arg(long, env = "COOKIE_SECURE", default_value_t = false)]
     pub cookie_secure: bool,
+
+    #[arg(long, env = "GITHUB_CLIENT_ID")]
+    pub github_client_id: Option<String>,
+
+    #[arg(long, env = "GITHUB_CLIENT_SECRET")]
+    pub github_client_secret: Option<String>,
+
+    #[arg(long, env = "GITHUB_REDIRECT_URI")]
+    pub github_redirect_uri: Option<String>,
 }

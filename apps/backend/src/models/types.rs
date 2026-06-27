@@ -1059,6 +1059,42 @@ pub struct AssignCollectionRequest {
     pub collection_id: Option<String>, // null to unassign
 }
 
+// ── GitHub OAuth types ────────────────────────────────────────────────────────
+
+/// Response for `GET /v1/github/auth` — contains the GitHub OAuth redirect URL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubAuthUrlResponse {
+    pub url: String,
+}
+
+/// Request body for `POST /v1/github/callback`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubCallbackRequest {
+    pub code: String,
+    pub state: Option<String>,
+}
+
+/// Response for `GET /v1/github/status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubConnectionStatus {
+    pub connected: bool,
+    pub github_login: Option<String>,
+    pub scopes: Option<String>,
+}
+
+/// Stored GitHub OAuth connection for an org (DB row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubConnection {
+    pub org_id: String,
+    pub access_token: String,
+    pub token_type: String,
+    pub scopes: String,
+    pub github_login: String,
+    pub github_user_id: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

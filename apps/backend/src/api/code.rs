@@ -87,6 +87,27 @@ pub async fn post_index(
                 code: "validation_error".to_string(),
             })));
         }
+
+        // Inject GitHub OAuth token if the URL is a GitHub HTTPS URL and a connection exists.
+        // The effective URL with token is used only for git commands and is NEVER logged or returned.
+        let effective_clone_url: String = if url.trim().starts_with("https://github.com/") {
+            let db = store.conn();
+            // Compute gh_result in an inner block so the MutexGuard is dropped before db.
+            let gh_result = {
+                match db.lock() {
+                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
+                    Err(_) => None,
+                }
+            };
+            if let Some(gh_conn) = gh_result {
+                url.trim().replacen("https://", &format!("https://oauth2:{}@", gh_conn.access_token), 1)
+            } else {
+                url.trim().to_string()
+            }
+        } else {
+            url.trim().to_string()
+        };
+
         // Clone to /tmp/nexusmind/{org_id}/{project}
         let clone_dir = format!("/tmp/nexusmind/{}/{}", auth.org_id, input.project.trim());
         let path = std::path::Path::new(&clone_dir);
@@ -106,7 +127,7 @@ pub async fn post_index(
             std::fs::create_dir_all(&clone_dir)
                 .map_err(|e| db_err(anyhow::anyhow!("failed to create clone dir: {e}")))?;
             let out = git_cmd()
-                .args(["clone", "--depth=1", "--quiet", url.trim(), &clone_dir])
+                .args(["clone", "--depth=1", "--quiet", &effective_clone_url, &clone_dir])
                 .output()
                 .map_err(|e| db_err(anyhow::anyhow!("git clone failed: {e}")))?;
             if !out.status.success() {
@@ -675,9 +696,33 @@ pub async fn post_reindex(
     let root_path = project.root_path.clone();
     let repo_url = project.repo_url.clone();
 
+    // Compute effective clone URL with injected GitHub token BEFORE spawning.
+    // The token-bearing URL is passed into the spawn closure but NEVER logged or returned.
+    let effective_repo_url: Option<String> = if let Some(ref url) = repo_url {
+        if url.trim().starts_with("https://github.com/") {
+            let spawn_db = store.conn();
+            // Extract the result in an inner block so the MutexGuard is dropped before spawn_db.
+            let gh_result = {
+                match spawn_db.lock() {
+                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
+                    Err(_) => None,
+                }
+            };
+            if let Some(gh_conn) = gh_result {
+                Some(url.trim().replacen("https://", &format!("https://oauth2:{}@", gh_conn.access_token), 1))
+            } else {
+                Some(url.trim().to_string())
+            }
+        } else {
+            Some(url.trim().to_string())
+        }
+    } else {
+        None
+    };
+
     tokio::spawn(async move {
-        // If repo_url is set, git pull first
-        if let Some(ref url) = repo_url {
+        // If a repo URL is set, git pull/clone first
+        if let Some(ref effective_url) = effective_repo_url {
             let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);
             let path = std::path::Path::new(&clone_dir);
             if path.join(".git").exists() {
@@ -686,8 +731,9 @@ pub async fn post_reindex(
                     .output();
             } else {
                 let _ = std::fs::create_dir_all(&clone_dir);
+                // effective_url may contain an OAuth token — do NOT log it
                 let _ = git_cmd()
-                    .args(["clone", "--depth=1", "--quiet", url.trim(), &clone_dir])
+                    .args(["clone", "--depth=1", "--quiet", effective_url, &clone_dir])
                     .output();
             }
             let effective_path = clone_dir;
