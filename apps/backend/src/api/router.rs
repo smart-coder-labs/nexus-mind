@@ -1,3 +1,10 @@
+//! Axum router assembly for the NexusMind HTTP API.
+//!
+//! The single public entry point is [`build`], which wires up all routes,
+//! middleware layers (auth, rate-limiting, CORS, cookies, tracing), and
+//! shared state into a single [`axum::Router`] ready to be handed to a
+//! `tokio` HTTP server.
+
 use axum::{
     middleware,
     routing::{delete, get, patch, post},
@@ -14,6 +21,24 @@ use crate::email::EmailConfig;
 use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
+/// Builds the complete Axum router from a live database connection and config.
+///
+/// The returned router is layered as follows (outermost first):
+/// 1. [`TraceLayer`] — request/response tracing.
+/// 2. [`CookieManagerLayer`] — cookie parsing and jar management.
+/// 3. CORS — configured from [`Config::cors_origins`] and [`Config::admin_origin`].
+/// 4. Auth middleware — validates `Authorization: Bearer <key>` **or** a
+///    `nexusmind_session` cookie; rejects unauthenticated requests with 401.
+/// 5. Rate-limit middleware — per-key sliding-window limiting.
+///
+/// Routes under `/internal/*` accept a `SUPERUSER_KEY` bearer token and bypass
+/// the normal per-org auth check. Unauthenticated public routes (`/v1/health`,
+/// `/v1/admin/auth/login`, `/v1/admin/auth/logout`, etc.) are merged outside
+/// the protected router and receive no auth middleware.
+///
+/// The embedding service is opt-in via the `NEXUSMIND_EMBED_ENABLED=true`
+/// environment variable. When disabled, semantic/vector search is unavailable
+/// but all other functionality works normally.
 pub fn build(conn: Connection, config: Config) -> Router {
     let config = Arc::new(config);
     let embed = if std::env::var("NEXUSMIND_EMBED_ENABLED").as_deref() == Ok("true") {
