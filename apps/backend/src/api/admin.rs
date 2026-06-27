@@ -307,15 +307,44 @@ pub async fn get_org_settings_api(
 pub async fn update_org_settings_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    AppJson(input): AppJson<OrgSettings>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let settings = queries::update_org_settings(&conn, &auth.org_id, &input).map_err(db_err)?;
-    Ok(Json(settings))
+
+    // Read current settings first, then merge only the fields present in the
+    // request body — standard PATCH semantics (absent keys are preserved).
+    let mut settings = queries::get_org_settings(&conn, &auth.org_id).map_err(db_err)?;
+
+    if let Some(val) = body.get("retention_days") {
+        settings.retention_days = if val.is_null() { None } else { val.as_i64() };
+    }
+    if let Some(val) = body.get("custom_instructions") {
+        settings.custom_instructions = val.as_str().map(|s| s.to_string());
+    }
+    if let Some(val) = body.get("min_password_length") {
+        settings.min_password_length = val.as_i64();
+    }
+    if let Some(val) = body.get("announcement") {
+        settings.announcement = val.as_str().map(|s| s.to_string());
+    }
+    if let Some(val) = body.get("announcement_type") {
+        settings.announcement_type = val.as_str().map(|s| s.to_string());
+    }
+    if let Some(val) = body.get("logo_url") {
+        settings.logo_url = val.as_str().map(|s| s.to_string());
+    }
+    if let Some(val) = body.get("events") {
+        if let Ok(parsed) = serde_json::from_value::<crate::models::types::AgentEventSettings>(val.clone()) {
+            settings.events = parsed;
+        }
+    }
+
+    let updated = queries::update_org_settings(&conn, &auth.org_id, &settings).map_err(db_err)?;
+    Ok(Json(updated))
 }
 
 #[derive(Deserialize)]
@@ -2548,6 +2577,52 @@ mod tests {
             ).unwrap();
             assert_eq!(foo_count, 0, "'foo' must be gone from all memories");
         }
+    }
+
+    // ── update_org_settings_api PATCH partial-update tests ───────────────────
+
+    fn app_with_org_settings(store: SqliteStore) -> Router {
+        use axum::routing::get;
+        let superuser_key: Option<String> = Some("test-superuser-key".to_string());
+        let email_config: Option<Arc<EmailConfig>> = None;
+
+        let protected = Router::new()
+            .route("/v1/admin/org/settings", get(get_org_settings_api).patch(update_org_settings_api))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
+
+        Router::new()
+            .merge(protected)
+            .layer(Extension(email_config))
+            .layer(Extension(superuser_key))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    #[tokio::test]
+    async fn patch_org_settings_partial_preserves_other_fields() {
+        let (store, key) = setup_with_admin_key();
+
+        // Send only retention_days — min_password_length must NOT become null.
+        let body = serde_json::json!({ "retention_days": 365 });
+        let resp = app_with_org_settings(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "partial PATCH must not 500");
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(json["retention_days"], 365, "retention_days must be updated");
+        // min_password_length was not in the request — DB default is 8, must still be 8.
+        assert_eq!(json["min_password_length"], 8, "min_password_length must be preserved");
     }
 }
 
