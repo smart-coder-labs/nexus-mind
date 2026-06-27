@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::str::FromStr;
 use std::fmt;
 
@@ -1024,12 +1024,57 @@ impl MergeMemoriesRequest {
     }
 }
 
+fn default_bulk_action() -> String {
+    "add".to_string()
+}
+
+fn deserialize_tag_field<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TagVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for TagVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string or an array of strings")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+            Ok(vec![v.to_owned()])
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Vec<String>, E> {
+            Ok(vec![v])
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(TagVisitor)
+}
+
 /// Request body for `POST /v1/admin/memories/bulk-tag`.
+///
+/// Accepts both the canonical field names and common aliases:
+/// - `ids` or `memory_ids`
+/// - `tag` (string) or `tags` (string or array of strings)
+/// - `action` defaults to `"add"` when omitted
 #[derive(Debug, Deserialize)]
 pub struct BulkTagRequest {
+    #[serde(alias = "memory_ids")]
     pub ids: Vec<String>,
+    #[serde(default = "default_bulk_action")]
     pub action: String,
-    pub tag: String,
+    #[serde(alias = "tag", deserialize_with = "deserialize_tag_field")]
+    pub tags: Vec<String>,
 }
 
 /// Response body for `POST /v1/admin/memories/bulk-tag`.
