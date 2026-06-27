@@ -2340,6 +2340,24 @@ pub fn list_projects_filtered(conn: &Connection, org_id: &str, include_archived:
     Ok(projects)
 }
 
+pub fn get_project_by_id(conn: &Connection, org_id: &str, id: &str) -> Result<Option<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE id = ?1 AND org_id = ?2",
+    )?;
+    let mut rows = stmt.query_map([id, org_id], |row| {
+        Ok(Project {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at: row.get(4)?,
+            parent_id: row.get(5)?,
+            archived_at: row.get(6)?,
+        })
+    })?;
+    rows.next().transpose().map_err(Into::into)
+}
+
 pub fn archive_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE projects SET archived_at = datetime('now') WHERE id = ?1 AND org_id = ?2",
