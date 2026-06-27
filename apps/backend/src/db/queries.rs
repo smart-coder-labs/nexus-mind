@@ -3850,6 +3850,27 @@ pub fn list_all_org_keys(conn: &Connection, org_id: &str) -> Result<Vec<ApiKeyWi
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Creates a new API key for a user in the org without revoking existing keys.
+/// Returns `(raw_key, key_id, created_at)`.
+pub fn create_api_key(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    label: &str,
+) -> Result<(String, String, String)> {
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![key_id, user_id, org_id, key_hash, label, now],
+    )?;
+
+    Ok((raw_key, key_id, now))
+}
+
 /// Revokes a specific API key in the org. Returns true if a row was updated.
 pub fn revoke_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result<bool> {
     let affected = conn.execute(
@@ -5913,6 +5934,24 @@ mod tests {
         assert_eq!(keys.len(), 1, "bootstrap creates exactly one active key");
         assert!(!keys[0].revoked, "key must not be revoked");
         assert_eq!(keys[0].user_email, "admin@acme.com");
+    }
+
+    #[test]
+    fn create_api_key_adds_key_without_revoking_existing() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let (raw_key, key_id, created_at) =
+            create_api_key(&conn, &org.id, &user.id, "ci-key").unwrap();
+
+        assert!(raw_key.starts_with("nm_"), "key must have nm_ prefix");
+        assert!(!key_id.is_empty(), "key_id must be populated");
+        assert!(!created_at.is_empty(), "created_at must be populated");
+
+        // Both the original bootstrap key and the new key are active.
+        let keys = list_all_org_keys(&conn, &org.id).unwrap();
+        assert_eq!(keys.len(), 2, "both keys must be active");
+        assert!(keys.iter().any(|k| k.label == "ci-key"), "new key must appear in list");
     }
 
     #[test]

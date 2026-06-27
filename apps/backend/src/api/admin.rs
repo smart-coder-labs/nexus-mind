@@ -833,6 +833,85 @@ pub async fn list_org_keys(
     Ok(Json(keys))
 }
 
+#[derive(Deserialize)]
+pub struct CreateKeyInput {
+    pub label: Option<String>,
+    pub user_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CreateKeyResponse {
+    pub key: String,
+    pub key_id: String,
+    pub label: String,
+    pub user_id: String,
+    pub created_at: String,
+}
+
+/// POST /v1/admin/keys — admin-only: create a new API key for a user in the org.
+/// Body: `{ "label": "...", "user_id": "..." }` — both optional.
+/// `user_id` defaults to the authenticated admin's own user ID.
+/// Returns `{ key, key_id, label, user_id, created_at }` — raw key shown once.
+pub async fn create_org_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(input): Json<CreateKeyInput>,
+) -> Result<(StatusCode, Json<CreateKeyResponse>), (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let label = input.label.unwrap_or_else(|| "api-key".to_string());
+    let target_user_id = input.user_id.unwrap_or_else(|| auth.user_id.clone());
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let user_in_org: bool = conn
+        .query_row(
+            "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![target_user_id, auth.org_id],
+            |row| row.get::<_, i32>(0),
+        )
+        .map_err(|_| lock_err())?
+        > 0;
+
+    if !user_in_org {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User not found in this organization".to_string(),
+                code: "user_not_found".to_string(),
+            }),
+        ));
+    }
+
+    let (raw_key, key_id, created_at) =
+        queries::create_api_key(&conn, &auth.org_id, &target_user_id, &label)
+            .map_err(db_err)?;
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "key.created",
+        "api_key",
+        Some(&key_id),
+        serde_json::json!({ "label": label, "for_user": target_user_id }),
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateKeyResponse {
+            key: raw_key,
+            key_id,
+            label,
+            user_id: target_user_id,
+            created_at,
+        }),
+    ))
+}
+
 /// DELETE /v1/admin/keys/:key_id — admin revokes any key in the org.
 pub async fn revoke_org_key(
     State(store): State<SqliteStore>,
@@ -2292,6 +2371,144 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "demo_key");
+    }
+
+    // ── create_org_key tests ─────────────────────────────────────────────────
+
+    fn app_with_create_key(store: SqliteStore) -> Router {
+        use axum::routing::{get, post};
+        let superuser_key: Option<String> = Some("test-superuser-key".to_string());
+        let email_config: Option<Arc<EmailConfig>> = None;
+
+        let protected = Router::new()
+            .route("/v1/admin/keys", get(list_org_keys).post(create_org_key))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
+
+        Router::new()
+            .merge(protected)
+            .layer(Extension(email_config))
+            .layer(Extension(superuser_key))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    #[tokio::test]
+    async fn create_org_key_returns_201_with_raw_key() {
+        let (store, admin_key) = setup_with_admin_key();
+
+        let body = serde_json::json!({ "label": "ci-bot" });
+
+        let resp = app_with_create_key(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/keys")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let key = json["key"].as_str().expect("key must be a string");
+        assert!(key.starts_with("nm_"), "returned key must have nm_ prefix");
+        assert_eq!(json["label"], "ci-bot");
+        assert!(json["key_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_org_key_returns_403_for_non_admin() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let member_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let (_, key) = q::invite_user(&conn, &org, "m@acme.com", "Member", "member").unwrap();
+            key
+        };
+
+        let body = serde_json::json!({ "label": "should-fail" });
+
+        let resp = app_with_create_key(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/keys")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_org_key_for_another_user_succeeds() {
+        let (store, admin_key) = setup_with_admin_key();
+        let member_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let (user, _) = q::invite_user(&conn, &org, "m2@acme.com", "Member2", "member").unwrap();
+            user.id
+        };
+
+        let body = serde_json::json!({ "label": "member-key", "user_id": member_id });
+
+        let resp = app_with_create_key(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/keys")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(json["user_id"], member_id);
+        assert_eq!(json["label"], "member-key");
+    }
+
+    #[tokio::test]
+    async fn create_org_key_returns_404_for_unknown_user() {
+        let (store, admin_key) = setup_with_admin_key();
+
+        let body = serde_json::json!({ "label": "x", "user_id": "nonexistent-id" });
+
+        let resp = app_with_create_key(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/keys")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(json["code"], "user_not_found");
     }
 
     // ── import_memories tests ─────────────────────────────────────────────────
