@@ -933,8 +933,29 @@ pub struct ImportMemory {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ImportMemoriesRequestInner {
+    Array(Vec<ImportMemory>),
+    Object { memories: Vec<ImportMemory> },
+}
+
+/// Accepts either a raw JSON array or `{ "memories": [...] }`.
+#[derive(Debug)]
 pub struct ImportMemoriesRequest {
     pub memories: Vec<ImportMemory>,
+}
+
+impl<'de> serde::Deserialize<'de> for ImportMemoriesRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let inner = ImportMemoriesRequestInner::deserialize(deserializer)?;
+        Ok(match inner {
+            ImportMemoriesRequestInner::Array(memories) => ImportMemoriesRequest { memories },
+            ImportMemoriesRequestInner::Object { memories } => ImportMemoriesRequest { memories },
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
