@@ -103,7 +103,6 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::db::{connection::connect, migrations, queries as q};
-    use crate::auth::api_keys;
 
     fn make_db() -> Arc<Mutex<Connection>> {
         let conn = connect(":memory:").unwrap();

@@ -661,7 +661,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{delete, get, patch, post},
+        routing::{delete, get, post},
         Router,
     };
     use tower::util::ServiceExt;

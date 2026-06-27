@@ -91,7 +91,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{get, patch, post},
+        routing::{get, patch},
         Router,
     };
     use tower::util::ServiceExt;
