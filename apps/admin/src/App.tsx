@@ -60,7 +60,8 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <Routes>
-                <Route path="/"         element={<Dashboard />} />
+                <Route path="/"          element={<Dashboard />} />
+                <Route path="/dashboard" element={<Navigate to="/" replace />} />
                 <Route path="/users"    element={<AdminRoute><Users /></AdminRoute>} />
                 <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
                 <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
