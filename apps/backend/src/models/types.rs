@@ -308,6 +308,7 @@ pub struct StoreMemoryRequest {
 pub struct Session {
     pub id: String,
     pub org_id: String,
+    pub name: Option<String>,
     pub project: String,
     pub directory: String,
     pub started_at: String,
@@ -320,6 +321,7 @@ pub struct Session {
 pub struct SessionWithCount {
     pub id: String,
     pub org_id: String,
+    pub name: Option<String>,
     pub project: String,
     pub directory: String,
     pub started_at: String,
@@ -332,6 +334,7 @@ pub struct SessionWithCount {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CreateSessionRequest {
     pub project: String,
+    pub name: Option<String>,
     pub directory: Option<String>,
     pub summary: Option<String>,
 }
@@ -339,6 +342,7 @@ pub struct CreateSessionRequest {
 /// Request body for `PATCH /v1/sessions/:id`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct PatchSessionRequest {
+    pub name: Option<String>,
     pub ended_at: Option<String>,
     pub summary: Option<String>,
 }
@@ -1331,6 +1335,7 @@ mod tests {
         let s = Session {
             id: "s1".into(),
             org_id: "org1".into(),
+            name: None,
             project: "nexusmind".into(),
             directory: "/home/user".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
