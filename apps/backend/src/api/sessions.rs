@@ -49,6 +49,28 @@ pub async fn create_session_handler(
     Ok((StatusCode::CREATED, Json(CreateSessionResponse { id: session.id, name: session.name })))
 }
 
+pub async fn get_session_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Session>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let result = queries::get_session(&conn, &auth.org_id, &session_id).map_err(db_err)?;
+
+    match result {
+        Some(session) => Ok(Json(session)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Session not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+    }
+}
+
 pub async fn patch_session_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -92,7 +114,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{get, patch},
+        routing::{get, patch, post},
         Router,
     };
     use tower::util::ServiceExt;
@@ -112,7 +134,7 @@ mod tests {
     fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/sessions", get(list_sessions_handler).post(create_session_handler))
-            .route("/v1/sessions/:id", patch(patch_session_handler))
+            .route("/v1/sessions/:id", get(get_session_handler).patch(patch_session_handler))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -308,6 +330,65 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["project"], "nexusmind");
         assert_eq!(arr[0]["memory_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn get_session_by_id_returns_200() {
+        let (store, key) = setup_with_key();
+
+        let create_body = serde_json::json!({ "project": "nexusmind" });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let session_id = create_json["id"].as_str().unwrap().to_string();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/sessions/{session_id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["id"], session_id);
+        assert_eq!(json["project"], "nexusmind");
+    }
+
+    #[tokio::test]
+    async fn get_session_by_id_wrong_id_returns_404() {
+        let (store, key) = setup_with_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions/nonexistent-session-id")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
