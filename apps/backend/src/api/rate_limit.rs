@@ -175,6 +175,9 @@ fn lookup_plan(conn: &Arc<Mutex<Connection>>, org_id: &str) -> String {
 ///
 /// Must be layered BELOW the auth middleware in code (so auth runs first at
 /// runtime and this middleware can read `Extension<AuthContext>`).
+///
+/// Every response — success or 429 — includes `X-RateLimit-Limit` and
+/// `X-RateLimit-Remaining`. Throttled responses additionally carry `Retry-After`.
 pub async fn rate_limit(
     State(state): State<RateLimitState>,
     Extension(auth): Extension<AuthContext>,
@@ -192,39 +195,48 @@ pub async fn rate_limit(
         evict_stale(&state, now, Duration::from_secs(120));
     }
 
-    // Get or insert the bucket.
-    let allowed = {
-        // Fast path: bucket already exists.
+    // Consume one token and capture the quota state for response headers.
+    // Returns (allowed, limit, remaining_after_consume, retry_after_secs).
+    let (allowed, limit, remaining, retry_after) = {
         if let Some(mut bucket) = state.buckets.get_mut(&user_key) {
-            bucket.try_consume(now)
+            let ok = bucket.try_consume(now);
+            let lim = bucket.quota.capacity as u64;
+            let rem = bucket.tokens.max(0.0) as u64;
+            let retry = if ok { 0 } else { bucket.retry_after_secs() };
+            (ok, lim, rem, retry)
         } else {
-            // Slow path: create a new bucket — do one DB round-trip to get the plan.
+            // Slow path: create a new bucket — one DB round-trip to get the plan.
             let plan = lookup_plan(&state.conn, &auth.org_id);
             let quota = quota_for(&plan);
             let mut bucket = Bucket::new(quota, now);
-            let result = bucket.try_consume(now);
+            let ok = bucket.try_consume(now);
+            let lim = bucket.quota.capacity as u64;
+            let rem = bucket.tokens.max(0.0) as u64;
+            let retry = if ok { 0 } else { bucket.retry_after_secs() };
             state.buckets.insert(user_key.clone(), bucket);
-            result
+            (ok, lim, rem, retry)
         }
     };
 
     if allowed {
-        Ok(next.run(req).await)
+        let mut response = next.run(req).await;
+        let hdrs = response.headers_mut();
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-ratelimit-limit", v);
+        }
+        if let Ok(v) = remaining.to_string().parse() {
+            hdrs.insert("x-ratelimit-remaining", v);
+        }
+        Ok(response)
     } else {
-        let retry_after = state
-            .buckets
-            .get(&user_key)
-            .map(|b| b.retry_after_secs())
-            .unwrap_or(60);
-
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "Retry-After",
-            retry_after
-                .to_string()
-                .parse()
-                .unwrap_or_else(|_| "60".parse().unwrap()),
-        );
+        if let Ok(v) = retry_after.to_string().parse() {
+            headers.insert("retry-after", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            headers.insert("x-ratelimit-limit", v);
+        }
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
 
         Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -468,8 +480,62 @@ mod tests {
         );
     }
 
+    /// The first successful request must include X-RateLimit-Limit and
+    /// X-RateLimit-Remaining headers so callers can track their quota.
+    #[tokio::test]
+    async fn router_rate_limit_headers_present_on_success() {
+        let store = make_store();
+        let api_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            key
+        };
+
+        let resp = app_with_rate_limit(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/test")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().contains_key("x-ratelimit-limit"),
+            "200 response must include X-RateLimit-Limit header"
+        );
+        assert!(
+            resp.headers().contains_key("x-ratelimit-remaining"),
+            "200 response must include X-RateLimit-Remaining header"
+        );
+
+        let limit: u64 = resp
+            .headers()
+            .get("x-ratelimit-limit")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .expect("X-RateLimit-Limit must be a valid integer");
+        let remaining: u64 = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .expect("X-RateLimit-Remaining must be a valid integer");
+
+        assert!(limit > 0, "X-RateLimit-Limit must be positive");
+        assert!(
+            remaining < limit,
+            "X-RateLimit-Remaining ({remaining}) must be less than limit ({limit}) after one request"
+        );
+    }
+
     /// Sending 101 requests with a free-tier API key must result in the 101st
-    /// request returning 429 with a `Retry-After` header.
+    /// request returning 429 with Retry-After, X-RateLimit-Limit, and
+    /// X-RateLimit-Remaining headers; the remaining value must be 0.
     #[tokio::test]
     async fn router_rate_limit_returns_429_on_exhaustion_integration() {
         let store = make_store();
@@ -524,5 +590,21 @@ mod tests {
             resp.headers().contains_key("retry-after"),
             "429 response must include Retry-After header"
         );
+        assert!(
+            resp.headers().contains_key("x-ratelimit-limit"),
+            "429 response must include X-RateLimit-Limit header"
+        );
+        assert!(
+            resp.headers().contains_key("x-ratelimit-remaining"),
+            "429 response must include X-RateLimit-Remaining header"
+        );
+
+        let remaining: u64 = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .expect("X-RateLimit-Remaining must be a valid integer");
+        assert_eq!(remaining, 0, "X-RateLimit-Remaining must be 0 when rate-limited");
     }
 }
