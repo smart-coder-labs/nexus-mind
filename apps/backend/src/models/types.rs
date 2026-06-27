@@ -4,6 +4,11 @@ use std::fmt;
 
 // ── Role enum ─────────────────────────────────────────────────────────────────
 
+/// Built-in three-level authorization hierarchy.
+///
+/// Roles are stored as lowercase strings (`"admin"`, `"member"`, `"viewer"`) in the
+/// database and in JSON responses. Use [`Role::as_u8`] to compare privilege levels
+/// numerically without pattern-matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -13,6 +18,7 @@ pub enum Role {
 }
 
 impl Role {
+    /// Returns the numeric weight for privilege comparison: `Admin=2`, `Member=1`, `Viewer=0`.
     pub fn as_u8(self) -> u8 {
         match self {
             Role::Admin  => 2,
@@ -48,6 +54,11 @@ impl fmt::Display for Role {
 
 // ── UserRole enum ─────────────────────────────────────────────────────────────
 
+/// A user's assigned role — either a built-in [`Role`] or a named custom role.
+///
+/// `UserRole::Custom` holds the raw role string from the database for organizations
+/// that define their own permission sets. Custom roles are not understood by the
+/// built-in permission checks (which only recognize `Standard(Role::Admin)`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UserRole {
@@ -56,10 +67,12 @@ pub enum UserRole {
 }
 
 impl UserRole {
+    /// Returns `true` only for `Standard(Role::Admin)`. Custom roles are never admin.
     pub fn is_admin(&self) -> bool {
         matches!(self, UserRole::Standard(Role::Admin))
     }
 
+    /// Returns the string form used in DB storage and JSON serialization.
     pub fn as_str(&self) -> &str {
         match self {
             UserRole::Standard(r) => match r {
@@ -101,6 +114,9 @@ fn default_true() -> bool {
     true
 }
 
+/// Per-org toggles that control which automated agent event handlers are active.
+///
+/// All fields default to `true`. Stored as a JSON blob inside [`OrgSettings`].
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentEventSettings {
     #[serde(default = "default_true")]
@@ -127,6 +143,10 @@ impl Default for AgentEventSettings {
     }
 }
 
+/// Org-wide configuration settings stored as a JSON blob in the organizations table.
+///
+/// All fields are optional so that future additions remain backwards-compatible with
+/// orgs that were created before a setting was introduced.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct OrgSettings {
     #[serde(default)]
@@ -174,6 +194,7 @@ pub struct RetentionPreview {
     pub retention_days: Option<i64>,
 }
 
+/// An organization (tenant) in the system. All resources are scoped to an org.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Org {
     pub id: String,
@@ -182,6 +203,7 @@ pub struct Org {
     pub created_at: String,
 }
 
+/// A user account within an org. Each user has exactly one API key at a time.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct User {
     pub id: String,
@@ -211,6 +233,11 @@ pub struct UpdateUserNoteRequest {
     pub note: Option<String>,
 }
 
+/// A named permission set that can be assigned to users in place of a built-in role.
+///
+/// Custom roles extend one or more base roles and enumerate fine-grained permissions.
+/// `is_template = true` means the role was seeded system-wide and is shared across orgs;
+/// template roles have `org_id = None`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CustomRole {
     pub id: String,
@@ -337,6 +364,11 @@ pub struct PatchSessionRequest {
     pub summary: Option<String>,
 }
 
+/// An immutable audit log record for a single action taken within an org.
+///
+/// `previous_hash` and `current_hash` form an append-only tamper-evident chain:
+/// each entry's `current_hash` is derived from its content plus the previous entry's
+/// `current_hash`. Rows created before the chain was introduced have both fields `None`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AuditEntry {
     pub id: String,
@@ -364,6 +396,11 @@ pub struct ProjectContext {
 
 // ── Convention ────────────────────────────────────────────────────────────────
 
+/// An org-wide or project-scoped rule that AI agents must follow.
+///
+/// Conventions have higher authority than memories. They are categorized,
+/// weighted for priority (higher `weight` = consulted first), and can be
+/// soft-archived when no longer active.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Convention {
     pub id: i64,
@@ -379,6 +416,7 @@ pub struct Convention {
     pub archived_at: Option<String>,
 }
 
+/// Request body for `POST /v1/conventions`.
 #[derive(Debug, Deserialize)]
 pub struct CreateConventionRequest {
     pub title: String,
@@ -389,6 +427,7 @@ pub struct CreateConventionRequest {
     pub project_id: Option<String>,
 }
 
+/// Request body for `PATCH /v1/conventions/:id`. All fields are optional patch semantics.
 #[derive(Debug, Deserialize)]
 pub struct UpdateConventionRequest {
     pub title: Option<String>,
@@ -435,12 +474,14 @@ pub struct MemoryFacets {
     pub projects: Vec<FacetCount>,
 }
 
+/// Aggregate memory count for a single tool (agent/integration). Part of [`OrgStats`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ToolUsage {
     pub tool: String,
     pub count: i64,
 }
 
+/// Summary statistics for an org — returned by `GET /v1/admin/stats`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OrgStats {
     pub total_memories: i64,
@@ -449,6 +490,8 @@ pub struct OrgStats {
     pub top_tools: Vec<ToolUsage>,
 }
 
+/// Platform-wide metrics visible only to superadmin callers.
+/// Returned by `GET /internal/metrics`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GlobalMetrics {
     pub total_orgs: i64,
@@ -457,6 +500,7 @@ pub struct GlobalMetrics {
     pub active_users_24h: i64,
 }
 
+/// An org with its aggregated resource counts — returned in internal org listings.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OrgWithStats {
     pub id: String,
@@ -467,6 +511,7 @@ pub struct OrgWithStats {
     pub memory_count: i64,
 }
 
+/// Counts of the major resource types owned by an org. Returned by `GET /v1/admin/stats/usage`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UsageStats {
     pub memories: i64,
@@ -476,6 +521,10 @@ pub struct UsageStats {
     pub code_repos: i64,
 }
 
+/// A logical project grouping for memories, conventions, and code repos.
+///
+/// Projects can be nested via `parent_id` to form a hierarchy. `archived_at` is set
+/// when the project is soft-archived; archived projects are hidden from default listings.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Project {
     pub id: String,
@@ -489,6 +538,7 @@ pub struct Project {
     pub archived_at: Option<String>,
 }
 
+/// A user's membership in a project with their project-level role.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ProjectMember {
     pub id: String,
@@ -500,6 +550,7 @@ pub struct ProjectMember {
     pub created_at: String,
 }
 
+/// Memory activity summary for a project. Returned by `GET /v1/projects/:id/stats`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectStats {
     pub total_memories: i64,
@@ -510,6 +561,10 @@ pub struct ProjectStats {
 
 // ── Policy types ──────────────────────────────────────────────────────────────
 
+/// An org-level governance policy applied to agent interactions.
+///
+/// Each policy has a `rule_type` that determines what `config` shape is valid.
+/// The [`PolicyConfig`] enum documents the supported rule types and their config schemas.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Policy {
     pub id: String,
@@ -541,6 +596,10 @@ pub enum PolicyConfig {
     },
 }
 
+/// Request body for `POST /v1/policies`.
+///
+/// `rule_type` and `config` are encoded via `#[serde(flatten)]` on [`PolicyConfig`],
+/// meaning both fields appear at the top level of the JSON object rather than nested.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CreatePolicyRequest {
     pub name: String,
@@ -554,16 +613,21 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Request body for `PATCH /v1/policies/:id`. All fields use patch semantics (absent = no change).
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct UpdatePolicyRequest {
     pub name: Option<String>,
-    /// If present, handler rejects with 400 immutable_rule_type — rule_type cannot change.
+    /// If present, handler rejects with 400 `immutable_rule_type` — rule_type cannot change after creation.
     pub rule_type: Option<String>,
     /// Raw JSON config value — validated against the existing rule_type by the handler.
     pub config: Option<serde_json::Value>,
     pub enabled: Option<bool>,
 }
 
+/// Request body for `POST /v1/policy/check`.
+///
+/// The handler evaluates all enabled policies for the org and returns whether
+/// the described agent interaction is allowed.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PolicyCheckRequest {
     pub model: String,
@@ -577,6 +641,7 @@ pub struct PolicyCheckRequest {
     pub project: Option<String>,
 }
 
+/// A single policy that was violated during a [`PolicyCheckRequest`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PolicyViolation {
     pub policy_id: String,
@@ -585,6 +650,10 @@ pub struct PolicyViolation {
     pub reason: String,
 }
 
+/// Response for `POST /v1/policy/check`.
+///
+/// `allowed` is `false` if any enabled policy blocks the interaction.
+/// `violations` lists each blocking policy with a human-readable reason.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PolicyCheckResponse {
     pub allowed: bool,
@@ -737,6 +806,10 @@ pub struct CodeStatusResponse {
 
 // ── Project event override types ──────────────────────────────────────────────
 
+/// Per-project overrides for org-level [`AgentEventSettings`].
+///
+/// A `None` value means "inherit from the org setting". An explicit `Some(false)`
+/// disables the event for this project even if the org setting is `true`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProjectEventOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -751,6 +824,7 @@ pub struct ProjectEventOverrides {
     pub scanner: Option<bool>,
 }
 
+/// Request body for `PATCH /v1/projects/:id/settings` to update event overrides.
 #[derive(Debug, Deserialize)]
 pub struct UpdateProjectEventOverridesRequest {
     pub overrides: ProjectEventOverrides,
@@ -758,6 +832,11 @@ pub struct UpdateProjectEventOverridesRequest {
 
 // ── Webhook types ─────────────────────────────────────────────────────────────
 
+/// An outbound webhook subscription that delivers event payloads to `target_url`.
+///
+/// When `secret` is set, each delivery includes an HMAC-SHA256 `X-NexusMind-Signature`
+/// header so the recipient can verify authenticity. `events` is a list of event type
+/// strings (e.g. `"memory.created"`); an empty list means all events.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Webhook {
     pub id: String,
@@ -785,6 +864,7 @@ pub struct UpdateWebhookRequest {
     pub events: Option<Vec<String>>,
 }
 
+/// Slim user projection returned in global search results and webhook delivery previews.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UserSummary {
     pub id: String,
@@ -795,6 +875,7 @@ pub struct UserSummary {
 
 // ── Webhook delivery log ─────────────────────────────────────────────────────
 
+/// A recorded outbound webhook delivery attempt. Returned by `GET /v1/webhooks/:id/deliveries`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebhookDelivery {
     pub id: String,
@@ -817,6 +898,7 @@ pub struct WebhookTestResult {
     pub error: Option<String>,
 }
 
+/// Combined result set for `GET /v1/search`. Groups matches across resource types.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GlobalSearchResult {
     pub memories: Vec<Memory>,
@@ -881,6 +963,10 @@ pub struct ResetKeyResponse {
 
 // ── Invite link types ─────────────────────────────────────────────────────────
 
+/// A single-use invite link that allows a new user to join an org.
+///
+/// Links expire at `expires_at`. Once redeemed, `used_at` is set and the link
+/// cannot be used again.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InviteLink {
     pub token: String,
@@ -898,6 +984,7 @@ pub struct CreateInviteLinkRequest {
     pub role: Option<String>,
 }
 
+/// Response for `POST /v1/admin/invites`. Contains the full invite URL to share with the new user.
 #[derive(Debug, Serialize)]
 pub struct InviteLinkResponse {
     pub token: String,
@@ -908,6 +995,7 @@ pub struct InviteLinkResponse {
 
 // ── Memory import types ───────────────────────────────────────────────────────
 
+/// A single memory item in a bulk import payload.
 #[derive(Debug, Deserialize)]
 pub struct ImportMemory {
     pub content: String,
@@ -919,6 +1007,7 @@ pub struct ImportMemory {
     pub session_id: Option<String>,
 }
 
+/// Request body for `POST /v1/admin/memories/import`.
 #[derive(Debug, Deserialize)]
 pub struct ImportMemoriesRequest {
     pub memories: Vec<ImportMemory>,
@@ -1038,6 +1127,10 @@ pub struct NotificationItem {
 
 // ── Collections ───────────────────────────────────────────────────────────────
 
+/// A named grouping of memories within an org.
+///
+/// `memory_count` is computed on read and may be `None` in write responses
+/// where the count is not re-queried.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Collection {
     pub id: String,

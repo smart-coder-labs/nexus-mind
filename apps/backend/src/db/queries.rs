@@ -81,10 +81,11 @@ pub fn is_key_account_disabled(conn: &Connection, key_hash: &str) -> Result<bool
     Ok(result.map(|d| d.is_some()).unwrap_or(false))
 }
 
-/// Creates the first organization + admin user + admin API key.
-/// Returns (org, user, raw_api_key).
-/// Fails if any organization already exists.
-/// Creates an org + admin user + API key with no guard. Used by seed and bootstrap.
+/// Creates an org + admin user + API key with no existence guard.
+///
+/// Returns `(org, user, raw_api_key)`. The raw key is only visible once — callers
+/// must capture and surface it immediately. Use [`bootstrap`] instead when you need
+/// to prevent creating a second org.
 pub fn create_org(
     conn: &Connection,
     org_name: &str,

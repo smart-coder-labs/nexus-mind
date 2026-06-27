@@ -1,3 +1,9 @@
+//! Sequential SQLite schema migrations for NexusMind.
+//!
+//! Call [`run_all`] (or its alias [`run`]) on startup — each individual migration is
+//! idempotent and guarded by `PRAGMA user_version`, so re-running on an already-migrated
+//! database is safe. Migrations run in ascending version order and must never be reordered.
+
 use anyhow::Result;
 use rusqlite::Connection;
 
@@ -261,7 +267,7 @@ pub fn run_v30(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Backwards-compatible alias so existing call sites keep working.
+/// Backwards-compatible alias for [`run_all`].
 pub fn run(conn: &Connection) -> Result<()> {
     run_all(conn)
 }

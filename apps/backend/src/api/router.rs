@@ -14,6 +14,16 @@ use crate::email::EmailConfig;
 use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
+/// Builds the complete Axum router for the NexusMind server.
+///
+/// Wires together:
+/// - Protected routes (auth + rate-limit middleware)
+/// - Internal superadmin routes (no auth middleware — caller-restricted by network)
+/// - Public routes (health, login, invite redemption)
+/// - CORS, cookie management, and request tracing layers
+///
+/// The optional embedding service is enabled by setting `NEXUSMIND_EMBED_ENABLED=true`.
+/// SMTP is enabled only when `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM` are all set.
 pub fn build(conn: Connection, config: Config) -> Router {
     let config = Arc::new(config);
     let embed = if std::env::var("NEXUSMIND_EMBED_ENABLED").as_deref() == Ok("true") {

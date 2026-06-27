@@ -1,3 +1,8 @@
+//! HTTP API layer — route handlers, middleware, and request/response types.
+//!
+//! Each sub-module corresponds to a logical feature area. All protected routes are
+//! mounted by [`router::build`] behind the auth + rate-limit middleware stack.
+
 pub mod router;
 pub mod middleware;
 pub mod health;
