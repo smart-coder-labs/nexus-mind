@@ -6158,7 +6158,7 @@ pub fn get_memory_health(conn: &Connection, org_id: &str) -> Result<crate::model
 
     let stale_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND archived_at IS NULL
-         AND updated_at < datetime('now', '-30 days')",
+         AND created_at < datetime('now', '-30 days')",
         [org_id],
         |row| row.get(0),
     )?;
