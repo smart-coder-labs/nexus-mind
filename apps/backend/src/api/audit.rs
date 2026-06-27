@@ -7,7 +7,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
     db::queries,
     models::types::{ApiError, AuditEntry, AuthContext, ExternalAuditRequest},
     store::sqlite::SqliteStore,
@@ -228,7 +228,7 @@ fn validation_err(msg: &str) -> (StatusCode, Json<ApiError>) {
 pub async fn post_audit(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<ExternalAuditRequest>,
+    AppJson(req): AppJson<ExternalAuditRequest>,
 ) -> Result<(StatusCode, Json<AuditEntry>), (StatusCode, Json<ApiError>)> {
     // Validation: action is required and must be 1-64 chars.
     let action = match req.action.as_deref() {

@@ -6,6 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
+    api::helpers::AppJson,
     db::queries,
     models::types::{ApiError, AuthContext, Convention, CreateConventionRequest, UpdateConventionRequest},
     store::sqlite::SqliteStore,
@@ -79,7 +80,7 @@ pub async fn get_convention(
 pub async fn create_convention(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(req): Json<CreateConventionRequest>,
+    AppJson(req): AppJson<CreateConventionRequest>,
 ) -> Result<(StatusCode, Json<Convention>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -94,7 +95,7 @@ pub async fn update_convention(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
-    Json(req): Json<UpdateConventionRequest>,
+    AppJson(req): AppJson<UpdateConventionRequest>,
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());

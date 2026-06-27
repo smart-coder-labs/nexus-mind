@@ -7,7 +7,7 @@ use serde::Deserialize;
 use chrono::Utc;
 
 use crate::{
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
     db::queries as db_queries,
     embed::{self},
     indexer,
@@ -63,7 +63,7 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 pub async fn post_index(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<IndexProjectRequest>,
+    AppJson(input): AppJson<IndexProjectRequest>,
 ) -> Result<(StatusCode, Json<IndexProjectResponse>), (StatusCode, Json<ApiError>)> {
     // Permission check
     {
@@ -200,7 +200,7 @@ pub async fn post_index(
 pub async fn post_search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<SearchCodeRequest>,
+    AppJson(input): AppJson<SearchCodeRequest>,
 ) -> Result<Json<Vec<SearchCodeResult>>, (StatusCode, Json<ApiError>)> {
     // Permission check
     {
@@ -545,7 +545,7 @@ pub async fn update_schedule(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
-    Json(body): Json<UpdateReindexScheduleRequest>,
+    AppJson(body): AppJson<UpdateReindexScheduleRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err((
@@ -580,7 +580,7 @@ pub async fn update_code_project(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
-    Json(body): Json<UpdateCodeProjectRequest>,
+    AppJson(body): AppJson<UpdateCodeProjectRequest>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let id: i64 = id_str.parse().map_err(|_| (
         StatusCode::UNPROCESSABLE_ENTITY,

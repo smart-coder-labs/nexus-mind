@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode, Extension, Json};
+use crate::api::helpers::AppJson;
 use serde::Deserialize;
 use std::sync::Arc;
 use tower_cookies::{Cookie, Cookies};
@@ -62,7 +63,7 @@ pub struct LoginInput {
 pub async fn login(
     cookies: Cookies,
     State(store): State<SqliteStore>,
-    Json(input): Json<LoginInput>,
+    AppJson(input): AppJson<LoginInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
@@ -184,7 +185,7 @@ pub struct SetPasswordInput {
 
 pub async fn set_password(
     State(store): State<SqliteStore>,
-    Json(input): Json<SetPasswordInput>,
+    AppJson(input): AppJson<SetPasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if input.password.len() < 8 {
         return Err(bad_request("Password must be at least 8 characters", "password_too_short"));
@@ -216,7 +217,7 @@ pub struct RequestResetInput {
 pub async fn request_reset(
     State(store): State<SqliteStore>,
     Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
-    Json(input): Json<RequestResetInput>,
+    AppJson(input): AppJson<RequestResetInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
@@ -257,7 +258,7 @@ pub struct ChangePasswordInput {
 pub async fn change_password(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<ChangePasswordInput>,
+    AppJson(input): AppJson<ChangePasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;

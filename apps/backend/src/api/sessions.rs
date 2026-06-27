@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+use crate::api::helpers::AppJson;
 
 use crate::{
     db::queries,
@@ -39,7 +40,7 @@ pub struct CreateSessionResponse {
 pub async fn create_session_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<CreateSessionRequest>,
+    AppJson(input): AppJson<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -75,7 +76,7 @@ pub async fn patch_session_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(session_id): Path<String>,
-    Json(input): Json<PatchSessionRequest>,
+    AppJson(input): AppJson<PatchSessionRequest>,
 ) -> Result<Json<Session>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
