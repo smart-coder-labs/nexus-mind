@@ -6540,7 +6540,7 @@ pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> R
     let (total_memories, memories_this_week, last_memory_at) = conn.query_row(
         "SELECT
             COUNT(*) as total_memories,
-            SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as memories_this_week,
+            COALESCE(SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) as memories_this_week,
             MAX(created_at) as last_memory_at
          FROM memories
          WHERE org_id = ?1 AND project = ?2 AND archived_at IS NULL",
@@ -6877,6 +6877,17 @@ mod project_stats_tests {
         assert_eq!(stats.total_memories, 3, "total_memories should be 3");
         assert_eq!(stats.memories_this_week, 3, "memories_this_week should be 3 (just inserted)");
         assert!(stats.last_memory_at.is_some(), "last_memory_at should be set");
+    }
+
+    #[test]
+    fn project_stats_returns_zeros_for_empty_project() {
+        let conn = setup();
+        let project = create_project(&conn, "org1", "empty-project", None, None).unwrap();
+        let stats = get_project_stats(&conn, "org1", &project.id).unwrap();
+        assert_eq!(stats.total_memories, 0, "total_memories should be 0");
+        assert_eq!(stats.memories_this_week, 0, "memories_this_week should be 0, not NULL");
+        assert!(stats.last_memory_at.is_none(), "last_memory_at should be None");
+        assert!(stats.top_tags.is_empty(), "top_tags should be empty");
     }
 }
 
