@@ -154,7 +154,7 @@ pub async fn export(
 pub struct SearchInput {
     pub query: String,
     pub limit: Option<i64>,
-    /// Search mode: "keyword" (default), "semantic", or "hybrid".
+    /// Search mode: "hybrid" (default), "keyword", or "semantic".
     pub mode: Option<String>,
 }
 
@@ -277,7 +277,7 @@ pub async fn search(
     }
 
     let limit = input.limit.unwrap_or(20);
-    let mode = input.mode.as_deref().unwrap_or("keyword").parse::<SearchMode>().unwrap_or(SearchMode::Keyword);
+    let mode = input.mode.as_deref().unwrap_or("hybrid").parse::<SearchMode>().unwrap_or(SearchMode::Hybrid);
     let mut memories = store
         .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
         .map_err(store_err)?;
