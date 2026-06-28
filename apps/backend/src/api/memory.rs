@@ -685,7 +685,7 @@ mod tests {
             .route("/v1/memory/search", post(search))
             .route("/v1/memory/bulk", delete(super::bulk_delete))
             .route("/v1/memory/:id", get(super::get_by_id).delete(super::delete).patch(super::update))
-            .route("/v1/memory/:id/pin", post(super::pin))
+            .route("/v1/memory/:id/pin", post(super::pin).delete(super::unpin))
             .route("/v1/memory/:id/unpin", post(super::unpin))
             .route("/v1/memory", get(list))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
@@ -1453,6 +1453,55 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // Verify pinned = false via GET
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn delete_pin_sets_pinned_false() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        // Pin first
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/memory/{mem_id}/pin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Unpin via DELETE /v1/memory/:id/pin
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/memory/{mem_id}/pin"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify pinned = false
         let resp = app(store)
             .oneshot(
                 Request::builder()

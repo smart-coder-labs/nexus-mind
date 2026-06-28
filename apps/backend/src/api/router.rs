@@ -66,7 +66,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/memory/:id", get(memory::get_by_id).delete(memory::delete).patch(memory::update))
         .route("/v1/memory/:id/archive", post(memory::archive))
         .route("/v1/memory/:id/restore", post(memory::restore))
-        .route("/v1/memory/:id/pin", post(memory::pin))
+        .route("/v1/memory/:id/pin", post(memory::pin).delete(memory::unpin))
         .route("/v1/memory/:id/unpin", post(memory::unpin))
         .route("/v1/memory", get(memory::list))
         .route("/v1/sessions", get(sessions::list_sessions_handler).post(sessions::create_session_handler))
