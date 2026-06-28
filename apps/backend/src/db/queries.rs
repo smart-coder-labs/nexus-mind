@@ -1408,17 +1408,18 @@ pub fn get_memory_trends(conn: &Connection, org_id: &str, days: i64) -> Result<c
         })?
         .collect::<std::result::Result<_, _>>()?;
 
-    // By type — top 5
+    // By type — top 5 (within the requested period)
     let mut stmt = conn.prepare(
         "SELECT COALESCE(type, 'untyped') as name, COUNT(*) as count
          FROM memories
          WHERE org_id = ?1
+           AND created_at >= datetime('now', '-' || ?2 || ' days')
          GROUP BY type
          ORDER BY count DESC
          LIMIT 5",
     )?;
     let by_type: Vec<NameCount> = stmt
-        .query_map([org_id], |row| {
+        .query_map(rusqlite::params![org_id, days], |row| {
             Ok(NameCount {
                 name: row.get(0)?,
                 count: row.get(1)?,
@@ -1426,17 +1427,18 @@ pub fn get_memory_trends(conn: &Connection, org_id: &str, days: i64) -> Result<c
         })?
         .collect::<std::result::Result<_, _>>()?;
 
-    // By project — top 5
+    // By project — top 5 (within the requested period)
     let mut stmt = conn.prepare(
         "SELECT project as name, COUNT(*) as count
          FROM memories
          WHERE org_id = ?1
+           AND created_at >= datetime('now', '-' || ?2 || ' days')
          GROUP BY project
          ORDER BY count DESC
          LIMIT 5",
     )?;
     let by_project: Vec<NameCount> = stmt
-        .query_map([org_id], |row| {
+        .query_map(rusqlite::params![org_id, days], |row| {
             Ok(NameCount {
                 name: row.get(0)?,
                 count: row.get(1)?,
@@ -1444,10 +1446,10 @@ pub fn get_memory_trends(conn: &Connection, org_id: &str, days: i64) -> Result<c
         })?
         .collect::<std::result::Result<_, _>>()?;
 
-    // Total
+    // Total within the requested period
     let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
-        [org_id],
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND created_at >= datetime('now', '-' || ?2 || ' days')",
+        rusqlite::params![org_id, days],
         |r| r.get(0),
     )?;
 
@@ -5845,6 +5847,47 @@ mod tests {
         assert_eq!(proj_b_count, Some(1));
     }
 
+    #[test]
+    fn trends_days_param_scopes_total_and_breakdowns() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Insert a memory that appears to be from 45 days ago
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, type)
+             VALUES ('old1', ?1, ?2, 'old-project', 'test', 'old content', '[]', datetime('now', '-45 days'), 'project', 'discovery')",
+            rusqlite::params![org.id, user.id],
+        ).unwrap();
+
+        // Insert a memory from today
+        let req = crate::models::types::StoreMemoryRequest {
+            project: Some("new-project".to_string()),
+            tool: "test".to_string(),
+            content: "recent content".to_string(),
+            tags: None,
+            title: None,
+            memory_type: Some("bugfix".to_string()),
+            scope: None,
+            topic_key: None,
+            session_id: None,
+        };
+        upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+
+        // With days=30, the old memory (45 days ago) must be excluded
+        let trends_30 = get_memory_trends(&conn, &org.id, 30).unwrap();
+        assert_eq!(trends_30.total, 1, "days=30 must exclude the 45-day-old memory");
+        assert!(!trends_30.by_project.iter().any(|x| x.name == "old-project"),
+            "old-project must not appear in by_project when days=30");
+        assert!(!trends_30.by_type.iter().any(|x| x.name == "discovery"),
+            "discovery type must not appear in by_type when days=30");
+
+        // With days=90, both memories must appear
+        let trends_90 = get_memory_trends(&conn, &org.id, 90).unwrap();
+        assert_eq!(trends_90.total, 2, "days=90 must include both memories");
+        assert!(trends_90.by_project.iter().any(|x| x.name == "old-project"),
+            "old-project must appear when days=90");
+    }
+
     // ── project event override tests ──────────────────────────────────────────
 
     fn setup_project(conn: &Connection) -> (String, String) {
@@ -6580,22 +6623,27 @@ pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> R
 pub fn get_top_contributors(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::ContributorStat>> {
     let mut stmt = conn.prepare(
         "SELECT
-           COALESCE(user_id, 'unknown') as agent_id,
+           COALESCE(m.user_id, 'unknown') as user_id,
            COUNT(*) as memory_count,
-           MAX(created_at) as last_activity
-         FROM memories
-         WHERE org_id = ?1
-           AND archived_at IS NULL
-           AND created_at >= datetime('now', '-' || ?2 || ' days')
-         GROUP BY user_id
+           MAX(m.created_at) as last_activity,
+           u.name as user_name,
+           u.email as user_email
+         FROM memories m
+         LEFT JOIN users u ON m.user_id = u.id AND m.org_id = u.org_id
+         WHERE m.org_id = ?1
+           AND m.archived_at IS NULL
+           AND m.created_at >= datetime('now', '-' || ?2 || ' days')
+         GROUP BY m.user_id
          ORDER BY memory_count DESC
          LIMIT 8",
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
         Ok(crate::models::types::ContributorStat {
-            agent_id:      row.get(0)?,
+            user_id:       row.get(0)?,
             memory_count:  row.get(1)?,
             last_activity: row.get(2)?,
+            user_name:     row.get(3)?,
+            user_email:    row.get(4)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -6827,10 +6875,12 @@ mod top_contributors_tests {
         let contributors = get_top_contributors(&conn, "org1", 30).unwrap();
 
         assert!(!contributors.is_empty(), "must return contributors");
-        assert_eq!(contributors[0].agent_id, "alice", "alice must rank first");
+        assert_eq!(contributors[0].user_id, "alice", "alice must rank first");
         assert_eq!(contributors[0].memory_count, 5, "alice must have count=5");
+        assert_eq!(contributors[0].user_name.as_deref(), Some("Alice"));
+        assert_eq!(contributors[0].user_email.as_deref(), Some("alice@acme.com"));
 
-        let bob = contributors.iter().find(|c| c.agent_id == "bob")
+        let bob = contributors.iter().find(|c| c.user_id == "bob")
             .expect("bob must be present");
         assert_eq!(bob.memory_count, 2, "bob must have 2 memories");
     }

@@ -1054,9 +1054,11 @@ pub struct RenameTagResponse {
 /// A single contributor entry — returned by `GET /v1/admin/stats/top-contributors`.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct ContributorStat {
-    pub agent_id: String,
+    pub user_id: String,
     pub memory_count: i64,
     pub last_activity: String,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 /// A single day entry in the memory creation heatmap.

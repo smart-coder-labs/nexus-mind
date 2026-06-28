@@ -748,10 +748,11 @@ export default function Dashboard() {
             <div className="space-y-3">
               {(contributors as ContributorStat[]).map((c, i) => {
                 const max = contributors[0].memory_count
+                const displayName = c.user_name || c.user_email || c.user_id
                 return (
-                  <div key={c.agent_id} className="flex items-center gap-3">
+                  <div key={c.user_id} className="flex items-center gap-3">
                     <span className="text-[10px] text-text-quaternary w-3 text-right">{i + 1}</span>
-                    <span className="text-xs text-text-secondary truncate flex-1 font-mono">{c.agent_id}</span>
+                    <span className="text-xs text-text-secondary truncate flex-1 font-mono">{displayName}</span>
                     <div className="w-24 h-1 bg-white/[0.06] rounded-full overflow-hidden">
                       <div
                         className="h-full bg-accent-blue rounded-full"
