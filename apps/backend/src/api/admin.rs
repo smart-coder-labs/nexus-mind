@@ -421,6 +421,40 @@ pub async fn delete_role_api(
     Ok(StatusCode::NO_CONTENT)
 }
 
+const PROJECT_NAME_MAX_LEN: usize = 100;
+
+fn validate_project_name(name: &str) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "Project name must not be empty or whitespace-only".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+    if trimmed.len() > PROJECT_NAME_MAX_LEN {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: format!("Project name must not exceed {} characters", PROJECT_NAME_MAX_LEN),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "Project name must not contain control characters".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
     pub name: String,
@@ -467,6 +501,7 @@ pub async fn create_project_api(
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
+    validate_project_name(&input.name)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let project = queries::create_project(&conn, &auth.org_id, &input.name, input.description.as_deref(), input.parent_id.as_deref())
