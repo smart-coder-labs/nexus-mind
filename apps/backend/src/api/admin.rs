@@ -1312,7 +1312,8 @@ pub async fn merge_memories(
 }
 
 /// `POST /v1/admin/memories/import` — admin-only batch import.
-/// Accepts `{ memories: [...] }`. Returns imported/skipped/errors counts.
+/// Accepts a raw JSON array `[...]` or the wrapper form `{ memories: [...] }`.
+/// Returns imported/skipped/errors counts.
 pub async fn import_memories(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -2115,6 +2116,36 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["imported"], 2);
         assert_eq!(json["skipped"], 1);
+    }
+
+    #[tokio::test]
+    async fn import_raw_array_accepted() {
+        let (store, key) = setup_with_admin_key();
+
+        let body = serde_json::json!([
+            { "content": "Raw array memory one" },
+            { "content": "Raw array memory two", "project": "myproject" }
+        ]);
+
+        let resp = app_with_import(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/memories/import")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(json["imported"], 2);
+        assert_eq!(json["skipped"], 0);
+        assert_eq!(json["errors"], serde_json::json!([]));
     }
 
     // ── agent_activity tests ──────────────────────────────────────────────────
