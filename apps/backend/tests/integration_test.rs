@@ -515,3 +515,34 @@ fn code_project_exclude_patterns_roundtrip() {
     let listed = projects.iter().find(|p| p.name == "myapp").expect("myapp must appear in list");
     assert_eq!(listed.exclude_patterns, patterns, "list_code_projects must include exclude_patterns");
 }
+
+#[test]
+fn update_org_settings_persists_announcement() {
+    use nexusmind::models::types::OrgSettings;
+    let conn = setup();
+    let (org, _, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Set announcement via update_org_settings (min_password_length is NOT NULL DEFAULT 8)
+    let input = OrgSettings {
+        min_password_length: Some(8),
+        announcement: Some("Maintenance tonight".to_string()),
+        announcement_type: Some("warning".to_string()),
+        ..Default::default()
+    };
+    let result = queries::update_org_settings(&conn, &org.id, &input).unwrap();
+    assert_eq!(result.announcement.as_deref(), Some("Maintenance tonight"), "announcement must be persisted");
+    assert_eq!(result.announcement_type.as_deref(), Some("warning"), "announcement_type must be persisted");
+
+    // Verify GET reflects the saved announcement
+    let fetched = queries::get_org_settings(&conn, &org.id).unwrap();
+    assert_eq!(fetched.announcement.as_deref(), Some("Maintenance tonight"), "GET must return persisted announcement");
+
+    // Clear announcement by passing empty string (min_password_length must remain non-null)
+    let clear_input = OrgSettings {
+        min_password_length: Some(8),
+        announcement: Some(String::new()),
+        ..Default::default()
+    };
+    let cleared = queries::update_org_settings(&conn, &org.id, &clear_input).unwrap();
+    assert!(cleared.announcement.is_none(), "empty string must clear announcement to NULL");
+}
