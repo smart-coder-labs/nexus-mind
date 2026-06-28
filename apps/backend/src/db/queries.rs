@@ -448,6 +448,7 @@ pub fn list_memories(
 }
 
 /// Count memories matching the same filters as `list_memories`.
+#[allow(clippy::too_many_arguments)]
 pub fn count_memories(
     conn: &Connection,
     org_id: &str,
