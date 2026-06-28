@@ -224,6 +224,85 @@ async fn me_without_auth_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Build a router + return a bearer API key for an admin of a fresh org.
+fn app_with_bearer() -> (axum::Router, String) {
+    let conn = connection::connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    let (_, _, raw_key) =
+        queries::bootstrap(&conn, "Val Org", "val-org", "val@test.com", "Val Admin").unwrap();
+    let router = router::build(conn, test_config());
+    (router, raw_key)
+}
+
+/// POST /v1/projects with the given JSON body and a Bearer token; return status + body.
+async fn post_project(
+    router: axum::Router,
+    bearer: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/projects")
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {bearer}"))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// Test 6: POST /v1/projects with an empty name returns 422.
+#[tokio::test]
+async fn create_project_empty_name_returns_422() {
+    let (router, key) = app_with_bearer();
+    let (status, body) = post_project(router, &key, serde_json::json!({ "name": "" })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "empty name must be 422, body={body}");
+    assert_eq!(body["code"], "validation_error");
+}
+
+/// Test 7: POST /v1/projects with a whitespace-only name returns 422.
+#[tokio::test]
+async fn create_project_whitespace_name_returns_422() {
+    let (router, key) = app_with_bearer();
+    let (status, body) = post_project(router, &key, serde_json::json!({ "name": "   " })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "whitespace-only name must be 422, body={body}");
+    assert_eq!(body["code"], "validation_error");
+}
+
+/// Test 8: POST /v1/projects with a name containing control characters returns 422.
+#[tokio::test]
+async fn create_project_control_chars_returns_422() {
+    let (router, key) = app_with_bearer();
+    let (status, body) = post_project(router, &key, serde_json::json!({ "name": "foo\tbar\n" })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "control-char name must be 422, body={body}");
+    assert_eq!(body["code"], "validation_error");
+}
+
+/// Test 9: POST /v1/projects with a name longer than 100 characters returns 422.
+#[tokio::test]
+async fn create_project_name_too_long_returns_422() {
+    let (router, key) = app_with_bearer();
+    let long_name = "a".repeat(101);
+    let (status, body) = post_project(router, &key, serde_json::json!({ "name": long_name })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "name >100 chars must be 422, body={body}");
+    assert_eq!(body["code"], "validation_error");
+}
+
+/// Test 10: POST /v1/projects with a valid name returns 201.
+#[tokio::test]
+async fn create_project_valid_name_returns_201() {
+    let (router, key) = app_with_bearer();
+    let (status, _body) = post_project(router, &key, serde_json::json!({ "name": "my-project" })).await;
+    assert_eq!(status, StatusCode::CREATED, "valid name must return 201");
+}
+
 /// Test 5: logout clears the session cookie and revokes the key — subsequent /me returns 401.
 #[tokio::test]
 async fn logout_clears_cookie_and_revokes_key() {
