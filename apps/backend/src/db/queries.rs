@@ -1116,9 +1116,11 @@ pub fn update_org_settings(conn: &Connection, org_id: &str, settings: &OrgSettin
     // Strip direct-column fields from the JSON blob — they live in their own columns.
     let blob_settings = OrgSettings { retention_days: None, custom_instructions: None, min_password_length: None, announcement: None, announcement_type: None, ..settings.clone() };
     let raw = serde_json::to_string(&blob_settings)?;
+    let ann: Option<&str> = settings.announcement.as_deref().filter(|s| !s.is_empty());
+    let ann_type = settings.announcement_type.as_deref().unwrap_or("info");
     conn.execute(
-        "UPDATE organizations SET settings = ?1, retention_days = ?2, custom_instructions = ?3, min_password_length = ?4 WHERE id = ?5",
-        rusqlite::params![raw, settings.retention_days, settings.custom_instructions, settings.min_password_length, org_id],
+        "UPDATE organizations SET settings = ?1, retention_days = ?2, custom_instructions = ?3, min_password_length = ?4, announcement = ?5, announcement_type = ?6 WHERE id = ?7",
+        rusqlite::params![raw, settings.retention_days, settings.custom_instructions, settings.min_password_length, ann, ann_type, org_id],
     )?;
     get_org_settings(conn, org_id)
 }
