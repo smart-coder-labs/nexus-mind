@@ -18,4 +18,9 @@ tmp/
 
 .fastembed_cache/
 
-*.atl
+# Skill registry caches — generated locally by loop-engineering, never tracked
+/.atl/
+/apps/.atl/
+/apps/landing/.atl/
+/apps/*/.atl/
+**/.atl/
