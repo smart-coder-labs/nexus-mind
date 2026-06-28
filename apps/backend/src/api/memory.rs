@@ -203,10 +203,51 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     )
 }
 
+const MAX_TAG_LENGTH: usize = 100;
+const MAX_TAGS: usize = 50;
+
+fn validate_and_normalize_tags(
+    tags: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, (StatusCode, Json<ApiError>)> {
+    let Some(tags) = tags else { return Ok(None) };
+
+    if tags.len() > MAX_TAGS {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: format!("Too many tags — maximum is {MAX_TAGS} per memory"),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+
+    let mut normalized = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let trimmed = tag.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.len() > MAX_TAG_LENGTH {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: format!(
+                        "Tag exceeds maximum length of {MAX_TAG_LENGTH} characters"
+                    ),
+                    code: "validation_error".to_string(),
+                }),
+            ));
+        }
+        normalized.push(trimmed);
+    }
+
+    Ok(Some(normalized))
+}
+
 pub async fn store(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    JsonBody(input): JsonBody<StoreMemoryRequest>,
+    JsonBody(mut input): JsonBody<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
     if input.content.len() > MAX_CONTENT_BYTES {
         return Err((
@@ -217,6 +258,7 @@ pub async fn store(
             }),
         ));
     }
+    input.tags = validate_and_normalize_tags(input.tags.take())?;
 
     let db = store.conn();
     {
@@ -2130,5 +2172,125 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "content_too_large");
+    }
+
+    // ── Tag validation tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn store_filters_empty_and_whitespace_tags() {
+        let (store, key) = setup_with_key();
+        let body = serde_json::json!({
+            "tool": "claude",
+            "content": "tag test",
+            "tags": ["valid-tag", "", "  ", "\t"]
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tags = mem["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1, "empty/whitespace tags must be filtered out");
+        assert_eq!(tags[0].as_str().unwrap(), "valid-tag");
+    }
+
+    #[tokio::test]
+    async fn store_trims_whitespace_from_tags() {
+        let (store, key) = setup_with_key();
+        let body = serde_json::json!({
+            "tool": "claude",
+            "content": "trim test",
+            "tags": ["  leading", "trailing  ", "  both  "]
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tags: Vec<&str> = mem["tags"].as_array().unwrap()
+            .iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(tags, vec!["leading", "trailing", "both"]);
+    }
+
+    #[tokio::test]
+    async fn store_rejects_tag_exceeding_max_length() {
+        let (store, key) = setup_with_key();
+        let long_tag = "a".repeat(super::MAX_TAG_LENGTH + 1);
+        let body = serde_json::json!({
+            "tool": "claude",
+            "content": "long tag test",
+            "tags": [long_tag]
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"].as_str().unwrap(), "validation_error");
+    }
+
+    #[tokio::test]
+    async fn store_rejects_too_many_tags() {
+        let (store, key) = setup_with_key();
+        let tags: Vec<String> = (0..=super::MAX_TAGS).map(|i| format!("tag-{i}")).collect();
+        let body = serde_json::json!({
+            "tool": "claude",
+            "content": "too many tags",
+            "tags": tags
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"].as_str().unwrap(), "validation_error");
     }
 }
