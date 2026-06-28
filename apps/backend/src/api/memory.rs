@@ -10,7 +10,7 @@ use crate::{
     db::queries as db_queries,
     models::types::{ApiError, AuthContext, Memory, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
-    api::helpers::{require_permission, AppJson},
+    api::helpers::{require_permission, AppJson, JsonBody},
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
@@ -204,7 +204,7 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 pub async fn store(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    AppJson(input): AppJson<StoreMemoryRequest>,
+    JsonBody(input): JsonBody<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
