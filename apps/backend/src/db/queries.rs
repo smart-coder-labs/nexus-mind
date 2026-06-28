@@ -3839,6 +3839,157 @@ pub fn revoke_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result
     Ok(affected > 0)
 }
 
+/// Returns a single API key (with joined user info) by key ID, scoped to the org.
+/// Returns `None` if the key does not exist in the org (revoked or otherwise).
+pub fn get_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result<Option<ApiKeyWithUser>> {
+    conn.query_row(
+        "SELECT ak.id, ak.user_id, u.name, u.email, ak.label, ak.last_used, ak.created_at, ak.revoked, ak.expires_at,
+                COALESCE(ak.times_used, 0), ak.last_used_at
+         FROM api_keys ak
+         JOIN users u ON u.id = ak.user_id
+         WHERE ak.id = ?1 AND ak.org_id = ?2",
+        rusqlite::params![key_id, org_id],
+        |row| {
+            Ok(ApiKeyWithUser {
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                user_name: row.get(2)?,
+                user_email: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                label: row.get(4)?,
+                last_used: row.get(5)?,
+                created_at: row.get(6)?,
+                revoked: row.get::<_, i64>(7)? != 0,
+                expires_at: row.get(8)?,
+                times_used: row.get::<_, i64>(9).unwrap_or(0),
+                last_used_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Updates the label and/or expires_at of a non-revoked key.
+/// `expires_at_value`: `Some(Some(s))` sets it, `Some(None)` clears it, `None` leaves it unchanged.
+/// Returns true if the key was found and updated.
+pub fn update_key_admin(
+    conn: &Connection,
+    org_id: &str,
+    key_id: &str,
+    label: Option<&str>,
+    expires_at_value: Option<Option<&str>>,
+) -> Result<bool> {
+    // Build update dynamically so we only touch fields that were provided.
+    let mut parts: Vec<String> = Vec::new();
+    if label.is_some() {
+        parts.push("label = ?3".to_string());
+    }
+    if expires_at_value.is_some() {
+        parts.push(format!("expires_at = ?{}", if label.is_some() { 4 } else { 3 }));
+    }
+    if parts.is_empty() {
+        // Nothing to update — check existence and return true if found.
+        let exists: bool = conn.query_row(
+            "SELECT count(*) FROM api_keys WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
+            rusqlite::params![key_id, org_id],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        return Ok(exists);
+    }
+
+    let sql = format!(
+        "UPDATE api_keys SET {} WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
+        parts.join(", ")
+    );
+
+    // We need to bind params in order. Use rusqlite params! with the right arity.
+    let affected = match (label, expires_at_value) {
+        (Some(lbl), Some(exp)) => conn.execute(
+            &sql,
+            rusqlite::params![key_id, org_id, lbl, exp],
+        )?,
+        (Some(lbl), None) => conn.execute(
+            &sql,
+            rusqlite::params![key_id, org_id, lbl],
+        )?,
+        (None, Some(exp)) => conn.execute(
+            &sql,
+            rusqlite::params![key_id, org_id, exp],
+        )?,
+        (None, None) => unreachable!(),
+    };
+    Ok(affected > 0)
+}
+
+/// Rotates a specific API key: revokes it and creates a new one for the same user.
+/// Returns `None` if the key does not exist or is already revoked.
+/// Returns `(new_key_metadata, raw_key)` on success — raw_key is shown only once.
+pub fn rotate_key_by_id(
+    conn: &Connection,
+    org_id: &str,
+    key_id: &str,
+) -> Result<Option<(ApiKeyWithUser, String)>> {
+    // Fetch user_id for the key, verify it belongs to the org and is not revoked.
+    let user_id: Option<String> = conn.query_row(
+        "SELECT user_id FROM api_keys WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
+        rusqlite::params![key_id, org_id],
+        |r| r.get(0),
+    ).optional()?;
+
+    let user_id = match user_id {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+
+    // Revoke the specific key.
+    conn.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE id = ?1",
+        rusqlite::params![key_id],
+    )?;
+
+    // Create a new key for the same user.
+    let new_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'rotated', ?5)",
+        rusqlite::params![new_id, user_id, org_id, key_hash, now],
+    )?;
+
+    // Fetch the new key with user info.
+    let key = get_key_admin(conn, org_id, &new_id)?
+        .expect("newly inserted key must be found");
+
+    Ok(Some((key, raw_key)))
+}
+
+/// Creates a new API key for a user. Returns `(key_metadata, raw_key)`.
+/// Returns `Err` if user does not exist in the org.
+pub fn create_key_admin(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    label: &str,
+    expires_at: Option<&str>,
+) -> Result<(ApiKeyWithUser, String)> {
+    let key_id = Uuid::new_v4().to_string();
+    let (raw_key, key_hash) = api_keys::generate();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![key_id, user_id, org_id, key_hash, label, now, expires_at],
+    )?;
+
+    let key = get_key_admin(conn, org_id, &key_id)?
+        .expect("newly inserted key must be found");
+
+    Ok((key, raw_key))
+}
+
 // ── Per-project event overrides ───────────────────────────────────────────────
 
 /// Returns the per-project agent event overrides for a project.
