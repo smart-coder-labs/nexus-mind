@@ -434,11 +434,25 @@ pub async fn update(
     Path(id): Path<String>,
     AppJson(input): AppJson<UpdateMemoryRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
-    if input.content.trim().is_empty() {
+    // Validate content if provided
+    if let Some(ref c) = input.content {
+        if c.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "content must not be empty".to_string(),
+                    code: "validation_error".to_string(),
+                }),
+            ));
+        }
+    }
+
+    // At least one field must be present
+    if input.content.is_none() && input.title.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
-                error: "content must not be empty".to_string(),
+                error: "at least one of 'content' or 'title' must be provided".to_string(),
                 code: "validation_error".to_string(),
             }),
         ));
@@ -462,8 +476,14 @@ pub async fn update(
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
 
-            let updated = db_queries::update_memory_content(&conn, &auth.org_id, &id, &input.content)
-                .map_err(store_err)?;
+            let updated = db_queries::update_memory_fields(
+                &conn,
+                &auth.org_id,
+                &id,
+                input.content.as_deref(),
+                input.title.as_deref(),
+            )
+            .map_err(store_err)?;
 
             match updated {
                 Some(m) => {
@@ -1380,6 +1400,130 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_memory_title_only_returns_200() {
+        let (store, admin_key, _) = setup_org();
+
+        // Seed memory with a known title
+        let body = serde_json::json!({ "tool": "claude", "content": "original content", "title": "original title" });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mem_id = mem["id"].as_str().unwrap().to_string();
+
+        // PATCH with title only — content must be preserved
+        let patch = serde_json::json!({ "title": "new title" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated["title"].as_str().unwrap(), "new title", "title must be updated");
+        assert_eq!(updated["content"].as_str().unwrap(), "original content", "content must be unchanged");
+    }
+
+    #[tokio::test]
+    async fn update_memory_both_fields_returns_200() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        let patch = serde_json::json!({ "content": "new content", "title": "new title" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated["content"].as_str().unwrap(), "new content");
+        assert_eq!(updated["title"].as_str().unwrap(), "new title");
+    }
+
+    #[tokio::test]
+    async fn update_memory_no_fields_returns_400_json() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        let patch = serde_json::json!({});
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "error must be JSON, got: {ct}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(err["error"].as_str().is_some(), "error field must be present");
+    }
+
+    #[tokio::test]
+    async fn update_memory_title_only_response_is_json() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        // This is Case 2 from the issue — previously returned 422 text/plain
+        let patch = serde_json::json!({ "title": "only title no content" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Must succeed (200) with JSON body, NOT 422 text/plain
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "response must be JSON, got: {ct}");
     }
 
     // ── POST /v1/memory/:id/pin + /unpin tests ────────────────────────────────

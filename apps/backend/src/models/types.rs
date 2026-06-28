@@ -877,9 +877,11 @@ pub struct OnboardingStatus {
 }
 
 /// Request body for `PATCH /v1/memory/:id`.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// All fields are optional — at least one must be provided.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct UpdateMemoryRequest {
-    pub content: String,
+    pub content: Option<String>,
+    pub title: Option<String>,
 }
 
 /// Returned by `POST /v1/admin/users/:user_id/reset-key`.

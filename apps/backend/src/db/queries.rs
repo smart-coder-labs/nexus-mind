@@ -2570,6 +2570,37 @@ pub fn update_memory_content(
     get_memory_by_id_for_org(conn, org_id, memory_id)
 }
 
+/// Partial update for PATCH /v1/memory/:id — updates whichever of content/title are provided.
+/// Returns `Some(Memory)` on success, `None` if the memory does not belong to this org.
+/// Caller must ensure at least one of content/title is Some.
+pub fn update_memory_fields(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    content: Option<&str>,
+    title: Option<&str>,
+) -> Result<Option<Memory>> {
+    let rows_changed = match (content, title) {
+        (Some(c), Some(t)) => conn.execute(
+            "UPDATE memories SET content = ?1, title = ?2, revision_count = revision_count + 1 WHERE id = ?3 AND org_id = ?4",
+            rusqlite::params![c, t, memory_id, org_id],
+        )?,
+        (Some(c), None) => conn.execute(
+            "UPDATE memories SET content = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
+            rusqlite::params![c, memory_id, org_id],
+        )?,
+        (None, Some(t)) => conn.execute(
+            "UPDATE memories SET title = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
+            rusqlite::params![t, memory_id, org_id],
+        )?,
+        (None, None) => return Err(anyhow::anyhow!("no fields to update")),
+    };
+    if rows_changed == 0 {
+        return Ok(None);
+    }
+    get_memory_by_id_for_org(conn, org_id, memory_id)
+}
+
 /// Updates the `admin_note` field of a memory (admin-only).
 /// Empty string clears the note (sets admin_note = NULL).
 /// Returns `Some(Memory)` on success, `None` if the memory does not belong to this org.
