@@ -1,8 +1,39 @@
+use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::Json;
 use rusqlite::Connection;
+use serde::de::DeserializeOwned;
 
 use crate::models::types::{ApiError, AuthContext};
+
+/// JSON extractor that maps all body errors (syntax, shape, missing) to 422.
+///
+/// Axum's built-in `Json` returns 400 for syntax/parse failures and 422 for shape
+/// mismatches, making the error model inconsistent. This extractor normalises all
+/// JSON body failures to 422 Unprocessable Entity.
+pub struct JsonBody<T>(pub T);
+
+#[axum::async_trait]
+impl<S, T> FromRequest<S> for JsonBody<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<ApiError>);
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(JsonBody(value)),
+            Err(rejection) => Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: rejection.to_string(),
+                    code: "invalid_body".to_string(),
+                }),
+            )),
+        }
+    }
+}
 
 /// Returns `Ok(())` if `auth.role` (or project-level override) has the required `permission`. Otherwise `Err(403)`.
 pub fn require_permission(

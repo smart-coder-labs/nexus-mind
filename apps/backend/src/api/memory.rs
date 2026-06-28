@@ -10,7 +10,7 @@ use crate::{
     db::queries as db_queries,
     models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
-    api::helpers::require_permission,
+    api::helpers::{require_permission, JsonBody},
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
@@ -194,7 +194,7 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 pub async fn store(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<StoreMemoryRequest>,
+    JsonBody(input): JsonBody<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
@@ -1467,6 +1467,62 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+    }
+
+    // ── Malformed body consistency tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn store_empty_body_returns_422() {
+        let (store, key) = setup_with_key();
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn store_null_body_returns_422() {
+        let (store, key) = setup_with_key();
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("null"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn store_array_body_returns_422() {
+        let (store, key) = setup_with_key();
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"[{"content":"test"}]"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
