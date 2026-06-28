@@ -1217,6 +1217,45 @@ pub struct GitHubConnectionStatus {
     pub scopes: Option<String>,
 }
 
+// ── Agent types ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Agent {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentRequest {
+    pub name: String,
+    pub model: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateAgentRequest {
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AgentAssignment {
+    pub id: String,
+    pub agent_id: String,
+    pub org_id: String,
+    pub repo_url: String,
+    pub created_at: String,
+}
+
 /// Stored GitHub OAuth connection for an org (DB row).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubConnection {

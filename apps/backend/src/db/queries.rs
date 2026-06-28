@@ -10,7 +10,7 @@ use crate::models::types::{
     Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
     ProjectEventOverrides, Webhook, CreateWebhookRequest, UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser,
     OnboardingItem, OnboardingStatus, InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest,
-    GitHubConnection,
+    GitHubConnection, Agent, CreateAgentRequest, UpdateAgentRequest, AgentAssignment,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -7288,4 +7288,93 @@ pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool>
         [org_id],
     )?;
     Ok(n > 0)
+}
+
+// ── Agent queries ─────────────────────────────────────────────────────────────
+
+fn agent_from_row(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
+    Ok(Agent {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        name: row.get(2)?,
+        model: row.get(3)?,
+        description: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+pub fn list_agents(conn: &Connection, org_id: &str) -> Result<Vec<Agent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, model, description, status, created_at, updated_at
+         FROM agents WHERE org_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], agent_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn get_agent(conn: &Connection, org_id: &str, id: &str) -> Result<Option<Agent>> {
+    conn.query_row(
+        "SELECT id, org_id, name, model, description, status, created_at, updated_at
+         FROM agents WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id],
+        agent_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn create_agent(conn: &Connection, org_id: &str, req: &CreateAgentRequest) -> Result<Agent> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO agents (id, org_id, name, model, description, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'active', datetime('now'), datetime('now'))",
+        rusqlite::params![id, org_id, req.name, req.model, req.description],
+    )?;
+    get_agent(conn, org_id, &id)?.ok_or_else(|| anyhow::anyhow!("agent not found after insert"))
+}
+
+pub fn update_agent(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    req: &UpdateAgentRequest,
+) -> Result<Option<Agent>> {
+    let n = conn.execute(
+        "UPDATE agents SET
+           name = COALESCE(?3, name),
+           model = COALESCE(?4, model),
+           description = CASE WHEN ?5 IS NOT NULL THEN ?5 ELSE description END,
+           status = COALESCE(?6, status),
+           updated_at = datetime('now')
+         WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id, req.name, req.model, req.description, req.status],
+    )?;
+    if n == 0 {
+        return Ok(None);
+    }
+    get_agent(conn, org_id, id)
+}
+
+pub fn list_agent_assignments(
+    conn: &Connection,
+    org_id: &str,
+    agent_id: &str,
+) -> Result<Vec<AgentAssignment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_id, org_id, repo_url, created_at
+         FROM agent_assignments WHERE org_id = ?1 AND agent_id = ?2
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, agent_id], |row| {
+        Ok(AgentAssignment {
+            id: row.get(0)?,
+            agent_id: row.get(1)?,
+            org_id: row.get(2)?,
+            repo_url: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
