@@ -163,6 +163,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/github/callback", post(github_auth::post_callback))
         .route("/v1/github/status", get(github_auth::get_status))
         .route("/v1/github/connection", delete(github_auth::delete_connection))
+        .route("/v1/github/disconnect", delete(github_auth::delete_connection))
         // Rate limit runs after auth (inner layer = runs second at runtime).
         // Auth is outermost (last `.layer()`) so it runs first.
         .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))

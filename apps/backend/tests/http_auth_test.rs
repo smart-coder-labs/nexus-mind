@@ -439,3 +439,60 @@ async fn missing_content_type_returns_json_error() {
     assert_eq!(body["code"], "invalid_content_type");
     assert!(body["error"].is_string());
 }
+
+/// Test: DELETE /v1/github/disconnect without auth returns 401.
+#[tokio::test]
+async fn github_disconnect_without_auth_returns_401() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/github/disconnect")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Test: DELETE /v1/github/disconnect with valid auth returns 204 (idempotent — works even with no connection stored).
+#[tokio::test]
+async fn github_disconnect_with_auth_returns_204() {
+    let (router, raw_key) = app_with_bearer();
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/github/disconnect")
+                .header("Authorization", format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "disconnect must return 204");
+}
+
+/// Test: DELETE /v1/github/connection (canonical route) also returns 204 with valid auth.
+#[tokio::test]
+async fn github_connection_delete_with_auth_returns_204() {
+    let (router, raw_key) = app_with_bearer();
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/github/connection")
+                .header("Authorization", format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "DELETE /v1/github/connection must return 204");
+}
