@@ -191,37 +191,26 @@ pub async fn test_webhook(
     })
     .to_string();
 
-    let result = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-d", &payload,
-            "--max-time", "10",
-            &webhook.target_url,
-        ])
-        .output();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| internal_error(anyhow::anyhow!(e)))?;
+
+    let result = client
+        .post(&webhook.target_url)
+        .header("Content-Type", "application/json")
+        .body(payload.clone())
+        .send()
+        .await;
 
     let test_result = match result {
-        Ok(output) => {
-            let code_str = String::from_utf8_lossy(&output.stdout);
-            let code_str = code_str.trim();
-            match code_str.parse::<u16>() {
-                Ok(status_code) => {
-                    let success = (200..300).contains(&status_code);
-                    WebhookTestResult {
-                        success,
-                        status_code: Some(status_code),
-                        error: if success { None } else { Some(format!("Received HTTP {status_code}")) },
-                    }
-                }
-                Err(_) => WebhookTestResult {
-                    success: false,
-                    status_code: None,
-                    error: Some(format!("Unexpected curl output: {code_str}")),
-                },
+        Ok(response) => {
+            let status_code = response.status().as_u16();
+            let success = (200..300).contains(&status_code);
+            WebhookTestResult {
+                success,
+                status_code: Some(status_code),
+                error: if success { None } else { Some(format!("Received HTTP {status_code}")) },
             }
         }
         Err(e) => WebhookTestResult {
@@ -322,31 +311,24 @@ pub async fn retry_delivery(
     drop(conn);
 
     let payload = delivery.payload.clone();
-    let result = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-d", &payload,
-            "--max-time", "10",
-            &webhook.target_url,
-        ])
-        .output();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| internal_error(anyhow::anyhow!(e)))?;
+
+    let result = client
+        .post(&webhook.target_url)
+        .header("Content-Type", "application/json")
+        .body(payload.clone())
+        .send()
+        .await;
 
     let (status_code, success, error_msg) = match result {
-        Ok(output) => {
-            let code_str = String::from_utf8_lossy(&output.stdout);
-            let code_str = code_str.trim();
-            match code_str.parse::<u16>() {
-                Ok(status_code) => {
-                    let success = (200..300).contains(&status_code);
-                    let err = if success { None } else { Some(format!("Received HTTP {status_code}")) };
-                    (Some(status_code as i64), success, err)
-                }
-                Err(_) => (None, false, Some(format!("Unexpected curl output: {code_str}"))),
-            }
+        Ok(response) => {
+            let status_code = response.status().as_u16();
+            let success = (200..300).contains(&status_code);
+            let err = if success { None } else { Some(format!("Received HTTP {status_code}")) };
+            (Some(status_code as i64), success, err)
         }
         Err(e) => (None, false, Some(e.to_string())),
     };
