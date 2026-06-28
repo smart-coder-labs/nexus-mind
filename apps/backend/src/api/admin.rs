@@ -1310,6 +1310,29 @@ pub struct NotificationsParams {
     pub limit: Option<i64>,
 }
 
+/// `POST /v1/admin/notifications/mark-all-read` — admin-only.
+/// Records the current timestamp as the org's last notification read time.
+/// Returns 204 No Content on success.
+pub async fn mark_all_notifications_read(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    conn.execute(
+        "UPDATE organizations SET notifications_read_at = datetime('now') WHERE id = ?1",
+        rusqlite::params![auth.org_id],
+    )
+    .map_err(|e| db_err(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn action_to_message(action: &str) -> &'static str {
     match action {
         "user.created"        => "New user joined",

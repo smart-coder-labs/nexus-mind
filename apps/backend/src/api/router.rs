@@ -155,6 +155,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/auth/change-password", post(auth::change_password))
         .route("/v1/admin/auth/me", get(auth::me))
         .route("/v1/admin/notifications", get(admin::get_notifications))
+        .route("/v1/admin/notifications/mark-all-read", post(admin::mark_all_notifications_read))
         .route("/v1/admin/invites", post(admin::create_invite_link))
         .route("/v1/admin/collections", get(admin::list_collections_api).post(admin::create_collection_api))
         .route("/v1/admin/collections/:id", delete(admin::delete_collection_api))
