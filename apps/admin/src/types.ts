@@ -392,9 +392,11 @@ export interface HeatmapDay {
 }
 
 export interface ContributorStat {
-  agent_id: string
+  user_id: string
   memory_count: number
   last_activity: string
+  user_name: string | null
+  user_email: string | null
 }
 
 export interface MergeMemoriesRequest {
