@@ -6,7 +6,7 @@ use axum::{
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, CreateSessionRequest, PatchSessionRequest, Session},
+    models::types::{ApiError, AuthContext, CreateSessionRequest, Memory, PatchSessionRequest, Session},
     store::sqlite::SqliteStore,
 };
 
@@ -107,6 +107,46 @@ pub async fn list_sessions_handler(
     Ok(Json(sessions))
 }
 
+pub async fn list_session_memories_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let session = queries::get_session(&conn, &auth.org_id, &session_id).map_err(db_err)?;
+    if session.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Session not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let memories = queries::list_memories(
+        &conn,
+        &auth.org_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&session_id),
+        1000,
+        0,
+        false,
+        None,
+        None,
+        None,
+    )
+    .map_err(db_err)?;
+
+    Ok(Json(memories))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +162,7 @@ mod tests {
     use crate::{
         api::middleware as auth_mw,
         db::{connection::connect, migrations, queries as q},
+        models::types::StoreMemoryRequest,
         store::sqlite::SqliteStore,
     };
 
@@ -135,6 +176,7 @@ mod tests {
         Router::new()
             .route("/v1/sessions", get(list_sessions_handler).post(create_session_handler))
             .route("/v1/sessions/:id", get(get_session_handler).patch(patch_session_handler))
+            .route("/v1/sessions/:id/memories", get(list_session_memories_handler))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -409,5 +451,136 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_session_memories_returns_memories_for_session() {
+        let (store, key) = setup_with_key();
+
+        // Create a session
+        let create_body = serde_json::json!({ "project": "nexusmind" });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let session_id = create_json["id"].as_str().unwrap().to_string();
+
+        // Insert a memory linked to that session
+        {
+            let (org_id, user_id) = {
+                let db = store.conn();
+                let conn = db.lock().unwrap();
+                let org = q::list_orgs(&conn).unwrap().into_iter().next().unwrap();
+                let users = q::list_users(&conn, &org.id).unwrap();
+                (org.id, users[0].id.clone())
+            };
+            let req = StoreMemoryRequest {
+                project: Some("nexusmind".to_string()),
+                tool: "claude-code".to_string(),
+                content: "session memory content".to_string(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: Some(session_id.clone()),
+            };
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::upsert_memory(&conn, &org_id, &user_id, &req).unwrap();
+        }
+
+        // GET /v1/sessions/:id/memories
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/sessions/{session_id}/memories"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["session_id"], session_id.as_str());
+        assert_eq!(arr[0]["content"], "session memory content");
+    }
+
+    #[tokio::test]
+    async fn list_session_memories_unknown_session_returns_404() {
+        let (store, key) = setup_with_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sessions/nonexistent-session/memories")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_session_memories_empty_for_session_with_no_memories() {
+        let (store, key) = setup_with_key();
+
+        // Create a session but attach no memories
+        let create_body = serde_json::json!({ "project": "nexusmind" });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let session_id = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/sessions/{session_id}/memories"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
     }
 }
