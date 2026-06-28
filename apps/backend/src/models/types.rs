@@ -287,6 +287,15 @@ fn default_revision_count() -> i64 {
     1
 }
 
+/// Pagination envelope returned by `GET /v1/memory` and `POST /v1/memory/search`.
+#[derive(Serialize)]
+pub struct MemoryPage {
+    pub memories: Vec<Memory>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// Request body for `POST /v1/memory/store`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StoreMemoryRequest {

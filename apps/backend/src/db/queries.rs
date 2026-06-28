@@ -447,6 +447,83 @@ pub fn list_memories(
     Ok(memories)
 }
 
+/// Count memories matching the same filters as `list_memories`.
+pub fn count_memories(
+    conn: &Connection,
+    org_id: &str,
+    user_id: Option<&str>,
+    tool: Option<&str>,
+    project: Option<&str>,
+    type_filter: Option<&str>,
+    scope_filter: Option<&str>,
+    session_id_filter: Option<&str>,
+    include_archived: bool,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+    collection_id_filter: Option<&str>,
+) -> Result<i64> {
+    let mut sql = String::from("SELECT COUNT(*) FROM memories WHERE org_id = ?1");
+    let mut param_idx = 2usize;
+    let mut extra_params: Vec<String> = Vec::new();
+
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    if let Some(u) = user_id {
+        sql.push_str(&format!(" AND user_id = ?{param_idx}"));
+        extra_params.push(u.to_string());
+        param_idx += 1;
+    }
+    if let Some(t) = tool {
+        sql.push_str(&format!(" AND tool = ?{param_idx}"));
+        extra_params.push(t.to_string());
+        param_idx += 1;
+    }
+    if let Some(p) = project {
+        sql.push_str(&format!(" AND project = ?{param_idx}"));
+        extra_params.push(p.to_string());
+        param_idx += 1;
+    }
+    if let Some(ty) = type_filter {
+        sql.push_str(&format!(" AND type = ?{param_idx}"));
+        extra_params.push(ty.to_string());
+        param_idx += 1;
+    }
+    if let Some(sc) = scope_filter {
+        sql.push_str(&format!(" AND scope = ?{param_idx}"));
+        extra_params.push(sc.to_string());
+        param_idx += 1;
+    }
+    if let Some(sid) = session_id_filter {
+        sql.push_str(&format!(" AND session_id = ?{param_idx}"));
+        extra_params.push(sid.to_string());
+        param_idx += 1;
+    }
+    if let Some(fd) = from_date {
+        sql.push_str(&format!(" AND created_at >= ?{param_idx}"));
+        extra_params.push(fd.to_string());
+        param_idx += 1;
+    }
+    if let Some(td) = to_date {
+        sql.push_str(&format!(" AND created_at < date(?{param_idx}, '+1 day')"));
+        extra_params.push(td.to_string());
+        param_idx += 1;
+    }
+    if let Some(cid) = collection_id_filter {
+        sql.push_str(&format!(" AND collection_id = ?{param_idx}"));
+        extra_params.push(cid.to_string());
+        param_idx += 1;
+    }
+    let _ = param_idx;
+
+    let mut all_params: Vec<String> = vec![org_id.to_string()];
+    all_params.extend(extra_params);
+    let refs: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+    let count: i64 = conn.query_row(&sql, refs.as_slice(), |row| row.get(0))?;
+    Ok(count)
+}
+
 /// Archives a memory (sets archived_at = now). No-op if already archived.
 /// Returns Ok(true) if the row was updated, Ok(false) if not found / already archived.
 pub fn archive_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {

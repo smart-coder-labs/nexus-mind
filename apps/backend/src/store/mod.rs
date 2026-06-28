@@ -2,7 +2,7 @@ pub mod sqlite;
 
 use anyhow::Result;
 
-use crate::models::types::{Memory, StoreMemoryRequest};
+use crate::models::types::{Memory, MemoryPage, StoreMemoryRequest};
 
 /// Filters for listing memories.
 pub struct MemoryFilters<'a> {
@@ -64,8 +64,8 @@ pub trait MemoryStore: Send + Sync {
     /// Implementations should write a `search` audit event.
     fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>>;
 
-    /// List memories with optional filters.
-    fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<Vec<Memory>>;
+    /// List memories with optional filters. Returns a pagination envelope.
+    fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<MemoryPage>;
 
     /// Fetch a single memory by id, scoped to the org. Returns `None` if not found.
     fn get(&self, org_id: &str, memory_id: &str) -> Result<Option<Memory>>;

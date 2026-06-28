@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, MemoryPage, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
 };
@@ -109,7 +109,8 @@ pub async fn export(
         to_date: None,
         collection_id: None,
     };
-    let memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
+    let page = store.list(&auth.org_id, &filters).map_err(store_err)?;
+    let memories = page.memories;
 
     let truncated = memories.len() as i64 == EXPORT_HARD_CAP;
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
@@ -263,7 +264,7 @@ pub async fn search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<SearchInput>,
-) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MemoryPage>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| (
@@ -287,14 +288,15 @@ pub async fn search(
             m.admin_note = None;
         }
     }
-    Ok(Json(memories))
+    let total = memories.len() as i64;
+    Ok(Json(MemoryPage { memories, total, limit, offset: 0 }))
 }
 
 pub async fn list(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListParams>,
-) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MemoryPage>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| (
@@ -344,14 +346,14 @@ pub async fn list(
         to_date: params.to_date.as_deref(),
         collection_id: params.collection_id.as_deref(),
     };
-    let mut memories = store.list(&auth.org_id, &filters).map_err(store_err)?;
+    let mut page = store.list(&auth.org_id, &filters).map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
     if !auth.role.is_admin() {
-        for m in &mut memories {
+        for m in &mut page.memories {
             m.admin_note = None;
         }
     }
-    Ok(Json(memories))
+    Ok(Json(page))
 }
 
 pub async fn get_by_id(
@@ -1899,7 +1901,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK, "custom memory:read role must be able to search");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let results: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let arr = results.as_array().unwrap();
+        let arr = results["memories"].as_array().expect("search returns MemoryPage with memories array");
         assert!(!arr.is_empty(), "search must return the seeded memory");
     }
 
@@ -2027,10 +2029,11 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let memories: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let memories = memories.as_array().unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = page["memories"].as_array().unwrap();
         assert!(!memories.is_empty(), "should have memories");
         assert_eq!(memories[0]["id"].as_str().unwrap(), id1, "pinned memory must be first");
         assert_eq!(memories[1]["id"].as_str().unwrap(), id2, "unpinned memory must follow");
+        assert!(page["total"].as_i64().unwrap() >= 2, "total must be present and >= 2");
     }
 }

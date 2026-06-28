@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     db::queries,
     embed::{self, EmbedService},
-    models::types::{Memory, StoreMemoryRequest},
+    models::types::{Memory, MemoryPage, StoreMemoryRequest},
     store::{MemoryFilters, MemoryStore, SearchMode},
 };
 
@@ -121,9 +121,23 @@ impl MemoryStore for SqliteStore {
         Ok(memories)
     }
 
-    fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<Vec<Memory>> {
+    fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<MemoryPage> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        queries::list_memories(
+        let total = queries::count_memories(
+            &conn,
+            org_id,
+            filters.user_id,
+            filters.tool,
+            filters.project,
+            filters.memory_type,
+            filters.scope,
+            filters.session_id,
+            filters.include_archived,
+            filters.from_date,
+            filters.to_date,
+            filters.collection_id,
+        )?;
+        let memories = queries::list_memories(
             &conn,
             org_id,
             filters.user_id,
@@ -138,7 +152,13 @@ impl MemoryStore for SqliteStore {
             filters.from_date,
             filters.to_date,
             filters.collection_id,
-        )
+        )?;
+        Ok(MemoryPage {
+            memories,
+            total,
+            limit: filters.limit,
+            offset: filters.offset,
+        })
     }
 
     fn get(&self, org_id: &str, memory_id: &str) -> Result<Option<Memory>> {
@@ -385,8 +405,11 @@ mod tests {
             memory_type: None, scope: None, session_id: None, limit: 50, offset: 0, include_archived: false,
             from_date: None, to_date: None, collection_id: None,
         };
-        let mems = store.list(&org_id, &filters).unwrap();
-        assert_eq!(mems.len(), 2);
+        let page = store.list(&org_id, &filters).unwrap();
+        assert_eq!(page.memories.len(), 2);
+        assert_eq!(page.total, 2);
+        assert_eq!(page.limit, 50);
+        assert_eq!(page.offset, 0);
     }
 
     #[test]
