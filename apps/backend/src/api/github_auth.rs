@@ -115,7 +115,7 @@ pub async fn post_callback(
     // Exchange code for access token
     let http = reqwest::Client::new();
 
-    let token_res: GitHubTokenResponse = http
+    let token_body: serde_json::Value = http
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
         .json(&serde_json::json!({
@@ -126,26 +126,47 @@ pub async fn post_callback(
         }))
         .send()
         .await
-        .map_err(|e| {
+        .map_err(|_| {
             (
                 StatusCode::BAD_GATEWAY,
                 Json(ApiError {
-                    error: format!("Failed to reach GitHub token endpoint: {e}"),
+                    error: "Failed to reach GitHub token endpoint".to_string(),
                     code: "github_token_error".to_string(),
                 }),
             )
         })?
         .json()
         .await
-        .map_err(|e| {
+        .map_err(|_| {
             (
                 StatusCode::BAD_GATEWAY,
                 Json(ApiError {
-                    error: format!("Invalid response from GitHub token endpoint: {e}"),
+                    error: "Failed to communicate with GitHub".to_string(),
                     code: "github_token_error".to_string(),
                 }),
             )
         })?;
+
+    // GitHub returns an `error` field for invalid/expired codes rather than an HTTP error status.
+    if token_body.get("error").is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid or expired authorization code".to_string(),
+                code: "invalid_grant".to_string(),
+            }),
+        ));
+    }
+
+    let token_res: GitHubTokenResponse = serde_json::from_value(token_body).map_err(|_| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: "Failed to communicate with GitHub".to_string(),
+                code: "github_token_error".to_string(),
+            }),
+        )
+    })?;
 
     // Fetch authenticated user info
     let user_res: GitHubUserResponse = http
