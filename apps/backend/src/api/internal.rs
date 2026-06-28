@@ -1,4 +1,5 @@
 use axum::{extract::{Path, Query, State}, http::StatusCode, Extension, Json};
+use crate::api::helpers::AppJson;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -80,7 +81,7 @@ pub async fn create_org(
     Extension(superuser_key): Extension<Option<String>>,
     Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
     headers: axum::http::HeaderMap,
-    Json(input): Json<CreateOrgInput>,
+    AppJson(input): AppJson<CreateOrgInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
     require_superuser(&superuser_key, &headers)?;
 
@@ -125,7 +126,7 @@ pub async fn update_org(
     Extension(superuser_key): Extension<Option<String>>,
     headers: axum::http::HeaderMap,
     Path(org_id): Path<String>,
-    Json(input): Json<UpdateOrgInput>,
+    AppJson(input): AppJson<UpdateOrgInput>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
     require_superuser(&superuser_key, &headers)?;
     let db = store.conn();

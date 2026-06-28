@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
     db::queries,
     models::types::{ApiError, AuthContext, CreateWebhookRequest, UpdateWebhookRequest, Webhook, WebhookDelivery, WebhookTestResult},
     store::sqlite::SqliteStore,
@@ -88,7 +88,7 @@ pub async fn list_webhooks(
 pub async fn create_webhook(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<CreateWebhookRequest>,
+    AppJson(req): AppJson<CreateWebhookRequest>,
 ) -> Result<(StatusCode, Json<Webhook>), (StatusCode, Json<ApiError>)> {
     let name = req.name.trim().to_string();
     if name.is_empty() {
@@ -129,7 +129,7 @@ pub async fn update_webhook(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateWebhookRequest>,
+    AppJson(req): AppJson<UpdateWebhookRequest>,
 ) -> Result<Json<Webhook>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;

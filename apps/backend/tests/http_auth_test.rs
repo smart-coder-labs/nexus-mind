@@ -1,4 +1,4 @@
-/// HTTP-level integration tests for cookie-based auth.
+/// HTTP-level integration tests for cookie-based auth and JSON error handling.
 ///
 /// These tests spin up the full Axum router (with CookieManagerLayer, auth middleware,
 /// and all auth routes) against an in-memory SQLite database, then drive it via
@@ -361,4 +361,81 @@ async fn logout_clears_cookie_and_revokes_key() {
         StatusCode::UNAUTHORIZED,
         "/me with a revoked cookie must return 401"
     );
+}
+
+// ── JSON error response tests ─────────────────────────────────────────────────
+
+/// Malformed JSON body must return 400 with Content-Type: application/json and
+/// a structured error body (not plain text).
+#[tokio::test]
+async fn malformed_json_returns_json_error() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/login")
+                .header("Content-Type", "application/json")
+                .body(Body::from("{invalid json}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .expect("must have Content-Type")
+        .to_str()
+        .unwrap();
+    assert!(
+        content_type.starts_with("application/json"),
+        "expected application/json, got: {content_type}"
+    );
+
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+
+    assert_eq!(body["code"], "invalid_json");
+    assert!(body["error"].is_string());
+}
+
+/// Missing Content-Type header must return 415 with Content-Type: application/json
+/// and a structured error body (not plain text).
+#[tokio::test]
+async fn missing_content_type_returns_json_error() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/auth/login")
+                .body(Body::from(r#"{"email":"x","password":"y"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .expect("must have Content-Type")
+        .to_str()
+        .unwrap();
+    assert!(
+        content_type.starts_with("application/json"),
+        "expected application/json, got: {content_type}"
+    );
+
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+
+    assert_eq!(body["code"], "invalid_content_type");
+    assert!(body["error"].is_string());
 }

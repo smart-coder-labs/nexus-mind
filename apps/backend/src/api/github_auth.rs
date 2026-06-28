@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
     config::Config,
     db::queries as db_queries,
     models::types::{
@@ -100,7 +100,7 @@ pub async fn post_callback(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Extension(config): Extension<Arc<Config>>,
-    Json(input): Json<GitHubCallbackRequest>,
+    AppJson(input): AppJson<GitHubCallbackRequest>,
 ) -> Result<Json<GitHubConnectionStatus>, (StatusCode, Json<ApiError>)> {
     {
         let db = store.conn();

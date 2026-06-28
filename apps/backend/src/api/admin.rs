@@ -1,4 +1,5 @@
 use axum::{extract::State, extract::Path, extract::Query, http::StatusCode, Extension, Json};
+use crate::api::helpers::AppJson;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -68,7 +69,7 @@ pub async fn create_org(
     Extension(superuser_key): Extension<Option<String>>,
     Extension(email_config): Extension<Option<Arc<EmailConfig>>>,
     headers: axum::http::HeaderMap,
-    Json(input): Json<CreateOrgInput>,
+    AppJson(input): AppJson<CreateOrgInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
     let expected = superuser_key.ok_or_else(unauthorized)?;
     let provided = headers
@@ -282,7 +283,7 @@ pub async fn get_org(
 pub async fn update_org(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<UpdateOrgInput>,
+    AppJson(input): AppJson<UpdateOrgInput>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -306,7 +307,7 @@ pub async fn get_org_settings_api(
 pub async fn update_org_settings_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<OrgSettings>,
+    AppJson(input): AppJson<OrgSettings>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -342,7 +343,7 @@ pub async fn list_roles_api(
 pub async fn create_role_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<CreateRoleInput>,
+    AppJson(input): AppJson<CreateRoleInput>,
 ) -> Result<(StatusCode, Json<CustomRole>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -496,7 +497,7 @@ pub async fn list_projects_api(
 pub async fn create_project_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<CreateProjectInput>,
+    AppJson(input): AppJson<CreateProjectInput>,
 ) -> Result<(StatusCode, Json<Project>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -597,7 +598,7 @@ pub async fn update_project_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
-    Json(input): Json<UpdateProjectInput>,
+    AppJson(input): AppJson<UpdateProjectInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -657,7 +658,7 @@ pub async fn upsert_project_member_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
-    Json(input): Json<UpsertProjectMemberInput>,
+    AppJson(input): AppJson<UpsertProjectMemberInput>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -830,7 +831,7 @@ pub async fn update_project_settings_api(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
     Path(project_id): Path<String>,
-    Json(body): Json<UpdateProjectEventOverridesRequest>,
+    AppJson(body): AppJson<UpdateProjectEventOverridesRequest>,
 ) -> Result<Json<ProjectEventOverrides>, (StatusCode, Json<ApiError>)> {
     if !ctx.role.is_admin() {
         return Err(forbidden());
@@ -1040,7 +1041,7 @@ fn action_to_message(action: &str) -> &'static str {
 pub async fn create_invite_link(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<CreateInviteLinkRequest>,
+    AppJson(input): AppJson<CreateInviteLinkRequest>,
 ) -> Result<(StatusCode, Json<InviteLinkResponse>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -1121,7 +1122,7 @@ pub struct RedeemInviteInput {
 pub async fn redeem_invite(
     State(store): State<SqliteStore>,
     Path(token): Path<String>,
-    Json(input): Json<RedeemInviteInput>,
+    AppJson(input): AppJson<RedeemInviteInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     use crate::auth::password::hash_password;
 
@@ -1241,7 +1242,7 @@ pub async fn get_agent_activity(
 pub async fn merge_memories(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<MergeMemoriesRequest>,
+    AppJson(body): AppJson<MergeMemoriesRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -1283,7 +1284,7 @@ pub async fn merge_memories(
 pub async fn import_memories(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<ImportMemoriesRequest>,
+    AppJson(body): AppJson<ImportMemoriesRequest>,
 ) -> Result<(StatusCode, Json<ImportMemoriesResponse>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -1351,7 +1352,7 @@ pub async fn import_memories(
 pub async fn bulk_tag_memories(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<BulkTagRequest>,
+    AppJson(body): AppJson<BulkTagRequest>,
 ) -> Result<Json<BulkTagResponse>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -1418,7 +1419,7 @@ pub async fn get_project_stats_api(
 pub async fn rename_tag(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<RenameTagRequest>,
+    AppJson(body): AppJson<RenameTagRequest>,
 ) -> Result<Json<RenameTagResponse>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -1519,7 +1520,7 @@ pub async fn export_org_config(
 pub async fn import_org_config(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<serde_json::Value>,
+    AppJson(body): AppJson<serde_json::Value>,
 ) -> Result<Json<ImportConfigResponse>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2570,7 +2571,7 @@ pub async fn list_collections_api(
 pub async fn create_collection_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(req): Json<CreateCollectionRequest>,
+    AppJson(req): AppJson<CreateCollectionRequest>,
 ) -> Result<(StatusCode, Json<Collection>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2612,7 +2613,7 @@ pub async fn assign_memory_collection_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(memory_id): Path<String>,
-    Json(req): Json<AssignCollectionRequest>,
+    AppJson(req): AppJson<AssignCollectionRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2796,7 +2797,7 @@ pub async fn update_memory_note(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateNoteRequest>,
+    AppJson(body): AppJson<UpdateNoteRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2825,7 +2826,7 @@ pub async fn update_memory_note(
 pub async fn update_org_announcement(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<UpdateAnnouncementRequest>,
+    AppJson(body): AppJson<UpdateAnnouncementRequest>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2844,7 +2845,7 @@ pub async fn update_org_announcement(
 pub async fn update_org_logo(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<UpdateOrgLogoRequest>,
+    AppJson(body): AppJson<UpdateOrgLogoRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2862,7 +2863,7 @@ pub async fn schedule_memory_delete(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<ScheduleDeleteRequest>,
+    AppJson(body): AppJson<ScheduleDeleteRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
@@ -2903,7 +2904,7 @@ pub async fn update_user_note(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
-    Json(body): Json<UpdateUserNoteRequest>,
+    AppJson(body): AppJson<UpdateUserNoteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());

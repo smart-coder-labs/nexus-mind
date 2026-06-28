@@ -10,7 +10,7 @@ use crate::{
     db::queries as db_queries,
     models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
-    api::helpers::{require_permission, JsonBody},
+    api::helpers::{require_permission, AppJson, JsonBody},
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
@@ -194,7 +194,7 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 pub async fn store(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    JsonBody(input): JsonBody<StoreMemoryRequest>,
+    AppJson(input): AppJson<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
@@ -224,7 +224,7 @@ pub async fn store(
 pub async fn search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<SearchInput>,
+    AppJson(input): AppJson<SearchInput>,
 ) -> Result<Json<Vec<Memory>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
@@ -397,7 +397,7 @@ pub struct BulkDeleteResponse {
 pub async fn bulk_delete(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<BulkDeleteInput>,
+    AppJson(input): AppJson<BulkDeleteInput>,
 ) -> Result<Json<BulkDeleteResponse>, (StatusCode, Json<ApiError>)> {
     if input.ids.is_empty() {
         return Ok(Json(BulkDeleteResponse { deleted: 0 }));
@@ -432,7 +432,7 @@ pub async fn update(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(input): Json<UpdateMemoryRequest>,
+    AppJson(input): AppJson<UpdateMemoryRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
     if input.content.trim().is_empty() {
         return Err((

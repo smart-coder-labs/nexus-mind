@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::Deserialize;
 
 use crate::{
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
     db::queries,
     models::types::{
         ApiError, AuthContext, Policy, PolicyCheckRequest, PolicyCheckResponse, UpdatePolicyRequest,
@@ -193,7 +193,7 @@ pub async fn list_policies(
 pub async fn create_policy(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<RawCreatePolicyRequest>,
+    AppJson(req): AppJson<RawCreatePolicyRequest>,
 ) -> Result<(StatusCode, Json<Policy>), (StatusCode, Json<ApiError>)> {
     // Validate name.
     let name = req.name.trim();
@@ -242,7 +242,7 @@ pub async fn update_policy(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(req): Json<UpdatePolicyRequest>,
+    AppJson(req): AppJson<UpdatePolicyRequest>,
 ) -> Result<Json<Policy>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -325,7 +325,7 @@ pub async fn delete_policy(
 pub async fn check_policy(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<PolicyCheckRequest>,
+    AppJson(req): AppJson<PolicyCheckRequest>,
 ) -> Result<Json<PolicyCheckResponse>, (StatusCode, Json<ApiError>)> {
     if req.model.is_empty() {
         return Err(bad_request("model is required", "invalid_request"));

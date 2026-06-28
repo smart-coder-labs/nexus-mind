@@ -10,7 +10,7 @@ use crate::{
     db::queries,
     models::types::{ApiError, AuthContext, User},
     store::sqlite::SqliteStore,
-    api::helpers::require_permission,
+    api::helpers::{require_permission, AppJson},
 };
 
 #[derive(Deserialize)]
@@ -85,7 +85,7 @@ pub async fn list(
 pub async fn invite(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Json(input): Json<InviteInput>,
+    AppJson(input): AppJson<InviteInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -196,7 +196,7 @@ pub async fn update_role(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
-    Json(input): Json<UpdateUserRoleInput>,
+    AppJson(input): AppJson<UpdateUserRoleInput>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
