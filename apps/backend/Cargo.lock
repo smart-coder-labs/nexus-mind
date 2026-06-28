@@ -1835,6 +1835,7 @@ name = "nexusmind"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bcrypt",
  "chrono",

@@ -7,10 +7,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
+    api::helpers::{require_permission, AppJson},
     db::queries,
     models::types::{ApiError, AuthContext, User},
     store::sqlite::SqliteStore,
-    api::helpers::{require_permission, AppJson},
 };
 
 #[derive(Deserialize)]
@@ -28,7 +28,7 @@ pub struct UpdateUserRoleInput {
 #[derive(Deserialize)]
 pub struct InviteInput {
     pub email: String,
-    pub name: String,
+    pub name: Option<String>,
     pub role: Option<String>,
     pub project_access: Option<ProjectAccess>,
 }
@@ -92,9 +92,11 @@ pub async fn invite(
     require_permission(&conn, &auth, None, "user:invite")?;
 
     let role = input.role.as_deref().unwrap_or("member");
+    let name_fallback = input.email.split('@').next().unwrap_or("").to_string();
+    let name = input.name.as_deref().unwrap_or(&name_fallback);
 
     let (user, api_key) =
-        queries::invite_user(&conn, &auth.org_id, &input.email, &input.name, role)
+        queries::invite_user(&conn, &auth.org_id, &input.email, name, role)
             .map_err(db_err)?;
 
     // Resolve which project IDs to grant access to
@@ -344,6 +346,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn invite_user_without_name_returns_201() {
+        let (store, admin_key) = setup_with_admin_key();
+        let body = serde_json::json!({ "email": "noname@acme.com" });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/users/invite")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn invite_user_bad_json_returns_json_error() {
+        let (store, admin_key) = setup_with_admin_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/users/invite")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "expected JSON content-type, got: {ct}");
     }
 
     #[tokio::test]
