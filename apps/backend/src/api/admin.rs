@@ -1423,8 +1423,8 @@ pub async fn bulk_tag_memories(
         return Err(forbidden());
     }
 
-    let tag = body.tag.trim().to_string();
-    if tag.is_empty() {
+    let tags: Vec<String> = body.tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    if tags.is_empty() {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
@@ -1447,8 +1447,11 @@ pub async fn bulk_tag_memories(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let updated = queries::bulk_tag_memories(&conn, &auth.org_id, &body.ids, &body.action, &tag)
-        .map_err(db_err)?;
+    let mut updated = 0usize;
+    for tag in &tags {
+        updated += queries::bulk_tag_memories(&conn, &auth.org_id, &body.ids, &body.action, tag)
+            .map_err(db_err)?;
+    }
 
     Ok(Json(BulkTagResponse { updated }))
 }
