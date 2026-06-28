@@ -524,6 +524,28 @@ pub async fn list_projects_api(
     Ok(Json(projects))
 }
 
+pub async fn get_project_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Project>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    match queries::get_project_by_id(&conn, &auth.org_id, &id).map_err(db_err)? {
+        Some(project) => Ok(Json(project)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Project not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+    }
+}
+
 pub async fn create_project_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

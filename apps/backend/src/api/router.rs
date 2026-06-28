@@ -80,7 +80,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/roles", get(admin::list_roles_api).post(admin::create_role_api))
         .route("/v1/roles/:id", delete(admin::delete_role_api))
         .route("/v1/projects", get(admin::list_projects_api).post(admin::create_project_api))
-        .route("/v1/projects/:id", delete(admin::delete_project_api).patch(admin::update_project_api))
+        .route("/v1/projects/:id", get(admin::get_project_api).delete(admin::delete_project_api).patch(admin::update_project_api))
         .route("/v1/projects/:id/archive", post(admin::archive_project_api))
         .route("/v1/projects/:id/restore", post(admin::restore_project_api))
         .route("/v1/projects/:project_id/members", get(admin::list_project_members_api).post(admin::upsert_project_member_api))
