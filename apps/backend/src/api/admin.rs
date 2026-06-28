@@ -16,6 +16,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 }
 
 use crate::{
+    config::Config,
     db::queries,
     models::types::{AgentActivity, ApiError, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
     store::sqlite::SqliteStore,
@@ -1070,6 +1071,7 @@ fn action_to_message(action: &str) -> &'static str {
 pub async fn create_invite_link(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
+    Extension(config): Extension<Arc<Config>>,
     AppJson(input): AppJson<CreateInviteLinkRequest>,
 ) -> Result<(StatusCode, Json<InviteLinkResponse>), (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
@@ -1084,7 +1086,8 @@ pub async fn create_invite_link(
     let invite = queries::create_invite_link(&conn, &auth.org_id, &role, &auth.user_id)
         .map_err(db_err)?;
 
-    let invite_url = format!("/set-password?invite={}", invite.token);
+    let base = config.app_base_url.trim_end_matches('/');
+    let invite_url = format!("{}/set-password?invite={}", base, invite.token);
 
     Ok((
         StatusCode::CREATED,
