@@ -1400,6 +1400,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn patch_increments_revision_count() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        // First PATCH: revision_count must go from 1 → 2
+        let body = serde_json::json!({ "content": "v2" });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["revision_count"].as_i64().unwrap(), 2, "first PATCH must set revision_count to 2");
+
+        // Second PATCH: revision_count must go from 2 → 3
+        let body = serde_json::json!({ "content": "v3" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(mem["revision_count"].as_i64().unwrap(), 3, "second PATCH must set revision_count to 3");
+    }
+
+    #[tokio::test]
     async fn update_memory_wrong_org_returns_404() {
         let (store_a, key_a, _) = setup_org();
         let mem_id = seed_memory(&store_a, &key_a).await;

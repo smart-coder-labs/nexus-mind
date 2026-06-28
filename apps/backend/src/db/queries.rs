@@ -2561,7 +2561,7 @@ pub fn update_memory_content(
     content: &str,
 ) -> Result<Option<Memory>> {
     let rows_changed = conn.execute(
-        "UPDATE memories SET content = ?1 WHERE id = ?2 AND org_id = ?3",
+        "UPDATE memories SET content = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
         rusqlite::params![content, memory_id, org_id],
     )?;
     if rows_changed == 0 {
