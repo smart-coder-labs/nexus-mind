@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, StoreMemoryRequest, UpdateMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
 };
@@ -207,6 +207,34 @@ pub async fn store(
         ))?;
         let project = input.project.as_deref().unwrap_or("default");
         require_permission(&conn, &auth, Some(project), "memory:write")?;
+
+        // Enforce pii_redact policies against memory content before storing.
+        let pii_policies: Vec<_> = db_queries::list_enabled_policies(&conn, &auth.org_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.rule_type == "pii_redact")
+            .collect();
+
+        if !pii_policies.is_empty() {
+            let check_req = PolicyCheckRequest {
+                model: String::new(),
+                prompt_tokens: None,
+                prompt_preview: Some(input.content.clone()),
+                user_id: None,
+                project: input.project.clone(),
+            };
+            let result = crate::policy::evaluate(&pii_policies, &check_req, 0, 0);
+            if !result.allowed {
+                let reasons: Vec<&str> = result.violations.iter().map(|v| v.reason.as_str()).collect();
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: format!("Memory blocked by policy: {}", reasons.join("; ")),
+                        code: "policy_violation".to_string(),
+                    }),
+                ));
+            }
+        }
     }
 
     let is_upsert = input.topic_key.is_some();
@@ -235,7 +263,7 @@ pub async fn search(
                 code: "internal_error".to_string(),
             }),
         ))?;
-        require_permission(&conn, &auth, None, "memory:search")?;
+        require_permission(&conn, &auth, None, "memory:read")?;
     }
 
     let limit = input.limit.unwrap_or(20);
@@ -1716,6 +1744,143 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+    }
+
+    // ── search permission tests ───────────────────────────────────────────────
+
+    /// A custom role with only memory:read should be able to call POST /v1/memory/search.
+    #[tokio::test]
+    async fn search_custom_readonly_role_returns_results() {
+        let (store, admin_key, org_id) = setup_org();
+
+        // Create a custom role with only memory:read (no memory:search)
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::create_role(
+                &conn,
+                &org_id,
+                "readonly",
+                "Read Only",
+                &["memory:read".to_string()],
+                None,
+            ).unwrap();
+        }
+
+        // Create a user with the custom role
+        let readonly_key = {
+            use crate::auth::api_keys;
+            use uuid::Uuid;
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let user_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+                 VALUES (?1, ?2, 'readonly@test.com', 'ReadOnly', 'readonly', 'active', datetime('now'))",
+                rusqlite::params![user_id, org_id],
+            ).unwrap();
+            let key_id = Uuid::new_v4().to_string();
+            let (raw_key, key_hash) = api_keys::generate();
+            conn.execute(
+                "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+                rusqlite::params![key_id, user_id, org_id, key_hash],
+            ).unwrap();
+            raw_key
+        };
+
+        // Admin stores a memory with a unique term
+        let body = serde_json::json!({ "tool": "claude", "content": "nexusmind_unique_searchable_term" });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Custom readonly role must be able to search (not 403)
+        let search_body = serde_json::json!({ "query": "nexusmind_unique_searchable_term" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {readonly_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "custom memory:read role must be able to search");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let results: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = results.as_array().unwrap();
+        assert!(!arr.is_empty(), "search must return the seeded memory");
+    }
+
+    /// A user with no permissions at all must get 403 on search.
+    #[tokio::test]
+    async fn search_no_permissions_returns_403() {
+        let (store, _, org_id) = setup_org();
+
+        // Create a custom role with no permissions
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::create_role(
+                &conn,
+                &org_id,
+                "noperms",
+                "No Perms",
+                &[],
+                None,
+            ).unwrap();
+        }
+
+        let noperms_key = {
+            use crate::auth::api_keys;
+            use uuid::Uuid;
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let user_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+                 VALUES (?1, ?2, 'noperms@test.com', 'NoPerms', 'noperms', 'active', datetime('now'))",
+                rusqlite::params![user_id, org_id],
+            ).unwrap();
+            let key_id = Uuid::new_v4().to_string();
+            let (raw_key, key_hash) = api_keys::generate();
+            conn.execute(
+                "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+                rusqlite::params![key_id, user_id, org_id, key_hash],
+            ).unwrap();
+            raw_key
+        };
+
+        let search_body = serde_json::json!({ "query": "test" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {noperms_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
