@@ -169,19 +169,20 @@ pub async fn test_webhook(
     Path(id): Path<String>,
 ) -> Result<Json<WebhookTestResult>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &ctx, None, "settings:write")?;
-
-    let webhook = queries::get_webhook(&conn, &id, &ctx.org_id)
-        .map_err(internal_error)?
-        .ok_or_else(not_found)?;
+    // Scope the lock guard so it's dropped before the await point below.
+    // `std::sync::MutexGuard` is `!Send`, so holding it across `.await`
+    // would make the future `!Send`, breaking axum's `Handler` bound.
+    let webhook = {
+        let conn = db.lock().map_err(|_| lock_err())?;
+        require_permission(&conn, &ctx, None, "settings:write")?;
+        queries::get_webhook(&conn, &id, &ctx.org_id)
+            .map_err(internal_error)?
+            .ok_or_else(not_found)?
+    };
 
     if !webhook.active {
         return Err(bad_request("Webhook is not active", "webhook_not_active"));
     }
-
-    // Release the lock before making the HTTP call.
-    drop(conn);
 
     let payload = serde_json::json!({
         "event": "test",
@@ -282,33 +283,37 @@ pub async fn retry_delivery(
     Path(delivery_id): Path<String>,
 ) -> Result<Json<RetryDeliveryResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &ctx, None, "settings:write")?;
+    // Scope the lock guard so it's dropped before the await point below.
+    // `std::sync::MutexGuard` is `!Send`, so holding it across `.await`
+    // would make the future `!Send`, breaking axum's `Handler` bound.
+    let (delivery, webhook) = {
+        let conn = db.lock().map_err(|_| lock_err())?;
+        require_permission(&conn, &ctx, None, "settings:write")?;
 
-    // Fetch original delivery
-    let delivery = queries::get_webhook_delivery(&conn, &ctx.org_id, &delivery_id)
-        .map_err(internal_error)?
-        .ok_or_else(|| (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Delivery not found".to_string(),
-                code: "delivery_not_found".to_string(),
-            }),
-        ))?;
+        // Fetch original delivery
+        let delivery = queries::get_webhook_delivery(&conn, &ctx.org_id, &delivery_id)
+            .map_err(internal_error)?
+            .ok_or_else(|| (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Delivery not found".to_string(),
+                    code: "delivery_not_found".to_string(),
+                }),
+            ))?;
 
-    // Fetch the associated webhook to get the URL
-    let webhook = queries::get_webhook(&conn, &delivery.webhook_id, &ctx.org_id)
-        .map_err(internal_error)?
-        .ok_or_else(|| (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Webhook not found".to_string(),
-                code: "webhook_not_found".to_string(),
-            }),
-        ))?;
+        // Fetch the associated webhook to get the URL
+        let webhook = queries::get_webhook(&conn, &delivery.webhook_id, &ctx.org_id)
+            .map_err(internal_error)?
+            .ok_or_else(|| (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Webhook not found".to_string(),
+                    code: "webhook_not_found".to_string(),
+                }),
+            ))?;
 
-    // Release the lock before making the HTTP call
-    drop(conn);
+        (delivery, webhook)
+    };
 
     let payload = delivery.payload.clone();
     let client = reqwest::Client::builder()

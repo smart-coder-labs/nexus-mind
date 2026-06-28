@@ -10,7 +10,7 @@ use crate::{
     db::queries as db_queries,
     models::types::{ApiError, AuthContext, Memory, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
-    api::helpers::{require_permission, AppJson, JsonBody},
+    api::helpers::{require_permission, AppJson},
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
