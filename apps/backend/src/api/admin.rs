@@ -18,7 +18,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     config::Config,
     db::queries,
-    models::types::{AgentActivity, ApiError, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
+    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
     store::sqlite::SqliteStore,
 };
 
@@ -856,6 +856,231 @@ pub async fn revoke_org_key(
             }),
         ))
     }
+}
+
+/// GET /v1/admin/keys/:key_id — fetch a single key's details (admin-only).
+pub async fn get_org_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(key_id): Path<String>,
+) -> Result<Json<ApiKeyWithUser>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    match queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? {
+        Some(key) => Ok(Json(key)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+    }
+}
+
+/// PATCH /v1/admin/keys/:key_id — update a key's label and/or expiry (admin-only).
+pub async fn update_org_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(key_id): Path<String>,
+    Json(body): Json<UpdateApiKeyRequest>,
+) -> Result<Json<ApiKeyWithUser>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    if body.label.is_none() && body.expires_at.is_none() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "At least one of 'label' or 'expires_at' must be provided".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+
+    // Resolve expires_at: null clears it, a string sets it, absent leaves it unchanged.
+    let expires_at_param: Option<Option<&str>> = match &body.expires_at {
+        None => None,
+        Some(v) if v.is_null() => Some(None),
+        Some(v) => Some(v.as_str()),
+    };
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let found = queries::update_key_admin(
+        &conn,
+        &auth.org_id,
+        &key_id,
+        body.label.as_deref(),
+        expires_at_param,
+    )
+    .map_err(db_err)?;
+
+    if !found {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let key = queries::get_key_admin(&conn, &auth.org_id, &key_id)
+        .map_err(db_err)?
+        .expect("key must exist after successful update");
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "key.updated",
+        "api_key",
+        Some(&key_id),
+        serde_json::json!({ "label": key.label }),
+    );
+
+    Ok(Json(key))
+}
+
+/// POST /v1/admin/keys/:key_id/rotate — revoke the key and issue a new one for the same user (admin-only).
+/// The raw key value is returned once in the response — callers must display it immediately.
+pub async fn rotate_org_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(key_id): Path<String>,
+) -> Result<Json<ApiKeyCreatedResponse>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    match queries::rotate_key_by_id(&conn, &auth.org_id, &key_id).map_err(db_err)? {
+        Some((key, raw_key)) => {
+            let _ = queries::log_audit(
+                &conn,
+                &auth.org_id,
+                &auth.user_id,
+                "key.rotated",
+                "api_key",
+                Some(&key.id),
+                serde_json::json!({ "previous_key_id": key_id }),
+            );
+            Ok(Json(ApiKeyCreatedResponse { key, raw_key }))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+    }
+}
+
+/// POST /v1/admin/keys/:key_id/revoke — explicit POST-based revoke (same effect as DELETE).
+pub async fn revoke_org_key_post(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(key_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let revoked = queries::revoke_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)?;
+    if revoked {
+        let _ = queries::log_audit(
+            &conn,
+            &auth.org_id,
+            &auth.user_id,
+            "key.revoked",
+            "api_key",
+            Some(&key_id),
+            serde_json::json!({}),
+        );
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
+    }
+}
+
+/// POST /v1/admin/keys — create a new API key for a user (admin-only).
+/// Returns the key metadata and the raw key value (shown once).
+pub async fn create_org_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<CreateApiKeyRequest>,
+) -> Result<(StatusCode, Json<ApiKeyCreatedResponse>), (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let label = body.label.as_deref().unwrap_or("api-key");
+    if label.trim().is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "label must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    // Verify the user exists in this org.
+    let user_exists: bool = conn
+        .query_row(
+            "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![body.user_id, auth.org_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|e| db_err(e.into()))? > 0;
+
+    if !user_exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User not found in this organization".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let (key, raw_key) = queries::create_key_admin(
+        &conn,
+        &auth.org_id,
+        &body.user_id,
+        label,
+        body.expires_at.as_deref(),
+    )
+    .map_err(db_err)?;
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "key.created",
+        "api_key",
+        Some(&key.id),
+        serde_json::json!({ "user_id": body.user_id, "label": label }),
+    );
+
+    Ok((StatusCode::CREATED, Json(ApiKeyCreatedResponse { key, raw_key })))
 }
 
 // ── Per-project agent event override handlers ─────────────────────────────────

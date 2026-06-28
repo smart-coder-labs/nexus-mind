@@ -892,6 +892,30 @@ pub struct ResetKeyResponse {
     pub new_key: String,
 }
 
+/// Returned by `POST /v1/admin/keys` (create) and `POST /v1/admin/keys/:id/rotate`.
+/// `raw_key` is only visible once — callers must display it immediately.
+#[derive(Debug, Serialize, Clone)]
+pub struct ApiKeyCreatedResponse {
+    pub key: ApiKeyWithUser,
+    pub raw_key: String,
+}
+
+/// Input for `POST /v1/admin/keys` — creates a new API key for a user.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateApiKeyRequest {
+    pub user_id: String,
+    pub label: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+/// Input for `PATCH /v1/admin/keys/:id` — updates mutable fields of a key.
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpdateApiKeyRequest {
+    pub label: Option<String>,
+    /// Pass `null` explicitly to clear the expiry.
+    pub expires_at: Option<serde_json::Value>,
+}
+
 // ── Invite link types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
