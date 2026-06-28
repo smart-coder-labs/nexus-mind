@@ -1895,7 +1895,7 @@ pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(St
         "SELECT me.memory_id, me.embedding
          FROM memory_embeddings me
          JOIN memories m ON m.id = me.memory_id
-         WHERE m.org_id = ?1",
+         WHERE m.org_id = ?1 AND m.archived_at IS NULL",
     )?;
     let rows = stmt.query_map([org_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
