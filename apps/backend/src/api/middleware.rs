@@ -12,6 +12,27 @@ use tower_cookies::Cookies;
 
 use crate::{auth::api_keys, db::queries, models::types::ApiError};
 
+pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
+    if let Some(accept) = req.headers().get(axum::http::header::ACCEPT) {
+        let accept_str = accept.to_str().unwrap_or("");
+        let is_acceptable = accept_str.split(',').any(|media_range| {
+            let media_type = media_range.split(';').next().unwrap_or("").trim();
+            matches!(media_type, "*/*" | "application/*" | "application/json")
+        });
+        if !is_acceptable {
+            return (
+                StatusCode::NOT_ACCEPTABLE,
+                Json(serde_json::json!({
+                    "error": "Unsupported media type in Accept header",
+                    "supported": ["application/json"]
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 pub async fn auth(
     cookies: Cookies,
     State(db): State<Arc<Mutex<Connection>>>,
@@ -103,6 +124,131 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::db::{connection::connect, migrations, queries as q};
+
+    fn accept_app() -> Router {
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(accept_json))
+    }
+
+    #[tokio::test]
+    async fn no_accept_header_passes_through() {
+        let response = accept_app()
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accept_json_passes_through() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accept_wildcard_passes_through() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accept_application_wildcard_passes_through() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "application/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accept_xml_returns_406() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "application/xml")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Unsupported media type in Accept header");
+        assert_eq!(json["supported"], serde_json::json!(["application/json"]));
+    }
+
+    #[tokio::test]
+    async fn accept_text_html_returns_406() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[tokio::test]
+    async fn accept_with_quality_factors_passes_when_json_present() {
+        // text/html;q=0.9, application/json;q=0.8
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "text/html;q=0.9, application/json;q=0.8")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accept_with_quality_factors_returns_406_when_no_json() {
+        let response = accept_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Accept", "text/html;q=0.9, application/xml;q=0.8")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    }
 
     fn make_db() -> Arc<Mutex<Connection>> {
         let conn = connect(":memory:").unwrap();

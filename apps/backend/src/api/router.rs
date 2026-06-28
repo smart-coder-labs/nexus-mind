@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, audit, auth, code, context, conventions, github_auth, health, internal, memory, middleware as auth_mw, policy, rate_limit, search, sessions, users, webhooks};
+use crate::api::{admin, audit, auth, code, context, conventions, github_auth, health, internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -159,7 +159,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         // Rate limit runs after auth (inner layer = runs second at runtime).
         // Auth is outermost (last `.layer()`) so it runs first.
         .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))
-        .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
+        .layer(middleware::from_fn_with_state(store.conn(), api_mw::auth));
 
     let cors_origins = config.cors_origins.clone();
     let admin_origin = config.admin_origin.clone();
@@ -219,6 +219,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .layer(Extension(Arc::clone(&config)))
         .layer(cors)
         .layer(CookieManagerLayer::new())
+        .layer(middleware::from_fn(api_mw::accept_json))
         .layer(TraceLayer::new_for_http())
         .with_state(store)
 }
