@@ -33,6 +33,7 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 #[derive(serde::Serialize)]
 pub struct CreateSessionResponse {
     pub id: String,
+    pub name: Option<String>,
 }
 
 pub async fn create_session_handler(
@@ -45,7 +46,7 @@ pub async fn create_session_handler(
 
     let session = queries::create_session(&conn, &auth.org_id, &input).map_err(db_err)?;
 
-    Ok((StatusCode::CREATED, Json(CreateSessionResponse { id: session.id })))
+    Ok((StatusCode::CREATED, Json(CreateSessionResponse { id: session.id, name: session.name })))
 }
 
 pub async fn patch_session_handler(

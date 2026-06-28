@@ -1608,14 +1608,15 @@ pub fn create_session(
     let directory = req.directory.as_deref().unwrap_or("");
 
     conn.execute(
-        "INSERT INTO sessions (id, org_id, project, directory, started_at, summary)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, org_id, req.project, directory, now, req.summary],
+        "INSERT INTO sessions (id, org_id, name, project, directory, started_at, summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, org_id, req.name, req.project, directory, now, req.summary],
     )?;
 
     Ok(Session {
         id,
         org_id: org_id.to_string(),
+        name: req.name.clone(),
         project: req.project.clone(),
         directory: directory.to_string(),
         started_at: now,
@@ -1632,7 +1633,7 @@ pub fn patch_session(
     session_id: &str,
     req: &PatchSessionRequest,
 ) -> Result<Option<Session>> {
-    if req.ended_at.is_none() && req.summary.is_none() {
+    if req.name.is_none() && req.ended_at.is_none() && req.summary.is_none() {
         // Nothing to update — fetch and return existing session
         return get_session(conn, org_id, session_id);
     }
@@ -1641,6 +1642,11 @@ pub fn patch_session(
     let mut params: Vec<String> = Vec::new();
     let mut param_idx = 1usize;
 
+    if let Some(name) = &req.name {
+        set_clauses.push(format!("name = ?{param_idx}"));
+        params.push(name.clone());
+        param_idx += 1;
+    }
     if let Some(ended_at) = &req.ended_at {
         set_clauses.push(format!("ended_at = ?{param_idx}"));
         params.push(ended_at.clone());
@@ -1675,18 +1681,19 @@ pub fn patch_session(
 /// Fetches a session by id, scoped to org. Returns None if not found.
 pub fn get_session(conn: &Connection, org_id: &str, session_id: &str) -> Result<Option<Session>> {
     let result = conn.query_row(
-        "SELECT id, org_id, project, directory, started_at, ended_at, summary
+        "SELECT id, org_id, name, project, directory, started_at, ended_at, summary
          FROM sessions WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![session_id, org_id],
         |row| {
             Ok(Session {
                 id: row.get(0)?,
                 org_id: row.get(1)?,
-                project: row.get(2)?,
-                directory: row.get(3)?,
-                started_at: row.get(4)?,
-                ended_at: row.get(5)?,
-                summary: row.get(6)?,
+                name: row.get(2)?,
+                project: row.get(3)?,
+                directory: row.get(4)?,
+                started_at: row.get(5)?,
+                ended_at: row.get(6)?,
+                summary: row.get(7)?,
             })
         },
     );
@@ -1700,7 +1707,7 @@ pub fn get_session(conn: &Connection, org_id: &str, session_id: &str) -> Result<
 /// Lists all sessions for an org, with their memory count, ordered by started_at DESC.
 pub fn list_sessions(conn: &Connection, org_id: &str) -> Result<Vec<SessionWithCount>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.org_id, s.project, s.directory, s.started_at, s.ended_at, s.summary,
+        "SELECT s.id, s.org_id, s.name, s.project, s.directory, s.started_at, s.ended_at, s.summary,
                 COUNT(m.id) as memory_count
          FROM sessions s
          LEFT JOIN memories m ON m.session_id = s.id AND m.org_id = s.org_id
@@ -1714,12 +1721,13 @@ pub fn list_sessions(conn: &Connection, org_id: &str) -> Result<Vec<SessionWithC
         Ok(SessionWithCount {
             id: row.get(0)?,
             org_id: row.get(1)?,
-            project: row.get(2)?,
-            directory: row.get(3)?,
-            started_at: row.get(4)?,
-            ended_at: row.get(5)?,
-            summary: row.get(6)?,
-            memory_count: row.get(7)?,
+            name: row.get(2)?,
+            project: row.get(3)?,
+            directory: row.get(4)?,
+            started_at: row.get(5)?,
+            ended_at: row.get(6)?,
+            summary: row.get(7)?,
+            memory_count: row.get(8)?,
         })
     })?;
 
@@ -4448,6 +4456,7 @@ mod tests {
 
         let req = crate::models::types::CreateSessionRequest {
             project: "nexusmind".into(),
+            name: None,
             directory: Some("/home/user".into()),
             summary: None,
         };
@@ -4466,12 +4475,14 @@ mod tests {
 
         let create_req = crate::models::types::CreateSessionRequest {
             project: "proj".into(),
+            name: None,
             directory: None,
             summary: None,
         };
         let session = create_session(&conn, &org.id, &create_req).unwrap();
 
         let patch_req = crate::models::types::PatchSessionRequest {
+            name: None,
             ended_at: Some("2026-01-01T01:00:00Z".into()),
             summary: Some("Session complete".into()),
         };
@@ -4489,12 +4500,14 @@ mod tests {
 
         let create_req = crate::models::types::CreateSessionRequest {
             project: "proj".into(),
+            name: None,
             directory: None,
             summary: None,
         };
         let session = create_session(&conn, &org.id, &create_req).unwrap();
 
         let patch_req = crate::models::types::PatchSessionRequest {
+            name: None,
             ended_at: Some("2026-01-01T01:00:00Z".into()),
             summary: None,
         };
