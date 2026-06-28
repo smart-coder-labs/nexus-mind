@@ -1280,7 +1280,17 @@ pub async fn merge_memories(
         return Err(forbidden());
     }
 
-    if body.keep_id == body.merge_id {
+    let (keep_id, merge_id) = body.resolve().map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: e.to_string(),
+                code: "missing_field".to_string(),
+            }),
+        )
+    })?;
+
+    if keep_id == merge_id {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
@@ -1293,7 +1303,7 @@ pub async fn merge_memories(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    queries::merge_memories(&conn, &auth.org_id, &body.keep_id, &body.merge_id)
+    queries::merge_memories(&conn, &auth.org_id, &keep_id, &merge_id)
         .map(Json)
         .map_err(|e| {
             let msg = e.to_string();

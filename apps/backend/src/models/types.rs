@@ -989,10 +989,39 @@ pub struct ScheduleDeleteRequest {
 }
 
 /// Request body for `POST /v1/admin/memories/merge`.
+///
+/// Accepts two calling conventions:
+///   - `source_id` + `target_id` (preferred): `target_id` is kept, `source_id` is merged in.
+///   - `keep_id` + `merge_id` (legacy): explicit field names.
+///
+/// When both conventions are provided the explicit `keep_id`/`merge_id` take precedence.
 #[derive(Debug, Deserialize)]
 pub struct MergeMemoriesRequest {
-    pub keep_id: String,
-    pub merge_id: String,
+    /// ID of the memory to keep (preferred field name).
+    pub target_id: Option<String>,
+    /// ID of the memory to merge into the kept one (preferred field name).
+    pub source_id: Option<String>,
+    /// Alias for `target_id` (legacy).
+    pub keep_id: Option<String>,
+    /// Alias for `source_id` (legacy).
+    pub merge_id: Option<String>,
+}
+
+impl MergeMemoriesRequest {
+    /// Returns `(keep_id, merge_id)` or an error string if the fields cannot be resolved.
+    pub fn resolve(&self) -> Result<(String, String), &'static str> {
+        let keep = self
+            .keep_id
+            .clone()
+            .or_else(|| self.target_id.clone())
+            .ok_or("missing field `keep_id` or `target_id`")?;
+        let merge = self
+            .merge_id
+            .clone()
+            .or_else(|| self.source_id.clone())
+            .ok_or("missing field `merge_id` or `source_id`")?;
+        Ok((keep, merge))
+    }
 }
 
 /// Request body for `POST /v1/admin/memories/bulk-tag`.
