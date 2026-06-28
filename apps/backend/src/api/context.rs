@@ -51,6 +51,130 @@ pub async fn get_project_context(
     Ok(Json(ctx_json))
 }
 
+fn build_context_response(
+    memories: Vec<serde_json::Value>,
+    label_key: &str,
+    label_val: serde_json::Value,
+) -> serde_json::Value {
+    let tools: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        memories
+            .iter()
+            .filter_map(|m| m["tool"].as_str().map(|s| s.to_string()))
+            .filter(|t| seen.insert(t.clone()))
+            .collect()
+    };
+    let last_activity = memories
+        .iter()
+        .filter_map(|m| m["created_at"].as_str())
+        .max()
+        .map(|s| serde_json::Value::String(s.to_string()))
+        .unwrap_or(serde_json::Value::Null);
+
+    serde_json::json!({
+        label_key: label_val,
+        "recent_memories": memories,
+        "tools": tools,
+        "last_activity": last_activity,
+    })
+}
+
+pub async fn get_global_context(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    require_permission(&conn, &auth, None, "memory:read")?;
+
+    let memories = db_queries::list_memories(
+        &conn,
+        &auth.org_id,
+        None, None, None, None, None, None,
+        20, 0, false, None, None, None,
+    )
+    .map_err(db_err)?;
+
+    let memory_values: Vec<serde_json::Value> = memories
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false))
+        .map_err(db_err)?;
+
+    let mut resp = build_context_response(memory_values, "scope", serde_json::json!("global"));
+    if let serde_json::Value::Object(ref mut map) = resp {
+        map.insert(
+            "conventions".to_string(),
+            serde_json::to_value(&conventions).unwrap_or(serde_json::json!([])),
+        );
+    }
+
+    Ok(Json(resp))
+}
+
+pub async fn get_type_context(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(memory_type): Path<String>,
+) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    require_permission(&conn, &auth, None, "memory:read")?;
+
+    let memories = db_queries::list_memories(
+        &conn,
+        &auth.org_id,
+        None, None, None, Some(&memory_type), None, None,
+        20, 0, false, None, None, None,
+    )
+    .map_err(db_err)?;
+
+    let memory_values: Vec<serde_json::Value> = memories
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Ok(Json(build_context_response(
+        memory_values,
+        "type",
+        serde_json::Value::String(memory_type),
+    )))
+}
+
+pub async fn get_session_context(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    require_permission(&conn, &auth, None, "memory:read")?;
+
+    let memories = db_queries::list_memories(
+        &conn,
+        &auth.org_id,
+        None, None, None, None, None, Some(&session_id),
+        20, 0, false, None, None, None,
+    )
+    .map_err(db_err)?;
+
+    let memory_values: Vec<serde_json::Value> = memories
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Ok(Json(build_context_response(
+        memory_values,
+        "session_id",
+        serde_json::Value::String(session_id),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
