@@ -258,6 +258,7 @@ pub fn search_memories(
              title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
              archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
         memories.push(Memory {
             id,
             org_id,
@@ -280,6 +281,7 @@ pub fn search_memories(
             collection_id,
             admin_note,
             delete_after,
+            status,
         });
     }
     Ok(memories)
@@ -416,6 +418,7 @@ pub fn list_memories(
              title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
              archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
         memories.push(Memory {
             id,
             org_id,
@@ -438,6 +441,7 @@ pub fn list_memories(
             collection_id,
             admin_note,
             delete_after,
+            status,
         });
     }
     Ok(memories)
@@ -1540,6 +1544,7 @@ pub fn upsert_memory(
                     collection_id: None,
                     admin_note: None,
                     delete_after: None,
+                    status: "active".to_string(),
                 });
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -1584,6 +1589,7 @@ pub fn upsert_memory(
         collection_id: None,
         admin_note: None,
         delete_after: None,
+        status: "active".to_string(),
     })
 }
 
@@ -1961,6 +1967,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
              title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
              archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
         map.insert(id.clone(), Memory {
             id,
             org_id,
@@ -1983,6 +1990,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
             collection_id,
             admin_note,
             delete_after,
+            status,
         });
     }
 
@@ -2503,6 +2511,7 @@ pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str
             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
             archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+            let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
             Ok(Some(Memory {
                 id,
                 org_id,
@@ -2525,6 +2534,7 @@ pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str
                 collection_id,
                 admin_note,
                 delete_after,
+                status,
             }))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -2633,6 +2643,7 @@ pub fn get_project_context(
              title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
              archived_at, pinned_i64) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
         recent_memories.push(Memory {
             id,
             org_id: org_id_col,
@@ -2655,6 +2666,7 @@ pub fn get_project_context(
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            status,
         });
     }
 
@@ -6035,6 +6047,7 @@ fn list_memories_by_hash(conn: &Connection, org_id: &str, hash: &str) -> Result<
              title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
              archived_at, pinned_i64) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
         memories.push(Memory {
             id,
             org_id,
@@ -6057,6 +6070,7 @@ fn list_memories_by_hash(conn: &Connection, org_id: &str, hash: &str) -> Result<
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            status,
         });
     }
     Ok(memories)

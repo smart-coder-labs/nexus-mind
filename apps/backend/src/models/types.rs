@@ -95,6 +95,10 @@ fn default_scope() -> String {
     "project".to_string()
 }
 
+fn default_active_status() -> String {
+    "active".to_string()
+}
+
 // ── Agent event settings ──────────────────────────────────────────────────────
 
 fn default_true() -> bool {
@@ -271,10 +275,12 @@ pub struct Memory {
     /// Private admin note. Never returned to agents or non-admin callers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_note: Option<String>,
-    /// ISO date string (YYYY-MM-DD). Memory will be auto-deleted on or after this date.
-    /// NULL = no scheduled deletion (only org-wide retention policy applies).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// ISO datetime when this memory is scheduled for deletion. NULL = no scheduled deletion.
+    #[serde(rename = "delete_at", default)]
     pub delete_after: Option<String>,
+    /// Derived status: "active" or "archived" (based on archived_at).
+    #[serde(default = "default_active_status")]
+    pub status: String,
 }
 
 fn default_revision_count() -> i64 {
@@ -950,7 +956,8 @@ pub struct UpdateAnnouncementRequest {
 /// None = clear the scheduled deletion date.
 #[derive(Debug, Deserialize)]
 pub struct ScheduleDeleteRequest {
-    pub delete_after: Option<String>,
+    #[serde(alias = "delete_after")]
+    pub delete_at: Option<String>,
 }
 
 /// Request body for `POST /v1/admin/memories/merge`.
@@ -1180,6 +1187,7 @@ mod tests {
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            status: "active".to_string(),
         };
         assert!(m.tags.is_empty());
         assert_eq!(m.scope, "project");
@@ -1309,6 +1317,7 @@ mod tests {
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            status: "active".to_string(),
         };
         let json_val: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(json_val["title"], "My title");
