@@ -320,9 +320,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version is the current max (38 as of v38 migration)
+    // Verify user_version is the current max (39 as of v39 migration)
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 38);
+    assert_eq!(version, 39);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
