@@ -14,6 +14,7 @@ use crate::{
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
+const MAX_CONTENT_BYTES: usize = 65_536; // 64 KiB
 
 #[derive(Deserialize)]
 pub struct ExportParams {
@@ -206,6 +207,16 @@ pub async fn store(
     Extension(auth): Extension<AuthContext>,
     JsonBody(input): JsonBody<StoreMemoryRequest>,
 ) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
+    if input.content.len() > MAX_CONTENT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ApiError {
+                error: format!("content exceeds maximum allowed size of {} bytes", MAX_CONTENT_BYTES),
+                code: "content_too_large".to_string(),
+            }),
+        ));
+    }
+
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| (
@@ -503,6 +514,15 @@ pub async fn update(
                 Json(ApiError {
                     error: "content must not be empty".to_string(),
                     code: "validation_error".to_string(),
+                }),
+            ));
+        }
+        if c.len() > MAX_CONTENT_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ApiError {
+                    error: format!("content exceeds maximum allowed size of {} bytes", MAX_CONTENT_BYTES),
+                    code: "content_too_large".to_string(),
                 }),
             ));
         }
@@ -2032,5 +2052,80 @@ mod tests {
         assert!(!memories.is_empty(), "should have memories");
         assert_eq!(memories[0]["id"].as_str().unwrap(), id1, "pinned memory must be first");
         assert_eq!(memories[1]["id"].as_str().unwrap(), id2, "unpinned memory must follow");
+    }
+
+    // ── Content size limit tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn store_oversized_content_returns_413() {
+        let (store, key) = setup_with_key();
+        let oversized = "A".repeat(super::MAX_CONTENT_BYTES + 1);
+        let body = serde_json::json!({ "tool": "claude", "content": oversized });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"].as_str().unwrap(), "content_too_large");
+    }
+
+    #[tokio::test]
+    async fn store_max_content_exactly_at_limit_returns_201() {
+        let (store, key) = setup_with_key();
+        let exact = "A".repeat(super::MAX_CONTENT_BYTES);
+        let body = serde_json::json!({ "tool": "claude", "content": exact });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn update_oversized_content_returns_413() {
+        let (store, admin_key, _) = setup_org();
+        let mem_id = seed_memory(&store, &admin_key).await;
+
+        let oversized = "B".repeat(super::MAX_CONTENT_BYTES + 1);
+        let body = serde_json::json!({ "content": oversized });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/memory/{mem_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"].as_str().unwrap(), "content_too_large");
     }
 }
