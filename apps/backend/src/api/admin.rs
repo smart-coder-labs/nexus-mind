@@ -54,7 +54,7 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
 
 #[derive(Deserialize)]
 pub struct UpdateOrgInput {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -291,7 +291,20 @@ pub async fn update_org(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let org = queries::update_org_name(&conn, &auth.org_id, &input.name).map_err(db_err)?;
+    let org = match input.name.as_deref() {
+        Some(name) => queries::update_org_name(&conn, &auth.org_id, name).map_err(db_err)?,
+        None => queries::get_org(&conn, &auth.org_id)
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "Organization not found".to_string(),
+                        code: "not_found".to_string(),
+                    }),
+                )
+            })?,
+    };
     Ok(Json(org))
 }
 
