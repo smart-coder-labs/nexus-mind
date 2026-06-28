@@ -1689,7 +1689,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(mem["pinned"].as_bool().unwrap(), true);
+        assert!(mem["pinned"].as_bool().unwrap());
     }
 
     #[tokio::test]
@@ -1737,7 +1737,7 @@ mod tests {
             .unwrap();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+        assert!(!mem["pinned"].as_bool().unwrap());
     }
 
     // ── Malformed body consistency tests ─────────────────────────────────────
@@ -1842,7 +1842,7 @@ mod tests {
             .unwrap();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(mem["pinned"].as_bool().unwrap(), false);
+        assert!(!mem["pinned"].as_bool().unwrap());
     }
 
     // ── search permission tests ───────────────────────────────────────────────

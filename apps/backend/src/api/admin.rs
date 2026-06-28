@@ -1,3 +1,7 @@
+// Test module is intentionally not at the end of the file (collections/keys routes
+// were added after the test scaffolding landed). The lint is purely stylistic.
+#![allow(clippy::items_after_test_module)]
+
 use axum::{extract::State, extract::Path, extract::Query, http::StatusCode, Extension, Json};
 use crate::api::helpers::AppJson;
 use serde::Deserialize;

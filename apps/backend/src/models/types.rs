@@ -1561,7 +1561,7 @@ mod tests {
         let back: Policy = serde_json::from_str(&s).unwrap();
         assert_eq!(p, back);
         assert_eq!(back.rule_type, "model_whitelist");
-        assert_eq!(back.enabled, true);
+        assert!(back.enabled);
     }
 
     #[test]

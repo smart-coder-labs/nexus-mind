@@ -448,6 +448,7 @@ pub fn list_memories(
 }
 
 /// Count memories matching the same filters as `list_memories`.
+#[allow(clippy::too_many_arguments)]
 pub fn count_memories(
     conn: &Connection,
     org_id: &str,
@@ -4291,7 +4292,7 @@ mod tests {
         assert_eq!(mem.user_id, user.id);
         assert_eq!(mem.content, "use anyhow for errors");
         assert_eq!(mem.tags, tags);
-        assert!(mem.id.len() > 0);
+        assert!(!mem.id.is_empty());
     }
 
     #[test]
@@ -5781,7 +5782,7 @@ mod tests {
 
         // Org B (admin) tries to delete org A's memory ID via org B's connection.
         // The WHERE clause filters by org_b.id so nothing in org_a is touched.
-        let deleted = bulk_delete_memories(&conn_b, &org_b.id, &[mem_a.id.clone()], true, &user_b.id).unwrap();
+        let deleted = bulk_delete_memories(&conn_b, &org_b.id, std::slice::from_ref(&mem_a.id), true, &user_b.id).unwrap();
         assert_eq!(deleted, 0, "cross-org deletion must not succeed");
 
         // Org A's memory must still exist in org A's DB
@@ -5830,7 +5831,7 @@ mod tests {
         let m = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content",
             &["keep".to_string(), "drop".to_string()]);
 
-        let updated = bulk_tag_memories(&conn, &org.id, &[m.id.clone()], "remove", "drop").unwrap();
+        let updated = bulk_tag_memories(&conn, &org.id, std::slice::from_ref(&m.id), "remove", "drop").unwrap();
         assert_eq!(updated, 1);
 
         let remaining = get_memories_by_ids(&conn, &org.id, &[m.id]).unwrap();
@@ -5850,7 +5851,7 @@ mod tests {
         let mem_a = legacy_store(&conn_a, &org_a.id, &user_a.id, "proj", "claude", "content", &[]);
 
         // Attempt to tag org_a's memory using org_b's org_id on conn_b
-        let updated = bulk_tag_memories(&conn_b, &org_b.id, &[mem_a.id.clone()], "add", "hacked").unwrap();
+        let updated = bulk_tag_memories(&conn_b, &org_b.id, std::slice::from_ref(&mem_a.id), "add", "hacked").unwrap();
         assert_eq!(updated, 0, "cross-org tag must not succeed");
 
         // Original memory in org_a must be untouched

@@ -767,8 +767,8 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        assert_eq!(body["allowed"], false);
-        assert!(body["violations"].as_array().unwrap().len() >= 1);
+        assert!(!body["allowed"].as_bool().unwrap_or(true));
+        assert!(!body["violations"].as_array().unwrap().is_empty());
         let violation = &body["violations"][0];
         assert_eq!(violation["rule_type"], "model_whitelist");
         assert!(violation["reason"].as_str().unwrap().contains("gpt-4"));
