@@ -2822,7 +2822,7 @@ pub async fn update_org_logo(
 }
 
 /// `PATCH /v1/admin/memories/:id/schedule-delete` — set or clear per-memory scheduled deletion (admin-only).
-/// Body: `{ delete_after: Option<String> }` — ISO date string or null to clear.
+/// Body: `{ delete_at: Option<String> }` — ISO datetime string or null to clear.
 pub async fn schedule_memory_delete(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -2834,7 +2834,7 @@ pub async fn schedule_memory_delete(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    queries::schedule_memory_delete(&conn, &auth.org_id, &id, body.delete_after.as_deref())
+    queries::schedule_memory_delete(&conn, &auth.org_id, &id, body.delete_at.as_deref())
         .map_err(|e| {
             if e.to_string() == "memory_not_found" {
                 (

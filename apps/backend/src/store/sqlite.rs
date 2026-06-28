@@ -182,6 +182,7 @@ impl MemoryStore for SqliteStore {
                 title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
                 archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+                let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
                 Ok(Some(Memory {
                     id,
                     org_id,
@@ -204,6 +205,7 @@ impl MemoryStore for SqliteStore {
                     collection_id,
                     admin_note,
                     delete_after,
+                    status,
                 }))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
