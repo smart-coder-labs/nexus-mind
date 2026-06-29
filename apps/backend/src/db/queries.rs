@@ -7668,6 +7668,25 @@ pub fn persist_file_graph(
     Ok(())
 }
 
+/// Returns true if the file already has at least one file-owned graph symbol
+/// (Function/Class/Method/Interface/Type/Enum/...). Used to decide whether to
+/// backfill graph data for files that were chunked before the knowledge-graph
+/// feature existed and are now unchanged on re-index.
+pub fn file_has_graph_symbols(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM code_symbols \
+         WHERE code_project_id = ?1 AND file_path = ?2 \
+           AND symbol_type NOT IN ('File','Folder','Project','External'))",
+        rusqlite::params![code_project_id, file_path],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
 /// Resolve a qualified_name to a symbol id, first from the in-memory map then from the DB.
 fn resolve_symbol_id(
     conn: &Connection,
@@ -7932,6 +7951,29 @@ mod graph_tests {
             rusqlite::params![pid], |r| r.get(0),
         ).unwrap();
         assert_eq!(foo_gone, 0, "foo must be gone");
+    }
+
+    #[test]
+    fn file_has_graph_symbols_drives_backfill_decision() {
+        let (conn, pid) = setup();
+        // Structural nodes only (File/Folder/Project) — no code symbols yet.
+        persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+        assert!(
+            !file_has_graph_symbols(&conn, pid, "src/lib.rs").unwrap(),
+            "a structural-only file must be reported as needing graph backfill"
+        );
+
+        // After a real code symbol is persisted, no backfill is needed.
+        let fg = FileGraph {
+            file_rel_path: "src/lib.rs".to_string(),
+            symbols: vec![make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
+            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs")],
+        };
+        persist_file_graph(&conn, pid, &fg).unwrap();
+        assert!(
+            file_has_graph_symbols(&conn, pid, "src/lib.rs").unwrap(),
+            "a file with a Function symbol must not be flagged for backfill"
+        );
     }
 
     #[test]

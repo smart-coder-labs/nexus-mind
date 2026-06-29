@@ -104,7 +104,32 @@ pub fn index_project(
         let stored_hash = stored_hashes.get(&rel_path);
 
         if stored_hash.map(|h| h == &file_meta.hash).unwrap_or(false) {
-            // File unchanged — count its existing chunks
+            // File unchanged — skip re-chunking/re-embedding. But backfill graph
+            // data if it is missing: projects indexed before the knowledge-graph
+            // feature have chunks (so files look "unchanged") yet no code symbols.
+            let needs_graph_backfill = {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                !db_queries::file_has_graph_symbols(&conn, code_project_id, &rel_path)
+                    .unwrap_or(false)
+            };
+            if needs_graph_backfill {
+                let language = file_meta.language.as_deref();
+                let (_chunks, file_graph) = chunker.chunk_with_graph(
+                    &rel_path,
+                    &file_meta.hash,
+                    language,
+                    &file_meta.content,
+                    &known_files,
+                );
+                if let Some(fg) = file_graph {
+                    let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                    if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
+                        tracing::warn!("Failed to backfill graph for {rel_path}: {e}");
+                    }
+                }
+            }
+
+            // Count its existing chunks
             let existing_count = {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                 db_queries::count_chunks_for_file(&conn, code_project_id, &rel_path)?
