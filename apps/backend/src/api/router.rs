@@ -103,6 +103,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/code/status/:project", get(code::get_status))
         .route("/v1/code/context", get(code::get_context))
         .route("/v1/code/graph", get(code::get_graph))
+        .route("/v1/code/snippet", get(code::get_snippet))
         .route("/v1/code/projects", get(code::list_projects))
         .route("/v1/code/projects/:id", delete(code::delete_project).patch(code::update_code_project))
         .route("/v1/code/projects/:id/schedule", patch(code::update_schedule))

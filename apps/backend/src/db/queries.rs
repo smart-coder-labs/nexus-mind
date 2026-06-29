@@ -3273,6 +3273,43 @@ pub fn count_chunks_for_file(
     Ok(count)
 }
 
+/// Returns the smallest code_chunk whose [start_line, end_line] range covers `line`
+/// for the given file. With AST chunking this is the symbol's own source. Returns
+/// `None` when no chunk covers the line (e.g. an unsupported-language file).
+pub fn get_chunk_covering_line(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    line: i64,
+) -> Result<Option<CodeChunk>> {
+    conn.query_row(
+        "SELECT id, code_project_id, file_path, file_hash, language, symbol, \
+                start_line, end_line, content, created_at \
+         FROM code_chunks \
+         WHERE code_project_id = ?1 AND file_path = ?2 \
+           AND start_line <= ?3 AND end_line >= ?3 \
+         ORDER BY (end_line - start_line) ASC \
+         LIMIT 1",
+        rusqlite::params![code_project_id, file_path, line],
+        |row| {
+            Ok(CodeChunk {
+                id: row.get(0)?,
+                code_project_id: row.get(1)?,
+                file_path: row.get(2)?,
+                file_hash: row.get(3)?,
+                language: row.get(4)?,
+                symbol: row.get(5)?,
+                start_line: row.get(6)?,
+                end_line: row.get(7)?,
+                content: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Insert a single code chunk, optionally with its embedding BLOB.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_code_chunk(
@@ -5480,6 +5517,29 @@ mod tests {
         let main_count = count_chunks_for_file(&conn, project_id, "src/main.rs").unwrap();
         assert_eq!(lib_count, 0, "lib.rs chunks must be deleted");
         assert_eq!(main_count, 1, "main.rs chunks must be preserved");
+    }
+
+    #[test]
+    fn get_chunk_covering_line_returns_tightest_chunk() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        // A broad window and a tight symbol chunk both cover line 12.
+        insert_code_chunk(&conn, project_id, "src/lib.rs", "h", Some("rust"), None, 1, 60, "whole window", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/lib.rs", "h", Some("rust"), Some("foo"), 10, 20, "fn foo() {}", None).unwrap();
+
+        let chunk = get_chunk_covering_line(&conn, project_id, "src/lib.rs", 12)
+            .unwrap()
+            .expect("a chunk must cover line 12");
+        assert_eq!(chunk.content, "fn foo() {}", "tightest covering chunk wins");
+        assert_eq!(chunk.symbol.as_deref(), Some("foo"));
+
+        // No chunk covers a line past EOF.
+        assert!(
+            get_chunk_covering_line(&conn, project_id, "src/lib.rs", 999).unwrap().is_none(),
+            "out-of-range line returns None"
+        );
     }
 
     #[test]

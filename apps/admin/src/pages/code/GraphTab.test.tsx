@@ -10,10 +10,12 @@ vi.mock('react-force-graph-3d', () => ({
 
 // Mock the API client
 const mockGetCodeGraph = vi.fn()
+const mockGetCodeSnippet = vi.fn()
 
 vi.mock('../../api/client', () => ({
   createClient: vi.fn(() => ({
     getCodeGraph: mockGetCodeGraph,
+    getCodeSnippet: mockGetCodeSnippet,
   })),
 }))
 

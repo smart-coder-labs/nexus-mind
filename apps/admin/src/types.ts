@@ -542,3 +542,12 @@ export interface CodeGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
 }
+
+export interface CodeSnippet {
+  file_path: string
+  symbol: string | null
+  language: string | null
+  start_line: number
+  end_line: number
+  content: string
+}

@@ -23,6 +23,7 @@ import type {
   BulkTagResponse,
   CodeSearchResult,
   CodeGraph,
+  CodeSnippet,
   SessionSummary,
   Webhook,
   CreateWebhookRequest,
@@ -452,6 +453,11 @@ export class NexusMindClient {
     if (opts.limit != null) qs.set('limit', String(opts.limit))
     if (opts.offset != null) qs.set('offset', String(opts.offset))
     return this.request(`/v1/code/graph?${qs}`)
+  }
+
+  getCodeSnippet(project: string, file: string, line: number): Promise<CodeSnippet> {
+    const qs = new URLSearchParams({ project, file, line: String(line) })
+    return this.request(`/v1/code/snippet?${qs}`)
   }
 
   listWebhooks(): Promise<{ webhooks: Webhook[] }> {

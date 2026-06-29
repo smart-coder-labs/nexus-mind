@@ -1,6 +1,6 @@
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Share2 } from 'lucide-react'
+import { Loader2, Share2, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext'
 import { createClient } from '../../api/client'
 import type { CodeProject } from '../../types'
@@ -28,6 +28,12 @@ const ALL_NODE_TYPES = [
   'Interface', 'Type', 'Enum', 'External',
 ]
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"]/g, c => (
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'
+  ))
+}
+
 export default function GraphTab({ projects }: GraphTabProps) {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
@@ -40,6 +46,10 @@ export default function GraphTab({ projects }: GraphTabProps) {
   const [selectedProject, setSelectedProject] = useState('')
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(DEFAULT_VISIBLE_TYPES))
   const [expandExternals, setExpandExternals] = useState(false)
+  const [selectedNode, setSelectedNode] = useState<ForceGraphNode | null>(null)
+
+  // Clear any open detail panel when switching projects
+  useEffect(() => { setSelectedNode(null) }, [selectedProject])
 
   const { data: graph, isLoading, isError, error } = useQuery({
     queryKey: ['code-graph', selectedProject],
@@ -48,12 +58,19 @@ export default function GraphTab({ projects }: GraphTabProps) {
     retry: false,
   })
 
+  // Source of the clicked symbol (only for nodes that map to code, i.e. have a line)
+  const hasSource = !!selectedNode && selectedNode.fp != null && selectedNode.startLine != null
+  const { data: snippet, isLoading: snippetLoading, isError: snippetError } = useQuery({
+    queryKey: ['code-snippet', selectedProject, selectedNode?.fp, selectedNode?.startLine],
+    queryFn: () => client.getCodeSnippet(selectedProject, selectedNode!.fp!, selectedNode!.startLine!),
+    enabled: hasSource,
+    retry: false,
+  })
+
   const graphData = useMemo(() => {
     if (!graph) return { nodes: [] as ForceGraphNode[], links: [] }
     const mapped = mapGraphData(graph)
 
-    // Apply external aggregation before LOD filter (aggregate is External type,
-    // so it correctly inherits External visibility from visibleTypes)
     const { nodes: withAgg, links: remappedLinks } = computeExternalAggregate(
       mapped.nodes,
       mapped.links,
@@ -70,19 +87,29 @@ export default function GraphTab({ projects }: GraphTabProps) {
   const handleTypeToggle = useCallback((type: string) => {
     setVisibleTypes(prev => {
       const next = new Set(prev)
-      if (next.has(type)) {
-        next.delete(type)
-      } else {
-        next.add(type)
-      }
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
       return next
     })
   }, [])
 
-  // Hover tooltip: symbol name + type (3D has no always-on canvas labels)
+  // Hover tooltip: name, type, location, language
   const nodeLabel = useCallback((node: object) => {
     const n = node as ForceGraphNode
-    return `${n.name} · ${n.type}`
+    const loc = n.startLine != null
+      ? `${escapeHtml(n.fp ?? '')}:${n.startLine}${n.endLine != null ? `-${n.endLine}` : ''}`
+      : escapeHtml(n.fp ?? n.name)
+    const lang = n.language ? ` · ${escapeHtml(n.language)}` : ''
+    const color = NODE_COLORS[n.type] ?? '#94a3b8'
+    return `<div style="padding:6px 9px;background:#16161a;border:1px solid #2a2a2e;border-radius:8px;font-family:ui-sans-serif,system-ui;max-width:320px;">
+      <div style="font-size:12px;font-weight:600;color:#e5e7eb;">${escapeHtml(n.name)}</div>
+      <div style="font-size:10px;color:${color};margin-top:1px;">${n.type}</div>
+      <div style="font-size:10px;color:#9ca3af;margin-top:3px;font-family:ui-monospace,monospace;">${loc}${lang}</div>
+    </div>`
+  }, [])
+
+  const handleNodeClick = useCallback((node: object) => {
+    setSelectedNode(node as ForceGraphNode)
   }, [])
 
   const linkColor = useCallback((link: object) => {
@@ -95,7 +122,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
     return NODE_COLORS[n.type] ?? '#94a3b8'
   }, [])
 
-  // No indexed projects available
   if (indexedProjects.length === 0) {
     return (
       <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
@@ -115,7 +141,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
     <div className="space-y-4">
       {/* Controls bar */}
       <div className="flex items-start gap-3 flex-wrap">
-        {/* Project selector */}
         <select
           value={selectedProject}
           onChange={e => setSelectedProject(e.target.value)}
@@ -128,7 +153,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
           ))}
         </select>
 
-        {/* Node-type filter pills */}
         {graph && (
           <div className="flex items-center gap-1.5 flex-wrap">
             {ALL_NODE_TYPES.map(type => (
@@ -149,7 +173,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
               </button>
             ))}
 
-            {/* External expand/collapse control (only when externals exist and are visible) */}
             {showExternalToggle && visibleTypes.has('External') && externalCount > EXTERNAL_COLLAPSE_THRESHOLD && (
               <button
                 type="button"
@@ -163,7 +186,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
         )}
       </div>
 
-      {/* Graph area */}
       {!selectedProject && (
         <div className="border border-border-primary rounded-[18px] p-10 text-center">
           <Share2 className="w-5 h-5 text-text-quaternary/40 mx-auto mb-2" />
@@ -193,7 +215,7 @@ export default function GraphTab({ projects }: GraphTabProps) {
             </p>
           </div>
         ) : (
-          <div className="border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 600 }}>
+          <div className="relative border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 600 }}>
             {/* Stats */}
             <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
               <span>{graphData.nodes.length} nodes visible</span>
@@ -203,13 +225,14 @@ export default function GraphTab({ projects }: GraphTabProps) {
               <span>{graph.node_count} total nodes</span>
               <span>·</span>
               <span>{graph.edge_count} total edges</span>
-              <span className="ml-auto text-text-quaternary/70">drag to rotate · scroll to zoom · right-drag to pan</span>
+              <span className="ml-auto text-text-quaternary/70">hover for info · click a node for source · drag to rotate</span>
             </div>
 
             <ForceGraph3D
               graphData={graphData}
               nodeColor={nodeColor}
               nodeLabel={nodeLabel}
+              onNodeClick={handleNodeClick}
               nodeRelSize={4}
               nodeOpacity={0.9}
               linkColor={linkColor}
@@ -220,6 +243,64 @@ export default function GraphTab({ projects }: GraphTabProps) {
               backgroundColor="#111113"
               showNavInfo={false}
             />
+
+            {/* Detail panel */}
+            {selectedNode && (
+              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col">
+                <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-text-primary truncate">{selectedNode.name}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span
+                        className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
+                        style={{ backgroundColor: NODE_COLORS[selectedNode.type] ?? '#94a3b8' }}
+                      >
+                        {selectedNode.type}
+                      </span>
+                      {selectedNode.language && (
+                        <span className="text-[10px] text-text-quaternary">{selectedNode.language}</span>
+                      )}
+                    </div>
+                    {selectedNode.fp && (
+                      <p className="text-[10px] text-text-quaternary font-mono mt-1 truncate">
+                        {selectedNode.fp}
+                        {selectedNode.startLine != null && `:${selectedNode.startLine}`}
+                        {selectedNode.endLine != null && `-${selectedNode.endLine}`}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedNode(null)}
+                    className="text-text-quaternary hover:text-text-primary transition-colors shrink-0"
+                    aria-label="Close detail panel"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-auto">
+                  {!hasSource && (
+                    <p className="text-xs text-text-quaternary p-4">
+                      Structural node — no source to show. Click a Function, Method, Class, or other code symbol.
+                    </p>
+                  )}
+                  {hasSource && snippetLoading && (
+                    <div className="flex items-center justify-center py-10">
+                      <Loader2 className="w-4 h-4 animate-spin text-text-quaternary" />
+                    </div>
+                  )}
+                  {hasSource && snippetError && (
+                    <p className="text-xs text-status-error/80 p-4">No source found for this symbol.</p>
+                  )}
+                  {hasSource && snippet && (
+                    <pre className="text-[11px] leading-relaxed text-text-secondary font-mono p-4 whitespace-pre">
+                      <code>{snippet.content}</code>
+                    </pre>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )
       )}
