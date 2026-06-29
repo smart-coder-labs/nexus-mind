@@ -12,7 +12,7 @@ use crate::{
     embed::{self},
     indexer,
     models::types::{
-        ApiError, AuthContext, CodeProject, CodeStatusResponse, IndexProjectRequest,
+        ApiError, AuthContext, CodeProject, CodeStatusResponse, GraphResponse, IndexProjectRequest,
         IndexProjectResponse, ReindexProjectResponse, SearchCodeRequest, SearchCodeResult,
         UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
     },
@@ -761,6 +761,107 @@ pub async fn post_reindex(
     }))
 }
 
+// ── GET /v1/code/graph ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct GetGraphQuery {
+    pub project: String,
+    #[serde(default)]
+    pub node_type: Option<String>,
+    #[serde(default)]
+    pub edge_type: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+const DEFAULT_GRAPH_LIMIT: i64 = 5_000;
+const MAX_GRAPH_LIMIT: i64 = 20_000;
+
+/// `GET /v1/code/graph`
+///
+/// Query parameters:
+///   - `project` (required): code project name scoped to the caller's org
+///   - `node_type` (optional): comma-separated list of symbol_type values to include
+///   - `edge_type`  (optional): comma-separated list of edge_type values to include
+///   - `limit`  (optional, default 5000, max 20000): maximum number of nodes returned
+///   - `offset` (optional, default 0)
+///
+/// Returns `404` when the project does not exist or does not belong to the org.
+pub async fn get_graph(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<GetGraphQuery>,
+) -> Result<Json<GraphResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    // Org-isolation: project must belong to this org
+    let project = db_queries::get_code_project(&auth.org_id, &params.project, &conn)
+        .map_err(db_err)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Code project '{}' not found", params.project),
+                    code: "not_found".to_string(),
+                }),
+            )
+        })?;
+
+    let node_types: Vec<String> = params
+        .node_type
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+
+    let edge_types: Vec<String> = params
+        .edge_type
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_GRAPH_LIMIT)
+        .clamp(1, MAX_GRAPH_LIMIT);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let code_project_id: i64 = project.id.parse().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Project id is not a valid integer".to_string(),
+                code: "internal_error".to_string(),
+            }),
+        )
+    })?;
+
+    let (nodes, edges) =
+        db_queries::get_graph(&conn, code_project_id, &node_types, &edge_types, limit, offset)
+            .map_err(db_err)?;
+
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+
+    Ok(Json(GraphResponse {
+        project: params.project,
+        node_count,
+        edge_count,
+        nodes,
+        edges,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,5 +1234,264 @@ mod tests {
             results.iter().any(|r| r["symbol"].as_str() == Some("authenticate_user")),
             "target chunk must be present in results"
         );
+    }
+
+    // ── GET /v1/code/graph ────────────────────────────────────────────────────
+
+    fn graph_app(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/code/graph", get(get_graph))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    fn setup_graph_store() -> (SqliteStore, String, i64) {
+        let store = make_store();
+        let (raw_key, pid) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (org, _, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let pid = q::upsert_code_project(&conn, &org.id, "myapp", "/ws").unwrap();
+            (key, pid)
+        };
+        (store, raw_key, pid)
+    }
+
+    #[tokio::test]
+    async fn get_graph_unknown_project_returns_404() {
+        let (store, key, _) = setup_graph_store();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=ghost")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_graph_unauthenticated_returns_401() {
+        let store = make_store();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=myapp")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_graph_empty_project_returns_200_with_envelope() {
+        let (store, key, _) = setup_graph_store();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=myapp")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["project"], "myapp");
+        assert_eq!(body["node_count"], 0);
+        assert_eq!(body["edge_count"], 0);
+        assert!(body["nodes"].as_array().unwrap().is_empty());
+        assert!(body["edges"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_graph_with_nodes_returns_correct_envelope() {
+        use crate::db::queries as db_q;
+        use crate::indexer::tree_sitter_chunker::{
+            EdgeType, FileGraph, Persist, RawEdge, RawSymbol, SymbolType,
+        };
+
+        let (store, key, pid) = setup_graph_store();
+
+        // Seed graph data
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            db_q::persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+            let fg = FileGraph {
+                file_rel_path: "src/lib.rs".to_string(),
+                symbols: vec![RawSymbol {
+                    symbol_type:    SymbolType::Function,
+                    name:           "do_work".to_string(),
+                    qualified_name: "src/lib.rs::do_work#1".to_string(),
+                    file_path:      Some("src/lib.rs".to_string()),
+                    file_hash:      Some("h".to_string()),
+                    start_line:     Some(1),
+                    end_line:       Some(5),
+                    language:       "rust".to_string(),
+                    persist:        Persist::FileOwned,
+                }],
+                edges: vec![RawEdge {
+                    from_qname: "file::src/lib.rs".to_string(),
+                    to_qname:   "src/lib.rs::do_work#1".to_string(),
+                    edge_type:  EdgeType::Defines,
+                    file_path:  Some("src/lib.rs".to_string()),
+                    persist:    Persist::FileOwned,
+                }],
+            };
+            db_q::persist_file_graph(&conn, pid, &fg).unwrap();
+        }
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=myapp")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["project"], "myapp");
+        let node_count = body["node_count"].as_u64().unwrap();
+        assert!(node_count >= 1, "at least the Function node must be present; got {}", node_count);
+        let edge_count = body["edge_count"].as_u64().unwrap();
+        assert!(edge_count >= 1, "at least the defines edge must be present; got {}", edge_count);
+
+        // node_count field matches nodes array length
+        assert_eq!(
+            node_count as usize,
+            body["nodes"].as_array().unwrap().len(),
+            "node_count must equal nodes.length()"
+        );
+        assert_eq!(
+            edge_count as usize,
+            body["edges"].as_array().unwrap().len(),
+            "edge_count must equal edges.length()"
+        );
+
+        // Every edge references a node in the returned set
+        let node_ids: std::collections::HashSet<u64> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_u64().unwrap())
+            .collect();
+        for edge in body["edges"].as_array().unwrap() {
+            let from = edge["from_id"].as_u64().unwrap();
+            let to   = edge["to_id"].as_u64().unwrap();
+            assert!(node_ids.contains(&from), "from_id {from} not in node set");
+            assert!(node_ids.contains(&to), "to_id {to} not in node set");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_graph_node_type_filter_applied() {
+        use crate::db::queries as db_q;
+        use crate::indexer::tree_sitter_chunker::{FileGraph, Persist, RawSymbol, SymbolType};
+
+        let (store, key, pid) = setup_graph_store();
+
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            db_q::persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+            let fg = FileGraph {
+                file_rel_path: "src/lib.rs".to_string(),
+                symbols: vec![
+                    RawSymbol {
+                        symbol_type: SymbolType::Function,
+                        name: "fn_one".to_string(),
+                        qualified_name: "src/lib.rs::fn_one#1".to_string(),
+                        file_path: Some("src/lib.rs".to_string()),
+                        file_hash: Some("h".to_string()),
+                        start_line: Some(1),
+                        end_line: Some(3),
+                        language: "rust".to_string(),
+                        persist: Persist::FileOwned,
+                    },
+                    RawSymbol {
+                        symbol_type: SymbolType::Struct,
+                        name: "MyStruct".to_string(),
+                        qualified_name: "src/lib.rs::MyStruct#5".to_string(),
+                        file_path: Some("src/lib.rs".to_string()),
+                        file_hash: Some("h".to_string()),
+                        start_line: Some(5),
+                        end_line: Some(10),
+                        language: "rust".to_string(),
+                        persist: Persist::FileOwned,
+                    },
+                ],
+                edges: vec![],
+            };
+            db_q::persist_file_graph(&conn, pid, &fg).unwrap();
+        }
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=myapp&node_type=Function")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let nodes = body["nodes"].as_array().unwrap();
+        assert!(
+            nodes.iter().all(|n| n["type"] == "Function"),
+            "all returned nodes must be of type Function"
+        );
+        assert!(
+            nodes.iter().any(|n| n["name"] == "fn_one"),
+            "fn_one must appear"
+        );
+        assert!(
+            nodes.iter().all(|n| n["name"] != "MyStruct"),
+            "MyStruct must be excluded by the filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_graph_limit_capped_at_20000() {
+        let (store, key, _) = setup_graph_store();
+
+        // Request limit=99999 — should be silently capped to 20000
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=myapp&limit=99999")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // We only verify it does NOT 400/500; the cap is invisible in an empty project
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

@@ -755,6 +755,45 @@ pub struct CodeStatusResponse {
     pub chunk_count: Option<i64>,
 }
 
+// ── Code graph API types ──────────────────────────────────────────────────────
+
+/// A single node in the code knowledge graph returned by `GET /v1/code/graph`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GraphNodeDto {
+    pub id:             i64,
+    #[serde(rename = "type")]
+    pub node_type:      String,
+    pub name:           String,
+    pub qualified_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path:  Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line:   Option<i64>,
+    pub language:       String,
+}
+
+/// A directed edge in the code knowledge graph.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GraphEdgeDto {
+    pub id:      i64,
+    pub from_id: i64,
+    pub to_id:   i64,
+    #[serde(rename = "type")]
+    pub edge_type: String,
+}
+
+/// Response envelope for `GET /v1/code/graph`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GraphResponse {
+    pub project:    String,
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub nodes:      Vec<GraphNodeDto>,
+    pub edges:      Vec<GraphEdgeDto>,
+}
+
 // ── Project event override types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
