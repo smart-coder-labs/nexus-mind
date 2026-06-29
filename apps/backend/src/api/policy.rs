@@ -233,6 +233,16 @@ pub async fn create_policy(
     )
     .map_err(internal_error)?;
 
+    let _ = queries::log_audit(
+        &conn,
+        &ctx.org_id,
+        &ctx.user_id,
+        "policy.created",
+        "policy",
+        Some(&id),
+        serde_json::json!({ "rule_type": req.rule_type, "name": name }),
+    );
+
     Ok((StatusCode::CREATED, Json(policy)))
 }
 
@@ -298,6 +308,27 @@ pub async fn update_policy(
     .map_err(internal_error)?
     .ok_or_else(not_found)?;
 
+    let mut fields_changed: Vec<&str> = Vec::new();
+    if req.name.is_some() {
+        fields_changed.push("name");
+    }
+    if req.config.is_some() {
+        fields_changed.push("config");
+    }
+    if req.enabled.is_some() {
+        fields_changed.push("enabled");
+    }
+
+    let _ = queries::log_audit(
+        &conn,
+        &ctx.org_id,
+        &ctx.user_id,
+        "policy.updated",
+        "policy",
+        Some(&id),
+        serde_json::json!({ "fields_changed": fields_changed }),
+    );
+
     Ok(Json(updated))
 }
 
@@ -312,8 +343,24 @@ pub async fn delete_policy(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "policy:write")?;
 
+    // Fetch the policy before deletion so the audit metadata can record what was removed.
+    let existing = queries::get_policy(&conn, &id, &ctx.org_id).map_err(internal_error)?;
+
     let deleted = queries::delete_policy(&conn, &id, &ctx.org_id).map_err(internal_error)?;
     if deleted {
+        let metadata = match existing {
+            Some(p) => serde_json::json!({ "name": p.name, "rule_type": p.rule_type }),
+            None => serde_json::json!({}),
+        };
+        let _ = queries::log_audit(
+            &conn,
+            &ctx.org_id,
+            &ctx.user_id,
+            "policy.deleted",
+            "policy",
+            Some(&id),
+            metadata,
+        );
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(not_found())
@@ -344,6 +391,21 @@ pub async fn check_policy(
         + req.prompt_tokens.unwrap_or(0).max(0) as u64;
 
     let response = crate::policy::evaluate(&policies, &req, tokens_used, requests_used);
+
+    let _ = queries::log_audit(
+        &conn,
+        &ctx.org_id,
+        &ctx.user_id,
+        "policy.check",
+        "policy",
+        None,
+        serde_json::json!({
+            "model": req.model,
+            "allowed": response.allowed,
+            "violations_count": response.violations.len(),
+        }),
+    );
+
     Ok(Json(response))
 }
 
@@ -841,5 +903,188 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── audit logging ─────────────────────────────────────────────────────────
+
+    /// Returns the count of audit entries with resource_type == "policy" for the
+    /// org bootstrapped in `store`.
+    fn policy_audit_entries(store: &SqliteStore) -> Vec<crate::models::types::AuditEntry> {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let org_id: String = conn
+            .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        crate::db::queries::list_audit(
+            &conn,
+            &org_id,
+            None,
+            None,
+            Some("policy"),
+            None,
+            None,
+            None,
+            100,
+            0,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_writes_policy_created_audit_entry() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let payload = serde_json::json!({
+            "name": "Audited Policy",
+            "rule_type": "pii_redact",
+            "config": { "patterns": ["x"] }
+        });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+        let entries = policy_audit_entries(&store);
+        let entry = entries
+            .iter()
+            .find(|e| e.action == "policy.created")
+            .expect("policy.created audit entry must exist");
+        assert_eq!(entry.resource_type, "policy");
+        assert_eq!(entry.resource_id.as_deref(), Some(id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn update_writes_policy_updated_audit_entry() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let create_payload = serde_json::json!({
+            "name": "Original",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude"] }
+        });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = body_json(create_resp).await["id"].as_str().unwrap().to_string();
+
+        let update_payload = serde_json::json!({ "enabled": false });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/policies/{id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(update_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let entries = policy_audit_entries(&store);
+        let entry = entries
+            .iter()
+            .find(|e| e.action == "policy.updated")
+            .expect("policy.updated audit entry must exist");
+        assert_eq!(entry.resource_id.as_deref(), Some(id.as_str()));
+        let changed = entry.metadata.get("fields_changed").and_then(|v| v.as_array()).unwrap();
+        assert!(changed.iter().any(|v| v == "enabled"));
+    }
+
+    #[tokio::test]
+    async fn delete_writes_policy_deleted_audit_entry() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let create_payload = serde_json::json!({
+            "name": "Doomed",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude"] }
+        });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = body_json(create_resp).await["id"].as_str().unwrap().to_string();
+
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/policies/{id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let entries = policy_audit_entries(&store);
+        let entry = entries
+            .iter()
+            .find(|e| e.action == "policy.deleted")
+            .expect("policy.deleted audit entry must exist");
+        assert_eq!(entry.resource_id.as_deref(), Some(id.as_str()));
+        assert_eq!(entry.metadata.get("name").and_then(|v| v.as_str()), Some("Doomed"));
+    }
+
+    #[tokio::test]
+    async fn check_writes_policy_check_audit_entry() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let payload = serde_json::json!({ "model": "gpt-4" });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policy/check")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let entries = policy_audit_entries(&store);
+        let entry = entries
+            .iter()
+            .find(|e| e.action == "policy.check")
+            .expect("policy.check audit entry must exist");
+        assert_eq!(entry.metadata.get("model").and_then(|v| v.as_str()), Some("gpt-4"));
+        assert_eq!(entry.metadata.get("allowed").and_then(|v| v.as_bool()), Some(true));
     }
 }
