@@ -159,10 +159,31 @@ pub struct RawCreatePolicyRequest {
     pub config: serde_json::Value,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Captures any field the API does not support yet (e.g. `action`, `priority`,
+    /// `project_id`, `user_id`, `scope`). The handler rejects these with 400
+    /// `invalid_field` instead of silently dropping them.
+    #[serde(flatten)]
+    pub unknown_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn default_enabled() -> bool {
     true
+}
+
+/// Reject any unsupported field captured by a `#[serde(flatten)]` map. Returns
+/// 400 `invalid_field` naming the first offending field so clients know the
+/// feature (`action`, `priority`, `project_id`, `user_id`, `scope`, …) is not
+/// implemented rather than having it silently dropped.
+fn reject_unknown_fields(
+    unknown: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if let Some((field, _)) = unknown.iter().next() {
+        return Err(bad_request(
+            &format!("unsupported field: '{field}'"),
+            "invalid_field",
+        ));
+    }
+    Ok(())
 }
 
 // ── Response wrappers ─────────────────────────────────────────────────────────
@@ -195,6 +216,9 @@ pub async fn create_policy(
     Extension(ctx): Extension<AuthContext>,
     AppJson(req): AppJson<RawCreatePolicyRequest>,
 ) -> Result<(StatusCode, Json<Policy>), (StatusCode, Json<ApiError>)> {
+    // Reject fields the API does not implement yet so they are not silently dropped.
+    reject_unknown_fields(&req.unknown_fields)?;
+
     // Validate name.
     let name = req.name.trim();
     if name.is_empty() {
@@ -244,6 +268,9 @@ pub async fn update_policy(
     Path(id): Path<String>,
     AppJson(req): AppJson<UpdatePolicyRequest>,
 ) -> Result<Json<Policy>, (StatusCode, Json<ApiError>)> {
+    // Reject fields the API does not implement yet so they are not silently dropped.
+    reject_unknown_fields(&req.unknown_fields)?;
+
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "policy:write")?;
@@ -529,6 +556,39 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = body_json(resp).await;
         assert_eq!(body["code"], "invalid_config");
+    }
+
+    #[tokio::test]
+    async fn create_with_unsupported_action_field_returns_400() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        // `action`/`priority` are documented but not implemented — must be rejected,
+        // not silently dropped.
+        let payload = serde_json::json!({
+            "name": "action-test",
+            "rule_type": "pii_redact",
+            "config": { "patterns": ["x"] },
+            "action": "log",
+            "priority": 99
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["code"], "invalid_field");
     }
 
     #[tokio::test]
@@ -820,6 +880,54 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = body_json(resp).await;
         assert_eq!(body["code"], "immutable_rule_type");
+    }
+
+    #[tokio::test]
+    async fn update_with_unsupported_field_returns_400() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        // Create a policy first.
+        let create_payload = serde_json::json!({
+            "name": "Whitelist",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude-3-5-sonnet"] }
+        });
+        let create_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let policy_id = body_json(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Attempt to set an unsupported field — must return 400 invalid_field.
+        let patch_payload = serde_json::json!({ "priority": 5 });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/policies/{policy_id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(patch_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["code"], "invalid_field");
     }
 
     #[tokio::test]

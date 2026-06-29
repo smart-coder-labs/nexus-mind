@@ -581,6 +581,11 @@ pub struct UpdatePolicyRequest {
     /// Raw JSON config value — validated against the existing rule_type by the handler.
     pub config: Option<serde_json::Value>,
     pub enabled: Option<bool>,
+    /// Captures any field the API does not support yet (e.g. `action`, `priority`,
+    /// `project_id`, `user_id`, `scope`). The handler rejects these with 400
+    /// `invalid_field` instead of silently dropping them. Skipped on serialize.
+    #[serde(flatten, skip_serializing)]
+    pub unknown_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
