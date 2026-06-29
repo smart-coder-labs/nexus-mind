@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod tree_sitter_chunker;
 pub mod walker;
 
 use anyhow::Result;
@@ -11,7 +12,8 @@ use crate::{
     db::queries as db_queries,
     embed::{self, EmbedService},
     indexer::{
-        chunker::{LineWindowChunker, Chunker},
+        chunker::Chunker,
+        tree_sitter_chunker::TreeSitterChunker,
         walker::walk_files,
     },
     models::types::{CodeProject, IndexProjectResponse},
@@ -32,7 +34,7 @@ pub fn index_project(
     db: &Arc<Mutex<Connection>>,
     embed_svc: Option<&Arc<EmbedService>>,
 ) -> Result<IndexProjectResponse> {
-    let chunker = LineWindowChunker::default();
+    let chunker = TreeSitterChunker::default();
 
     // Walk the directory
     let files = walk_files(root_path)?;
