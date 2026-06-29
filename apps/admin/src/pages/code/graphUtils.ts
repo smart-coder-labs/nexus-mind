@@ -61,7 +61,10 @@ export interface ForceGraphNode {
   type: string
   name: string
   fp: string | null
-  // ForceGraph2D injects x/y/vx/vy at runtime
+  startLine?: number | null
+  endLine?: number | null
+  language?: string | null
+  // ForceGraph injects x/y/z/vx/vy at runtime
   x?: number
   y?: number
 }
@@ -90,6 +93,9 @@ export function mapGraphData(graph: CodeGraph): MappedGraph {
       type: n.type,
       name: n.name,
       fp: n.file_path,
+      startLine: n.start_line ?? null,
+      endLine: n.end_line ?? null,
+      language: n.language ?? null,
     })),
     links: graph.edges.map(e => ({
       source: e.from_id,
@@ -147,6 +153,9 @@ export function computeExternalAggregate(
     type: 'External',
     name: `External dependencies (${externalNodes.length})`,
     fp: null,
+    startLine: null,
+    endLine: null,
+    language: null,
   }
 
   // Remap links pointing to/from external nodes → aggregate

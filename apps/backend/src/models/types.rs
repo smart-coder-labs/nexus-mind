@@ -794,6 +794,17 @@ pub struct GraphResponse {
     pub edges:      Vec<GraphEdgeDto>,
 }
 
+/// Response body for `GET /v1/code/snippet` — the source of the chunk covering a symbol.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SnippetResponse {
+    pub file_path:  String,
+    pub symbol:     Option<String>,
+    pub language:   Option<String>,
+    pub start_line: i64,
+    pub end_line:   i64,
+    pub content:    String,
+}
+
 // ── Project event override types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

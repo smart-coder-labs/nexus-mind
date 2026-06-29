@@ -14,7 +14,7 @@ use crate::{
     models::types::{
         ApiError, AuthContext, CodeProject, CodeStatusResponse, GraphResponse, IndexProjectRequest,
         IndexProjectResponse, ReindexProjectResponse, SearchCodeRequest, SearchCodeResult,
-        UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
+        SnippetResponse, UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
     },
     store::sqlite::SqliteStore,
 };
@@ -859,6 +859,73 @@ pub async fn get_graph(
         edge_count,
         nodes,
         edges,
+    }))
+}
+
+// ── GET /v1/code/snippet ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct GetSnippetQuery {
+    pub project: String,
+    pub file: String,
+    pub line: i64,
+}
+
+/// `GET /v1/code/snippet`
+///
+/// Returns the source of the code chunk covering `line` in `file` for the given
+/// project — used when a graph node is clicked to reveal the symbol's code.
+/// Returns `404` when the project is unknown to the org or no chunk covers the line.
+pub async fn get_snippet(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<GetSnippetQuery>,
+) -> Result<Json<SnippetResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    // Org-isolation: project must belong to this org
+    let project = db_queries::get_code_project(&auth.org_id, &params.project, &conn)
+        .map_err(db_err)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Code project '{}' not found", params.project),
+                    code: "not_found".to_string(),
+                }),
+            )
+        })?;
+
+    let code_project_id: i64 = project.id.parse().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Project id is not a valid integer".to_string(),
+                code: "internal_error".to_string(),
+            }),
+        )
+    })?;
+
+    let chunk = db_queries::get_chunk_covering_line(&conn, code_project_id, &params.file, params.line)
+        .map_err(db_err)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "No source found for this symbol".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(SnippetResponse {
+        file_path: chunk.file_path,
+        symbol: chunk.symbol,
+        language: chunk.language,
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        content: chunk.content,
     }))
 }
 
