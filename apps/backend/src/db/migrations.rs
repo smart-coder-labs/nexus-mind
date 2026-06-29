@@ -42,9 +42,71 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v37(conn)?;
     run_v38(conn)?;
     run_v40(conn)?;
+    run_v41(conn)?;
+    run_v42(conn)?;
     Ok(())
 }
 
+
+/// Migration v42: creates `code_edges` table linking code_symbols via typed directed edges.
+/// Each edge is project-scoped (FK → code_projects ON DELETE CASCADE) and both endpoints
+/// cascade-delete (FK → code_symbols ON DELETE CASCADE).
+/// Idempotent — guarded by PRAGMA user_version < 42.
+pub fn run_v42(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 42 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS code_edges (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code_project_id INTEGER NOT NULL REFERENCES code_projects(id) ON DELETE CASCADE,
+            from_symbol_id  INTEGER NOT NULL REFERENCES code_symbols(id) ON DELETE CASCADE,
+            to_symbol_id    INTEGER NOT NULL REFERENCES code_symbols(id) ON DELETE CASCADE,
+            edge_type       TEXT NOT NULL,
+            file_path       TEXT,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE(code_project_id, from_symbol_id, to_symbol_id, edge_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_edges_project ON code_edges(code_project_id);
+        CREATE INDEX IF NOT EXISTS idx_code_edges_from ON code_edges(from_symbol_id);
+        CREATE INDEX IF NOT EXISTS idx_code_edges_to ON code_edges(to_symbol_id);
+        CREATE INDEX IF NOT EXISTS idx_code_edges_project_file ON code_edges(code_project_id, file_path);
+        PRAGMA user_version = 42;",
+    )?;
+    Ok(())
+}
+
+/// Migration v41: creates `code_symbols` table for the code knowledge graph.
+/// Symbols are project-scoped (FK → code_projects ON DELETE CASCADE) with a
+/// UNIQUE constraint on (code_project_id, qualified_name) to support idempotent upserts.
+/// Idempotent — guarded by PRAGMA user_version < 41.
+pub fn run_v41(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 41 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS code_symbols (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            code_project_id INTEGER NOT NULL REFERENCES code_projects(id) ON DELETE CASCADE,
+            symbol_type     TEXT NOT NULL,
+            name            TEXT NOT NULL,
+            qualified_name  TEXT NOT NULL,
+            file_path       TEXT,
+            file_hash       TEXT,
+            start_line      INTEGER,
+            end_line        INTEGER,
+            language        TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE(code_project_id, qualified_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_symbols_project ON code_symbols(code_project_id);
+        CREATE INDEX IF NOT EXISTS idx_code_symbols_project_file ON code_symbols(code_project_id, file_path);
+        PRAGMA user_version = 41;",
+    )?;
+    Ok(())
+}
 
 /// Migration v40: adds notifications_read_at to organizations.
 /// Records when an org admin last marked all notifications as read.
@@ -1558,7 +1620,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
@@ -1955,7 +2017,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
@@ -1964,7 +2026,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after re-running v20");
+        assert_eq!(get_user_version(&conn), 42, "user_version must remain 42 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2096,7 +2158,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2123,14 +2185,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
@@ -2248,7 +2310,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2267,14 +2329,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2351,14 +2413,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2441,7 +2503,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -2635,14 +2697,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
@@ -2679,14 +2741,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -2725,14 +2787,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 40, "user_version must be 38 after run_all");
+        assert_eq!(get_user_version(&conn), 42, "user_version must be 42 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -2857,7 +2919,107 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 40, "user_version must remain 38");
+        assert_eq!(get_user_version(&conn), 42, "user_version must remain 42 (run_all already applied v41+v42)");
+    }
+
+    // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
+
+    #[test]
+    fn run_all_sets_user_version_to_42() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(
+            get_user_version(&conn),
+            42,
+            "user_version must be 42 after v41+v42 are included in run_all"
+        );
+    }
+
+    #[test]
+    fn run_v41_creates_code_symbols_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "code_symbols"), "code_symbols must exist after v41");
+    }
+
+    #[test]
+    fn run_v42_creates_code_edges_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "code_edges"), "code_edges must exist after v42");
+    }
+
+    #[test]
+    fn run_v41_code_symbols_unique_qualified_name() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'myapp', '/ws')",
+            [],
+        ).unwrap();
+        let pid: i64 = conn.query_row(
+            "SELECT id FROM code_projects WHERE name='myapp'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_symbols \
+             (code_project_id, symbol_type, name, qualified_name, file_path, file_hash, start_line, end_line, language) \
+             VALUES (?1, 'Function', 'my_fn', 'src/lib.rs::my_fn#1', 'src/lib.rs', 'abc', 1, 10, 'rust')",
+            rusqlite::params![pid],
+        ).unwrap();
+        // Duplicate qualified_name must be rejected
+        let dup = conn.execute(
+            "INSERT INTO code_symbols \
+             (code_project_id, symbol_type, name, qualified_name, language) \
+             VALUES (?1, 'Function', 'my_fn', 'src/lib.rs::my_fn#1', 'rust')",
+            rusqlite::params![pid],
+        );
+        assert!(dup.is_err(), "UNIQUE(code_project_id, qualified_name) must reject duplicate");
+    }
+
+    #[test]
+    fn run_v42_code_edges_cascade_delete_on_symbol() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')", []).unwrap();
+        conn.execute("INSERT INTO code_projects (org_id, name, root_path) VALUES ('org1', 'p', '/ws')", []).unwrap();
+        let pid: i64 = conn.query_row("SELECT id FROM code_projects WHERE name='p'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO code_symbols (code_project_id, symbol_type, name, qualified_name, language) \
+             VALUES (?1, 'File', 'a', 'file::a.rs', 'rust')",
+            rusqlite::params![pid],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO code_symbols (code_project_id, symbol_type, name, qualified_name, language) \
+             VALUES (?1, 'Function', 'foo', 'a.rs::foo#1', 'rust')",
+            rusqlite::params![pid],
+        ).unwrap();
+        let from_id: i64 = conn.query_row("SELECT id FROM code_symbols WHERE name='a'", [], |r| r.get(0)).unwrap();
+        let to_id: i64 = conn.query_row("SELECT id FROM code_symbols WHERE name='foo'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO code_edges (code_project_id, from_symbol_id, to_symbol_id, edge_type) \
+             VALUES (?1, ?2, ?3, 'defines')",
+            rusqlite::params![pid, from_id, to_id],
+        ).unwrap();
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM code_edges", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "edge must exist before symbol deletion");
+        conn.execute("DELETE FROM code_symbols WHERE id = ?1", rusqlite::params![from_id]).unwrap();
+        let after: i32 = conn.query_row("SELECT COUNT(*) FROM code_edges", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, 0, "edges must cascade-delete when from_symbol is removed");
+    }
+
+    #[test]
+    fn run_all_v41_v42_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_all(&conn);
+        assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 42, "version must remain 42 on second run_all");
     }
 
     #[test]
