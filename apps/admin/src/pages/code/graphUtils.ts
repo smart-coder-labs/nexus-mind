@@ -8,6 +8,7 @@ import type { CodeGraph } from '../../types'
  */
 export const DEFAULT_VISIBLE_TYPES = new Set<string>([
   'Project',
+  'Folder',
   'File',
   'Module',
   'Function',
@@ -46,8 +47,8 @@ export const NODE_COLORS: Record<string, string> = {
 }
 
 export const EDGE_COLORS: Record<string, string> = {
-  contains_folder:  '#1e293b', // slate-800 (muted structural)
-  contains_file:    '#1e293b',
+  contains_folder:  '#64748b', // slate-500 (structural skeleton, visible on dark bg)
+  contains_file:    '#475569', // slate-600
   defines:          '#3b82f6', // blue-500 (accent)
   defines_method:   '#6366f1', // indigo-500
   imports:          '#f59e0b', // amber-500 (distinct)
