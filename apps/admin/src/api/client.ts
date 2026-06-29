@@ -672,8 +672,15 @@ export class NexusMindClient {
 
   // ── Policies ─────────────────────────────────────────────────────────────────
 
-  listPolicies(): Promise<{ policies: Policy[] }> {
-    return this.request('/v1/policies')
+  listPolicies(
+    params: { rule_type?: string; enabled?: boolean; limit?: number; offset?: number; sort?: string; order?: string } = {},
+  ): Promise<{ policies: Policy[]; total: number; limit: number; offset: number }> {
+    const qs = new URLSearchParams()
+    // Default to a generous limit so the admin list is not truncated by the
+    // backend's default page size. Callers can override for real pagination.
+    if (params.limit == null) qs.set('limit', '1000')
+    Object.entries(params).forEach(([k, v]) => v != null && qs.set(k, String(v)))
+    return this.request(`/v1/policies?${qs}`)
   }
 
   createPolicy(data: CreatePolicyRequest): Promise<Policy> {

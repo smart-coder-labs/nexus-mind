@@ -3055,6 +3055,69 @@ pub fn list_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Lists policies for an org with optional filters, sorting, and pagination.
+///
+/// `rule_type` / `enabled` are optional equality filters. `sort` must be one of
+/// `created_at`, `updated_at`, `name`; `order` must be `asc` or `desc` — both are
+/// validated by the caller and inlined into the SQL (they are never user-supplied
+/// free text once they reach this function). Returns the matching page plus the
+/// total count of rows that match the filters (ignoring limit/offset).
+#[allow(clippy::too_many_arguments)]
+pub fn list_policies_paginated(
+    conn: &Connection,
+    org_id: &str,
+    rule_type: Option<&str>,
+    enabled: Option<bool>,
+    sort: &str,
+    order: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<Policy>, i64)> {
+    // Build the shared WHERE clause and its bound params.
+    let mut where_sql = String::from(" WHERE org_id = ?1");
+    let mut param_idx = 2usize;
+    let mut extra_params: Vec<String> = Vec::new();
+
+    if let Some(rt) = rule_type {
+        where_sql.push_str(&format!(" AND rule_type = ?{param_idx}"));
+        extra_params.push(rt.to_string());
+        param_idx += 1;
+    }
+    if let Some(en) = enabled {
+        where_sql.push_str(&format!(" AND enabled = ?{param_idx}"));
+        extra_params.push(if en { "1".to_string() } else { "0".to_string() });
+        param_idx += 1;
+    }
+
+    // Total count for the pagination envelope.
+    let count_sql = format!("SELECT COUNT(*) FROM policies{where_sql}");
+    let count_params: Vec<&dyn rusqlite::ToSql> = std::iter::once(&org_id as &dyn rusqlite::ToSql)
+        .chain(extra_params.iter().map(|s| s as &dyn rusqlite::ToSql))
+        .collect();
+    let total: i64 = conn.query_row(&count_sql, count_params.as_slice(), |row| row.get(0))?;
+
+    // sort/order are validated against an allowlist by the caller, so inlining is safe.
+    let select_sql = format!(
+        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
+         FROM policies{where_sql} ORDER BY {sort} {order} LIMIT ?{param_idx} OFFSET ?{}",
+        param_idx + 1
+    );
+
+    let mut all_params: Vec<String> = vec![org_id.to_string()];
+    all_params.extend(extra_params);
+    all_params.push(limit.to_string());
+    all_params.push(offset.to_string());
+    let refs: Vec<&dyn rusqlite::ToSql> = all_params
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut stmt = conn.prepare(&select_sql)?;
+    let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
+    let policies = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((policies, total))
+}
+
 /// Returns only enabled policies for an org, ordered by creation date ASC.
 /// Used by the `/policy/check` handler for evaluation.
 pub fn list_enabled_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {

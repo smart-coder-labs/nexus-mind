@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Extension, Json,
 };
@@ -165,27 +165,99 @@ fn default_enabled() -> bool {
     true
 }
 
+// ── Query params ──────────────────────────────────────────────────────────────
+
+/// Columns that `GET /v1/policies` may be sorted by.
+const VALID_SORT_FIELDS: &[&str] = &["created_at", "updated_at", "name"];
+
+/// Query parameters for `GET /v1/policies`. A non-numeric `limit`/`offset` fails
+/// deserialization and is rejected by axum with `400 Bad Request`.
+#[derive(Deserialize)]
+pub struct ListPoliciesParams {
+    pub rule_type: Option<String>,
+    pub enabled: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
+}
+
 // ── Response wrappers ─────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct PoliciesResponse {
     pub policies: Vec<Policy>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-/// `GET /v1/policies` — list all policies for the caller's org.
+/// `GET /v1/policies` — list policies for the caller's org with optional
+/// filtering (`rule_type`, `enabled`), sorting (`sort`, `order`), and pagination
+/// (`limit`, `offset`). Returns a `{policies, total, limit, offset}` envelope.
 /// Requires `policy:read`.
 pub async fn list_policies(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<ListPoliciesParams>,
 ) -> Result<Json<PoliciesResponse>, (StatusCode, Json<ApiError>)> {
+    // Validate pagination bounds.
+    let limit = params.limit.unwrap_or(50);
+    if limit < 0 {
+        return Err(bad_request("limit must be non-negative", "validation_error"));
+    }
+    let offset = params.offset.unwrap_or(0);
+    if offset < 0 {
+        return Err(bad_request("offset must be non-negative", "validation_error"));
+    }
+
+    // Validate rule_type filter against the known set.
+    if let Some(ref rt) = params.rule_type {
+        if !VALID_RULE_TYPES.contains(&rt.as_str()) {
+            return Err(bad_request(
+                &format!("rule_type must be one of: {}", VALID_RULE_TYPES.join(", ")),
+                "invalid_rule_type",
+            ));
+        }
+    }
+
+    // Validate sort/order against allowlists before inlining into SQL.
+    let sort = params.sort.as_deref().unwrap_or("created_at");
+    if !VALID_SORT_FIELDS.contains(&sort) {
+        return Err(bad_request(
+            &format!("sort must be one of: {}", VALID_SORT_FIELDS.join(", ")),
+            "invalid_sort",
+        ));
+    }
+    let order = match params.order.as_deref().unwrap_or("desc") {
+        o @ ("asc" | "desc") => o,
+        _ => return Err(bad_request("order must be 'asc' or 'desc'", "invalid_order")),
+    };
+
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "policy:read")?;
 
-    let policies = queries::list_policies(&conn, &ctx.org_id).map_err(internal_error)?;
-    Ok(Json(PoliciesResponse { policies }))
+    let (policies, total) = queries::list_policies_paginated(
+        &conn,
+        &ctx.org_id,
+        params.rule_type.as_deref(),
+        params.enabled,
+        sort,
+        order,
+        limit,
+        offset,
+    )
+    .map_err(internal_error)?;
+
+    Ok(Json(PoliciesResponse {
+        policies,
+        total,
+        limit,
+        offset,
+    }))
 }
 
 /// `POST /v1/policies` — create a new policy.
@@ -440,6 +512,194 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
         assert_eq!(body["policies"], serde_json::json!([]));
+        assert_eq!(body["total"], 0);
+        assert_eq!(body["limit"], 50);
+        assert_eq!(body["offset"], 0);
+    }
+
+    // Helper: create a policy via the API and return its id.
+    async fn create_policy_via_api(
+        store: &SqliteStore,
+        key: &str,
+        payload: serde_json::Value,
+    ) -> String {
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        body_json(resp).await["id"].as_str().unwrap().to_string()
+    }
+
+    async fn get_policies(store: &SqliteStore, key: &str, query: &str) -> axum::response::Response {
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/policies{query}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn seed_four_policies(store: &SqliteStore, key: &str) {
+        create_policy_via_api(
+            store,
+            key,
+            serde_json::json!({
+                "name": "Whitelist A",
+                "rule_type": "model_whitelist",
+                "config": { "allowed_models": ["claude"] }
+            }),
+        )
+        .await;
+        create_policy_via_api(
+            store,
+            key,
+            serde_json::json!({
+                "name": "Redact Email",
+                "rule_type": "pii_redact",
+                "config": { "patterns": ["\\d+"] }
+            }),
+        )
+        .await;
+        create_policy_via_api(
+            store,
+            key,
+            serde_json::json!({
+                "name": "Redact Phone",
+                "rule_type": "pii_redact",
+                "config": { "patterns": ["\\w+"] }
+            }),
+        )
+        .await;
+        create_policy_via_api(
+            store,
+            key,
+            serde_json::json!({
+                "name": "Budget 1M",
+                "rule_type": "budget_limit",
+                "config": { "max_tokens_per_day": 1000000 }
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_rule_type() {
+        let store = make_store();
+        let key = admin_key(&store);
+        seed_four_policies(&store, &key).await;
+
+        let resp = get_policies(&store, &key, "?rule_type=pii_redact").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 2);
+        assert_eq!(body["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_enabled() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let id = create_policy_via_api(
+            &store,
+            &key,
+            serde_json::json!({
+                "name": "Disabled",
+                "rule_type": "model_whitelist",
+                "config": { "allowed_models": ["claude"] },
+                "enabled": false
+            }),
+        )
+        .await;
+        create_policy_via_api(
+            &store,
+            &key,
+            serde_json::json!({
+                "name": "Enabled",
+                "rule_type": "model_whitelist",
+                "config": { "allowed_models": ["claude"] }
+            }),
+        )
+        .await;
+
+        let resp = get_policies(&store, &key, "?enabled=false").await;
+        let body = body_json(resp).await;
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["policies"][0]["id"], id);
+    }
+
+    #[tokio::test]
+    async fn list_paginates_with_limit() {
+        let store = make_store();
+        let key = admin_key(&store);
+        seed_four_policies(&store, &key).await;
+
+        let resp = get_policies(&store, &key, "?limit=2").await;
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 2);
+        assert_eq!(body["total"], 4);
+        assert_eq!(body["limit"], 2);
+        assert_eq!(body["offset"], 0);
+    }
+
+    #[tokio::test]
+    async fn list_non_numeric_limit_returns_400() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let resp = get_policies(&store, &key, "?limit=abc").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_sort_and_order_applied() {
+        let store = make_store();
+        let key = admin_key(&store);
+        seed_four_policies(&store, &key).await;
+
+        // sort=name&order=asc → "Budget 1M" first (deterministic, no timestamp ties).
+        let resp = get_policies(&store, &key, "?sort=name&order=asc").await;
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"][0]["name"], "Budget 1M");
+
+        // order=desc reverses it → "Whitelist A" first.
+        let resp = get_policies(&store, &key, "?sort=name&order=desc").await;
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"][0]["name"], "Whitelist A");
+    }
+
+    #[tokio::test]
+    async fn list_invalid_sort_returns_400() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let resp = get_policies(&store, &key, "?sort=evil").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["code"], "invalid_sort");
+    }
+
+    #[tokio::test]
+    async fn list_invalid_order_returns_400() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let resp = get_policies(&store, &key, "?order=sideways").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["code"], "invalid_order");
     }
 
     // ── create ────────────────────────────────────────────────────────────────
