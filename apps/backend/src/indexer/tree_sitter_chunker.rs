@@ -1149,6 +1149,31 @@ mod tests {
     }
 
     #[test]
+    fn typescript_extracts_code_symbols_and_edges() {
+        let chunker = TreeSitterChunker::default();
+        let src = "import { Order } from './order';\nimport express from 'express';\n\nexport interface Product {\n  id: string;\n  price: number;\n}\n\nexport class OrderService {\n  private orders: Order[] = [];\n  createOrder(p: Product): Order { return {} as Order; }\n  async cancelOrder(id: string): Promise<void> {}\n}\n\nexport function calculateTotal(products: Product[]): number {\n  return products.reduce((s, p) => s + p.price, 0);\n}\n\nexport type OrderId = string;\nexport enum Status { Pending, Shipped }\n";
+        let known: std::collections::HashSet<String> =
+            ["src/order.ts".to_string()].into_iter().collect();
+        let (_chunks, fg) =
+            chunker.chunk_with_graph("src/service.ts", "h", Some("typescript"), src, &known);
+        let fg = fg.expect("TS file should produce a FileGraph");
+        let types: Vec<&str> = fg.symbols.iter().map(|s| s.symbol_type.as_str()).collect();
+        assert!(types.contains(&"Interface"), "TS interface extracted");
+        assert!(types.contains(&"Class"), "TS class extracted");
+        assert!(types.contains(&"Method"), "TS method extracted");
+        assert!(types.contains(&"Function"), "TS function extracted");
+        assert!(types.contains(&"Type"), "TS type alias extracted");
+        assert!(types.contains(&"Enum"), "TS enum extracted");
+        // defines edges from the File node to each top-level symbol
+        let defines = fg
+            .edges
+            .iter()
+            .filter(|e| e.edge_type.as_str() == "defines")
+            .count();
+        assert!(defines >= 4, "expected >=4 defines edges, got {defines}");
+    }
+
+    #[test]
     fn file_without_definitions_falls_back() {
         let chunker = TreeSitterChunker::default();
         // Only comments and an import — no definitions for the AST to pick up.
