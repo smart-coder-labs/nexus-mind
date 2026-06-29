@@ -3,7 +3,7 @@ pub mod tree_sitter_chunker;
 pub mod walker;
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -12,7 +12,6 @@ use crate::{
     db::queries as db_queries,
     embed::{self, EmbedService},
     indexer::{
-        chunker::Chunker,
         tree_sitter_chunker::TreeSitterChunker,
         walker::walk_files,
     },
@@ -65,6 +64,27 @@ pub fn index_project(
             .unwrap_or_default()
     };
 
+    // Build the set of all relative paths for structural graph nodes
+    let known_files: HashSet<String> = files
+        .iter()
+        .map(|f| {
+            f.path
+                .strip_prefix(root_path)
+                .unwrap_or(&f.path)
+                .trim_start_matches('/')
+                .to_string()
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    let all_rel_paths: Vec<String> = known_files.iter().cloned().collect();
+
+    // Persist the structural nodes (Project, Folder, File) once per index run
+    {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        db_queries::persist_structure(&conn, code_project_id, project_name, &all_rel_paths)?;
+    }
+
     let mut total_chunks = 0i64;
     let mut files_indexed = 0i64;
 
@@ -100,11 +120,20 @@ pub fn index_project(
             db_queries::delete_chunks_for_file(&conn, code_project_id, &rel_path)?;
         }
 
-        // Chunk the file
+        // Chunk the file AND extract graph data in a single parse pass
         let language = file_meta.language.as_deref();
-        let raw_chunks = chunker.chunk(&rel_path, &file_meta.hash, language, &file_meta.content);
+        let (raw_chunks, file_graph) =
+            chunker.chunk_with_graph(&rel_path, &file_meta.hash, language, &file_meta.content, &known_files);
         if raw_chunks.is_empty() {
             continue;
+        }
+
+        // Persist graph data for this file if available
+        if let Some(fg) = file_graph {
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
+                tracing::warn!("Failed to persist graph for {rel_path}: {e}");
+            }
         }
 
         // Embed all chunks (best-effort — no embedding BLOB if service is unavailable)

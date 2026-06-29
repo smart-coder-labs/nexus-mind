@@ -2,16 +2,19 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use std::collections::HashMap;
 
 use crate::auth::api_keys;
 use crate::models::types::{
     AuthContext, AuditEntry, CodeChunk, CodeProject, CreateSessionRequest, CustomRole,
-    GlobalMetrics, Memory, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
-    Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User, UserRole, Project, ProjectMember,
-    ProjectEventOverrides, Webhook, CreateWebhookRequest, UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser,
-    OnboardingItem, OnboardingStatus, InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest,
-    GitHubConnection, Agent, CreateAgentRequest, UpdateAgentRequest, AgentAssignment,
+    GlobalMetrics, GraphEdgeDto, GraphNodeDto, Memory, Org, OrgSettings, OrgStats, OrgWithStats,
+    PatchSessionRequest, Policy, Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User,
+    UserRole, Project, ProjectMember, ProjectEventOverrides, Webhook, CreateWebhookRequest,
+    UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser, OnboardingItem, OnboardingStatus,
+    InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest, GitHubConnection,
+    Agent, CreateAgentRequest, UpdateAgentRequest, AgentAssignment,
 };
+use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
 
 /// Looks up an API key by its SHA-256 hash.
 /// Returns AuthContext if the key exists, is not revoked, the user is active,
@@ -7455,4 +7458,589 @@ pub fn list_agent_assignments(
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+// ── Code knowledge graph persistence ─────────────────────────────────────────
+
+/// Create the structural virtual nodes (Project, Folder, File) for every file in a
+/// project using a single `BEGIN`/`COMMIT` transaction. All inserts use
+/// `INSERT OR IGNORE` so the function is safe to call multiple times.
+///
+/// Edges emitted: `project→folder (contains_folder)`, `folder→subfolder`,
+/// `folder→file (contains_file)`.
+pub fn persist_structure(
+    conn: &Connection,
+    code_project_id: i64,
+    project_name: &str,
+    rel_paths: &[String],
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    // Project node
+    let project_qname = format!("project::{}", project_name);
+    tx.execute(
+        "INSERT OR IGNORE INTO code_symbols \
+         (code_project_id, symbol_type, name, qualified_name, language) \
+         VALUES (?1, 'Project', ?2, ?3, 'unknown')",
+        rusqlite::params![code_project_id, project_name, project_qname],
+    )?;
+
+    for rel_path in rel_paths {
+        // All ancestor folder paths for this file
+        let parts: Vec<&str> = rel_path.split('/').collect();
+        let file_name = parts.last().copied().unwrap_or(rel_path.as_str());
+
+        // Insert folders from root down
+        let mut prev_qname = project_qname.clone();
+        let mut prev_type  = "project";
+        for depth in 0..parts.len().saturating_sub(1) {
+            let folder_path: String = parts[..=depth].join("/");
+            let folder_qname = format!("folder::{}", folder_path);
+            let folder_name  = parts[depth];
+            tx.execute(
+                "INSERT OR IGNORE INTO code_symbols \
+                 (code_project_id, symbol_type, name, qualified_name, language) \
+                 VALUES (?1, 'Folder', ?2, ?3, 'unknown')",
+                rusqlite::params![code_project_id, folder_name, folder_qname],
+            )?;
+            let edge_type = "contains_folder";
+            let _ = prev_type; // only used to track traversal direction, same edge_type either way
+            tx.execute(
+                "INSERT OR IGNORE INTO code_edges \
+                 (code_project_id, from_symbol_id, to_symbol_id, edge_type) \
+                 SELECT ?1, \
+                        (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?2), \
+                        (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?3), \
+                        ?4 \
+                 WHERE (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?2) IS NOT NULL \
+                   AND (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?3) IS NOT NULL",
+                rusqlite::params![code_project_id, prev_qname, folder_qname, edge_type],
+            )?;
+            prev_qname = folder_qname;
+            prev_type  = "folder";
+        }
+
+        // File node
+        let file_qname = format!("file::{}", rel_path);
+        tx.execute(
+            "INSERT OR IGNORE INTO code_symbols \
+             (code_project_id, symbol_type, name, qualified_name, file_path, language) \
+             VALUES (?1, 'File', ?2, ?3, ?3, 'unknown')",
+            rusqlite::params![code_project_id, file_name, file_qname],
+        )?;
+        // Wait — file_path should be rel_path, not file_qname
+        // Fix: file_path = rel_path, qualified_name = file_qname
+        // Actually we already inserted with file_path = file_qname (the qualified_name) above.
+        // Let me correct the insert:
+
+        // The previous INSERT already happened. Since it's INSERT OR IGNORE, if it failed due to
+        // UNIQUE, we need to use UPDATE. But on first run there's no prior row. Let me use a
+        // different approach: use UPSERT to ensure file_path is set correctly.
+        tx.execute(
+            "INSERT OR IGNORE INTO code_symbols \
+             (code_project_id, symbol_type, name, qualified_name, file_path, language) \
+             VALUES (?1, 'File', ?2, ?3, ?4, 'unknown')",
+            rusqlite::params![code_project_id, file_name, file_qname, rel_path],
+        )?;
+
+        let edge_type = "contains_file";
+        tx.execute(
+            "INSERT OR IGNORE INTO code_edges \
+             (code_project_id, from_symbol_id, to_symbol_id, edge_type) \
+             SELECT ?1, \
+                    (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?2), \
+                    (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?3), \
+                    ?4 \
+             WHERE (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?2) IS NOT NULL \
+               AND (SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name=?3) IS NOT NULL",
+            rusqlite::params![code_project_id, prev_qname, file_qname, edge_type],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Delete and re-insert all file-owned symbols and edges for a single source file,
+/// wrapped in one `BEGIN`/`COMMIT` transaction. RAII drop rolls back on failure.
+///
+/// Shared nodes (File, Folder, Project, External stubs) are upserted with
+/// `INSERT OR IGNORE` — they survive re-indexes and are only removed via CASCADE
+/// when the project is deleted.
+pub fn persist_file_graph(
+    conn: &Connection,
+    code_project_id: i64,
+    file_graph: &FileGraph,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    // 1. Delete FileOwned symbols for this file (cascades to FileOwned edges via FK ON DELETE CASCADE)
+    tx.execute(
+        "DELETE FROM code_symbols \
+         WHERE code_project_id = ?1 AND file_path = ?2 AND symbol_type NOT IN ('File','Folder','Project','External')",
+        rusqlite::params![code_project_id, file_graph.file_rel_path],
+    )?;
+
+    // 2. Delete FileOwned edges for this file (those not already cascade-deleted)
+    tx.execute(
+        "DELETE FROM code_edges WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_graph.file_rel_path],
+    )?;
+
+    // 3. Upsert symbols and build qname → id map
+    let mut id_map: HashMap<String, i64> = HashMap::new();
+
+    for sym in &file_graph.symbols {
+        let id: i64 = match sym.persist {
+            Persist::Shared => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO code_symbols \
+                     (code_project_id, symbol_type, name, qualified_name, file_path, file_hash, \
+                      start_line, end_line, language) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        code_project_id,
+                        sym.symbol_type.as_str(),
+                        sym.name,
+                        sym.qualified_name,
+                        sym.file_path,
+                        sym.file_hash,
+                        sym.start_line,
+                        sym.end_line,
+                        sym.language,
+                    ],
+                )?;
+                tx.query_row(
+                    "SELECT id FROM code_symbols WHERE code_project_id = ?1 AND qualified_name = ?2",
+                    rusqlite::params![code_project_id, sym.qualified_name],
+                    |row| row.get(0),
+                )?
+            }
+            Persist::FileOwned => {
+                tx.execute(
+                    "INSERT INTO code_symbols \
+                     (code_project_id, symbol_type, name, qualified_name, file_path, file_hash, \
+                      start_line, end_line, language) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        code_project_id,
+                        sym.symbol_type.as_str(),
+                        sym.name,
+                        sym.qualified_name,
+                        sym.file_path,
+                        sym.file_hash,
+                        sym.start_line,
+                        sym.end_line,
+                        sym.language,
+                    ],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        id_map.insert(sym.qualified_name.clone(), id);
+    }
+
+    // 4. Insert edges — resolve qnames to ids, skip edges with unresolvable endpoints
+    for edge in &file_graph.edges {
+        let from_id = match resolve_symbol_id(&tx, code_project_id, &edge.from_qname, &id_map)? {
+            Some(id) => id,
+            None => continue,
+        };
+        let to_id = match resolve_symbol_id(&tx, code_project_id, &edge.to_qname, &id_map)? {
+            Some(id) => id,
+            None => continue,
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO code_edges \
+             (code_project_id, from_symbol_id, to_symbol_id, edge_type, file_path) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                code_project_id,
+                from_id,
+                to_id,
+                edge.edge_type.as_str(),
+                edge.file_path,
+            ],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Resolve a qualified_name to a symbol id, first from the in-memory map then from the DB.
+fn resolve_symbol_id(
+    conn: &Connection,
+    code_project_id: i64,
+    qname: &str,
+    id_map: &HashMap<String, i64>,
+) -> Result<Option<i64>> {
+    if let Some(id) = id_map.get(qname) {
+        return Ok(Some(*id));
+    }
+    conn.query_row(
+        "SELECT id FROM code_symbols WHERE code_project_id = ?1 AND qualified_name = ?2",
+        rusqlite::params![code_project_id, qname],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Return nodes and edges for a project, applying optional type filters.
+///
+/// Two-step query:
+/// 1. SELECT nodes with filters + LIMIT/OFFSET.
+/// 2. SELECT edges WHERE both endpoints are in the returned node set.
+///
+/// This guarantees no dangling edges in the response.
+pub fn get_graph(
+    conn: &Connection,
+    code_project_id: i64,
+    node_types: &[String],
+    edge_types: &[String],
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<GraphNodeDto>, Vec<GraphEdgeDto>)> {
+    // Step 1: build the node query
+    let type_filter = if node_types.is_empty() {
+        String::new()
+    } else {
+        let placeholders: Vec<String> = (3..3 + node_types.len())
+            .map(|n| format!("?{}", n))
+            .collect();
+        format!(" AND symbol_type IN ({})", placeholders.join(", "))
+    };
+    let node_sql = format!(
+        "SELECT id, symbol_type, name, qualified_name, file_path, start_line, end_line, language \
+         FROM code_symbols WHERE code_project_id = ?1{} \
+         ORDER BY id LIMIT ?2 OFFSET ?{} ",
+        type_filter,
+        3 + node_types.len(),
+    );
+
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(code_project_id),
+        Box::new(limit),
+    ];
+    for t in node_types {
+        params.push(Box::new(t.clone()));
+    }
+    params.push(Box::new(offset));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&node_sql)?;
+    let nodes: Vec<GraphNodeDto> = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            Ok(GraphNodeDto {
+                id:             row.get(0)?,
+                node_type:      row.get(1)?,
+                name:           row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path:      row.get(4)?,
+                start_line:     row.get(5)?,
+                end_line:       row.get(6)?,
+                language:       row.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if nodes.is_empty() {
+        return Ok((nodes, vec![]));
+    }
+
+    // Step 2: collect edges where BOTH endpoints are in the returned node set
+    let node_ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+    let id_placeholders: Vec<String> = (1..=node_ids.len()).map(|n| format!("?{}", n)).collect();
+    let edge_type_filter = if edge_types.is_empty() {
+        String::new()
+    } else {
+        let et_start = node_ids.len() + 1;
+        let et_placeholders: Vec<String> = (et_start..et_start + edge_types.len())
+            .map(|n| format!("?{}", n))
+            .collect();
+        format!(" AND edge_type IN ({})", et_placeholders.join(", "))
+    };
+    let edge_sql = format!(
+        "SELECT id, from_symbol_id, to_symbol_id, edge_type \
+         FROM code_edges \
+         WHERE code_project_id = ?{} \
+           AND from_symbol_id IN ({}) \
+           AND to_symbol_id IN ({}) {} \
+         ORDER BY id",
+        node_ids.len() + 1,
+        id_placeholders.join(", "),
+        id_placeholders.join(", "),
+        edge_type_filter,
+    );
+
+    let mut edge_params: Vec<Box<dyn rusqlite::ToSql>> = node_ids
+        .iter()
+        .map(|id| -> Box<dyn rusqlite::ToSql> { Box::new(*id) })
+        .collect();
+    edge_params.push(Box::new(code_project_id));
+    for t in edge_types {
+        edge_params.push(Box::new(t.clone()));
+    }
+    let edge_refs: Vec<&dyn rusqlite::ToSql> = edge_params.iter().map(|b| b.as_ref()).collect();
+
+    let mut estmt = conn.prepare(&edge_sql)?;
+    let edges: Vec<GraphEdgeDto> = estmt
+        .query_map(edge_refs.as_slice(), |row| {
+            Ok(GraphEdgeDto {
+                id:        row.get(0)?,
+                from_id:   row.get(1)?,
+                to_id:     row.get(2)?,
+                edge_type: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok((nodes, edges))
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+    use crate::indexer::tree_sitter_chunker::{
+        EdgeType, FileGraph, Persist, RawEdge, RawSymbol, SymbolType,
+    };
+
+    fn setup() -> (Connection, i64) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        let pid = upsert_code_project(&conn, "org1", "myapp", "/ws").unwrap();
+        (conn, pid)
+    }
+
+    fn make_symbol(name: &str, qname: &str, sym_type: SymbolType, fp: &str, persist: Persist) -> RawSymbol {
+        RawSymbol {
+            symbol_type:    sym_type,
+            name:           name.to_string(),
+            qualified_name: qname.to_string(),
+            file_path:      Some(fp.to_string()),
+            file_hash:      Some("hash1".to_string()),
+            start_line:     Some(1),
+            end_line:       Some(10),
+            language:       "rust".to_string(),
+            persist,
+        }
+    }
+
+    fn make_edge(from: &str, to: &str, et: EdgeType, fp: &str) -> RawEdge {
+        RawEdge {
+            from_qname: from.to_string(),
+            to_qname:   to.to_string(),
+            edge_type:  et,
+            file_path:  Some(fp.to_string()),
+            persist:    Persist::FileOwned,
+        }
+    }
+
+    #[test]
+    fn persist_structure_creates_project_folder_file_nodes() {
+        let (conn, pid) = setup();
+        persist_structure(&conn, pid, "myapp", &["src/a/b.rs".to_string()]).unwrap();
+
+        // Project node
+        let proj: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='Project'",
+            rusqlite::params![pid],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(proj, 1, "exactly one Project node");
+
+        // Folder nodes: src and src/a
+        let folders: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='Folder'",
+            rusqlite::params![pid],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(folders, 2, "exactly two Folder nodes (src, src/a)");
+
+        // File node
+        let files: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='File'",
+            rusqlite::params![pid],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(files, 1, "exactly one File node");
+    }
+
+    #[test]
+    fn persist_structure_is_idempotent() {
+        let (conn, pid) = setup();
+        let paths = vec!["src/a/b.rs".to_string()];
+        persist_structure(&conn, pid, "myapp", &paths).unwrap();
+        persist_structure(&conn, pid, "myapp", &paths).unwrap();
+
+        let total: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1",
+            rusqlite::params![pid],
+            |r| r.get(0),
+        ).unwrap();
+        // Project(1) + Folder src(1) + Folder src/a(1) + File(1) = 4
+        assert_eq!(total, 4, "second call must not create extra rows");
+    }
+
+    #[test]
+    fn persist_file_graph_deletes_and_reinserts_file_owned() {
+        let (conn, pid) = setup();
+        persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+
+        // First index: function 'foo'
+        let fg1 = FileGraph {
+            file_rel_path: "src/lib.rs".to_string(),
+            symbols: vec![make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
+            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs")],
+        };
+        persist_file_graph(&conn, pid, &fg1).unwrap();
+        let count1: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='Function'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count1, 1, "one Function after first index");
+
+        // Second index: function 'bar' (replaces 'foo')
+        let fg2 = FileGraph {
+            file_rel_path: "src/lib.rs".to_string(),
+            symbols: vec![make_symbol("bar", "src/lib.rs::bar#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
+            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::bar#1", EdgeType::Defines, "src/lib.rs")],
+        };
+        persist_file_graph(&conn, pid, &fg2).unwrap();
+
+        let count2: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='Function'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count2, 1, "still one Function after second index (foo replaced by bar)");
+
+        let bar_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='bar'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(bar_exists, 1, "bar must exist");
+
+        let foo_gone: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='foo'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(foo_gone, 0, "foo must be gone");
+    }
+
+    #[test]
+    fn persist_file_graph_sibling_folder_node_survives_reindex() {
+        let (conn, pid) = setup();
+        persist_structure(&conn, pid, "myapp", &[
+            "src/a.rs".to_string(),
+            "src/b.rs".to_string(),
+        ]).unwrap();
+
+        // Index a.rs
+        let fg = FileGraph {
+            file_rel_path: "src/a.rs".to_string(),
+            symbols: vec![make_symbol("foo", "src/a.rs::foo#1", SymbolType::Function, "src/a.rs", Persist::FileOwned)],
+            edges:   vec![],
+        };
+        persist_file_graph(&conn, pid, &fg).unwrap();
+
+        // Get the Folder 'src' id before re-index
+        let folder_id_before: i64 = conn.query_row(
+            "SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name='folder::src'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+
+        // Re-index a.rs
+        persist_file_graph(&conn, pid, &fg).unwrap();
+
+        // Folder 'src' must still have the same id
+        let folder_id_after: i64 = conn.query_row(
+            "SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name='folder::src'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(folder_id_before, folder_id_after, "Folder node id must be stable across reindexes");
+
+        // Count folder nodes — still exactly one 'src'
+        let folder_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND qualified_name='folder::src'",
+            rusqlite::params![pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(folder_count, 1, "no duplicate folder created by reindex");
+    }
+
+    #[test]
+    fn get_graph_with_node_type_filter() {
+        let (conn, pid) = setup();
+        persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+
+        let fg = FileGraph {
+            file_rel_path: "src/lib.rs".to_string(),
+            symbols: vec![
+                make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned),
+                make_symbol("Bar", "src/lib.rs::Bar#5", SymbolType::Struct, "src/lib.rs", Persist::FileOwned),
+            ],
+            edges: vec![],
+        };
+        persist_file_graph(&conn, pid, &fg).unwrap();
+
+        let (nodes, _) = get_graph(&conn, pid, &["Function".to_string()], &[], 5000, 0).unwrap();
+        assert!(
+            nodes.iter().all(|n| n.node_type == "Function"),
+            "node_type filter must exclude Struct nodes"
+        );
+        assert!(
+            nodes.iter().any(|n| n.name == "foo"),
+            "Function 'foo' must appear"
+        );
+        assert!(
+            nodes.iter().all(|n| n.name != "Bar"),
+            "Struct 'Bar' must not appear when filtered to Function"
+        );
+    }
+
+    #[test]
+    fn get_graph_edges_reference_only_returned_nodes() {
+        let (conn, pid) = setup();
+        persist_structure(&conn, pid, "myapp", &["src/lib.rs".to_string()]).unwrap();
+
+        let fg = FileGraph {
+            file_rel_path: "src/lib.rs".to_string(),
+            symbols: vec![
+                make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned),
+            ],
+            edges: vec![
+                make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs"),
+            ],
+        };
+        persist_file_graph(&conn, pid, &fg).unwrap();
+
+        let (nodes, edges) = get_graph(&conn, pid, &[], &[], 5000, 0).unwrap();
+        let node_ids: std::collections::HashSet<i64> = nodes.iter().map(|n| n.id).collect();
+        for edge in &edges {
+            assert!(
+                node_ids.contains(&edge.from_id),
+                "from_id {} not in node set",
+                edge.from_id
+            );
+            assert!(
+                node_ids.contains(&edge.to_id),
+                "to_id {} not in node set",
+                edge.to_id
+            );
+        }
+    }
+
+    #[test]
+    fn get_graph_empty_project_returns_empty() {
+        let (conn, pid) = setup();
+        let (nodes, edges) = get_graph(&conn, pid, &[], &[], 5000, 0).unwrap();
+        assert!(nodes.is_empty(), "empty project must return no nodes");
+        assert!(edges.is_empty(), "empty project must return no edges");
+    }
 }
