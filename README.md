@@ -83,7 +83,7 @@ Claude Code / Cursor / any MCP client
 apps/
   backend/   # Rust + Axum API — multi-tenant, audit trail, health
   admin/     # React admin panel — users, memories, audit log, settings
-  mcp/       # TypeScript MCP server — store_memory, search_memory, list_memories
+  mcp/       # TypeScript MCP server — memory + policy tools
 scripts/
   reset-demo.sh   # wipe + reseed demo data
   test-mcp.sh     # smoke test: store → search → delete
@@ -102,6 +102,11 @@ docs/
 | `store_memory` | Save a decision, convention, finding, or any project context |
 | `search_memory` | Semantic search across your team's memories |
 | `list_memories` | Browse recent memories, filter by project or tool |
+| `list_policies` | List governance policies (model whitelist, budget, PII redaction) |
+| `create_policy` | Create a policy — `model_whitelist`, `budget_limit`, or `pii_redact` |
+| `update_policy` | Update a policy's name, config, or enabled state (`rule_type` is immutable) |
+| `delete_policy` | Delete a policy by id |
+| `check_policy` | Evaluate active policies against a prospective request |
 
 ---
 
