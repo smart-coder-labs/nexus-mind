@@ -3,8 +3,8 @@ import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from '../../test/render'
 import type { CodeProject } from '../../types'
 
-// Mock canvas-based library — jsdom has no real canvas
-vi.mock('react-force-graph-2d', () => ({
+// Mock WebGL-based library — jsdom has no real canvas/WebGL
+vi.mock('react-force-graph-3d', () => ({
   default: vi.fn(() => <div data-testid="force-graph" />),
 }))
 
@@ -85,15 +85,15 @@ describe('mapGraphData — from_id/to_id → source/target', () => {
   })
 })
 
-describe('default LOD filter — excludes Folder and External', () => {
-  it('excludes Folder nodes by default', () => {
+describe('default LOD filter — shows structural skeleton, hides External', () => {
+  it('includes Folder nodes by default (structural skeleton)', () => {
     const nodes = [
       { id: 1, type: 'File', name: 'index.ts', fp: null },
       { id: 2, type: 'Folder', name: 'src', fp: null },
       { id: 3, type: 'Function', name: 'fn', fp: null },
     ]
     const visible = filterNodesByTypes(nodes, DEFAULT_VISIBLE_TYPES)
-    expect(visible.map(n => n.type)).not.toContain('Folder')
+    expect(visible.map(n => n.type)).toContain('Folder')
   })
 
   it('excludes External nodes by default', () => {
@@ -112,8 +112,8 @@ describe('default LOD filter — excludes Folder and External', () => {
     }
   })
 
-  it('does NOT include Folder or External in the default set', () => {
-    expect(DEFAULT_VISIBLE_TYPES.has('Folder')).toBe(false)
+  it('includes Folder but hides External in the default set', () => {
+    expect(DEFAULT_VISIBLE_TYPES.has('Folder')).toBe(true)
     expect(DEFAULT_VISIBLE_TYPES.has('External')).toBe(false)
   })
 })

@@ -4,7 +4,7 @@ import { Loader2, Share2 } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext'
 import { createClient } from '../../api/client'
 import type { CodeProject } from '../../types'
-import ForceGraph2D from 'react-force-graph-2d'
+import ForceGraph3D from 'react-force-graph-3d'
 import {
   mapGraphData,
   filterNodesByTypes,
@@ -12,7 +12,6 @@ import {
   computeExternalAggregate,
   DEFAULT_VISIBLE_TYPES,
   EXTERNAL_COLLAPSE_THRESHOLD,
-  LABEL_ZOOM_THRESHOLD,
   NODE_COLORS,
   EDGE_COLORS,
   type ForceGraphNode,
@@ -41,7 +40,6 @@ export default function GraphTab({ projects }: GraphTabProps) {
   const [selectedProject, setSelectedProject] = useState('')
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(DEFAULT_VISIBLE_TYPES))
   const [expandExternals, setExpandExternals] = useState(false)
-  const [zoom, setZoom] = useState(1)
 
   const { data: graph, isLoading, isError, error } = useQuery({
     queryKey: ['code-graph', selectedProject],
@@ -81,38 +79,15 @@ export default function GraphTab({ projects }: GraphTabProps) {
     })
   }, [])
 
-  const handleZoom = useCallback(({ k }: { k: number }) => {
-    setZoom(k)
+  // Hover tooltip: symbol name + type (3D has no always-on canvas labels)
+  const nodeLabel = useCallback((node: object) => {
+    const n = node as ForceGraphNode
+    return `${n.name} · ${n.type}`
   }, [])
-
-  const nodeCanvasObject = useCallback(
-    (node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const n = node as ForceGraphNode
-      const x = n.x ?? 0
-      const y = n.y ?? 0
-      const color = NODE_COLORS[n.type] ?? '#94a3b8'
-
-      // Draw node circle
-      ctx.beginPath()
-      ctx.arc(x, y, 4, 0, 2 * Math.PI)
-      ctx.fillStyle = color
-      ctx.fill()
-
-      // Draw label only above zoom threshold
-      if (globalScale > LABEL_ZOOM_THRESHOLD) {
-        const fontSize = Math.max(6, 10 / globalScale)
-        ctx.font = `${fontSize}px sans-serif`
-        ctx.fillStyle = color
-        ctx.textAlign = 'center'
-        ctx.fillText(n.name, x, y - 6)
-      }
-    },
-    [],
-  )
 
   const linkColor = useCallback((link: object) => {
     const l = link as { type: string }
-    return EDGE_COLORS[l.type] ?? '#334155'
+    return EDGE_COLORS[l.type] ?? '#475569'
   }, [])
 
   const nodeColor = useCallback((node: object) => {
@@ -223,23 +198,27 @@ export default function GraphTab({ projects }: GraphTabProps) {
             <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
               <span>{graphData.nodes.length} nodes visible</span>
               <span>·</span>
-              <span>{graphData.links.length} edges</span>
+              <span>{graphData.links.length} edges visible</span>
               <span>·</span>
               <span>{graph.node_count} total nodes</span>
-              {zoom !== 1 && <span>· zoom {zoom.toFixed(1)}×</span>}
+              <span>·</span>
+              <span>{graph.edge_count} total edges</span>
+              <span className="ml-auto text-text-quaternary/70">drag to rotate · scroll to zoom · right-drag to pan</span>
             </div>
 
-            <ForceGraph2D
+            <ForceGraph3D
               graphData={graphData}
               nodeColor={nodeColor}
+              nodeLabel={nodeLabel}
+              nodeRelSize={4}
+              nodeOpacity={0.9}
               linkColor={linkColor}
-              nodeCanvasObject={nodeCanvasObject}
-              nodeCanvasObjectMode={() => 'replace'}
-              onZoom={handleZoom}
-              backgroundColor="#111113"
-              linkWidth={1}
-              linkDirectionalArrowLength={3}
+              linkWidth={0.5}
+              linkOpacity={0.5}
+              linkDirectionalArrowLength={2.5}
               linkDirectionalArrowRelPos={1}
+              backgroundColor="#111113"
+              showNavInfo={false}
             />
           </div>
         )
