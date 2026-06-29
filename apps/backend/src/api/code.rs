@@ -79,118 +79,112 @@ pub async fn post_index(
         })));
     }
 
-    // Determine effective root_path
-    let effective_root_path: String = if let Some(url) = &input.repo_url {
-        if url.trim().is_empty() {
-            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-                error: "repo_url must not be empty".to_string(),
-                code: "validation_error".to_string(),
-            })));
-        }
-
-        // Inject GitHub OAuth token if the URL is a GitHub HTTPS URL and a connection exists.
-        // The effective URL with token is used only for git commands and is NEVER logged or returned.
-        let effective_clone_url: String = if url.trim().starts_with("https://github.com/") {
-            let db = store.conn();
-            // Compute gh_result in an inner block so the MutexGuard is dropped before db.
-            let gh_result = {
-                match db.lock() {
-                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
-                    Err(_) => None,
-                }
-            };
-            if let Some(gh_conn) = gh_result {
-                url.trim().replacen("https://", &format!("https://oauth2:{}@", gh_conn.access_token), 1)
-            } else {
-                url.trim().to_string()
-            }
-        } else {
-            url.trim().to_string()
-        };
-
-        // Clone to /tmp/nexusmind/{org_id}/{project}
-        let clone_dir = format!("/tmp/nexusmind/{}/{}", auth.org_id, input.project.trim());
-        let path = std::path::Path::new(&clone_dir);
-        if path.join(".git").exists() {
-            // Pull latest
-            let out = git_cmd()
-                .args(["-C", &clone_dir, "pull", "--rebase", "--quiet"])
-                .output()
-                .map_err(|e| db_err(anyhow::anyhow!("git pull failed: {e}")))?;
-            if !out.status.success() {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-                    error: format!("git pull failed: {}", String::from_utf8_lossy(&out.stderr)),
-                    code: "git_error".to_string(),
-                })));
-            }
-        } else {
-            std::fs::create_dir_all(&clone_dir)
-                .map_err(|e| db_err(anyhow::anyhow!("failed to create clone dir: {e}")))?;
-            let out = git_cmd()
-                .args(["clone", "--depth=1", "--quiet", &effective_clone_url, &clone_dir])
-                .output()
-                .map_err(|e| db_err(anyhow::anyhow!("git clone failed: {e}")))?;
-            if !out.status.success() {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-                    error: format!("git clone failed: {}", String::from_utf8_lossy(&out.stderr)),
-                    code: "git_error".to_string(),
-                })));
-            }
-        }
-        clone_dir
-    } else if let Some(path) = &input.root_path {
-        if path.trim().is_empty() {
-            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-                error: "root_path must not be empty".to_string(),
-                code: "validation_error".to_string(),
-            })));
-        }
-        path.trim().to_string()
-    } else {
+    // Validate that exactly one source is provided and non-empty.
+    let has_repo = input.repo_url.as_ref().map(|u| !u.trim().is_empty()).unwrap_or(false);
+    let has_path = input.root_path.as_ref().map(|p| !p.trim().is_empty()).unwrap_or(false);
+    if input.repo_url.is_some() && !has_repo {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+            error: "repo_url must not be empty".to_string(),
+            code: "validation_error".to_string(),
+        })));
+    }
+    if input.root_path.is_some() && !has_path {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
+            error: "root_path must not be empty".to_string(),
+            code: "validation_error".to_string(),
+        })));
+    }
+    if !has_repo && !has_path {
         return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
             error: "either repo_url or root_path must be provided".to_string(),
             code: "validation_error".to_string(),
         })));
-    };
-
-    let embed_svc = store.embed_service();
-    let db = store.conn();
-
-    // Run synchronously (v1) — large repos may time out
-    let result = indexer::index_project(
-        &auth.org_id,
-        &input.project,
-        &effective_root_path,
-        &db,
-        embed_svc.as_ref(),
-    );
-
-    // On error, persist the error status before returning
-    let response = match result {
-        Ok(r) => r,
-        Err(e) => {
-            let now = Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
-            // Best-effort: look up the project id to record the error
-            if let Ok(conn) = db.lock() {
-                if let Ok(Some(proj)) = db_queries::get_code_project(&auth.org_id, &input.project, &conn) {
-                    if let Ok(pid) = proj.id.parse::<i64>() {
-                        let _ = db_queries::set_code_project_error(&conn, pid, &e.to_string(), &now);
-                    }
-                }
-            }
-            return Err(db_err(e));
-        }
-    };
-
-    // Save repo_url if provided
-    if let Some(url) = &input.repo_url {
-        let conn = db.lock().map_err(|_| lock_err())?;
-        let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &input.project, url);
     }
 
-    Ok((StatusCode::OK, Json(response)))
+    let project_name = input.project.trim().to_string();
+
+    // The effective root path is the clone dir for repos (cloned in the background)
+    // or the provided local path. We do NOT clone synchronously — large repos would
+    // block the request and time out (502).
+    let effective_root_path: String = if has_repo {
+        format!("/tmp/nexusmind/{}/{}", auth.org_id, project_name)
+    } else {
+        input.root_path.as_ref().unwrap().trim().to_string()
+    };
+
+    // Inject GitHub OAuth token before spawning. The token-bearing URL is used only
+    // for git commands and is NEVER logged or returned.
+    let effective_repo_url: Option<String> = if has_repo {
+        let url = input.repo_url.as_ref().unwrap().trim();
+        if url.starts_with("https://github.com/") {
+            let gh_result = {
+                match store.conn().lock() {
+                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
+                    Err(_) => None,
+                }
+            };
+            Some(match gh_result {
+                Some(gh) => url.replacen("https://", &format!("https://oauth2:{}@", gh.access_token), 1),
+                None => url.to_string(),
+            })
+        } else {
+            Some(url.to_string())
+        }
+    } else {
+        None
+    };
+
+    // Create/locate the project row and mark it indexing immediately, so the client
+    // gets a fast response and can poll index_status.
+    let project_id = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        let pid = db_queries::upsert_code_project(&conn, &auth.org_id, &project_name, &effective_root_path)
+            .map_err(db_err)?;
+        if let Some(url) = &input.repo_url {
+            let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &project_name, url);
+        }
+        let _ = db_queries::set_code_project_indexing(&conn, pid);
+        pid
+    };
+
+    // Spawn background clone (if needed) + index.
+    let db = store.conn();
+    let embed_svc = store.embed_service();
+    let org_id = auth.org_id.clone();
+    let spawn_project = project_name.clone();
+    let spawn_path = effective_root_path.clone();
+    tokio::spawn(async move {
+        if let Some(ref effective_url) = effective_repo_url {
+            let path = std::path::Path::new(&spawn_path);
+            if path.join(".git").exists() {
+                let _ = git_cmd()
+                    .args(["-C", &spawn_path, "pull", "--rebase", "--quiet"])
+                    .output();
+            } else {
+                let _ = std::fs::create_dir_all(&spawn_path);
+                // effective_url may contain an OAuth token — do NOT log it
+                let _ = git_cmd()
+                    .args(["clone", "--depth=1", "--quiet", effective_url, &spawn_path])
+                    .output();
+            }
+        }
+        let result = indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref());
+        if let Err(e) = result {
+            let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            if let Ok(conn) = db.lock() {
+                let _ = db_queries::set_code_project_error(&conn, project_id, &e.to_string(), &now);
+            }
+        }
+    });
+
+    Ok((StatusCode::OK, Json(IndexProjectResponse {
+        project: project_name,
+        status: "indexing_started".to_string(),
+        file_count: 0,
+        chunk_count: 0,
+        last_indexed: String::new(),
+    })))
 }
 
 /// `POST /v1/code/search`
