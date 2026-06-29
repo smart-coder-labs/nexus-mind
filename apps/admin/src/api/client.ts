@@ -22,6 +22,7 @@ import type {
   BulkDeleteResponse,
   BulkTagResponse,
   CodeSearchResult,
+  CodeGraph,
   SessionSummary,
   Webhook,
   CreateWebhookRequest,
@@ -439,6 +440,18 @@ export class NexusMindClient {
       method: 'POST',
       body: JSON.stringify({ project, query, top_k: topK, extension }),
     })
+  }
+
+  getCodeGraph(
+    project: string,
+    opts: { node_type?: string; edge_type?: string; limit?: number; offset?: number } = {},
+  ): Promise<CodeGraph> {
+    const qs = new URLSearchParams({ project })
+    if (opts.node_type) qs.set('node_type', opts.node_type)
+    if (opts.edge_type) qs.set('edge_type', opts.edge_type)
+    if (opts.limit != null) qs.set('limit', String(opts.limit))
+    if (opts.offset != null) qs.set('offset', String(opts.offset))
+    return this.request(`/v1/code/graph?${qs}`)
   }
 
   listWebhooks(): Promise<{ webhooks: Webhook[] }> {

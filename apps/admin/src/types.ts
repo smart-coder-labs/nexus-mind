@@ -514,3 +514,31 @@ export interface UpdateConventionRequest {
   weight?: number
   tags?: string[]
 }
+
+// ── Code Knowledge Graph (v41/v42) ────────────────────────────────────────────
+
+export interface GraphNode {
+  id: number
+  type: string
+  name: string
+  qualified_name: string
+  file_path: string | null
+  start_line?: number | null
+  end_line?: number | null
+  language?: string | null
+}
+
+export interface GraphEdge {
+  id: number
+  from_id: number
+  to_id: number
+  type: string
+}
+
+export interface CodeGraph {
+  project: string
+  node_count: number
+  edge_count: number
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
