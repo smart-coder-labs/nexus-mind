@@ -211,11 +211,13 @@ export default function Dashboard() {
     enabled: isAdmin,
   })
 
-  const { data: activity, isLoading: activityLoading } = useQuery({
-    queryKey: ['audit', 'recent'],
-    queryFn: () => client.getAuditLog({ limit: 20 }),
+  const [activityLimit, setActivityLimit] = useState(20)
+  const { data: activity, isLoading: activityLoading, isFetching: activityFetching } = useQuery({
+    queryKey: ['audit', 'recent', activityLimit],
+    queryFn: () => client.getAuditLog({ limit: activityLimit }),
     refetchInterval: 30_000,
     enabled: isAdmin,
+    placeholderData: (prev) => prev,
   })
 
   const { data: users } = useQuery({
@@ -602,15 +604,18 @@ export default function Dashboard() {
                             type E = typeof entries[number]
                             type Item =
                               | { kind: 'run'; entry: E; count: number; lastTimestamp: string }
-                              | { kind: 'search'; entry: E }
-                            const isRichSearch = (e: E) =>
-                              e.action.toLowerCase().includes('search') &&
-                              (Array.isArray((e.metadata as Record<string, unknown>)?.results) ||
-                                typeof (e.metadata as Record<string, unknown>)?.query === 'string')
+                              | { kind: 'detail'; entry: E }
+                            const meta = (e: E) => (e.metadata ?? {}) as Record<string, unknown>
+                            const isRich = (e: E) => {
+                              const a = e.action.toLowerCase()
+                              if (a.includes('search')) return Array.isArray(meta(e).results) || typeof meta(e).query === 'string'
+                              if (a.includes('store')) return typeof meta(e).preview === 'string' || typeof meta(e).title === 'string'
+                              return false
+                            }
                             const items: Item[] = []
                             for (const entry of entries) {
-                              if (isRichSearch(entry)) {
-                                items.push({ kind: 'search', entry })
+                              if (isRich(entry)) {
+                                items.push({ kind: 'detail', entry })
                                 continue
                               }
                               const last = items[items.length - 1]
@@ -645,11 +650,12 @@ export default function Dashboard() {
                                 />
                               )
 
-                              if (item.kind === 'search') {
-                                const md = entry.metadata as Record<string, unknown>
-                                const query = typeof md?.query === 'string' ? md.query : null
-                                const resultCount = typeof md?.result_count === 'number' ? md.result_count : null
-                                const results = (Array.isArray(md?.results) ? md.results : []) as {
+                              if (item.kind === 'detail') {
+                                const md = (entry.metadata ?? {}) as Record<string, unknown>
+                                const isSearch = entry.action.toLowerCase().includes('search')
+                                const query = typeof md.query === 'string' ? md.query : null
+                                const resultCount = typeof md.result_count === 'number' ? md.result_count : null
+                                const results = (Array.isArray(md.results) ? md.results : []) as {
                                   id?: string; title?: string; project?: string; type?: string
                                 }[]
                                 const byProject = new Map<string, typeof results>()
@@ -658,6 +664,11 @@ export default function Dashboard() {
                                   if (!byProject.has(p)) byProject.set(p, [])
                                   byProject.get(p)!.push(r)
                                 }
+                                const project = typeof md.project === 'string' ? md.project : null
+                                const title = typeof md.title === 'string' ? md.title : null
+                                const memType = typeof md.type === 'string' ? md.type : null
+                                const tags = Array.isArray(md.tags) ? (md.tags as string[]) : []
+                                const preview = typeof md.preview === 'string' ? md.preview : null
                                 const open = expandedActivity.has(entry.id)
                                 return (
                                   <li key={entry.id} className="flex items-start gap-3">
@@ -673,40 +684,68 @@ export default function Dashboard() {
                                           {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                           <Badge variant={variant} size="sm">{actionLabel}</Badge>
                                           <span className="text-text-secondary">{entry.resource_type}</span>
-                                          {query && <span className="text-text-primary truncate">“{query}”</span>}
-                                          {resultCount != null && (
+                                          {isSearch && query && <span className="text-text-primary truncate">“{query}”</span>}
+                                          {isSearch && resultCount != null && (
                                             <span className="text-[10px] text-text-quaternary tabular-nums">· {resultCount} result{resultCount === 1 ? '' : 's'}</span>
                                           )}
+                                          {!isSearch && project && (
+                                            <span className="text-text-quaternary">in <span className="text-text-secondary">{project}</span></span>
+                                          )}
+                                          {!isSearch && title && <span className="text-text-primary truncate">— {title}</span>}
                                         </span>
                                         <time dateTime={entry.timestamp} className="shrink-0 text-[10px] text-text-quaternary tabular-nums" title={formatAbsTime(entry.timestamp)}>
                                           {relativeTime(entry.timestamp)}
                                         </time>
                                       </button>
                                       {open && (
-                                        <div className="mt-2 ml-1.5 pl-3 border-l border-border-primary space-y-2 text-[11px]">
-                                          {query && (
-                                            <p className="text-text-quaternary">query: <span className="text-text-secondary">“{query}”</span></p>
-                                          )}
-                                          {results.length > 0 ? (
-                                            <div className="space-y-1.5">
-                                              <p className="text-text-quaternary">returned:</p>
-                                              {[...byProject.entries()].map(([project, rs]) => (
-                                                <div key={project} className="ml-1">
-                                                  <p className="text-text-secondary flex items-center gap-1">
-                                                    <FolderOpen className="w-3 h-3 shrink-0" />
-                                                    <span className="truncate">{project}</span>
-                                                    <span className="text-text-quaternary">({rs.length})</span>
-                                                  </p>
-                                                  <ul className="ml-4 mt-0.5 space-y-0.5">
-                                                    {rs.map((r, i) => (
-                                                      <li key={r.id ?? i} className="text-text-quaternary truncate">• {r.title || r.id}</li>
-                                                    ))}
-                                                  </ul>
+                                        <div className="mt-2 ml-1.5 pl-3 border-l border-border-primary space-y-1.5 text-[11px]">
+                                          {isSearch ? (
+                                            <>
+                                              {query && <p className="text-text-quaternary">query: <span className="text-text-secondary">“{query}”</span></p>}
+                                              {results.length > 0 ? (
+                                                <div className="space-y-1.5">
+                                                  <p className="text-text-quaternary">returned:</p>
+                                                  {[...byProject.entries()].map(([proj, rs]) => (
+                                                    <div key={proj} className="ml-1">
+                                                      <p className="text-text-secondary flex items-center gap-1">
+                                                        <FolderOpen className="w-3 h-3 shrink-0" />
+                                                        <span className="truncate">{proj}</span>
+                                                        <span className="text-text-quaternary">({rs.length})</span>
+                                                      </p>
+                                                      <ul className="ml-4 mt-0.5 space-y-0.5">
+                                                        {rs.map((r, i) => (
+                                                          <li key={r.id ?? i} className="text-text-quaternary truncate">• {r.title || r.id}</li>
+                                                        ))}
+                                                      </ul>
+                                                    </div>
+                                                  ))}
                                                 </div>
-                                              ))}
-                                            </div>
+                                              ) : (
+                                                <p className="text-text-quaternary">no results captured for this search</p>
+                                              )}
+                                            </>
                                           ) : (
-                                            <p className="text-text-quaternary">no results captured for this search</p>
+                                            <>
+                                              {project && (
+                                                <p className="text-text-quaternary flex items-center gap-1">
+                                                  <FolderOpen className="w-3 h-3 shrink-0" />
+                                                  <span className="text-text-secondary truncate">{project}</span>
+                                                </p>
+                                              )}
+                                              {title && <p className="text-text-quaternary">title: <span className="text-text-secondary">{title}</span></p>}
+                                              {memType && <p className="text-text-quaternary">type: <span className="text-text-secondary">{memType}</span></p>}
+                                              {tags.length > 0 && (
+                                                <div className="flex flex-wrap gap-1 items-center">
+                                                  <span className="text-text-quaternary">tags:</span>
+                                                  {tags.map(t => (
+                                                    <span key={t} className="px-1.5 py-0.5 rounded-full bg-white/[0.06] text-text-secondary">{t}</span>
+                                                  ))}
+                                                </div>
+                                              )}
+                                              {preview && (
+                                                <p className="text-text-quaternary line-clamp-3 whitespace-pre-wrap">{preview}</p>
+                                              )}
+                                            </>
                                           )}
                                         </div>
                                       )}
@@ -745,6 +784,18 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
+                  {activity.length >= activityLimit && (
+                    <div className="pt-1 pl-5">
+                      <button
+                        type="button"
+                        onClick={() => setActivityLimit(l => l + 20)}
+                        disabled={activityFetching}
+                        className="text-[11px] text-text-quaternary hover:text-text-secondary transition-colors disabled:opacity-50"
+                      >
+                        {activityFetching ? 'Loading…' : 'Show more'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             })()}
