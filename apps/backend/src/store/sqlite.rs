@@ -69,7 +69,14 @@ impl MemoryStore for SqliteStore {
             "store",
             "memory",
             Some(&memory.id),
-            serde_json::json!({ "tool": memory.tool, "project": memory.project }),
+            serde_json::json!({
+                "tool": memory.tool,
+                "project": memory.project,
+                "title": memory.title,
+                "type": memory.memory_type,
+                "tags": memory.tags,
+                "preview": memory.content.chars().take(160).collect::<String>(),
+            }),
         );
 
         // Embed the content and persist the vector (best-effort — never fail the store call).

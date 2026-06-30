@@ -286,10 +286,13 @@ export class NexusMindClient {
     })
   }
 
-  listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {
+  async listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {
     const params = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v != null && params.set(k, String(v)))
-    return this.request(`/v1/memory?${params}`)
+    // The endpoint returns a paginated MemoryPage ({ memories, total, ... });
+    // unwrap to the array (tolerating a bare array for backward compatibility).
+    const res = await this.request<Memory[] | { memories?: Memory[] }>(`/v1/memory?${params}`)
+    return Array.isArray(res) ? res : (res?.memories ?? [])
   }
 
   getMemory(id: string): Promise<Memory> {
@@ -303,11 +306,13 @@ export class NexusMindClient {
     })
   }
 
-  searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
-    return this.request('/v1/memory/search', {
+  async searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
+    // /v1/memory/search returns a paginated MemoryPage — unwrap to the array.
+    const res = await this.request<Memory[] | { memories?: Memory[] }>('/v1/memory/search', {
       method: 'POST',
       body: JSON.stringify({ query, limit, mode }),
     })
+    return Array.isArray(res) ? res : (res?.memories ?? [])
   }
 
   deleteMemory(id: string): Promise<void> {
