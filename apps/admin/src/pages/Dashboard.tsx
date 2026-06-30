@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { Badge } from '@/components/ui/Badge/Badge'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 
 type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends' | 'memory-health'
@@ -173,6 +173,15 @@ export default function Dashboard() {
   })
   const [showCustomize, setShowCustomize] = useState(false)
   const customizeRef = useRef<HTMLDivElement>(null)
+  // Expanded activity rows (rich search events drill down into a result tree)
+  const [expandedActivity, setExpandedActivity] = useState<Set<string>>(new Set())
+  const toggleActivity = (id: string) =>
+    setExpandedActivity(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const toggleCard = (key: CardKey) => {
     setHiddenCards(prev => {
@@ -584,17 +593,49 @@ export default function Dashboard() {
                           className="absolute left-[7px] top-2 bottom-2 w-px bg-border-primary"
                           aria-hidden="true"
                         />
-                        <ul className="space-y-3">
-                          {entries.map((entry) => {
-                            const displayName =
-                              userMap.get(entry.user_id) ??
-                              (entry.metadata?.user_email as string | undefined) ??
-                              'System'
-                            const variant = timelineActionVariant(entry.action)
-                            const actionLabel = entry.action.split('.').pop() ?? entry.action
-                            return (
-                              <li key={entry.id} className="flex items-start gap-3 group">
-                                {/* Colored timeline dot */}
+                        <ul className="space-y-2.5">
+                          {/* Rich search events (with a query + returned results) render as
+                              an expandable tree drilling into results grouped by project.
+                              Plain events collapse consecutive identical ones into one "×N"
+                              row so bursts don't read as a wall of identical lines. */}
+                          {(() => {
+                            type E = typeof entries[number]
+                            type Item =
+                              | { kind: 'run'; entry: E; count: number; lastTimestamp: string }
+                              | { kind: 'search'; entry: E }
+                            const isRichSearch = (e: E) =>
+                              e.action.toLowerCase().includes('search') &&
+                              (Array.isArray((e.metadata as Record<string, unknown>)?.results) ||
+                                typeof (e.metadata as Record<string, unknown>)?.query === 'string')
+                            const items: Item[] = []
+                            for (const entry of entries) {
+                              if (isRichSearch(entry)) {
+                                items.push({ kind: 'search', entry })
+                                continue
+                              }
+                              const last = items[items.length - 1]
+                              if (
+                                last && last.kind === 'run' &&
+                                last.entry.user_id === entry.user_id &&
+                                last.entry.action === entry.action &&
+                                last.entry.resource_type === entry.resource_type &&
+                                typeof (entry.metadata as Record<string, unknown>)?.description !== 'string'
+                              ) {
+                                last.count += 1
+                                last.lastTimestamp = entry.timestamp
+                              } else {
+                                items.push({ kind: 'run', entry, count: 1, lastTimestamp: entry.timestamp })
+                              }
+                            }
+                            return items.map((item) => {
+                              const entry = item.entry
+                              const displayName =
+                                userMap.get(entry.user_id) ??
+                                (entry.metadata?.user_email as string | undefined) ??
+                                'System'
+                              const variant = timelineActionVariant(entry.action)
+                              const actionLabel = entry.action.split('.').pop() ?? entry.action
+                              const dot = (
                                 <div
                                   className={cn(
                                     'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-[#272729] relative z-10',
@@ -602,44 +643,104 @@ export default function Dashboard() {
                                   )}
                                   aria-hidden="true"
                                 />
-                                {/* Event content */}
-                                <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1">
-                                      {displayName !== 'System' && (
-                                        <span className="font-semibold">{displayName}</span>
+                              )
+
+                              if (item.kind === 'search') {
+                                const md = entry.metadata as Record<string, unknown>
+                                const query = typeof md?.query === 'string' ? md.query : null
+                                const resultCount = typeof md?.result_count === 'number' ? md.result_count : null
+                                const results = (Array.isArray(md?.results) ? md.results : []) as {
+                                  id?: string; title?: string; project?: string; type?: string
+                                }[]
+                                const byProject = new Map<string, typeof results>()
+                                for (const r of results) {
+                                  const p = r.project || 'unknown'
+                                  if (!byProject.has(p)) byProject.set(p, [])
+                                  byProject.get(p)!.push(r)
+                                }
+                                const open = expandedActivity.has(entry.id)
+                                return (
+                                  <li key={entry.id} className="flex items-start gap-3">
+                                    {dot}
+                                    <div className="flex-1 min-w-0 max-w-2xl">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleActivity(entry.id)}
+                                        className="w-full flex items-baseline justify-between gap-3 text-left"
+                                      >
+                                        <span className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                          <ChevronRight className={cn('w-3 h-3 text-text-quaternary transition-transform shrink-0', open && 'rotate-90')} />
+                                          {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
+                                          <Badge variant={variant} size="sm">{actionLabel}</Badge>
+                                          <span className="text-text-secondary">{entry.resource_type}</span>
+                                          {query && <span className="text-text-primary truncate">“{query}”</span>}
+                                          {resultCount != null && (
+                                            <span className="text-[10px] text-text-quaternary tabular-nums">· {resultCount} result{resultCount === 1 ? '' : 's'}</span>
+                                          )}
+                                        </span>
+                                        <time dateTime={entry.timestamp} className="shrink-0 text-[10px] text-text-quaternary tabular-nums" title={formatAbsTime(entry.timestamp)}>
+                                          {relativeTime(entry.timestamp)}
+                                        </time>
+                                      </button>
+                                      {open && (
+                                        <div className="mt-2 ml-1.5 pl-3 border-l border-border-primary space-y-2 text-[11px]">
+                                          {query && (
+                                            <p className="text-text-quaternary">query: <span className="text-text-secondary">“{query}”</span></p>
+                                          )}
+                                          {results.length > 0 ? (
+                                            <div className="space-y-1.5">
+                                              <p className="text-text-quaternary">returned:</p>
+                                              {[...byProject.entries()].map(([project, rs]) => (
+                                                <div key={project} className="ml-1">
+                                                  <p className="text-text-secondary flex items-center gap-1">
+                                                    <FolderOpen className="w-3 h-3 shrink-0" />
+                                                    <span className="truncate">{project}</span>
+                                                    <span className="text-text-quaternary">({rs.length})</span>
+                                                  </p>
+                                                  <ul className="ml-4 mt-0.5 space-y-0.5">
+                                                    {rs.map((r, i) => (
+                                                      <li key={r.id ?? i} className="text-text-quaternary truncate">• {r.title || r.id}</li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            <p className="text-text-quaternary">no results captured for this search</p>
+                                          )}
+                                        </div>
                                       )}
+                                    </div>
+                                  </li>
+                                )
+                              }
+
+                              const { count, lastTimestamp } = item
+                              return (
+                                <li key={entry.id} className="flex items-start gap-3 group">
+                                  {dot}
+                                  <div className="flex-1 min-w-0 flex items-baseline justify-between gap-3 max-w-2xl">
+                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                      {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                       <Badge variant={variant} size="sm">{actionLabel}</Badge>
-                                      {entry.resource_type && (
-                                        <span className="text-text-secondary">{entry.resource_type}</span>
+                                      {entry.resource_type && <span className="text-text-secondary">{entry.resource_type}</span>}
+                                      {count > 1 && (
+                                        <span className="text-[10px] font-semibold text-text-quaternary tabular-nums">×{count}</span>
+                                      )}
+                                      {typeof entry.metadata?.description === 'string' && (
+                                        <span className="text-text-quaternary truncate">— {entry.metadata.description}</span>
                                       )}
                                     </p>
-                                    {typeof entry.metadata?.description === 'string' && (
-                                      <p className="text-[10px] text-text-quaternary mt-0.5 truncate">
-                                        {entry.metadata.description}
-                                      </p>
-                                    )}
-                                  </div>
-                                  {/* Relative + absolute timestamps */}
-                                  <div className="shrink-0 text-right">
-                                    <time
-                                      dateTime={entry.timestamp}
-                                      className="text-[10px] text-text-quaternary block"
-                                      title={formatAbsTime(entry.timestamp)}
-                                    >
-                                      {relativeTime(entry.timestamp)}
-                                    </time>
-                                    <time
-                                      dateTime={entry.timestamp}
-                                      className="text-[10px] text-text-quaternary/60 block opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                      {formatAbsTime(entry.timestamp)}
+                                    <time dateTime={entry.timestamp} className="shrink-0 text-[10px] text-text-quaternary tabular-nums" title={formatAbsTime(entry.timestamp)}>
+                                      {count > 1
+                                        ? `${relativeTime(lastTimestamp)} – ${relativeTime(entry.timestamp)}`
+                                        : relativeTime(entry.timestamp)}
                                     </time>
                                   </div>
-                                </div>
-                              </li>
-                            )
-                          })}
+                                </li>
+                              )
+                            })
+                          })()}
                         </ul>
                       </div>
                     </div>
