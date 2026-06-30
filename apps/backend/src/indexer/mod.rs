@@ -107,10 +107,16 @@ pub fn index_project(
             continue;
         }
 
+        // Read content on demand — the walker holds only paths, so a huge repo is
+        // never loaded into memory at once. One file's content lives at a time.
+        let (content, hash) = match walker::read_file(&file_meta.path) {
+            Some(ch) => ch,
+            None => continue, // binary / unreadable
+        };
         let language = file_meta.language.as_deref();
         let unchanged = stored_hashes
             .get(&rel_path)
-            .map(|h| h == &file_meta.hash)
+            .map(|h| h == &hash)
             .unwrap_or(false);
 
         if unchanged {
@@ -128,7 +134,7 @@ pub fn index_project(
             };
             if needs_graph_backfill {
                 let (_chunks, file_graph) = chunker
-                    .chunk_with_graph(&rel_path, &file_meta.hash, language, &file_meta.content, &known_files);
+                    .chunk_with_graph(&rel_path, &hash, language, &content, &known_files);
                 if let Some(fg) = file_graph {
                     let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                     if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
@@ -139,7 +145,7 @@ pub fn index_project(
             if needs_source {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                 let _ = db_queries::upsert_code_file(
-                    &conn, code_project_id, &rel_path, &file_meta.content, &file_meta.hash,
+                    &conn, code_project_id, &rel_path, &content, &hash,
                 );
             }
             let existing_count = {
@@ -153,7 +159,7 @@ pub fn index_project(
 
         // Changed file: extract + persist graph + store source now; defer embedding.
         let (raw_chunks, file_graph) =
-            chunker.chunk_with_graph(&rel_path, &file_meta.hash, language, &file_meta.content, &known_files);
+            chunker.chunk_with_graph(&rel_path, &hash, language, &content, &known_files);
         if let Some(fg) = file_graph {
             let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
             if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
@@ -163,7 +169,7 @@ pub fn index_project(
         {
             let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
             let _ = db_queries::upsert_code_file(
-                &conn, code_project_id, &rel_path, &file_meta.content, &file_meta.hash,
+                &conn, code_project_id, &rel_path, &content, &hash,
             );
         }
         files_indexed += 1;
@@ -190,14 +196,18 @@ pub fn index_project(
 
     // ── PASS 2: embeddings for changed files (slow — powers semantic search) ──
     // Runs after the graph is complete, so the graph is available long before this
-    // finishes. Re-chunks from the already-in-memory file content (no extra reads).
-    // Skipped entirely in `graph_only` mode for codebase-memory-style fast indexing
-    // (structure/graph only, no semantic search).
+    // finishes. Re-reads each file's content on demand (one at a time — bounded
+    // memory). Skipped entirely in `graph_only` mode for codebase-memory-style fast
+    // indexing (structure/graph only, no semantic search).
     if !graph_only {
         for (idx, rel_path) in &changed {
             let file_meta = &files[*idx];
             let language = file_meta.language.as_deref();
-            let raw_chunks = chunker.chunk(rel_path, &file_meta.hash, language, &file_meta.content);
+            let (content, hash) = match walker::read_file(&file_meta.path) {
+                Some(ch) => ch,
+                None => continue,
+            };
+            let raw_chunks = chunker.chunk(rel_path, &hash, language, &content);
             if raw_chunks.is_empty() {
                 continue;
             }
