@@ -114,12 +114,17 @@ pub fn index_project(
             .unwrap_or(false);
 
         if unchanged {
-            // Backfill graph only when missing (projects indexed before the graph
-            // feature have chunks but no code symbols). Avoids re-parsing in steady state.
-            let needs_graph_backfill = {
+            // Backfill graph + source only when missing (projects indexed before
+            // these features). Avoids re-parsing / re-writing in steady state.
+            let (needs_graph_backfill, needs_source) = {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                !db_queries::file_has_graph_symbols(&conn, code_project_id, &rel_path)
-                    .unwrap_or(false)
+                (
+                    !db_queries::file_has_graph_symbols(&conn, code_project_id, &rel_path)
+                        .unwrap_or(false),
+                    db_queries::get_code_file(&conn, code_project_id, &rel_path)
+                        .map(|o| o.is_none())
+                        .unwrap_or(true),
+                )
             };
             if needs_graph_backfill {
                 let (_chunks, file_graph) = chunker
@@ -131,6 +136,12 @@ pub fn index_project(
                     }
                 }
             }
+            if needs_source {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                let _ = db_queries::upsert_code_file(
+                    &conn, code_project_id, &rel_path, &file_meta.content, &file_meta.hash,
+                );
+            }
             let existing_count = {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                 db_queries::count_chunks_for_file(&conn, code_project_id, &rel_path)?
@@ -140,7 +151,7 @@ pub fn index_project(
             continue;
         }
 
-        // Changed file: extract + persist graph now; defer embedding to pass 2.
+        // Changed file: extract + persist graph + store source now; defer embedding.
         let (raw_chunks, file_graph) =
             chunker.chunk_with_graph(&rel_path, &file_meta.hash, language, &file_meta.content, &known_files);
         if let Some(fg) = file_graph {
@@ -148,6 +159,12 @@ pub fn index_project(
             if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
                 tracing::warn!("Failed to persist graph for {rel_path}: {e}");
             }
+        }
+        {
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            let _ = db_queries::upsert_code_file(
+                &conn, code_project_id, &rel_path, &file_meta.content, &file_meta.hash,
+            );
         }
         files_indexed += 1;
         if raw_chunks.is_empty() {
