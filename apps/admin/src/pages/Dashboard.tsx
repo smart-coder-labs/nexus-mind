@@ -584,28 +584,48 @@ export default function Dashboard() {
                           className="absolute left-[7px] top-2 bottom-2 w-px bg-border-primary"
                           aria-hidden="true"
                         />
-                        <ul className="space-y-3">
-                          {entries.map((entry) => {
-                            const displayName =
-                              userMap.get(entry.user_id) ??
-                              (entry.metadata?.user_email as string | undefined) ??
-                              'System'
-                            const variant = timelineActionVariant(entry.action)
-                            const actionLabel = entry.action.split('.').pop() ?? entry.action
-                            return (
-                              <li key={entry.id} className="flex items-start gap-3 group">
-                                {/* Colored timeline dot */}
-                                <div
-                                  className={cn(
-                                    'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-[#272729] relative z-10',
-                                    timelineDotClass(entry.action)
-                                  )}
-                                  aria-hidden="true"
-                                />
-                                {/* Event content */}
-                                <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1">
+                        <ul className="space-y-2.5">
+                          {/* Collapse consecutive identical events (same user + action +
+                              resource) into one row with a count, so a burst of N searches
+                              reads as a single "×N" item instead of N identical rows. */}
+                          {(() => {
+                            type Run = { entry: typeof entries[number]; count: number; lastTimestamp: string }
+                            const runs: Run[] = []
+                            for (const entry of entries) {
+                              const last = runs[runs.length - 1]
+                              if (
+                                last &&
+                                last.entry.user_id === entry.user_id &&
+                                last.entry.action === entry.action &&
+                                last.entry.resource_type === entry.resource_type &&
+                                typeof entry.metadata?.description !== 'string'
+                              ) {
+                                last.count += 1
+                                last.lastTimestamp = entry.timestamp
+                              } else {
+                                runs.push({ entry, count: 1, lastTimestamp: entry.timestamp })
+                              }
+                            }
+                            return runs.map(({ entry, count, lastTimestamp }) => {
+                              const displayName =
+                                userMap.get(entry.user_id) ??
+                                (entry.metadata?.user_email as string | undefined) ??
+                                'System'
+                              const variant = timelineActionVariant(entry.action)
+                              const actionLabel = entry.action.split('.').pop() ?? entry.action
+                              return (
+                                <li key={entry.id} className="flex items-start gap-3 group">
+                                  {/* Colored timeline dot */}
+                                  <div
+                                    className={cn(
+                                      'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-[#272729] relative z-10',
+                                      timelineDotClass(entry.action)
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  {/* Event content — capped width so the timestamp sits close, not far right */}
+                                  <div className="flex-1 min-w-0 flex items-baseline justify-between gap-3 max-w-2xl">
+                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
                                       {displayName !== 'System' && (
                                         <span className="font-semibold">{displayName}</span>
                                       )}
@@ -613,33 +633,30 @@ export default function Dashboard() {
                                       {entry.resource_type && (
                                         <span className="text-text-secondary">{entry.resource_type}</span>
                                       )}
+                                      {count > 1 && (
+                                        <span className="text-[10px] font-semibold text-text-quaternary tabular-nums">
+                                          ×{count}
+                                        </span>
+                                      )}
+                                      {typeof entry.metadata?.description === 'string' && (
+                                        <span className="text-text-quaternary truncate">— {entry.metadata.description}</span>
+                                      )}
                                     </p>
-                                    {typeof entry.metadata?.description === 'string' && (
-                                      <p className="text-[10px] text-text-quaternary mt-0.5 truncate">
-                                        {entry.metadata.description}
-                                      </p>
-                                    )}
-                                  </div>
-                                  {/* Relative + absolute timestamps */}
-                                  <div className="shrink-0 text-right">
+                                    {/* Relative time (range when collapsed); absolute on hover */}
                                     <time
                                       dateTime={entry.timestamp}
-                                      className="text-[10px] text-text-quaternary block"
+                                      className="shrink-0 text-[10px] text-text-quaternary tabular-nums"
                                       title={formatAbsTime(entry.timestamp)}
                                     >
-                                      {relativeTime(entry.timestamp)}
-                                    </time>
-                                    <time
-                                      dateTime={entry.timestamp}
-                                      className="text-[10px] text-text-quaternary/60 block opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                      {formatAbsTime(entry.timestamp)}
+                                      {count > 1
+                                        ? `${relativeTime(lastTimestamp)} – ${relativeTime(entry.timestamp)}`
+                                        : relativeTime(entry.timestamp)}
                                     </time>
                                   </div>
-                                </div>
-                              </li>
-                            )
-                          })}
+                                </li>
+                              )
+                            })
+                          })()}
                         </ul>
                       </div>
                     </div>
