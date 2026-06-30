@@ -3,6 +3,7 @@ pub mod tree_sitter_chunker;
 pub mod walker;
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +14,7 @@ use crate::{
     embed::{self, EmbedService},
     indexer::{
         chunker::Chunker,
-        tree_sitter_chunker::TreeSitterChunker,
+        tree_sitter_chunker::{FileGraph, TreeSitterChunker},
         walker::walk_files,
     },
     models::types::{CodeProject, IndexProjectResponse},
@@ -92,106 +93,109 @@ pub fn index_project(
     // Changed files needing (re-)embedding in pass 2: (index into `files`, rel_path).
     let mut changed: Vec<(usize, String)> = Vec::new();
 
+    // Files already fully indexed (have both graph symbols and stored source) are
+    // skipped without re-parsing when unchanged. Loaded once (cheap) for the run.
+    let (complete_graph, complete_source) = {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        (
+            db_queries::list_files_with_symbols(&conn, code_project_id).unwrap_or_default(),
+            db_queries::list_files_with_source(&conn, code_project_id).unwrap_or_default(),
+        )
+    };
+
     // ── PASS 1: graph extraction for ALL files (fast — AST only, no embeddings) ──
-    // The structural + symbol graph is built from a single tree-sitter parse per
-    // file and is queryable as soon as this pass finishes, independent of the slow
-    // embedding pass below.
-    for (idx, file_meta) in files.iter().enumerate() {
-        let rel_path = file_meta.path
-            .strip_prefix(root_path)
-            .unwrap_or(&file_meta.path)
-            .trim_start_matches('/')
-            .to_string();
+    // Tree-sitter parsing is CPU-bound and embarrassingly parallel, so each batch of
+    // files is parsed across cores (rayon); persistence stays serial (single SQLite
+    // writer). Batching bounds peak memory to one batch of file contents at a time.
+    struct Parsed {
+        idx: usize,
+        rel_path: String,
+        content: String,
+        hash: String,
+        unchanged: bool,
+        fg: Option<FileGraph>,
+        has_chunks: bool,
+        skip: bool,
+    }
 
-        if exclude_patterns.iter().any(|pat| rel_path.contains(pat.as_str())) {
-            continue;
-        }
+    const BATCH: usize = 256;
+    let mut start = 0usize;
+    while start < files.len() {
+        let end = (start + BATCH).min(files.len());
 
-        // Read content on demand — the walker holds only paths, so a huge repo is
-        // never loaded into memory at once. One file's content lives at a time.
-        let (content, hash) = match walker::read_file(&file_meta.path) {
-            Some(ch) => ch,
-            None => continue, // binary / unreadable
-        };
-        let language = file_meta.language.as_deref();
-        let unchanged = stored_hashes
-            .get(&rel_path)
-            .map(|h| h == &hash)
-            .unwrap_or(false);
+        // Parallel: read + parse each file in the batch (no DB access here).
+        let parsed: Vec<Parsed> = (start..end)
+            .into_par_iter()
+            .filter_map(|idx| {
+                let file_meta = &files[idx];
+                let rel_path = file_meta
+                    .path
+                    .strip_prefix(root_path)
+                    .unwrap_or(&file_meta.path)
+                    .trim_start_matches('/')
+                    .to_string();
+                if exclude_patterns.iter().any(|pat| rel_path.contains(pat.as_str())) {
+                    return None;
+                }
+                let (content, hash) = walker::read_file(&file_meta.path)?;
+                let unchanged = stored_hashes.get(&rel_path).map(|h| h == &hash).unwrap_or(false);
+                // Already complete and unchanged → don't re-parse, just count later.
+                if unchanged
+                    && complete_graph.contains(&rel_path)
+                    && complete_source.contains(&rel_path)
+                {
+                    return Some(Parsed {
+                        idx, rel_path, content: String::new(), hash,
+                        unchanged, fg: None, has_chunks: false, skip: true,
+                    });
+                }
+                let (raw_chunks, fg) = chunker.chunk_with_graph(
+                    &rel_path, &hash, file_meta.language.as_deref(), &content, &known_files,
+                );
+                Some(Parsed {
+                    idx, rel_path, content, hash, unchanged, fg,
+                    has_chunks: !raw_chunks.is_empty(), skip: false,
+                })
+            })
+            .collect();
 
-        if unchanged {
-            // Backfill graph + source only when missing (projects indexed before
-            // these features). Avoids re-parsing / re-writing in steady state.
-            let (needs_graph_backfill, needs_source) = {
+        // Serial: persist the batch (per-op lock keeps the health endpoint responsive).
+        for p in parsed {
+            if p.skip {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                (
-                    !db_queries::file_has_graph_symbols(&conn, code_project_id, &rel_path)
-                        .unwrap_or(false),
-                    db_queries::get_code_file(&conn, code_project_id, &rel_path)
-                        .map(|o| o.is_none())
-                        .unwrap_or(true),
-                )
-            };
-            if needs_graph_backfill {
-                let (_chunks, file_graph) = chunker
-                    .chunk_with_graph(&rel_path, &hash, language, &content, &known_files);
-                if let Some(fg) = file_graph {
-                    let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                    if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
-                        tracing::warn!("Failed to backfill graph for {rel_path}: {e}");
-                    }
+                total_chunks += db_queries::count_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
+                files_indexed += 1;
+                continue;
+            }
+            if let Some(fg) = &p.fg {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, fg) {
+                    tracing::warn!("Failed to persist graph for {}: {e}", p.rel_path);
                 }
             }
-            if needs_source {
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                let _ = db_queries::upsert_code_file(
-                    &conn, code_project_id, &rel_path, &content, &hash,
-                );
-            }
-            let existing_count = {
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                db_queries::count_chunks_for_file(&conn, code_project_id, &rel_path)?
-            };
-            total_chunks += existing_count;
-            files_indexed += 1;
-            continue;
-        }
-
-        // Changed file: extract + persist graph + store source now; defer embedding.
-        let (raw_chunks, file_graph) =
-            chunker.chunk_with_graph(&rel_path, &hash, language, &content, &known_files);
-        if let Some(fg) = file_graph {
-            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            if let Err(e) = db_queries::persist_file_graph(&conn, code_project_id, &fg) {
-                tracing::warn!("Failed to persist graph for {rel_path}: {e}");
-            }
-        }
-        {
-            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            let _ = db_queries::upsert_code_file(
-                &conn, code_project_id, &rel_path, &content, &hash,
-            );
-        }
-        files_indexed += 1;
-        if raw_chunks.is_empty() {
-            continue;
-        }
-        if graph_only {
-            // Leave existing search chunks untouched — embeddings are skipped, so
-            // re-chunking would strip the searchable content. Just count what's there.
-            let existing = {
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                db_queries::count_chunks_for_file(&conn, code_project_id, &rel_path)?
-            };
-            total_chunks += existing;
-        } else {
             {
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                db_queries::delete_chunks_for_file(&conn, code_project_id, &rel_path)?;
+                let _ = db_queries::upsert_code_file(
+                    &conn, code_project_id, &p.rel_path, &p.content, &p.hash,
+                );
             }
-            total_chunks += raw_chunks.len() as i64;
-            changed.push((idx, rel_path));
+            files_indexed += 1;
+            if !p.has_chunks {
+                continue;
+            }
+            if p.unchanged || graph_only {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                total_chunks += db_queries::count_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
+            } else {
+                {
+                    let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                    db_queries::delete_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
+                }
+                changed.push((p.idx, p.rel_path));
+            }
         }
+
+        start = end;
     }
 
     // ── PASS 2: embeddings for changed files (slow — powers semantic search) ──

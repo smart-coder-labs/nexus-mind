@@ -30,4 +30,5 @@ primary_region = "ord"
   # machine during indexing. 1GB gives headroom for the model + repo content + SQLite.
   memory = "1024mb"
   cpu_kind = "shared"
-  cpus = 1
+  # Multiple cores so the indexer can parse files in parallel (rayon).
+  cpus = 4

@@ -3362,6 +3362,33 @@ pub fn upsert_code_file(
     Ok(())
 }
 
+/// Returns the set of file paths that already have stored source (code_files).
+pub fn list_files_with_source(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path FROM code_files WHERE code_project_id = ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
+/// Returns the set of file paths that already have file-owned code symbols.
+pub fn list_files_with_symbols(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT file_path FROM code_symbols \
+         WHERE code_project_id = ?1 \
+           AND symbol_type NOT IN ('File','Folder','Project','External') \
+           AND file_path IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
 /// Returns the stored raw source of a file, if present.
 pub fn get_code_file(
     conn: &Connection,
