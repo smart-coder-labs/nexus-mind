@@ -191,6 +191,20 @@ pub fn build(conn: Connection, config: Config) -> Router {
                 if origin_str == admin_origin {
                     return true;
                 }
+                // Allow Cloudflare Pages preview deployments of our own frontends.
+                // Preview URLs carry a per-deploy hash prefix (e.g.
+                // https://ded118df.nexusmind-backoffice.pages.dev), so an exact
+                // allowlist can't keep up — match the project suffix instead.
+                const PAGES_PREVIEW_SUFFIXES: &[&str] = &[
+                    ".nexusmind-backoffice.pages.dev",
+                    ".nexusmind-admin.pages.dev",
+                    ".nexusmind-landing.pages.dev",
+                ];
+                if origin_str.starts_with("https://")
+                    && PAGES_PREVIEW_SUFFIXES.iter().any(|s| origin_str.ends_with(s))
+                {
+                    return true;
+                }
                 cors_origins.split(',').any(|allowed| allowed.trim() == origin_str)
             },
         ))
