@@ -3,10 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
-import { StatisticDisplay } from '@/components/ui/StatisticDisplay/StatisticDisplay'
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
-import { ActivityItem } from '../components/ActivityItem'
+import { Badge } from '@/components/ui/Badge/Badge'
 import { cn } from '@/lib/utils'
 import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
@@ -107,6 +106,53 @@ function activityIcon(action: string) {
   if (action.startsWith('convention.')) return BookMarked
   if (action.startsWith('webhook.')) return Webhook
   return Activity
+}
+
+// --- Stat pill badge accent mapping ---
+const BADGE_ACCENT: Record<string, string> = {
+  'total-memories': 'bg-status-success/10 border-status-success/20',
+  'active-users':   'bg-accent-blue/10 border-accent-blue/20',
+  'searches-today': 'bg-accent-blue/[0.07] border-accent-blue/[0.14]',
+  'top-tool':       'bg-white/[0.06] border-border-primary',
+  'total-sessions': 'bg-status-warning/10 border-status-warning/20',
+  'this-week':      'bg-status-success/[0.07] border-status-success/[0.14]',
+  'this-month':     'bg-accent-blue/[0.05] border-accent-blue/[0.10]',
+}
+
+// --- Timeline helpers ---
+function timelineActionVariant(action: string): 'primary' | 'success' | 'error' | 'warning' | 'default' {
+  const a = action.split('.').pop() ?? action
+  if (a === 'store' || a === 'create' || a === 'invite') return 'success'
+  if (a === 'search' || a === 'query') return 'primary'
+  if (a === 'delete' || a === 'revoke' || a === 'remove') return 'error'
+  if (a === 'update' || a === 'edit') return 'warning'
+  return 'default'
+}
+
+function timelineDotClass(action: string): string {
+  const variant = timelineActionVariant(action)
+  const map: Record<string, string> = {
+    success: 'bg-status-success',
+    primary: 'bg-accent-blue',
+    error:   'bg-status-error',
+    warning: 'bg-status-warning',
+    default: 'bg-white/[0.20]',
+  }
+  return map[variant]
+}
+
+function formatAbsTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function dayLabel(iso: string): string {
+  const d = new Date(iso)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString()) return 'Today'
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 export default function Dashboard() {
@@ -468,18 +514,27 @@ export default function Dashboard() {
               Failed to load statistics. Check your connection and try again.
             </div>
           ) : statsLoading || trendsLoading || usageLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className="flex flex-wrap gap-2">
               {Array.from({ length: 7 }).map((_, i) => (
-                <Skeleton key={i} className="h-32 rounded-[18px]" />
+                <Skeleton key={i} className="h-7 w-32 rounded-full" />
               ))}
             </div>
           ) : (
-            <StatisticDisplay
-              metrics={metrics}
-              columns={3}
-              variant="card"
-              size="md"
-            />
+            <div className="flex flex-wrap gap-2" role="list" aria-label="Key statistics">
+              {metrics.map((metric) => (
+                <span
+                  key={metric.id}
+                  role="listitem"
+                  className={cn(
+                    'inline-flex items-baseline gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
+                    BADGE_ACCENT[metric.id ?? ''] ?? 'bg-white/[0.06] border-border-primary'
+                  )}
+                >
+                  <span className="font-bold text-text-primary tabular-nums">{metric.value}</span>
+                  <span className="text-text-quaternary">{metric.label}</span>
+                </span>
+              ))}
+            </div>
           )}
         </section>
       )}
@@ -490,26 +545,108 @@ export default function Dashboard() {
           <h2 className="text-xs font-semibold text-text-primary mb-4">
             Recent Activity
           </h2>
-          <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] px-6 divide-y divide-border-secondary">
+          <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-5">
             {activityLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="py-3">
-                  <Skeleton className="h-6 w-full rounded-[5px]" />
-                </div>
-              ))
+              <div className="space-y-4">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="flex gap-3">
+                    <Skeleton className="w-[15px] h-[15px] rounded-full mt-0.5 shrink-0" />
+                    <Skeleton className="h-9 flex-1 rounded-[8px]" />
+                  </div>
+                ))}
+              </div>
             ) : !activity || activity.length === 0 ? (
               <div className="py-8">
                 <EmptyState title="No activity yet" description="Actions performed by your team will appear here." />
               </div>
-            ) : (
-              activity.map((entry) => (
-                <ActivityItem
-                  key={entry.id}
-                  entry={entry}
-                  userName={userMap.get(entry.user_id)}
-                />
-              ))
-            )}
+            ) : (() => {
+              // Group entries by calendar day
+              const groups: { label: string; entries: typeof activity }[] = []
+              const seen = new Map<string, typeof activity>()
+              for (const entry of activity) {
+                const label = dayLabel(entry.timestamp)
+                if (!seen.has(label)) seen.set(label, [])
+                seen.get(label)!.push(entry)
+              }
+              for (const [label, entries] of seen) {
+                groups.push({ label, entries })
+              }
+              return (
+                <div className="space-y-5">
+                  {groups.map(({ label, entries }) => (
+                    <div key={label}>
+                      <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wider mb-3 pl-5">
+                        {label}
+                      </p>
+                      <div className="relative">
+                        {/* Vertical connector line */}
+                        <div
+                          className="absolute left-[7px] top-2 bottom-2 w-px bg-border-primary"
+                          aria-hidden="true"
+                        />
+                        <ul className="space-y-3">
+                          {entries.map((entry) => {
+                            const displayName =
+                              userMap.get(entry.user_id) ??
+                              (entry.metadata?.user_email as string | undefined) ??
+                              'System'
+                            const variant = timelineActionVariant(entry.action)
+                            const actionLabel = entry.action.split('.').pop() ?? entry.action
+                            return (
+                              <li key={entry.id} className="flex items-start gap-3 group">
+                                {/* Colored timeline dot */}
+                                <div
+                                  className={cn(
+                                    'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-[#272729] relative z-10',
+                                    timelineDotClass(entry.action)
+                                  )}
+                                  aria-hidden="true"
+                                />
+                                {/* Event content */}
+                                <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1">
+                                      {displayName !== 'System' && (
+                                        <span className="font-semibold">{displayName}</span>
+                                      )}
+                                      <Badge variant={variant} size="sm">{actionLabel}</Badge>
+                                      {entry.resource_type && (
+                                        <span className="text-text-secondary">{entry.resource_type}</span>
+                                      )}
+                                    </p>
+                                    {typeof entry.metadata?.description === 'string' && (
+                                      <p className="text-[10px] text-text-quaternary mt-0.5 truncate">
+                                        {entry.metadata.description}
+                                      </p>
+                                    )}
+                                  </div>
+                                  {/* Relative + absolute timestamps */}
+                                  <div className="shrink-0 text-right">
+                                    <time
+                                      dateTime={entry.timestamp}
+                                      className="text-[10px] text-text-quaternary block"
+                                      title={formatAbsTime(entry.timestamp)}
+                                    >
+                                      {relativeTime(entry.timestamp)}
+                                    </time>
+                                    <time
+                                      dateTime={entry.timestamp}
+                                      className="text-[10px] text-text-quaternary/60 block opacity-0 group-hover:opacity-100 transition-opacity"
+                                    >
+                                      {formatAbsTime(entry.timestamp)}
+                                    </time>
+                                  </div>
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
         </section>
       )}
