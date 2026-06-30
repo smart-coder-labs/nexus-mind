@@ -3310,6 +3310,39 @@ pub fn get_chunk_covering_line(
     .map_err(Into::into)
 }
 
+/// Returns all code_chunks for a file, ordered by start_line. Used to assemble a
+/// symbol's source by line-range overlap (containers like classes are split into
+/// method chunks, so a point lookup misses the declaration line) and to show the
+/// whole-file source when a File node is clicked.
+pub fn get_file_chunks(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<Vec<CodeChunk>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, code_project_id, file_path, file_hash, language, symbol, \
+                start_line, end_line, content, created_at \
+         FROM code_chunks \
+         WHERE code_project_id = ?1 AND file_path = ?2 \
+         ORDER BY start_line ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id, file_path], |row| {
+        Ok(CodeChunk {
+            id: row.get(0)?,
+            code_project_id: row.get(1)?,
+            file_path: row.get(2)?,
+            file_hash: row.get(3)?,
+            language: row.get(4)?,
+            symbol: row.get(5)?,
+            start_line: row.get(6)?,
+            end_line: row.get(7)?,
+            content: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 /// Insert a single code chunk, optionally with its embedding BLOB.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_code_chunk(
@@ -5540,6 +5573,26 @@ mod tests {
             get_chunk_covering_line(&conn, project_id, "src/lib.rs", 999).unwrap().is_none(),
             "out-of-range line returns None"
         );
+    }
+
+    #[test]
+    fn get_file_chunks_returns_all_ordered() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        // Two methods of a class, plus a chunk in another file.
+        insert_code_chunk(&conn, project_id, "src/svc.ts", "h", Some("typescript"), Some("two"), 20, 25, "two() {}", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/svc.ts", "h", Some("typescript"), Some("one"), 10, 15, "one() {}", None).unwrap();
+        insert_code_chunk(&conn, project_id, "src/other.ts", "h", Some("typescript"), None, 1, 5, "other", None).unwrap();
+
+        let chunks = get_file_chunks(&conn, project_id, "src/svc.ts").unwrap();
+        assert_eq!(chunks.len(), 2, "only the target file's chunks");
+        assert_eq!(chunks[0].start_line, 10, "ordered by start_line");
+        assert_eq!(chunks[1].start_line, 20);
+        // Range overlap [12, 22] (a class spanning its methods) catches both.
+        let overlapping: Vec<_> = chunks.iter().filter(|c| c.start_line <= 22 && c.end_line >= 12).collect();
+        assert_eq!(overlapping.len(), 2, "class range overlaps both method chunks");
     }
 
     #[test]

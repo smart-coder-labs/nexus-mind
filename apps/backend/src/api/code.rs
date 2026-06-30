@@ -874,14 +874,21 @@ pub async fn get_graph(
 pub struct GetSnippetQuery {
     pub project: String,
     pub file: String,
-    pub line: i64,
+    /// Symbol start line. When `start`+`end` are given, the source of all chunks
+    /// overlapping that range is returned (so a Class is reassembled from its
+    /// method chunks). When omitted, the WHOLE file source is returned (File nodes).
+    #[serde(default)]
+    pub start: Option<i64>,
+    #[serde(default)]
+    pub end: Option<i64>,
 }
 
 /// `GET /v1/code/snippet`
 ///
-/// Returns the source of the code chunk covering `line` in `file` for the given
-/// project — used when a graph node is clicked to reveal the symbol's code.
-/// Returns `404` when the project is unknown to the org or no chunk covers the line.
+/// Returns source from `file`'s indexed chunks: the chunks overlapping
+/// `[start, end]` for a symbol, or the whole file when no range is given.
+/// `404` when the project is unknown to the org or the file has no chunks
+/// (e.g. it was indexed graph-only without embeddings).
 pub async fn get_snippet(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -913,25 +920,47 @@ pub async fn get_snippet(
         )
     })?;
 
-    let chunk = db_queries::get_chunk_covering_line(&conn, code_project_id, &params.file, params.line)
-        .map_err(db_err)?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "No source found for this symbol".to_string(),
-                    code: "not_found".to_string(),
-                }),
-            )
-        })?;
+    let all_chunks = db_queries::get_file_chunks(&conn, code_project_id, &params.file)
+        .map_err(db_err)?;
+
+    // Symbol: keep chunks overlapping [start, end]. File (no range): keep all.
+    let selected: Vec<_> = match (params.start, params.end) {
+        (Some(s), Some(e)) => all_chunks
+            .into_iter()
+            .filter(|c| c.start_line <= e && c.end_line >= s)
+            .collect(),
+        _ => all_chunks,
+    };
+
+    if selected.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "No source found — this file has no indexed code chunks. \
+                        Re-index without 'Graph only' to view source."
+                    .to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let start_line = selected.iter().map(|c| c.start_line).min().unwrap_or(0);
+    let end_line = selected.iter().map(|c| c.end_line).max().unwrap_or(0);
+    let language = selected.first().and_then(|c| c.language.clone());
+    let symbol = selected.iter().find_map(|c| c.symbol.clone());
+    let content = selected
+        .iter()
+        .map(|c| c.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
 
     Ok(Json(SnippetResponse {
-        file_path: chunk.file_path,
-        symbol: chunk.symbol,
-        language: chunk.language,
-        start_line: chunk.start_line,
-        end_line: chunk.end_line,
-        content: chunk.content,
+        file_path: params.file,
+        symbol,
+        language,
+        start_line,
+        end_line,
+        content,
     }))
 }
 
