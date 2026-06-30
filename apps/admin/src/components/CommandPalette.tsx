@@ -121,7 +121,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         const data = await client.globalSearch(query.trim())
         setResults(data)
       } catch {
-        setResults({ memories: [], users: [], projects: [] })
+        setResults({ memories: [], users: [], projects: [], policies: [], conventions: [] })
       } finally {
         setLoading(false)
       }

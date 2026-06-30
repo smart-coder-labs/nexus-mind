@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search as SearchIcon, X } from 'lucide-react'
 import { createClient } from '../api/client'
-import type { GlobalSearchResult, Memory, UserSummary, Project } from '../types'
+import type { GlobalSearchResult, Memory, UserSummary, Project, Policy, Convention } from '../types'
 import { cn } from '@/lib/utils'
 
 const client = createClient()
 
-type Tab = 'all' | 'memories' | 'users' | 'projects'
+type Tab = 'all' | 'memories' | 'users' | 'projects' | 'policies' | 'conventions'
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'all',      label: 'All' },
-  { key: 'memories', label: 'Memories' },
-  { key: 'users',    label: 'Users' },
-  { key: 'projects', label: 'Projects' },
+  { key: 'all',         label: 'All' },
+  { key: 'memories',   label: 'Memories' },
+  { key: 'users',      label: 'Users' },
+  { key: 'projects',   label: 'Projects' },
+  { key: 'policies',   label: 'Policies' },
+  { key: 'conventions', label: 'Conventions' },
 ]
 
 // ── Result cards ──────────────────────────────────────────────────────────────
@@ -83,6 +85,46 @@ function ProjectCard({ project }: { project: Project }) {
   )
 }
 
+function PolicyCard({ policy }: { policy: Policy }) {
+  return (
+    <div className="bg-[#272729] rounded-[11px] border border-border-primary p-4 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-semibold text-text-primary flex-1 truncate">{policy.name}</p>
+        <span
+          className={cn(
+            'text-[10px] font-semibold rounded-full px-2 py-0.5 shrink-0',
+            policy.enabled
+              ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+              : 'bg-white/[0.06] border border-border-secondary text-text-quaternary',
+          )}
+        >
+          {policy.enabled ? 'enabled' : 'disabled'}
+        </span>
+      </div>
+      {policy.rule_type && (
+        <p className="text-[10px] text-text-quaternary">{policy.rule_type}</p>
+      )}
+    </div>
+  )
+}
+
+function ConventionCard({ convention }: { convention: Convention }) {
+  const firstLine = convention.content.split('\n')[0].trim()
+  return (
+    <div className="bg-[#272729] rounded-[11px] border border-border-primary p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-semibold text-text-primary flex-1 truncate">{convention.title}</p>
+        {convention.category && (
+          <span className="text-[10px] font-semibold bg-white/[0.06] border border-border-secondary text-text-tertiary rounded-full px-2 py-0.5 shrink-0 capitalize">
+            {convention.category}
+          </span>
+        )}
+      </div>
+      <p className="text-[10px] text-text-secondary leading-relaxed line-clamp-2">{firstLine}</p>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Search() {
@@ -121,16 +163,20 @@ export default function Search() {
     runSearch(debouncedQuery)
   }, [debouncedQuery, runSearch])
 
-  const memories  = results?.memories  ?? []
-  const users     = results?.users     ?? []
-  const projects  = results?.projects  ?? []
-  const totalCount = memories.length + users.length + projects.length
+  const memories    = results?.memories    ?? []
+  const users       = results?.users       ?? []
+  const projects    = results?.projects    ?? []
+  const policies    = results?.policies    ?? []
+  const conventions = results?.conventions ?? []
+  const totalCount  = memories.length + users.length + projects.length + policies.length + conventions.length
 
   const tabCounts: Record<Tab, number> = {
-    all:      totalCount,
-    memories: memories.length,
-    users:    users.length,
-    projects: projects.length,
+    all:         totalCount,
+    memories:    memories.length,
+    users:       users.length,
+    projects:    projects.length,
+    policies:    policies.length,
+    conventions: conventions.length,
   }
 
   const hasResults = totalCount > 0
@@ -141,7 +187,7 @@ export default function Search() {
       <div>
         <h1 className="text-base font-semibold text-text-primary">Search</h1>
         <p className="text-xs text-text-quaternary mt-0.5">
-          Search across memories, users, and projects
+          Search across memories, policies, conventions, and more
         </p>
       </div>
 
@@ -173,7 +219,7 @@ export default function Search() {
 
       {/* Tabs — only visible when there are results or a query */}
       {(hasResults || loading) && debouncedQuery && (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {TABS.map(({ key, label }) => (
             <button
               key={key}
@@ -268,6 +314,34 @@ export default function Search() {
               )}
               {projects.map(p => (
                 <ProjectCard key={p.id} project={p} />
+              ))}
+            </section>
+          )}
+
+          {/* Policies */}
+          {(activeTab === 'all' || activeTab === 'policies') && policies.length > 0 && (
+            <section className="space-y-3">
+              {activeTab === 'all' && (
+                <p className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+                  Policies
+                </p>
+              )}
+              {policies.map(p => (
+                <PolicyCard key={p.id} policy={p} />
+              ))}
+            </section>
+          )}
+
+          {/* Conventions */}
+          {(activeTab === 'all' || activeTab === 'conventions') && conventions.length > 0 && (
+            <section className="space-y-3">
+              {activeTab === 'all' && (
+                <p className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+                  Conventions
+                </p>
+              )}
+              {conventions.map(c => (
+                <ConventionCard key={c.id} convention={c} />
               ))}
             </section>
           )}
