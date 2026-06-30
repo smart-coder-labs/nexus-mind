@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::{
     db::queries,
     email::{send_password_setup, EmailConfig},
-    models::types::{ApiError, AuditEntry, GlobalMetrics, Org, OrgWithStats, User},
+    models::types::{ApiError, AuditEntry, GlobalMetrics, InternalSearchResult, Org, OrgWithStats, User},
     store::sqlite::SqliteStore,
 };
 
@@ -255,4 +255,41 @@ pub async fn suspend_user(
     } else {
         Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found or already suspended".to_string(), code: "not_found".to_string() })))
     }
+}
+
+// ── Internal global search ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct InternalSearchParams {
+    pub q: String,
+    #[serde(default = "default_internal_limit")]
+    pub limit: i64,
+}
+
+fn default_internal_limit() -> i64 {
+    10
+}
+
+/// Cross-org search for the backoffice: returns matching orgs and users.
+pub async fn internal_search(
+    State(store): State<SqliteStore>,
+    Extension(superuser_key): Extension<Option<String>>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<InternalSearchParams>,
+) -> Result<Json<InternalSearchResult>, (StatusCode, Json<ApiError>)> {
+    require_superuser(&superuser_key, &headers)?;
+
+    let q = params.q.trim();
+    if q.is_empty() {
+        return Ok(Json(InternalSearchResult { orgs: vec![], users: vec![] }));
+    }
+
+    let limit = params.limit.clamp(1, 50);
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    let orgs = queries::search_orgs_by_query(&conn, q, limit).map_err(db_err)?;
+    let users = queries::search_users_global_by_query(&conn, q, limit).map_err(db_err)?;
+
+    Ok(Json(InternalSearchResult { orgs, users }))
 }
