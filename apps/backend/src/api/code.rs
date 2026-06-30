@@ -58,8 +58,10 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 /// `POST /v1/code/index`
 ///
 /// Accepts either a `repo_url` (GitHub URL to clone/pull) or a `root_path` (local path).
-/// Chunks and embeds all eligible source files and persists them for semantic search.
-/// Synchronous in v1.
+/// Runs asynchronously: the project is marked `indexing` and the clone + index run in a
+/// background task, so large repos do not block the request (no 502). The client polls
+/// `index_status`. Pass `graph_only: true` to build the structural + symbol graph and
+/// skip the slow embedding pass (fast, no semantic search).
 pub async fn post_index(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -154,6 +156,7 @@ pub async fn post_index(
     let org_id = auth.org_id.clone();
     let spawn_project = project_name.clone();
     let spawn_path = effective_root_path.clone();
+    let graph_only = input.graph_only.unwrap_or(false);
     tokio::spawn(async move {
         if let Some(ref effective_url) = effective_repo_url {
             let path = std::path::Path::new(&spawn_path);
@@ -169,7 +172,7 @@ pub async fn post_index(
                     .output();
             }
         }
-        let result = indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref());
+        let result = indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref(), graph_only);
         if let Err(e) = result {
             let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             if let Ok(conn) = db.lock() {
@@ -731,7 +734,7 @@ pub async fn post_reindex(
                     .output();
             }
             let effective_path = clone_dir;
-            let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref());
+            let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref(), false);
             if let Err(e) = result {
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                 if let Ok(conn) = db.lock() {
@@ -739,7 +742,7 @@ pub async fn post_reindex(
                 }
             }
         } else {
-            let result = indexer::index_project(&org_id, &project_name, &root_path, &db, embed_svc.as_ref());
+            let result = indexer::index_project(&org_id, &project_name, &root_path, &db, embed_svc.as_ref(), false);
             if let Err(e) = result {
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                 if let Ok(conn) = db.lock() {

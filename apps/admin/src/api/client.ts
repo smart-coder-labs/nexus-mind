@@ -406,7 +406,7 @@ export class NexusMindClient {
     return this.request(`/v1/code/projects/${id}/restore`, { method: 'POST' })
   }
 
-  indexProject(data: { project: string; repo_url?: string; root_path?: string }): Promise<CodeIndexResponse> {
+  indexProject(data: { project: string; repo_url?: string; root_path?: string; graph_only?: boolean }): Promise<CodeIndexResponse> {
     return this.request('/v1/code/index', { method: 'POST', body: JSON.stringify(data) })
   }
 
