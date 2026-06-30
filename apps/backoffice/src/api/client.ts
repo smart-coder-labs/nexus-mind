@@ -1,4 +1,4 @@
-import type { Org, OrgWithStats, User, AuditEntry, GlobalMetrics, CreateOrgResponse } from '../types'
+import type { Org, OrgWithStats, User, AuditEntry, GlobalMetrics, CreateOrgResponse, InternalSearchResult } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
@@ -97,6 +97,13 @@ export function impersonateOrg(orgId: string): Promise<{ token: string }> {
 
 export function suspendUser(userId: string): Promise<void> {
   return request(`/internal/users/${userId}/suspend`, { method: 'POST' })
+}
+
+// ── Internal search ────────────────────────────────────────────────────────────
+
+export function searchInternal(q: string, limit = 10): Promise<InternalSearchResult> {
+  const qs = new URLSearchParams({ q, limit: String(limit) })
+  return request<InternalSearchResult>(`/internal/search?${qs}`)
 }
 
 // ── Auth check (validate key) ─────────────────────────────────────────────────

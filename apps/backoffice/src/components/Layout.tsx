@@ -5,6 +5,7 @@ import {
   Building2,
   Users,
   ScrollText,
+  Search,
   LogOut,
   Menu,
   X,
@@ -25,6 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Organizations',  href: '/orgs',     icon: Building2 },
   { label: 'Users',          href: '/users',    icon: Users },
   { label: 'Audit Log',      href: '/audit',    icon: ScrollText },
+  { label: 'Search',         href: '/search',   icon: Search },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {

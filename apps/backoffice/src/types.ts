@@ -49,3 +49,8 @@ export type ApiError = {
   error: string
   code: string
 }
+
+export interface InternalSearchResult {
+  orgs: OrgWithStats[]
+  users: User[]
+}

@@ -55,6 +55,8 @@ pub async fn get_global_search(
             memories: vec![],
             users: vec![],
             projects: vec![],
+            policies: vec![],
+            conventions: vec![],
         }));
     }
 
@@ -73,10 +75,18 @@ pub async fn get_global_search(
     let projects = queries::search_projects_by_query(&conn, &auth.org_id, q, limit)
         .map_err(db_err)?;
 
+    let policies = queries::search_policies_by_query(&conn, &auth.org_id, q, limit)
+        .map_err(db_err)?;
+
+    let conventions = queries::search_conventions_by_query(&conn, &auth.org_id, q, limit)
+        .map_err(db_err)?;
+
     Ok(Json(GlobalSearchResult {
         memories,
         users,
         projects,
+        policies,
+        conventions,
     }))
 }
 
@@ -167,5 +177,120 @@ mod tests {
 
         let results = queries::search_users_by_query(&conn, &org_a, "carol", 10).unwrap();
         assert!(results.is_empty(), "org_a must not see org_b users");
+    }
+
+    #[test]
+    fn search_policies_by_query_matches_name() {
+        let conn = setup_db();
+        let org_id = seed_org(&conn);
+        conn.execute(
+            "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, created_at, updated_at)
+             VALUES ('pol1', ?1, 'Block GPT Models', 'model_whitelist', '{\"allowed_models\":[]}', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+            [&org_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, created_at, updated_at)
+             VALUES ('pol2', ?1, 'Budget Cap', 'budget_limit', '{\"max_tokens_per_day\":100000}', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+            [&org_id],
+        ).unwrap();
+
+        let results = queries::search_policies_by_query(&conn, &org_id, "gpt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Block GPT Models");
+
+        let results_budget = queries::search_policies_by_query(&conn, &org_id, "budget", 10).unwrap();
+        assert_eq!(results_budget.len(), 1);
+        assert_eq!(results_budget[0].name, "Budget Cap");
+
+        let results_none = queries::search_policies_by_query(&conn, &org_id, "nonexistent", 10).unwrap();
+        assert!(results_none.is_empty());
+    }
+
+    #[test]
+    fn search_conventions_by_query_matches_title_and_content() {
+        let conn = setup_db();
+        let org_id = seed_org(&conn);
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags)
+             VALUES (?1, 'Use snake_case', 'All identifiers must use snake_case naming', 'naming', 100, '[]')",
+            [&org_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags)
+             VALUES (?1, 'Error handling', 'Always use anyhow for error propagation', 'patterns', 90, '[]')",
+            [&org_id],
+        ).unwrap();
+
+        // match by title
+        let by_title = queries::search_conventions_by_query(&conn, &org_id, "snake", 10).unwrap();
+        assert_eq!(by_title.len(), 1);
+        assert_eq!(by_title[0].title, "Use snake_case");
+
+        // match by content
+        let by_content = queries::search_conventions_by_query(&conn, &org_id, "anyhow", 10).unwrap();
+        assert_eq!(by_content.len(), 1);
+        assert_eq!(by_content[0].title, "Error handling");
+
+        // no match
+        let no_match = queries::search_conventions_by_query(&conn, &org_id, "typescript", 10).unwrap();
+        assert!(no_match.is_empty());
+    }
+
+    #[test]
+    fn search_conventions_excludes_archived() {
+        let conn = setup_db();
+        let org_id = seed_org(&conn);
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags, archived_at)
+             VALUES (?1, 'Old convention', 'This was archived', 'naming', 50, '[]', '2026-01-01T00:00:00Z')",
+            [&org_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags)
+             VALUES (?1, 'Old active convention', 'This is active', 'naming', 50, '[]')",
+            [&org_id],
+        ).unwrap();
+
+        let results = queries::search_conventions_by_query(&conn, &org_id, "old", 10).unwrap();
+        assert_eq!(results.len(), 1, "archived convention must be excluded");
+        assert_eq!(results[0].title, "Old active convention");
+    }
+
+    #[test]
+    fn search_policies_org_isolation() {
+        let conn = setup_db();
+        let org_a = seed_org(&conn);
+        let org_b = "org_b".to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org B', 'org-b')",
+            [&org_b],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, created_at, updated_at)
+             VALUES ('pol_b', ?1, 'B Policy', 'model_whitelist', '{}', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+            [&org_b],
+        ).unwrap();
+
+        let results = queries::search_policies_by_query(&conn, &org_a, "policy", 10).unwrap();
+        assert!(results.is_empty(), "org_a must not see org_b policies");
+    }
+
+    #[test]
+    fn search_conventions_org_isolation() {
+        let conn = setup_db();
+        let org_a = seed_org(&conn);
+        let org_b = "org_b".to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org B', 'org-b')",
+            [&org_b],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conventions (org_id, title, content, category, weight, tags)
+             VALUES (?1, 'B Convention', 'some content', 'general', 100, '[]')",
+            [&org_b],
+        ).unwrap();
+
+        let results = queries::search_conventions_by_query(&conn, &org_a, "convention", 10).unwrap();
+        assert!(results.is_empty(), "org_a must not see org_b conventions");
     }
 }

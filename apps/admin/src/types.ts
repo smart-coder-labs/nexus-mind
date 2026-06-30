@@ -279,6 +279,8 @@ export interface GlobalSearchResult {
   memories: Memory[]
   users: UserSummary[]
   projects: Project[]
+  policies: Policy[]
+  conventions: Convention[]
 }
 
 export interface DailyCount {

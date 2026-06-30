@@ -228,7 +228,8 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/internal/orgs/:id/impersonate", post(internal::impersonate_org))
         .route("/internal/users", get(internal::list_users))
         .route("/internal/users/:id/suspend", post(internal::suspend_user))
-        .route("/internal/audit", get(internal::list_audit));
+        .route("/internal/audit", get(internal::list_audit))
+        .route("/internal/search", get(internal::internal_search));
 
     Router::new()
         .route("/v1/health", get(health::handler))
