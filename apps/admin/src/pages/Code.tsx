@@ -677,6 +677,7 @@ function RepositoriesTab({
 
   const [showForm, setShowForm] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
+  const [graphOnly, setGraphOnly] = useState(false)
   const [selectedProject, setSelectedProject] = useState('')
   const [projectMode, setProjectMode] = useState<'existing' | 'new'>('existing')
   const [newProjectName, setNewProjectName] = useState('')
@@ -696,7 +697,7 @@ function RepositoriesTab({
   })
 
   const indexMut = useMutation({
-    mutationFn: (data: { project: string; repo_url?: string; root_path?: string }) => client.indexProject(data),
+    mutationFn: (data: { project: string; repo_url?: string; root_path?: string; graph_only?: boolean }) => client.indexProject(data),
     onSuccess: () => {
       setRepoUrl('')
       setSelectedProject('')
@@ -744,7 +745,7 @@ function RepositoriesTab({
     e.preventDefault()
     setIndexError(null)
     const project = projectMode === 'existing' ? selectedProject : newProjectName.trim()
-    indexMut.mutate({ project, repo_url: repoUrl.trim() })
+    indexMut.mutate({ project, repo_url: repoUrl.trim(), graph_only: graphOnly })
   }
 
   const handleDelete = (p: CodeProject) => {
@@ -852,6 +853,20 @@ function RepositoriesTab({
                 required
               />
             </div>
+
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={graphOnly}
+                onChange={e => setGraphOnly(e.target.checked)}
+                disabled={indexMut.isPending}
+                className="mt-0.5 accent-accent-blue"
+              />
+              <span className="text-[11px] text-text-tertiary leading-snug">
+                Graph only — build the code structure graph fast, skip semantic-search embeddings.
+                Much faster on large repos; you can run a full index later for search.
+              </span>
+            </label>
 
             {indexError && <p className="text-xs text-status-error/80">{indexError}</p>}
 

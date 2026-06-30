@@ -33,6 +33,7 @@ pub fn index_project(
     root_path: &str,
     db: &Arc<Mutex<Connection>>,
     embed_svc: Option<&Arc<EmbedService>>,
+    graph_only: bool,
 ) -> Result<IndexProjectResponse> {
     let chunker = TreeSitterChunker::default();
 
@@ -148,56 +149,70 @@ pub fn index_project(
                 tracing::warn!("Failed to persist graph for {rel_path}: {e}");
             }
         }
+        files_indexed += 1;
         if raw_chunks.is_empty() {
             continue;
         }
-        {
-            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            db_queries::delete_chunks_for_file(&conn, code_project_id, &rel_path)?;
+        if graph_only {
+            // Leave existing search chunks untouched — embeddings are skipped, so
+            // re-chunking would strip the searchable content. Just count what's there.
+            let existing = {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                db_queries::count_chunks_for_file(&conn, code_project_id, &rel_path)?
+            };
+            total_chunks += existing;
+        } else {
+            {
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                db_queries::delete_chunks_for_file(&conn, code_project_id, &rel_path)?;
+            }
+            total_chunks += raw_chunks.len() as i64;
+            changed.push((idx, rel_path));
         }
-        total_chunks += raw_chunks.len() as i64;
-        files_indexed += 1;
-        changed.push((idx, rel_path));
     }
 
     // ── PASS 2: embeddings for changed files (slow — powers semantic search) ──
     // Runs after the graph is complete, so the graph is available long before this
     // finishes. Re-chunks from the already-in-memory file content (no extra reads).
-    for (idx, rel_path) in &changed {
-        let file_meta = &files[*idx];
-        let language = file_meta.language.as_deref();
-        let raw_chunks = chunker.chunk(rel_path, &file_meta.hash, language, &file_meta.content);
-        if raw_chunks.is_empty() {
-            continue;
-        }
-
-        let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc {
-            let texts: Vec<&str> = raw_chunks.iter().map(|c| c.content.as_str()).collect();
-            match svc.embed_batch(&texts) {
-                Ok(vecs) => vecs.into_iter().map(|v| Some(embed::serialize(&v))).collect(),
-                Err(e) => {
-                    tracing::warn!("Failed to embed batch for {rel_path}: {e}");
-                    raw_chunks.iter().map(|_| None).collect()
-                }
+    // Skipped entirely in `graph_only` mode for codebase-memory-style fast indexing
+    // (structure/graph only, no semantic search).
+    if !graph_only {
+        for (idx, rel_path) in &changed {
+            let file_meta = &files[*idx];
+            let language = file_meta.language.as_deref();
+            let raw_chunks = chunker.chunk(rel_path, &file_meta.hash, language, &file_meta.content);
+            if raw_chunks.is_empty() {
+                continue;
             }
-        } else {
-            raw_chunks.iter().map(|_| None).collect()
-        };
 
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        for (chunk, embedding) in raw_chunks.iter().zip(embeddings.iter()) {
-            db_queries::insert_code_chunk(
-                &conn,
-                code_project_id,
-                rel_path,
-                &chunk.file_hash,
-                chunk.language.as_deref(),
-                chunk.symbol.as_deref(),
-                chunk.start_line,
-                chunk.end_line,
-                &chunk.content,
-                embedding.as_deref(),
-            )?;
+            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc {
+                let texts: Vec<&str> = raw_chunks.iter().map(|c| c.content.as_str()).collect();
+                match svc.embed_batch(&texts) {
+                    Ok(vecs) => vecs.into_iter().map(|v| Some(embed::serialize(&v))).collect(),
+                    Err(e) => {
+                        tracing::warn!("Failed to embed batch for {rel_path}: {e}");
+                        raw_chunks.iter().map(|_| None).collect()
+                    }
+                }
+            } else {
+                raw_chunks.iter().map(|_| None).collect()
+            };
+
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            for (chunk, embedding) in raw_chunks.iter().zip(embeddings.iter()) {
+                db_queries::insert_code_chunk(
+                    &conn,
+                    code_project_id,
+                    rel_path,
+                    &chunk.file_hash,
+                    chunk.language.as_deref(),
+                    chunk.symbol.as_deref(),
+                    chunk.start_line,
+                    chunk.end_line,
+                    &chunk.content,
+                    embedding.as_deref(),
+                )?;
+            }
         }
     }
 

@@ -688,6 +688,10 @@ pub struct IndexProjectRequest {
     pub project: String,
     pub root_path: Option<String>,
     pub repo_url: Option<String>,
+    /// When true, build the structural + symbol graph only and skip the slow
+    /// embedding pass (no semantic search). Fast, codebase-memory-style indexing.
+    #[serde(default)]
+    pub graph_only: Option<bool>,
 }
 
 /// Response body for `POST /v1/code/index`.
@@ -1783,6 +1787,7 @@ mod tests {
             project: "myapp".into(),
             root_path: Some("/workspace/myapp".into()),
             repo_url: None,
+            graph_only: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         let back: IndexProjectRequest = serde_json::from_str(&s).unwrap();
