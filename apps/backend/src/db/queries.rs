@@ -3343,6 +3343,40 @@ pub fn get_file_chunks(
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Store (or replace) the raw source of a file, so exact symbol/file source can be
+/// shown in the graph without reconstructing it from symbol-fragment chunks.
+pub fn upsert_code_file(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    content: &str,
+    file_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO code_files (code_project_id, file_path, content, file_hash) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(code_project_id, file_path) \
+         DO UPDATE SET content = excluded.content, file_hash = excluded.file_hash",
+        rusqlite::params![code_project_id, file_path, content, file_hash],
+    )?;
+    Ok(())
+}
+
+/// Returns the stored raw source of a file, if present.
+pub fn get_code_file(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT content FROM code_files WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Insert a single code chunk, optionally with its embedding BLOB.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_code_chunk(

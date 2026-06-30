@@ -920,10 +920,33 @@ pub async fn get_snippet(
         )
     })?;
 
+    // Preferred path: the exact stored file source. A symbol returns its exact
+    // line range [start, end]; a File node (no range) returns the whole file.
+    if let Some(content) = db_queries::get_code_file(&conn, code_project_id, &params.file).map_err(db_err)? {
+        let total = content.lines().count() as i64;
+        let (start_line, end_line, body) = match (params.start, params.end) {
+            (Some(s), Some(e)) if total > 0 => {
+                let s = s.clamp(1, total);
+                let e = e.clamp(s, total);
+                let lines: Vec<&str> = content.lines().collect();
+                (s, e, lines[(s as usize - 1)..(e as usize)].join("\n"))
+            }
+            _ => (1, total.max(1), content),
+        };
+        return Ok(Json(SnippetResponse {
+            file_path: params.file,
+            symbol: None,
+            language: None,
+            start_line,
+            end_line,
+            content: body,
+        }));
+    }
+
+    // Fallback for projects indexed before code_files existed: reconstruct from
+    // chunks (overlapping the range, or all chunks for a whole file).
     let all_chunks = db_queries::get_file_chunks(&conn, code_project_id, &params.file)
         .map_err(db_err)?;
-
-    // Symbol: keep chunks overlapping [start, end]. File (no range): keep all.
     let selected: Vec<_> = match (params.start, params.end) {
         (Some(s), Some(e)) => all_chunks
             .into_iter()
@@ -931,19 +954,16 @@ pub async fn get_snippet(
             .collect(),
         _ => all_chunks,
     };
-
     if selected.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
-                error: "No source found — this file has no indexed code chunks. \
-                        Re-index without 'Graph only' to view source."
+                error: "No source stored for this file yet — re-index the project to view source."
                     .to_string(),
                 code: "not_found".to_string(),
             }),
         ));
     }
-
     let start_line = selected.iter().map(|c| c.start_line).min().unwrap_or(0);
     let end_line = selected.iter().map(|c| c.end_line).max().unwrap_or(0);
     let language = selected.first().and_then(|c| c.language.clone());
