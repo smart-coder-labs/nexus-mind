@@ -896,6 +896,15 @@ pub struct GlobalSearchResult {
     pub memories: Vec<Memory>,
     pub users: Vec<UserSummary>,
     pub projects: Vec<Project>,
+    pub policies: Vec<Policy>,
+    pub conventions: Vec<Convention>,
+}
+
+/// Result type for the internal (backoffice) search endpoint.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InternalSearchResult {
+    pub orgs: Vec<OrgWithStats>,
+    pub users: Vec<User>,
 }
 
 /// Daily memory count — one entry per calendar day.

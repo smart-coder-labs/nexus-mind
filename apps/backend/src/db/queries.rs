@@ -4034,6 +4034,108 @@ pub fn search_projects_by_query(
     Ok(projects)
 }
 
+/// Full-text LIKE search across policies for an org, matching on the `name` field.
+pub fn search_policies_by_query(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::Policy>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
+         FROM policies
+         WHERE org_id = ?1
+           AND LOWER(name) LIKE ?2
+         ORDER BY name ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], row_to_policy)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// LIKE search across active (non-archived) conventions for an org, matching on `title` or `content`.
+pub fn search_conventions_by_query(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::Convention>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
+         FROM conventions
+         WHERE org_id = ?1
+           AND archived_at IS NULL
+           AND (LOWER(title) LIKE ?2 OR LOWER(content) LIKE ?2)
+         ORDER BY weight DESC, title ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], convention_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Global (cross-org) LIKE search across organizations for the backoffice.
+pub fn search_orgs_by_query(
+    conn: &Connection,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::OrgWithStats>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT o.id, o.name, o.slug, o.created_at,
+                (SELECT count(*) FROM users u WHERE u.org_id = o.id) AS user_count,
+                (SELECT count(*) FROM memories m WHERE m.org_id = o.id) AS memory_count
+         FROM organizations o
+         WHERE LOWER(o.name) LIKE ?1 OR LOWER(o.slug) LIKE ?1
+         ORDER BY o.name ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |r| {
+        Ok(crate::models::types::OrgWithStats {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            slug: r.get(2)?,
+            created_at: r.get(3)?,
+            user_count: r.get(4)?,
+            memory_count: r.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Global (cross-org) LIKE search across users for the backoffice, matching on `name` or `email`.
+pub fn search_users_global_by_query(
+    conn: &Connection,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::types::User>> {
+    let pattern = format!("%{}%", q.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT id, org_id, email, name, role, status, created_at
+         FROM users
+         WHERE LOWER(name) LIKE ?1 OR LOWER(email) LIKE ?1
+         ORDER BY name ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |r| {
+        Ok(crate::models::types::User {
+            id: r.get(0)?,
+            org_id: r.get(1)?,
+            email: r.get(2)?,
+            name: r.get(3)?,
+            role: r.get(4)?,
+            status: r.get(5)?,
+            created_at: r.get(6)?,
+            last_active: None,
+            disabled_at: None,
+            admin_note: None,
+            last_login_at: None,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 /// Lists all non-revoked API keys for an org, joined with user info. Admin-only.
 pub fn list_all_org_keys(conn: &Connection, org_id: &str) -> Result<Vec<ApiKeyWithUser>> {
     let mut stmt = conn.prepare(
