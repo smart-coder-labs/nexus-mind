@@ -26,6 +26,8 @@ primary_region = "ord"
     timeout = "5s"
 
 [[vm]]
-  memory = "256mb"
+  # The nomic-embed embedding model alone loads ~274MB; 256MB OOM-killed the
+  # machine during indexing. 1GB gives headroom for the model + repo content + SQLite.
+  memory = "1024mb"
   cpu_kind = "shared"
   cpus = 1

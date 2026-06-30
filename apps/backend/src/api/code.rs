@@ -172,11 +172,20 @@ pub async fn post_index(
                     .output();
             }
         }
-        let result = indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref(), graph_only);
-        if let Err(e) = result {
+        // Isolate the index so a panic sets error status instead of poisoning the
+        // shared connection mutex / taking the process down.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref(), graph_only)
+        }));
+        let err_msg = match outcome {
+            Ok(Ok(_)) => None,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(_) => Some("indexing failed unexpectedly".to_string()),
+        };
+        if let Some(msg) = err_msg {
             let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             if let Ok(conn) = db.lock() {
-                let _ = db_queries::set_code_project_error(&conn, project_id, &e.to_string(), &now);
+                let _ = db_queries::set_code_project_error(&conn, project_id, &msg, &now);
             }
         }
     });
