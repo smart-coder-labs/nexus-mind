@@ -342,6 +342,46 @@ pub async fn search(
         }
     }
     let total = memories.len() as i64;
+
+    // Audit the search with rich detail (query + a sample of returned results,
+    // grouped client-side by project) so the activity feed can render it as a
+    // hierarchical tree instead of a bare "search · memory" row.
+    {
+        let results: Vec<serde_json::Value> = memories
+            .iter()
+            .take(8)
+            .map(|m| {
+                let title = m
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| m.content.chars().take(60).collect::<String>());
+                serde_json::json!({
+                    "id": m.id,
+                    "title": title,
+                    "project": m.project,
+                    "type": m.memory_type,
+                })
+            })
+            .collect();
+        if let Ok(conn) = store.conn().lock() {
+            let _ = db_queries::log_audit(
+                &conn,
+                &auth.org_id,
+                &auth.user_id,
+                "search",
+                "memory",
+                None,
+                serde_json::json!({
+                    "query": input.query,
+                    "mode": input.mode.as_deref().unwrap_or("hybrid"),
+                    "result_count": total,
+                    "results": results,
+                }),
+            );
+        }
+    }
+
     Ok(Json(MemoryPage { memories, total, limit, offset: 0 }))
 }
 
