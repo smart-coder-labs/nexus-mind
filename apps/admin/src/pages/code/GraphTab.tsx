@@ -59,10 +59,17 @@ export default function GraphTab({ projects }: GraphTabProps) {
   })
 
   // Source of the clicked symbol (only for nodes that map to code, i.e. have a line)
-  const hasSource = !!selectedNode && selectedNode.fp != null && selectedNode.startLine != null
-  const { data: snippet, isLoading: snippetLoading, isError: snippetError } = useQuery({
-    queryKey: ['code-snippet', selectedProject, selectedNode?.fp, selectedNode?.startLine],
-    queryFn: () => client.getCodeSnippet(selectedProject, selectedNode!.fp!, selectedNode!.startLine!),
+  // Any node backed by a file has source: symbols use their line range; a File
+  // node (no line range) shows the whole file. Folder/Project have no file.
+  const hasSource = !!selectedNode && selectedNode.fp != null
+  const { data: snippet, isLoading: snippetLoading, isError: snippetError, error: snippetErr } = useQuery({
+    queryKey: ['code-snippet', selectedProject, selectedNode?.fp, selectedNode?.startLine, selectedNode?.endLine],
+    queryFn: () => client.getCodeSnippet(
+      selectedProject,
+      selectedNode!.fp!,
+      selectedNode!.startLine ?? undefined,
+      selectedNode!.endLine ?? undefined,
+    ),
     enabled: hasSource,
     retry: false,
   })
@@ -282,7 +289,8 @@ export default function GraphTab({ projects }: GraphTabProps) {
                 <div className="flex-1 overflow-auto">
                   {!hasSource && (
                     <p className="text-xs text-text-quaternary p-4">
-                      Structural node — no source to show. Click a Function, Method, Class, or other code symbol.
+                      {selectedNode.type} node — no file source. Click a File or a code symbol
+                      (Function, Method, Class…) to view code.
                     </p>
                   )}
                   {hasSource && snippetLoading && (
@@ -291,7 +299,9 @@ export default function GraphTab({ projects }: GraphTabProps) {
                     </div>
                   )}
                   {hasSource && snippetError && (
-                    <p className="text-xs text-status-error/80 p-4">No source found for this symbol.</p>
+                    <p className="text-xs text-status-error/80 p-4">
+                      {(snippetErr as Error)?.message ?? 'No source found.'}
+                    </p>
                   )}
                   {hasSource && snippet && (
                     <pre className="text-[11px] leading-relaxed text-text-secondary font-mono p-4 whitespace-pre">

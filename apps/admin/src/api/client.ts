@@ -455,8 +455,10 @@ export class NexusMindClient {
     return this.request(`/v1/code/graph?${qs}`)
   }
 
-  getCodeSnippet(project: string, file: string, line: number): Promise<CodeSnippet> {
-    const qs = new URLSearchParams({ project, file, line: String(line) })
+  getCodeSnippet(project: string, file: string, start?: number, end?: number): Promise<CodeSnippet> {
+    const qs = new URLSearchParams({ project, file })
+    if (start != null) qs.set('start', String(start))
+    if (end != null) qs.set('end', String(end))
     return this.request(`/v1/code/snippet?${qs}`)
   }
 
