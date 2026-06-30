@@ -170,6 +170,11 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/github/status", get(github_auth::get_status))
         .route("/v1/github/connection", delete(github_auth::delete_connection))
         .route("/v1/github/disconnect", delete(github_auth::delete_connection))
+        // Blanket audit is the innermost layer (added first) so it wraps the
+        // handler and runs after auth has set the AuthContext. It records an
+        // audit entry for every successful mutating request whose handler does
+        // not already self-log (see middleware::AUDIT_SKIP_PATTERNS).
+        .layer(middleware::from_fn_with_state(store.conn(), api_mw::audit))
         // Rate limit runs after auth (inner layer = runs second at runtime).
         // Auth is outermost (last `.layer()`) so it runs first.
         .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))
