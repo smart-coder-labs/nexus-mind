@@ -87,6 +87,12 @@ Call `search_memory` PROACTIVELY when:
 
 If unsure whether to search — search.
 
+### HOW to search (avoid lazy project-name queries)
+
+- To load a **project's** context, use `get_context(project=…)` or `list_memories(project=…)` — NOT `search_memory`.
+- `search_memory` is a **semantic** search: pass a query describing the specific thing you need (e.g. `"how auth tokens are validated"`, `"deploy pipeline config"`, `"why we chose SQLite"`).
+- NEVER pass a bare project/repo name (e.g. `"nexus-mind"`) as the `search_memory` query — a semantic engine returns noise for that, not the project's context. Use `get_context`/`list_memories` for whole-project loading.
+
 ## SESSION CLOSE (MANDATORY)
 
 Before saying "done", "that's it", "finished" (or the equivalent in any language), call:
