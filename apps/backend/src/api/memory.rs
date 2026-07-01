@@ -273,7 +273,8 @@ pub async fn store(
         require_permission(&conn, &auth, Some(project), "memory:write")?;
 
         // Enforce pii_redact policies against memory content before storing.
-        let pii_policies: Vec<_> = db_queries::list_enabled_policies(&conn, &auth.org_id)
+        // Scoped to org-wide + this memory's project (project ADDS to org-wide).
+        let pii_policies: Vec<_> = db_queries::list_enabled_policies(&conn, &auth.org_id, input.project.as_deref())
             .unwrap_or_default()
             .into_iter()
             .filter(|p| p.rule_type == "pii_redact")

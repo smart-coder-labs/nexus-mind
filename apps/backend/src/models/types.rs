@@ -539,6 +539,9 @@ pub struct Policy {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Project this policy is scoped to. NULL = org-wide (applies to every project).
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// Typed enum that represents the config payload for each rule type.
@@ -567,6 +570,9 @@ pub struct CreatePolicyRequest {
     pub config: PolicyConfig,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Project to scope this policy to. None = org-wide (applies to every project).
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -1619,12 +1625,54 @@ mod tests {
             enabled: true,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-01T00:00:00.000Z".into(),
+            project_id: None,
         };
         let s = serde_json::to_string(&p).unwrap();
         let back: Policy = serde_json::from_str(&s).unwrap();
         assert_eq!(p, back);
         assert_eq!(back.rule_type, "model_whitelist");
         assert!(back.enabled);
+    }
+
+    #[test]
+    fn policy_with_project_id_roundtrip() {
+        let p = Policy {
+            id: "p_abc".into(),
+            org_id: "org1".into(),
+            name: "Project Scoped".into(),
+            rule_type: "model_whitelist".into(),
+            config: json!({"allowed_models": ["claude-3-5-sonnet"]}),
+            enabled: true,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+            project_id: Some("proj_1".into()),
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        let back: Policy = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.project_id.as_deref(), Some("proj_1"));
+    }
+
+    #[test]
+    fn create_policy_request_project_id_defaults_to_none() {
+        let json_str = r#"{
+            "name": "Whitelist only claude",
+            "rule_type": "model_whitelist",
+            "config": {"allowed_models": ["claude-3-5-sonnet"]}
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert!(req.project_id.is_none());
+    }
+
+    #[test]
+    fn create_policy_request_project_id_roundtrip() {
+        let json_str = r#"{
+            "name": "Scoped policy",
+            "rule_type": "model_whitelist",
+            "config": {"allowed_models": ["claude-3-5-sonnet"]},
+            "project_id": "proj_1"
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.project_id.as_deref(), Some("proj_1"));
     }
 
     #[test]

@@ -3045,13 +3045,14 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Policy> {
         enabled: enabled_int != 0,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        project_id: row.get(8)?,
     })
 }
 
 /// Returns all policies for an org, ordered by creation date DESC.
 pub fn list_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
+        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
          FROM policies WHERE org_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([org_id], row_to_policy)?;
@@ -3060,19 +3061,33 @@ pub fn list_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {
 
 /// Returns only enabled policies for an org, ordered by creation date ASC.
 /// Used by the `/policy/check` handler for evaluation.
-pub fn list_enabled_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
-         FROM policies WHERE org_id = ?1 AND enabled = 1 ORDER BY created_at ASC",
-    )?;
-    let rows = stmt.query_map([org_id], row_to_policy)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+///
+/// `project`: when `Some(p)`, returns org-wide policies (`project_id IS NULL`)
+/// UNION policies scoped to project `p` — project scoping ADDS to org-wide, it
+/// never replaces it. When `None`, returns every enabled policy for the org
+/// regardless of `project_id` (admin listing / no-project-context behavior).
+pub fn list_enabled_policies(conn: &Connection, org_id: &str, project: Option<&str>) -> Result<Vec<Policy>> {
+    if let Some(p) = project {
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
+             FROM policies WHERE org_id = ?1 AND enabled = 1 AND (project_id IS NULL OR project_id = ?2) ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![org_id, p], row_to_policy)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
+             FROM policies WHERE org_id = ?1 AND enabled = 1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([org_id], row_to_policy)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
 }
 
 /// Returns a single policy by id + org_id, or None (hides cross-org existence).
 pub fn get_policy(conn: &Connection, id: &str, org_id: &str) -> Result<Option<Policy>> {
     let result = conn.query_row(
-        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
+        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
          FROM policies WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![id, org_id],
         row_to_policy,
@@ -3085,6 +3100,9 @@ pub fn get_policy(conn: &Connection, id: &str, org_id: &str) -> Result<Option<Po
 }
 
 /// Inserts a new policy and returns the created row.
+/// `project_id`: `None` = org-wide (applies to every project); `Some(p)` scopes
+/// the policy to project `p` only.
+#[allow(clippy::too_many_arguments)]
 pub fn insert_policy(
     conn: &Connection,
     id: &str,
@@ -3093,15 +3111,16 @@ pub fn insert_policy(
     rule_type: &str,
     config_json: &str,
     enabled: bool,
+    project_id: Option<&str>,
 ) -> Result<Policy> {
     let now = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
     let enabled_int: i64 = if enabled { 1 } else { 0 };
     conn.execute(
-        "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-        rusqlite::params![id, org_id, name, rule_type, config_json, enabled_int, now],
+        "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, project_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+        rusqlite::params![id, org_id, name, rule_type, config_json, enabled_int, project_id, now],
     )?;
     get_policy(conn, id, org_id)?
         .ok_or_else(|| anyhow::anyhow!("insert_policy: row not found after insert"))
@@ -4043,7 +4062,7 @@ pub fn search_policies_by_query(
 ) -> Result<Vec<crate::models::types::Policy>> {
     let pattern = format!("%{}%", q.to_lowercase());
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at
+        "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
          FROM policies
          WHERE org_id = ?1
            AND LOWER(name) LIKE ?2
@@ -5477,7 +5496,7 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        let policy = insert_policy(&conn, &id, &org.id, "Whitelist", "model_whitelist", config_json, true).unwrap();
+        let policy = insert_policy(&conn, &id, &org.id, "Whitelist", "model_whitelist", config_json, true, None).unwrap();
 
         assert_eq!(policy.id, id);
         assert_eq!(policy.org_id, org.id);
@@ -5507,7 +5526,7 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org1.id, "Whitelist", "model_whitelist", config_json, true).unwrap();
+        insert_policy(&conn, &id, &org1.id, "Whitelist", "model_whitelist", config_json, true, None).unwrap();
 
         // Querying with org2 must return None
         let result = get_policy(&conn, &id, &org2_id).unwrap();
@@ -5524,8 +5543,8 @@ mod tests {
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
 
-        insert_policy(&conn, &id1, &org1.id, "Org1 Policy", "model_whitelist", config_json, true).unwrap();
-        insert_policy(&conn, &id2, &org2_id, "Org2 Policy", "model_whitelist", config_json, true).unwrap();
+        insert_policy(&conn, &id1, &org1.id, "Org1 Policy", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(&conn, &id2, &org2_id, "Org2 Policy", "model_whitelist", config_json, true, None).unwrap();
 
         let org1_policies = list_policies(&conn, &org1.id).unwrap();
         let org2_policies = list_policies(&conn, &org2_id).unwrap();
@@ -5543,7 +5562,7 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "Old Name", "model_whitelist", config_json, true).unwrap();
+        insert_policy(&conn, &id, &org.id, "Old Name", "model_whitelist", config_json, true, None).unwrap();
 
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
         let updated = update_policy(&conn, &id, &org.id, Some("New Name"), None, Some(false), &now).unwrap();
@@ -5570,7 +5589,7 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "Temp", "model_whitelist", config_json, true).unwrap();
+        insert_policy(&conn, &id, &org.id, "Temp", "model_whitelist", config_json, true, None).unwrap();
 
         let deleted = delete_policy(&conn, &id, &org.id).unwrap();
         assert!(deleted);
@@ -5587,7 +5606,7 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org1.id, "Org1 Policy", "model_whitelist", config_json, true).unwrap();
+        insert_policy(&conn, &id, &org1.id, "Org1 Policy", "model_whitelist", config_json, true, None).unwrap();
 
         let deleted = delete_policy(&conn, &id, &org2_id).unwrap();
         assert!(!deleted, "delete from wrong org must return false");
@@ -5605,12 +5624,123 @@ mod tests {
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
 
-        insert_policy(&conn, &id1, &org.id, "Enabled", "model_whitelist", config_json, true).unwrap();
-        insert_policy(&conn, &id2, &org.id, "Disabled", "model_whitelist", config_json, false).unwrap();
+        insert_policy(&conn, &id1, &org.id, "Enabled", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(&conn, &id2, &org.id, "Disabled", "model_whitelist", config_json, false, None).unwrap();
 
-        let enabled = list_enabled_policies(&conn, &org.id).unwrap();
+        let enabled = list_enabled_policies(&conn, &org.id, None).unwrap();
         assert_eq!(enabled.len(), 1);
         assert_eq!(enabled[0].name, "Enabled");
+    }
+
+    // ── Policy project scoping tests ──────────────────────────────────────────
+
+    #[test]
+    fn insert_policy_with_project_id_round_trips() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project = create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+
+        let id = format!("p_{}", Uuid::new_v4().simple());
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        let policy = insert_policy(&conn, &id, &org.id, "Scoped", "model_whitelist", config_json, true, Some(&project.id)).unwrap();
+
+        assert_eq!(policy.project_id.as_deref(), Some(project.id.as_str()));
+
+        let fetched = get_policy(&conn, &id, &org.id).unwrap().unwrap();
+        assert_eq!(fetched.project_id.as_deref(), Some(project.id.as_str()));
+    }
+
+    #[test]
+    fn insert_policy_without_project_id_is_org_wide() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let id = format!("p_{}", Uuid::new_v4().simple());
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        let policy = insert_policy(&conn, &id, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+
+        assert!(policy.project_id.is_none());
+        let fetched = get_policy(&conn, &id, &org.id).unwrap().unwrap();
+        assert!(fetched.project_id.is_none());
+    }
+
+    #[test]
+    fn list_enabled_policies_org_wide_policy_applies_to_any_project() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_a = create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+        let project_b = create_project(&conn, &org.id, "proj-b", None, None).unwrap();
+
+        let id = format!("p_{}", Uuid::new_v4().simple());
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        insert_policy(&conn, &id, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+
+        let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
+        let for_b = list_enabled_policies(&conn, &org.id, Some(&project_b.id)).unwrap();
+        assert_eq!(for_a.len(), 1, "org-wide policy must apply to project A");
+        assert_eq!(for_b.len(), 1, "org-wide policy must apply to project B");
+    }
+
+    #[test]
+    fn list_enabled_policies_project_scoped_only_for_that_project() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_a = create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+        let project_b = create_project(&conn, &org.id, "proj-b", None, None).unwrap();
+
+        let id = format!("p_{}", Uuid::new_v4().simple());
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        insert_policy(&conn, &id, &org.id, "ProjA Only", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
+
+        let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
+        let for_b = list_enabled_policies(&conn, &org.id, Some(&project_b.id)).unwrap();
+        assert_eq!(for_a.len(), 1, "project-scoped policy must apply to its own project");
+        assert_eq!(for_b.len(), 0, "project-scoped policy must NOT apply to a different project");
+    }
+
+    #[test]
+    fn list_enabled_policies_none_returns_everything_including_project_scoped() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_a = create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        let id1 = format!("p_{}", Uuid::new_v4().simple());
+        let id2 = format!("p_{}", Uuid::new_v4().simple());
+        let id3 = format!("p_{}", Uuid::new_v4().simple());
+        insert_policy(&conn, &id1, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(&conn, &id2, &org.id, "ProjA", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
+        insert_policy(&conn, &id3, &org.id, "DisabledOrgWide", "model_whitelist", config_json, false, None).unwrap();
+
+        let admin_view = list_enabled_policies(&conn, &org.id, None).unwrap();
+        assert_eq!(admin_view.len(), 2, "None must return all ENABLED policies for the org regardless of project_id");
+        let names: Vec<&str> = admin_view.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"OrgWide"));
+        assert!(names.contains(&"ProjA"));
+        assert!(!names.contains(&"DisabledOrgWide"), "disabled policies must still be excluded");
+    }
+
+    #[test]
+    fn list_enabled_policies_project_resolution_is_union_not_other_projects() {
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_a = create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+        let project_q = create_project(&conn, &org.id, "proj-q", None, None).unwrap();
+
+        let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
+        let id1 = format!("p_{}", Uuid::new_v4().simple());
+        let id2 = format!("p_{}", Uuid::new_v4().simple());
+        let id3 = format!("p_{}", Uuid::new_v4().simple());
+        insert_policy(&conn, &id1, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(&conn, &id2, &org.id, "ProjA", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
+        insert_policy(&conn, &id3, &org.id, "ProjQ", "model_whitelist", config_json, true, Some(&project_q.id)).unwrap();
+
+        let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
+        let names: Vec<&str> = for_a.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(for_a.len(), 2, "resolving for project A must be org-wide UNION project A");
+        assert!(names.contains(&"OrgWide"));
+        assert!(names.contains(&"ProjA"));
+        assert!(!names.contains(&"ProjQ"), "project Q's policy must not leak into project A's resolution");
     }
 
     #[test]
@@ -7469,11 +7599,16 @@ mod project_stats_tests {
 
 // ── Convention queries ────────────────────────────────────────────────────────
 
+/// `project`: when `Some(p)`, returns org-wide conventions (`project_id IS NULL`)
+/// UNION conventions scoped to project `p` — project scoping ADDS to org-wide, it
+/// never replaces it. When `None`, returns every convention for the org
+/// regardless of `project_id` (admin listing / no-project-context behavior).
 pub fn list_conventions(
     conn: &Connection,
     org_id: &str,
     category: Option<&str>,
     include_archived: Option<bool>,
+    project: Option<&str>,
 ) -> Result<Vec<Convention>> {
     let include_archived = include_archived.unwrap_or(false);
     let mut sql = String::from(
@@ -7481,22 +7616,33 @@ pub fn list_conventions(
          FROM conventions
          WHERE org_id = ?1"
     );
+    let mut param_idx = 2usize;
+    let mut extra_params: Vec<String> = Vec::new();
+
     if !include_archived {
         sql.push_str(" AND archived_at IS NULL");
     }
-    if category.is_some() {
-        sql.push_str(" AND category = ?2");
+    if let Some(cat) = category {
+        sql.push_str(&format!(" AND category = ?{param_idx}"));
+        extra_params.push(cat.to_string());
+        param_idx += 1;
+    }
+    if let Some(p) = project {
+        sql.push_str(&format!(" AND (project_id IS NULL OR project_id = ?{param_idx})"));
+        extra_params.push(p.to_string());
     }
     sql.push_str(" ORDER BY weight DESC, created_at DESC");
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = if let Some(cat) = category {
-        stmt.query_map(rusqlite::params![org_id, cat], convention_from_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        stmt.query_map(rusqlite::params![org_id], convention_from_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let mut all_params: Vec<String> = vec![org_id.to_string()];
+    all_params.extend(extra_params);
+    let refs: Vec<&dyn rusqlite::ToSql> = all_params
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+    let rows = stmt
+        .query_map(refs.as_slice(), convention_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
@@ -7591,6 +7737,125 @@ fn convention_from_row(row: &rusqlite::Row) -> rusqlite::Result<Convention> {
         updated_at: row.get(9)?,
         archived_at: row.get(10)?,
     })
+}
+
+#[cfg(test)]
+mod convention_scope_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+    use crate::models::types::CreateConventionRequest;
+
+    fn setup() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn
+    }
+
+    fn seed_org(conn: &Connection) -> String {
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
+            [],
+        ).unwrap();
+        "org1".to_string()
+    }
+
+    fn make_req(title: &str, project_id: Option<&str>) -> CreateConventionRequest {
+        CreateConventionRequest {
+            title: title.to_string(),
+            content: "content".to_string(),
+            category: None,
+            weight: None,
+            tags: None,
+            project_id: project_id.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn org_wide_convention_returned_for_any_project() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+        let project_b = create_project(&conn, &org_id, "proj-b", None, None).unwrap();
+
+        create_convention(&conn, &org_id, &make_req("Org-wide rule", None)).unwrap();
+
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
+        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id)).unwrap();
+
+        assert_eq!(for_a.len(), 1, "org-wide convention must apply to project A");
+        assert_eq!(for_b.len(), 1, "org-wide convention must apply to project B");
+    }
+
+    #[test]
+    fn project_scoped_convention_only_for_that_project() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+        let project_b = create_project(&conn, &org_id, "proj-b", None, None).unwrap();
+
+        create_convention(&conn, &org_id, &make_req("Proj A rule", Some(&project_a.id))).unwrap();
+
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
+        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id)).unwrap();
+
+        assert_eq!(for_a.len(), 1, "project-scoped convention must apply to its own project");
+        assert_eq!(for_b.len(), 0, "project-scoped convention must NOT apply to a different project");
+    }
+
+    #[test]
+    fn none_project_returns_everything_for_org() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+
+        create_convention(&conn, &org_id, &make_req("Org-wide", None)).unwrap();
+        create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
+
+        let all = list_conventions(&conn, &org_id, None, None, None).unwrap();
+        assert_eq!(all.len(), 2, "None must return everything for the org regardless of project_id (admin listing)");
+    }
+
+    #[test]
+    fn resolving_for_project_is_union_org_wide_and_project_not_other_project() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+        let project_q = create_project(&conn, &org_id, "proj-q", None, None).unwrap();
+
+        create_convention(&conn, &org_id, &make_req("Org-wide", None)).unwrap();
+        create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
+        create_convention(&conn, &org_id, &make_req("Proj Q", Some(&project_q.id))).unwrap();
+
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
+        let titles: Vec<&str> = for_a.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(for_a.len(), 2, "resolving for project A must be org-wide UNION project A");
+        assert!(titles.contains(&"Org-wide"));
+        assert!(titles.contains(&"Proj A"));
+        assert!(!titles.contains(&"Proj Q"), "project Q's convention must not leak into project A's resolution");
+    }
+
+    #[test]
+    fn list_conventions_project_scoping_combines_with_category_filter() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+
+        let mut org_wide_style = make_req("Org-wide style", None);
+        org_wide_style.category = Some("style".to_string());
+        create_convention(&conn, &org_id, &org_wide_style).unwrap();
+
+        let mut proj_a_naming = make_req("Proj A naming", Some(&project_a.id));
+        proj_a_naming.category = Some("naming".to_string());
+        create_convention(&conn, &org_id, &proj_a_naming).unwrap();
+
+        let style_for_a = list_conventions(&conn, &org_id, Some("style"), None, Some(&project_a.id)).unwrap();
+        assert_eq!(style_for_a.len(), 1);
+        assert_eq!(style_for_a[0].title, "Org-wide style");
+    }
 }
 
 // ── GitHub OAuth connection queries ───────────────────────────────────────────
