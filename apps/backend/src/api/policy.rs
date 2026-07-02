@@ -1032,4 +1032,119 @@ mod tests {
         let body = body_json(resp).await;
         assert_eq!(body["allowed"], false, "org-wide policy must apply regardless of project");
     }
+
+    // ── pagination tests ──────────────────────────────────────────────────────
+
+    /// Inserts a policy directly via the query layer and pins its `created_at` to a
+    /// deterministic value so list ordering (created_at DESC) is stable in tests.
+    fn insert_policy_at(store: &SqliteStore, org_id: &str, name: &str, created_at: &str) {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let id = format!("p_{}", uuid::Uuid::new_v4().simple());
+        crate::db::queries::insert_policy(
+            &conn, &id, org_id, name, "model_whitelist",
+            r#"{"allowed_models":["claude"]}"#, true, None,
+        ).unwrap();
+        conn.execute(
+            "UPDATE policies SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params![created_at, id],
+        ).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_default_returns_everything_under_the_default_limit() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        for i in 0..3 {
+            insert_policy_at(&store, &org_id, &format!("P{i}"), &format!("2025-01-0{}T00:00:00.000Z", i + 1));
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 3, "no limit/offset must still return everything under the default cap");
+    }
+
+    #[tokio::test]
+    async fn list_respects_explicit_limit_and_offset() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        // created_at DESC ordering: newest first → P5, P4, P3, P2, P1
+        for i in 1..=5 {
+            insert_policy_at(&store, &org_id, &format!("P{i}"), &format!("2025-01-0{i}T00:00:00.000Z"));
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies?limit=2&offset=1")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let names: Vec<&str> = body["policies"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["P4", "P3"], "limit=2&offset=1 must return the 2nd and 3rd most recent policies");
+    }
+
+    #[tokio::test]
+    async fn list_limit_is_clamped_to_500_not_rejected() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..505 {
+                let id = format!("p_{}", uuid::Uuid::new_v4().simple());
+                crate::db::queries::insert_policy(
+                    &conn, &id, &org_id, &format!("P{i}"), "model_whitelist",
+                    r#"{"allowed_models":["claude"]}"#, true, None,
+                ).unwrap();
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies?limit=10000")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "an over-max limit must be clamped, never rejected");
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 500, "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows");
+    }
 }

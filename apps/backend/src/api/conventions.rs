@@ -313,4 +313,105 @@ mod tests {
         let body = body_json(resp).await;
         assert_eq!(body.as_array().unwrap().len(), 2, "no project param must return everything for the org (admin listing)");
     }
+
+    // ── pagination tests ──────────────────────────────────────────────────────
+
+    fn create_convention_with_weight(conn: &rusqlite::Connection, org_id: &str, title: &str, weight: i64) {
+        queries::create_convention(conn, org_id, &crate::models::types::CreateConventionRequest {
+            title: title.to_string(),
+            content: "content".to_string(),
+            category: None,
+            weight: Some(weight),
+            tags: None,
+            project_id: None,
+        }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_default_returns_everything_under_the_default_limit() {
+        let store = make_store();
+        let (org_id, key) = admin_key(&store);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..3 {
+                create_convention_with_weight(&conn, &org_id, &format!("C{i}"), i);
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/conventions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 3, "no limit/offset must still return everything under the default cap");
+    }
+
+    #[tokio::test]
+    async fn list_respects_explicit_limit_and_offset() {
+        let store = make_store();
+        let (org_id, key) = admin_key(&store);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            // Weight DESC ordering: W50, W40, W30, W20, W10
+            create_convention_with_weight(&conn, &org_id, "W50", 50);
+            create_convention_with_weight(&conn, &org_id, "W40", 40);
+            create_convention_with_weight(&conn, &org_id, "W30", 30);
+            create_convention_with_weight(&conn, &org_id, "W20", 20);
+            create_convention_with_weight(&conn, &org_id, "W10", 10);
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/conventions?limit=2&offset=1")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let titles: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, vec!["W40", "W30"], "limit=2&offset=1 must return the 2nd and 3rd highest-weight conventions");
+    }
+
+    #[tokio::test]
+    async fn list_limit_is_clamped_to_500_not_rejected() {
+        let store = make_store();
+        let (org_id, key) = admin_key(&store);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..505 {
+                create_convention_with_weight(&conn, &org_id, &format!("C{i}"), 505 - i);
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/conventions?limit=10000")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "an over-max limit must be clamped, never rejected");
+        let body = body_json(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 500, "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows");
+    }
 }
