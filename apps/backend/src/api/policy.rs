@@ -175,19 +175,35 @@ pub struct PoliciesResponse {
     pub policies: Vec<Policy>,
 }
 
+/// Default page size when `limit` is not provided.
+const DEFAULT_LIST_LIMIT: i64 = 100;
+/// Hard ceiling on `limit` — requests above this are clamped, never rejected.
+const MAX_LIST_LIMIT: i64 = 500;
+
+#[derive(Deserialize)]
+pub struct ListPoliciesParams {
+    /// Max rows to return. Defaults to 100, clamped to 500 (never errors).
+    pub limit: Option<i64>,
+    /// Rows to skip. Defaults to 0.
+    pub offset: Option<i64>,
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-/// `GET /v1/policies` — list all policies for the caller's org.
+/// `GET /v1/policies` — list policies for the caller's org.
 /// Requires `policy:read`.
 pub async fn list_policies(
     State(store): State<SqliteStore>,
     Extension(ctx): Extension<AuthContext>,
+    axum::extract::Query(params): axum::extract::Query<ListPoliciesParams>,
 ) -> Result<Json<PoliciesResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "policy:read")?;
 
-    let policies = queries::list_policies(&conn, &ctx.org_id).map_err(internal_error)?;
+    let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(0, MAX_LIST_LIMIT);
+    let offset = params.offset.unwrap_or(0).max(0);
+    let policies = queries::list_policies(&conn, &ctx.org_id, limit, offset).map_err(internal_error)?;
     Ok(Json(PoliciesResponse { policies }))
 }
 

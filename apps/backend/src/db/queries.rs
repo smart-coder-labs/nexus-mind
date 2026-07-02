@@ -3058,13 +3058,13 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Policy> {
     })
 }
 
-/// Returns all policies for an org, ordered by creation date DESC.
-pub fn list_policies(conn: &Connection, org_id: &str) -> Result<Vec<Policy>> {
+/// Returns policies for an org, ordered by creation date DESC, page by `limit`/`offset`.
+pub fn list_policies(conn: &Connection, org_id: &str, limit: i64, offset: i64) -> Result<Vec<Policy>> {
     let mut stmt = conn.prepare(
         "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
-         FROM policies WHERE org_id = ?1 ORDER BY created_at DESC",
+         FROM policies WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
     )?;
-    let rows = stmt.query_map([org_id], row_to_policy)?;
+    let rows = stmt.query_map(rusqlite::params![org_id, limit, offset], row_to_policy)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
@@ -5581,7 +5581,7 @@ mod tests {
     fn list_policies_returns_empty_for_new_org() {
         let conn = setup();
         let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        let policies = list_policies(&conn, &org.id).unwrap();
+        let policies = list_policies(&conn, &org.id, 1000, 0).unwrap();
         assert!(policies.is_empty());
     }
 
@@ -5642,8 +5642,8 @@ mod tests {
         insert_policy(&conn, &id1, &org1.id, "Org1 Policy", "model_whitelist", config_json, true, None).unwrap();
         insert_policy(&conn, &id2, &org2_id, "Org2 Policy", "model_whitelist", config_json, true, None).unwrap();
 
-        let org1_policies = list_policies(&conn, &org1.id).unwrap();
-        let org2_policies = list_policies(&conn, &org2_id).unwrap();
+        let org1_policies = list_policies(&conn, &org1.id, 1000, 0).unwrap();
+        let org2_policies = list_policies(&conn, &org2_id, 1000, 0).unwrap();
 
         assert_eq!(org1_policies.len(), 1);
         assert_eq!(org1_policies[0].name, "Org1 Policy");
@@ -7699,12 +7699,17 @@ mod project_stats_tests {
 /// UNION conventions scoped to project `p` — project scoping ADDS to org-wide, it
 /// never replaces it. When `None`, returns every convention for the org
 /// regardless of `project_id` (admin listing / no-project-context behavior).
+/// `limit`/`offset` page the result set, ordered by `weight DESC, created_at DESC`
+/// (highest-weight conventions first). Callers that want "everything" should pass
+/// a generously large `limit`.
 pub fn list_conventions(
     conn: &Connection,
     org_id: &str,
     category: Option<&str>,
     include_archived: Option<bool>,
     project: Option<&str>,
+    limit: i64,
+    offset: i64,
 ) -> Result<Vec<Convention>> {
     let include_archived = include_archived.unwrap_or(false);
     let mut sql = String::from(
@@ -7726,12 +7731,18 @@ pub fn list_conventions(
     if let Some(p) = project {
         sql.push_str(&format!(" AND (project_id IS NULL OR project_id = ?{param_idx})"));
         extra_params.push(p.to_string());
+        param_idx += 1;
     }
-    sql.push_str(" ORDER BY weight DESC, created_at DESC");
+    sql.push_str(&format!(
+        " ORDER BY weight DESC, created_at DESC LIMIT ?{param_idx} OFFSET ?{}",
+        param_idx + 1
+    ));
 
     let mut stmt = conn.prepare(&sql)?;
     let mut all_params: Vec<String> = vec![org_id.to_string()];
     all_params.extend(extra_params);
+    all_params.push(limit.to_string());
+    all_params.push(offset.to_string());
     let refs: Vec<&dyn rusqlite::ToSql> = all_params
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
@@ -7879,8 +7890,8 @@ mod convention_scope_tests {
 
         create_convention(&conn, &org_id, &make_req("Org-wide rule", None)).unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
-        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id)).unwrap();
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
+        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
 
         assert_eq!(for_a.len(), 1, "org-wide convention must apply to project A");
         assert_eq!(for_b.len(), 1, "org-wide convention must apply to project B");
@@ -7895,8 +7906,8 @@ mod convention_scope_tests {
 
         create_convention(&conn, &org_id, &make_req("Proj A rule", Some(&project_a.id))).unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
-        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id)).unwrap();
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
+        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
 
         assert_eq!(for_a.len(), 1, "project-scoped convention must apply to its own project");
         assert_eq!(for_b.len(), 0, "project-scoped convention must NOT apply to a different project");
@@ -7911,7 +7922,7 @@ mod convention_scope_tests {
         create_convention(&conn, &org_id, &make_req("Org-wide", None)).unwrap();
         create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
 
-        let all = list_conventions(&conn, &org_id, None, None, None).unwrap();
+        let all = list_conventions(&conn, &org_id, None, None, None, 1000, 0).unwrap();
         assert_eq!(all.len(), 2, "None must return everything for the org regardless of project_id (admin listing)");
     }
 
@@ -7926,7 +7937,7 @@ mod convention_scope_tests {
         create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
         create_convention(&conn, &org_id, &make_req("Proj Q", Some(&project_q.id))).unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id)).unwrap();
+        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
         let titles: Vec<&str> = for_a.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(for_a.len(), 2, "resolving for project A must be org-wide UNION project A");
         assert!(titles.contains(&"Org-wide"));
@@ -7948,7 +7959,7 @@ mod convention_scope_tests {
         proj_a_naming.category = Some("naming".to_string());
         create_convention(&conn, &org_id, &proj_a_naming).unwrap();
 
-        let style_for_a = list_conventions(&conn, &org_id, Some("style"), None, Some(&project_a.id)).unwrap();
+        let style_for_a = list_conventions(&conn, &org_id, Some("style"), None, Some(&project_a.id), 1000, 0).unwrap();
         assert_eq!(style_for_a.len(), 1);
         assert_eq!(style_for_a[0].title, "Org-wide style");
     }

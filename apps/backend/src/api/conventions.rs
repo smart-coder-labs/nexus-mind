@@ -42,6 +42,11 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+/// Default page size when `limit` is not provided.
+const DEFAULT_LIST_LIMIT: i64 = 100;
+/// Hard ceiling on `limit` — requests above this are clamped, never rejected.
+const MAX_LIST_LIMIT: i64 = 500;
+
 #[derive(Deserialize)]
 pub struct ListParams {
     pub category: Option<String>,
@@ -50,6 +55,10 @@ pub struct ListParams {
     /// conventions. When absent, returns every convention for the org regardless
     /// of project_id (admin listing behavior).
     pub project: Option<String>,
+    /// Max rows to return. Defaults to 100, clamped to 500 (never errors).
+    pub limit: Option<i64>,
+    /// Rows to skip. Defaults to 0.
+    pub offset: Option<i64>,
 }
 
 pub async fn list_conventions(
@@ -59,12 +68,16 @@ pub async fn list_conventions(
 ) -> Result<Json<Vec<Convention>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(0, MAX_LIST_LIMIT);
+    let offset = params.offset.unwrap_or(0).max(0);
     let conventions = queries::list_conventions(
         &conn,
         &auth.org_id,
         params.category.as_deref(),
         params.include_archived,
         params.project.as_deref(),
+        limit,
+        offset,
     ).map_err(db_err)?;
     Ok(Json(conventions))
 }

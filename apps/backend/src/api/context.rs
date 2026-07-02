@@ -38,7 +38,8 @@ pub async fn get_project_context(
         .map_err(db_err)?;
 
     // Scope to org-wide + this project's conventions (project scoping ADDS to org-wide).
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), Some(&project))
+    // TODO(context-caps): limit is temporarily generous here; Change 5 caps this at 50.
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), Some(&project), 1000, 0)
         .map_err(db_err)?;
 
     let mut ctx_json = serde_json::to_value(&ctx).map_err(|e| db_err(e.into()))?;
@@ -103,7 +104,8 @@ pub async fn get_global_context(
         .collect();
 
     // Global context has no project in scope — admin listing (everything for the org).
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None)
+    // TODO(context-caps): limit is temporarily generous here; Change 5 caps this at 50.
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None, 1000, 0)
         .map_err(db_err)?;
 
     let mut resp = build_context_response(memory_values, "scope", serde_json::json!("global"));
