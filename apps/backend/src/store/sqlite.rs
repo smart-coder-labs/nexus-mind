@@ -45,6 +45,15 @@ impl SqliteStore {
     pub fn embed_service(&self) -> Option<Arc<EmbedService>> {
         self.embed.clone()
     }
+
+    /// Returns `true` when `search()` would silently downgrade the given mode to
+    /// `Keyword` because no embed service is configured. Single source of truth
+    /// for the fallback predicate, shared by `search()` itself and by callers
+    /// (e.g. `api::memory::search`) that need to report `degraded` in responses
+    /// without duplicating — and risking drift from — the actual fallback condition.
+    pub fn will_degrade(&self, mode: SearchMode) -> bool {
+        matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && self.embed.is_none()
+    }
 }
 
 // ── MemoryStore impl ──────────────────────────────────────────────────────────
@@ -97,12 +106,11 @@ impl MemoryStore for SqliteStore {
 
     fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>> {
         // Resolve effective mode: downgrade to Keyword if no embed service.
-        let effective_mode = match mode {
-            SearchMode::Semantic | SearchMode::Hybrid if self.embed.is_none() => {
-                tracing::debug!("No embed service — falling back to Keyword search");
-                SearchMode::Keyword
-            }
-            m => m,
+        let effective_mode = if self.will_degrade(mode) {
+            tracing::debug!("No embed service — falling back to Keyword search");
+            SearchMode::Keyword
+        } else {
+            mode
         };
 
         let memories = match effective_mode {

@@ -354,9 +354,9 @@ pub async fn search(
     let limit = input.limit.unwrap_or(20);
     let mode = input.mode.as_deref().unwrap_or("hybrid").parse::<SearchMode>().unwrap_or(SearchMode::Hybrid);
     // `store.search` silently downgrades semantic/hybrid to keyword search when no
-    // embed service is configured (see SqliteStore::search) — surface that here so
-    // callers know results are degraded rather than assuming semantic ranking.
-    let degraded = if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && store.embed_service().is_none() {
+    // embed service is configured (see SqliteStore::will_degrade) — surface that
+    // here so callers know results are degraded rather than assuming semantic ranking.
+    let degraded = if store.will_degrade(mode) {
         Some("keyword-fallback".to_string())
     } else {
         None
