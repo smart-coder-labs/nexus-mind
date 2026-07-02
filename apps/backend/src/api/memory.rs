@@ -2150,6 +2150,93 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
+    // ── degraded search fallback tests ────────────────────────────────────────
+    // The test store never attaches an embed service (SqliteStore::new has no
+    // `.with_embed(..)`), so `semantic`/`hybrid` modes always fall back to
+    // keyword search here — exactly the condition we want to surface.
+
+    #[tokio::test]
+    async fn search_hybrid_without_embed_service_reports_degraded() {
+        let (store, admin_key, _) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        let search_body = serde_json::json!({ "query": "seed", "mode": "hybrid" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["degraded"].as_str(),
+            Some("keyword-fallback"),
+            "hybrid mode without an embed service must report degraded: keyword-fallback, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_semantic_without_embed_service_reports_degraded() {
+        let (store, admin_key, _) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        let search_body = serde_json::json!({ "query": "seed", "mode": "semantic" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["degraded"].as_str(), Some("keyword-fallback"));
+    }
+
+    #[tokio::test]
+    async fn search_keyword_mode_never_reports_degraded() {
+        let (store, admin_key, _) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        let search_body = serde_json::json!({ "query": "seed", "mode": "keyword" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("degraded").is_none() || body["degraded"].is_null(),
+            "keyword mode must never report degraded, got: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn list_returns_pinned_first() {
         let (store, admin_key, _) = setup_org();
