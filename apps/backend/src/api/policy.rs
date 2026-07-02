@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::Deserialize;
 
 use crate::{
-    api::helpers::{require_permission, AppJson},
+    api::helpers::{require_permission, resolve_list_pagination, AppJson},
     db::queries,
     models::types::{
         ApiError, AuthContext, Policy, PolicyCheckRequest, PolicyCheckResponse, UpdatePolicyRequest,
@@ -175,14 +175,11 @@ pub struct PoliciesResponse {
     pub policies: Vec<Policy>,
 }
 
-/// Default page size when `limit` is not provided.
-const DEFAULT_LIST_LIMIT: i64 = 100;
-/// Hard ceiling on `limit` — requests above this are clamped, never rejected.
-const MAX_LIST_LIMIT: i64 = 500;
-
 #[derive(Deserialize)]
 pub struct ListPoliciesParams {
-    /// Max rows to return. Defaults to 100, clamped to 500 (never errors).
+    /// Max rows to return. Pagination is opt-in — when neither `limit` nor
+    /// `offset` is provided, the full list is returned unbounded. Once
+    /// provided, `limit` is clamped to 500 (never errors).
     pub limit: Option<i64>,
     /// Rows to skip. Defaults to 0.
     pub offset: Option<i64>,
@@ -201,8 +198,7 @@ pub async fn list_policies(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "policy:read")?;
 
-    let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(0, MAX_LIST_LIMIT);
-    let offset = params.offset.unwrap_or(0).max(0);
+    let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
     let policies = queries::list_policies(&conn, &ctx.org_id, limit, offset).map_err(internal_error)?;
     Ok(Json(PoliciesResponse { policies }))
 }
@@ -1097,6 +1093,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_without_params_returns_full_unbounded_list_beyond_100() {
+        // Pagination is opt-in: when the caller sends neither `limit` nor
+        // `offset`, the endpoint must behave exactly like before pagination
+        // was introduced — i.e. return every policy for the org, even
+        // beyond the old DEFAULT_LIST_LIMIT of 100.
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..150 {
+                let id = format!("p_{}", uuid::Uuid::new_v4().simple());
+                crate::db::queries::insert_policy(
+                    &conn, &id, &org_id, &format!("P{i}"), "model_whitelist",
+                    r#"{"allowed_models":["claude"]}"#, true, None,
+                ).unwrap();
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["policies"].as_array().unwrap().len(), 150,
+            "no limit/offset must return the full unbounded list, not truncate at 100"
+        );
+    }
+
+    #[tokio::test]
     async fn list_respects_explicit_limit_and_offset() {
         let store = make_store();
         let key = admin_key(&store);
@@ -1162,5 +1202,59 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK, "an over-max limit must be clamped, never rejected");
         let body = body_json(resp).await;
         assert_eq!(body["policies"].as_array().unwrap().len(), 500, "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows");
+    }
+
+    #[tokio::test]
+    async fn list_limit_zero_returns_empty_not_error() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        insert_policy_at(&store, &org_id, "P0", "2025-01-01T00:00:00.000Z");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies?limit=0")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "limit=0 must not error");
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 0, "limit=0 must return an empty list");
+    }
+
+    #[tokio::test]
+    async fn list_negative_limit_is_clamped_to_zero_not_error() {
+        let store = make_store();
+        let key = admin_key(&store);
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        insert_policy_at(&store, &org_id, "P0", "2025-01-01T00:00:00.000Z");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies?limit=-5")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "negative limit must not error");
+        let body = body_json(resp).await;
+        assert_eq!(body["policies"].as_array().unwrap().len(), 0, "negative limit must be clamped to 0 rows, not treated as unbounded");
     }
 }

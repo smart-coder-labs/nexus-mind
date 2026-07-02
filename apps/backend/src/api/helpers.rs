@@ -8,6 +8,30 @@ use serde::de::DeserializeOwned;
 
 use crate::models::types::{ApiError, AuthContext};
 
+/// Default page size used only when the caller opts into pagination by
+/// supplying `offset` without `limit`. See [`resolve_list_pagination`].
+pub const DEFAULT_LIST_LIMIT: i64 = 100;
+/// Hard ceiling on `limit` — requests above this are clamped, never rejected.
+pub const MAX_LIST_LIMIT: i64 = 500;
+
+/// Resolves `limit`/`offset` query params for list endpoints using an
+/// opt-in pagination contract:
+///
+/// - Neither `limit` nor `offset` provided → pagination is NOT applied; the
+///   full result set is returned, matching behavior from before pagination
+///   support existed.
+/// - Either is provided → `limit` is clamped to `[0, MAX_LIST_LIMIT]`
+///   (defaulting to `DEFAULT_LIST_LIMIT` when only `offset` was given) and
+///   `offset` is clamped to be non-negative.
+pub fn resolve_list_pagination(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
+    if limit.is_none() && offset.is_none() {
+        return (i64::MAX, 0);
+    }
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(0, MAX_LIST_LIMIT);
+    let offset = offset.unwrap_or(0).max(0);
+    (limit, offset)
+}
+
 /// JSON extractor that maps all body errors (syntax, shape, missing) to 422.
 ///
 /// Axum's built-in `Json` returns 400 for syntax/parse failures and 422 for shape
