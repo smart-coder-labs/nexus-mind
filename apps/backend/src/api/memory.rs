@@ -2320,6 +2320,200 @@ mod tests {
         assert!(page["total"].as_i64().unwrap() >= 2, "total must be present and >= 2");
     }
 
+    // ── compact response shape tests ──────────────────────────────────────────
+
+    const COMPACT_FIELDS: &[&str] = &[
+        "id", "title", "type", "project", "tags", "pinned", "created_at", "preview",
+    ];
+
+    #[tokio::test]
+    async fn list_compact_true_returns_preview_shape() {
+        let (store, admin_key, _) = setup_org();
+        let body = serde_json::json!({ "tool": "claude", "content": "a".repeat(300) });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/memory?compact=true")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = page["memories"].as_array().unwrap();
+        assert_eq!(memories.len(), 1);
+        let item = &memories[0];
+        let obj = item.as_object().unwrap();
+        for field in COMPACT_FIELDS {
+            assert!(obj.contains_key(*field), "compact item must contain '{field}', got: {item}");
+        }
+        assert!(obj.get("content").is_none(), "compact item must not include full content");
+        let preview = item["preview"].as_str().unwrap();
+        assert_eq!(preview.chars().count(), 200, "preview must be the first 200 chars of content");
+    }
+
+    #[tokio::test]
+    async fn list_without_compact_returns_full_shape() {
+        let (store, admin_key, _) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/memory")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = page["memories"].as_array().unwrap();
+        assert!(!memories.is_empty());
+        assert!(
+            memories[0].as_object().unwrap().contains_key("content"),
+            "default (non-compact) shape must still include full content"
+        );
+        assert!(
+            memories[0].as_object().unwrap().get("preview").is_none(),
+            "default (non-compact) shape must not include a preview field"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_compact_true_returns_preview_shape() {
+        let (store, admin_key, _) = setup_org();
+        let content = format!("findme_compact_marker {}", "b".repeat(300));
+        let body = serde_json::json!({ "tool": "claude", "content": content });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let search_body = serde_json::json!({ "query": "findme_compact_marker", "mode": "keyword", "compact": true });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = page["memories"].as_array().unwrap();
+        assert_eq!(memories.len(), 1);
+        let obj = memories[0].as_object().unwrap();
+        for field in COMPACT_FIELDS {
+            assert!(obj.contains_key(*field), "compact search item must contain '{field}'");
+        }
+        assert!(obj.get("content").is_none());
+    }
+
+    #[tokio::test]
+    async fn search_without_compact_returns_full_shape() {
+        let (store, admin_key, _) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        let search_body = serde_json::json!({ "query": "seed", "mode": "keyword" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(search_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = page["memories"].as_array().unwrap();
+        assert!(!memories.is_empty());
+        assert!(memories[0].as_object().unwrap().contains_key("content"));
+    }
+
+    #[tokio::test]
+    async fn compact_preview_does_not_panic_on_multibyte_utf8_boundary() {
+        let (store, admin_key, _) = setup_org();
+        // 250 multi-byte characters ('é' is 2 bytes in UTF-8) — a naive byte-slice
+        // truncation at byte offset 200 would land mid-codepoint and panic.
+        let content: String = std::iter::repeat('é').take(250).collect();
+        let body = serde_json::json!({ "tool": "claude", "content": content });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/memory?compact=true")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "must not panic on multi-byte UTF-8 truncation");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let preview = page["memories"][0]["preview"]
+            .as_str()
+            .expect("compact preview field must be present and a string");
+        assert_eq!(preview.chars().count(), 200);
+    }
+
     // ── Content size limit tests ──────────────────────────────────────────────
 
     #[tokio::test]
