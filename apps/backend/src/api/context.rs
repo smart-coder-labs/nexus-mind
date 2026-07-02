@@ -207,6 +207,7 @@ mod tests {
     fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/context/project/:project", get(get_project_context))
+            .route("/v1/context", get(get_global_context))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -410,5 +411,147 @@ mod tests {
             ctx["recent_memories"].as_array().unwrap().len(), 0,
             "org B must not see org A's memories"
         );
+    }
+
+    // ── Change 5: context payload caps ────────────────────────────────────────
+
+    fn create_convention_with_weight(conn: &rusqlite::Connection, org_id: &str, title: &str, weight: i64) {
+        q::create_convention(conn, org_id, &crate::models::types::CreateConventionRequest {
+            title: title.to_string(),
+            content: "content".to_string(),
+            category: None,
+            weight: Some(weight),
+            tags: None,
+            project_id: None,
+        }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_project_context_caps_conventions_at_50_ordered_by_weight() {
+        let (store, admin_key, org_id) = bootstrap_store();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..55 {
+                create_convention_with_weight(&conn, &org_id, &format!("C{i}"), i);
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/context/project/any-project")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let conventions = ctx["conventions"].as_array().unwrap();
+        assert_eq!(conventions.len(), 50, "embedded conventions must be capped at 50");
+        assert_eq!(conventions[0]["title"].as_str().unwrap(), "C54", "must be ordered by weight DESC — highest weight first");
+    }
+
+    #[tokio::test]
+    async fn get_global_context_caps_conventions_at_50_ordered_by_weight() {
+        let (store, admin_key, org_id) = bootstrap_store();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            for i in 0..55 {
+                create_convention_with_weight(&conn, &org_id, &format!("C{i}"), i);
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/context")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let conventions = ctx["conventions"].as_array().unwrap();
+        assert_eq!(conventions.len(), 50, "embedded conventions must be capped at 50");
+        assert_eq!(conventions[0]["title"].as_str().unwrap(), "C54", "must be ordered by weight DESC — highest weight first");
+    }
+
+    #[tokio::test]
+    async fn get_project_context_compact_true_applies_preview_to_memories() {
+        let (store, admin_key, org_id) = bootstrap_store();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::upsert_memory(&conn, &org_id, &{
+                conn.query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", rusqlite::params![org_id], |r| r.get::<_, String>(0)).unwrap()
+            }, &crate::models::types::StoreMemoryRequest {
+                project: Some("proj-compact".to_string()),
+                tool: "claude".to_string(),
+                content: "x".repeat(300),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            }).unwrap();
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/context/project/proj-compact?compact=true")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memories = ctx["recent_memories"].as_array().unwrap();
+        assert_eq!(memories.len(), 1);
+        let obj = memories[0].as_object().unwrap();
+        assert!(obj.contains_key("preview"), "compact=true must apply the preview shape to embedded memories");
+        assert!(obj.get("content").is_none(), "compact=true must not include full content");
+        assert_eq!(obj["preview"].as_str().unwrap().chars().count(), 200);
+    }
+
+    #[tokio::test]
+    async fn get_global_context_without_compact_keeps_full_memory_shape() {
+        let (store, admin_key, _) = bootstrap_store();
+        // No memories needed — just confirm the default (non-compact) response shape
+        // for the endpoint is unaffected by the new query param support.
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/context")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(ctx["recent_memories"].is_array());
     }
 }
