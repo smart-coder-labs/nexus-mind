@@ -3698,12 +3698,12 @@ pub fn set_code_project_repo_url(conn: &Connection, org_id: &str, name: &str, re
     Ok(())
 }
 
-/// Delete a code project (and its chunks, via cascade) for (org_id, name).
+/// Delete a code project (and its chunks, via cascade) for (org_id, id).
 /// Returns `true` if a row was deleted, `false` if not found.
-pub fn delete_code_project(conn: &Connection, org_id: &str, name: &str) -> Result<bool> {
+pub fn delete_code_project(conn: &Connection, org_id: &str, id: i64) -> Result<bool> {
     let affected = conn.execute(
-        "DELETE FROM code_projects WHERE org_id = ?1 AND name = ?2",
-        [org_id, name],
+        "DELETE FROM code_projects WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
     )?;
     Ok(affected > 0)
 }
