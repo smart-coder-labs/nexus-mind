@@ -804,6 +804,41 @@ pub struct GraphResponse {
     pub edges:      Vec<GraphEdgeDto>,
 }
 
+// ── Memory graph API types ─────────────────────────────────────────────────
+
+/// A single node in the memory knowledge graph returned by `GET /v1/memory/graph`.
+/// Ids are namespaced strings (e.g. `memory:{uuid}`, `project:{id}`, `tag:{name}`)
+/// because memory entities span multiple tables with heterogeneous TEXT/UUID keys.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MemGraphNode {
+    pub id:        String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub label:     String,
+}
+
+/// A directed edge in the memory knowledge graph.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MemGraphEdge {
+    pub id:        String,
+    pub from_id:   String,
+    pub to_id:     String,
+    #[serde(rename = "type")]
+    pub edge_type: String,
+}
+
+/// Response envelope for `GET /v1/memory/graph`. Mirrors `GraphResponse`'s field
+/// names so the frontend force-graph seam can be reused, even though node/edge
+/// ids are strings here instead of integers.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MemoryGraphResponse {
+    pub project:    String,
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub nodes:      Vec<MemGraphNode>,
+    pub edges:      Vec<MemGraphEdge>,
+}
+
 /// Response body for `GET /v1/code/snippet` — the source of the chunk covering a symbol.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SnippetResponse {
