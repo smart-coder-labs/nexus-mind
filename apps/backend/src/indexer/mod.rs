@@ -281,3 +281,74 @@ pub fn get_project_status(
     let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
     db_queries::get_code_project(org_id, project_name, &conn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+
+    /// End-to-end: a Markdown file in the project tree is indexed into the
+    /// searchable `code_chunks` content path, split by heading section with the
+    /// heading as its symbol. Runs without an embedding service — chunks are
+    /// still persisted (with NULL embeddings), which is what makes them findable.
+    #[test]
+    fn indexes_markdown_file_into_searchable_chunks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(
+            dir.path().join("docs").join("guide.md"),
+            "# Getting Started\n\nInstall the CLI.\n\n## Authentication\n\nUse an API key.\n",
+        )
+        .unwrap();
+
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        let db = Arc::new(Mutex::new(conn));
+
+        let summary = index_project(
+            "org1",
+            "myproj",
+            dir.path().to_str().unwrap(),
+            &db,
+            None,
+            false,
+        )
+        .expect("index must succeed");
+        assert!(summary.file_count >= 1, "markdown file must be counted as indexed");
+
+        // The markdown content must land in code_chunks with heading symbols.
+        let conn = db.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT file_path, symbol, language FROM code_chunks")
+            .unwrap();
+        let rows: Vec<(String, Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert!(
+            rows.iter().any(|(path, _, _)| path.ends_with("guide.md")),
+            "guide.md must be indexed into code_chunks, got: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|(_, sym, _)| sym.as_deref() == Some("Getting Started")),
+            "an H1 heading must become a chunk symbol, got: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|(_, sym, _)| sym.as_deref() == Some("Authentication")),
+            "an H2 heading must become a chunk symbol, got: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .filter(|(path, _, _)| path.ends_with("guide.md"))
+                .all(|(_, _, lang)| lang.as_deref() == Some("markdown")),
+            "markdown chunks must be tagged with the markdown language, got: {rows:?}"
+        );
+    }
+}

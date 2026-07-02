@@ -35,6 +35,51 @@ fn git_cmd() -> std::process::Command {
     cmd
 }
 
+/// Strip `user:token@` credentials from any URL in `s` so OAuth tokens never leak
+/// into stored error messages or logs.
+fn redact_credentials(s: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"://[^/@\s]+@").expect("static regex must compile"));
+    re.replace_all(s, "://***@").into_owned()
+}
+
+/// Clone (or `git pull`, if already cloned) `effective_url` into `dest`.
+///
+/// Returns `Err` with a **credential-redacted** message when git exits non-zero —
+/// e.g. an authentication failure cloning a PRIVATE repository without a valid
+/// token. This is the fix for "indexing private projects silently does nothing":
+/// previously the clone result was discarded (`let _ = …output()`), so a failed
+/// private clone fell through to indexing an empty directory and reported
+/// `indexed` with 0 files instead of surfacing the auth error.
+fn clone_or_pull(effective_url: &str, dest: &str) -> Result<(), String> {
+    let already_cloned = std::path::Path::new(dest).join(".git").exists();
+    let output = if already_cloned {
+        git_cmd()
+            .args(["-C", dest, "pull", "--rebase", "--quiet"])
+            .output()
+    } else {
+        let _ = std::fs::create_dir_all(dest);
+        // effective_url may carry an OAuth token — never log it directly.
+        git_cmd()
+            .args(["clone", "--depth=1", "--quiet", effective_url, dest])
+            .output()
+    };
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let op = if already_cloned { "pull" } else { "clone" };
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(format!(
+                "git {op} failed ({}): {}",
+                o.status,
+                redact_credentials(stderr.trim())
+            ))
+        }
+        Err(e) => Err(format!("failed to run git: {e}")),
+    }
+}
+
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -159,17 +204,14 @@ pub async fn post_index(
     let graph_only = input.graph_only.unwrap_or(false);
     tokio::spawn(async move {
         if let Some(ref effective_url) = effective_repo_url {
-            let path = std::path::Path::new(&spawn_path);
-            if path.join(".git").exists() {
-                let _ = git_cmd()
-                    .args(["-C", &spawn_path, "pull", "--rebase", "--quiet"])
-                    .output();
-            } else {
-                let _ = std::fs::create_dir_all(&spawn_path);
-                // effective_url may contain an OAuth token — do NOT log it
-                let _ = git_cmd()
-                    .args(["clone", "--depth=1", "--quiet", effective_url, &spawn_path])
-                    .output();
+            // Surface clone/pull failures (e.g. auth failure on a private repo)
+            // as a project error instead of silently indexing an empty directory.
+            if let Err(e) = clone_or_pull(effective_url, &spawn_path) {
+                let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                if let Ok(conn) = db.lock() {
+                    let _ = db_queries::set_code_project_error(&conn, project_id, &e, &now);
+                }
+                return;
             }
         }
         // Isolate the index so a panic sets error status instead of poisoning the
@@ -727,36 +769,28 @@ pub async fn post_reindex(
     };
 
     tokio::spawn(async move {
-        // If a repo URL is set, git pull/clone first
-        if let Some(ref effective_url) = effective_repo_url {
+        // If a repo URL is set, git pull/clone first. Resolve the path to index.
+        let effective_path = if let Some(ref effective_url) = effective_repo_url {
             let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);
-            let path = std::path::Path::new(&clone_dir);
-            if path.join(".git").exists() {
-                let _ = git_cmd()
-                    .args(["-C", &clone_dir, "pull", "--rebase", "--quiet"])
-                    .output();
-            } else {
-                let _ = std::fs::create_dir_all(&clone_dir);
-                // effective_url may contain an OAuth token — do NOT log it
-                let _ = git_cmd()
-                    .args(["clone", "--depth=1", "--quiet", effective_url, &clone_dir])
-                    .output();
-            }
-            let effective_path = clone_dir;
-            let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref(), false);
-            if let Err(e) = result {
+            // Surface clone/pull failures (e.g. auth failure on a private repo)
+            // as a project error instead of silently indexing an empty directory.
+            if let Err(e) = clone_or_pull(effective_url, &clone_dir) {
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                 if let Ok(conn) = db.lock() {
-                    let _ = db_queries::set_code_project_error(&conn, id, &e.to_string(), &now);
+                    let _ = db_queries::set_code_project_error(&conn, id, &e, &now);
                 }
+                return;
             }
+            clone_dir
         } else {
-            let result = indexer::index_project(&org_id, &project_name, &root_path, &db, embed_svc.as_ref(), false);
-            if let Err(e) = result {
-                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                if let Ok(conn) = db.lock() {
-                    let _ = db_queries::set_code_project_error(&conn, id, &e.to_string(), &now);
-                }
+            root_path
+        };
+
+        let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref(), false);
+        if let Err(e) = result {
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            if let Ok(conn) = db.lock() {
+                let _ = db_queries::set_code_project_error(&conn, id, &e.to_string(), &now);
             }
         }
     });
@@ -1006,6 +1040,58 @@ mod tests {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
         SqliteStore::new(conn)
+    }
+
+    // ── Private-repo clone-failure handling ───────────────────────────────────
+
+    #[test]
+    fn clone_or_pull_reports_error_for_unreachable_remote() {
+        // A local path that does not exist mimics a private clone the server
+        // cannot access (git exits non-zero, offline & deterministic). The old
+        // code discarded this and indexed an empty dir; now it must be an Err so
+        // the caller surfaces a project error instead of a silent empty index.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("clone");
+        let res = clone_or_pull(
+            "/nonexistent/nexusmind-private-repo-xyz/repo.git",
+            dest.to_str().unwrap(),
+        );
+        assert!(res.is_err(), "a failed clone must return Err, not silently succeed");
+    }
+
+    #[test]
+    fn clone_or_pull_succeeds_for_valid_local_repo() {
+        fn git(args: &[&str]) {
+            let out = git_cmd()
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.dev")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.dev")
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        let src = tempfile::TempDir::new().unwrap();
+        let src_path = src.path().to_str().unwrap();
+        git(&["init", "-q", src_path]);
+        std::fs::write(src.path().join("README.md"), "# hi\n").unwrap();
+        git(&["-C", src_path, "add", "."]);
+        git(&["-C", src_path, "commit", "-qm", "init"]);
+
+        let dst = tempfile::TempDir::new().unwrap();
+        let dest = dst.path().join("clone");
+        let res = clone_or_pull(src_path, dest.to_str().unwrap());
+        assert!(res.is_ok(), "cloning a valid local repo must succeed: {res:?}");
+        assert!(dest.join(".git").exists(), "clone must produce a .git dir");
+    }
+
+    #[test]
+    fn redact_credentials_strips_oauth_token() {
+        let s = "fatal: Authentication failed for 'https://oauth2:ghp_SECRETTOKEN@github.com/org/repo.git'";
+        let out = redact_credentials(s);
+        assert!(!out.contains("ghp_SECRETTOKEN"), "token must be redacted: {out}");
+        assert!(out.contains("://***@github.com"), "redacted marker must be present: {out}");
     }
 
     fn app(store: SqliteStore) -> Router {

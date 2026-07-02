@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::indexer::chunker::{Chunker, LineWindowChunker, RawChunk};
+use crate::indexer::chunker::{Chunker, LineWindowChunker, MarkdownChunker, RawChunk};
 
 // ── Code graph types ──────────────────────────────────────────────────────────
 
@@ -138,6 +138,8 @@ pub struct TreeSitterChunker {
     /// Fallback used for unsupported languages, parse failures, files without
     /// recognized definitions, and sub-splitting oversized symbols.
     fallback: LineWindowChunker,
+    /// Heading-section chunker for Markdown, which has no tree-sitter grammar here.
+    markdown: MarkdownChunker,
     /// Symbols spanning more than this many lines are sub-split via `fallback`.
     max_chunk_lines: usize,
 }
@@ -146,6 +148,7 @@ impl Default for TreeSitterChunker {
     fn default() -> Self {
         TreeSitterChunker {
             fallback: LineWindowChunker::default(),
+            markdown: MarkdownChunker::default(),
             max_chunk_lines: 200,
         }
     }
@@ -264,6 +267,14 @@ impl TreeSitterChunker {
             return (vec![], None);
         }
 
+        // Markdown has no code graph — chunk it into heading sections (content only).
+        if language == Some("markdown") {
+            return (
+                self.markdown.chunk(file_path, file_hash, language, content),
+                None,
+            );
+        }
+
         let grammar = match Self::grammar_for(language, file_path) {
             Some(g) => g,
             None => {
@@ -325,6 +336,11 @@ impl Chunker for TreeSitterChunker {
     ) -> Vec<RawChunk> {
         if content.is_empty() {
             return vec![];
+        }
+
+        // Markdown → heading-section chunker (no tree-sitter grammar).
+        if language == Some("markdown") {
+            return self.markdown.chunk(file_path, file_hash, language, content);
         }
 
         // Unsupported language → fallback.
@@ -1188,6 +1204,7 @@ mod tests {
     fn oversized_symbol_is_subsplit() {
         let chunker = TreeSitterChunker {
             fallback: LineWindowChunker { window: 60, overlap: 15 },
+            markdown: MarkdownChunker::default(),
             max_chunk_lines: 50,
         };
         // A single function body of ~200 lines.
