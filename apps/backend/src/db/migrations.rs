@@ -616,6 +616,17 @@ pub fn run_v2(conn: &Connection) -> Result<()> {
     }
 
     // Rebuild FTS: drop old table + triggers, recreate with 4 columns, backfill
+    //
+    // TODO(search-recall): this table uses the default `unicode61` tokenizer, which
+    // does no stemming — "migrate" and "migration" are unrelated tokens to FTS5. A
+    // `tokenize = 'porter unicode61'` tokenizer would improve recall further on top
+    // of the OR-join fix in `sanitize_fts_query` (see db/queries.rs). Deferred here
+    // rather than added as a new migration because switching tokenizers requires
+    // dropping and rebuilding this virtual table (same DROP+CREATE+backfill pattern
+    // used below) against the live `memories` table in production, which is a
+    // reindex of arbitrary size with no cheap rollback if it's interrupted mid-way.
+    // That risk should be taken deliberately (e.g. behind a maintenance window or a
+    // background/batched rebuild), not folded silently into this change.
     conn.execute_batch(
         "
         DROP TRIGGER IF EXISTS memories_ai;

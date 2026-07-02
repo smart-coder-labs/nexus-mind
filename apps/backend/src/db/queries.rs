@@ -187,6 +187,14 @@ pub fn bootstrap(
 /// We wrap each whitespace-separated token in double quotes so they are
 /// treated as literal phrase terms. Empty tokens are skipped.
 /// Returns None if the sanitized result is empty (caller should skip FTS).
+///
+/// Tokens are joined with `OR` (not implicit AND via whitespace) so that
+/// natural-language queries with several terms still match rows containing
+/// only a subset of them — results are then ranked by `bm25` (via `ORDER BY
+/// rank` in `search_memories`), so rows matching more terms still surface
+/// first. Joining with plain whitespace would make FTS5 require every term
+/// to be present in the same row, which frequently yields zero results for
+/// longer queries.
 pub fn sanitize_fts_query(query: &str) -> Option<String> {
     // FTS5 special chars that cause parse errors even inside quoted phrases:
     // < > + - * : ^ " ( )
@@ -203,7 +211,7 @@ pub fn sanitize_fts_query(query: &str) -> Option<String> {
         })
         .collect();
 
-    if terms.is_empty() { None } else { Some(terms.join(" ")) }
+    if terms.is_empty() { None } else { Some(terms.join(" OR ")) }
 }
 
 /// Full-text search over memories, scoped to the org.
