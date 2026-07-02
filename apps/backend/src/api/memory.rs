@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, MemoryPage, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
 };
@@ -838,6 +838,91 @@ pub async fn unpin(
             }),
         ))
     }
+}
+
+// ── GET /v1/memory/graph ────────────────────────────────────────────────────
+
+const DEFAULT_MEM_GRAPH_LIMIT: i64 = 2_000;
+const MAX_MEM_GRAPH_LIMIT: i64 = 10_000;
+
+#[derive(Debug, Deserialize)]
+pub struct GetMemoryGraphQuery {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// `GET /v1/memory/graph`
+///
+/// Query parameters:
+///   - `project` (required): project name or id scoped to the caller's org — `422` if missing
+///   - `since` (optional): ISO-8601 timestamp; only memories created at/after this are included
+///   - `limit`  (optional, default 2000, max 10000): maximum number of Memory nodes (anchor cap)
+///   - `offset` (optional, default 0)
+///
+/// Returns a read-only, on-the-fly graph of Memory/Project/Session/User/Collection/Tag
+/// nodes and their relationships, scoped to `auth.org_id`. Envelope mirrors
+/// `GET /v1/code/graph`'s `GraphResponse` shape so the frontend can reuse the same seam.
+pub async fn get_graph(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<GetMemoryGraphQuery>,
+) -> Result<Json<MemoryGraphResponse>, (StatusCode, Json<ApiError>)> {
+    let project = match params.project.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: "project is required".to_string(),
+                    code: "validation_error".to_string(),
+                }),
+            ))
+        }
+    };
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError {
+            error: "Database lock error".to_string(),
+            code: "internal_error".to_string(),
+        }),
+    ))?;
+
+    require_permission(&conn, &auth, Some(&project), "memory:read")?;
+
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_MEM_GRAPH_LIMIT)
+        .clamp(1, MAX_MEM_GRAPH_LIMIT);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let (nodes, edges) = db_queries::get_memory_graph(
+        &conn,
+        &auth.org_id,
+        &project,
+        params.since.as_deref(),
+        limit,
+        offset,
+    )
+    .map_err(store_err)?;
+
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+
+    Ok(Json(MemoryGraphResponse {
+        project,
+        node_count,
+        edge_count,
+        nodes,
+        edges,
+    }))
 }
 
 #[cfg(test)]
@@ -2333,5 +2418,208 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "validation_error");
+    }
+
+    // ── GET /v1/memory/graph ────────────────────────────────────────────────
+
+    fn graph_app(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/memory/graph", get(super::get_graph))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_unauthenticated_returns_401() {
+        let store = make_store();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=default")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_missing_project_returns_422() {
+        let (store, key) = setup_with_key();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"].as_str().unwrap(), "validation_error");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_empty_project_returns_200_with_envelope() {
+        let (store, key) = setup_with_key();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=nonexistent")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["project"], "nonexistent");
+        assert_eq!(body["node_count"], 0);
+        assert_eq!(body["edge_count"], 0);
+        assert!(body["nodes"].as_array().unwrap().is_empty());
+        assert!(body["edges"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_returns_envelope_with_seeded_memory() {
+        let (store, key) = setup_with_key();
+        seed_memory(&store, &key).await;
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=default")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let node_count = body["node_count"].as_u64().unwrap();
+        assert!(node_count >= 1, "must include at least the Memory node, got {node_count}");
+        assert_eq!(
+            node_count as usize,
+            body["nodes"].as_array().unwrap().len(),
+            "node_count must equal nodes.length()"
+        );
+        assert_eq!(
+            body["edge_count"].as_u64().unwrap() as usize,
+            body["edges"].as_array().unwrap().len(),
+            "edge_count must equal edges.length()"
+        );
+
+        // No dangling edges — every edge references a node in the returned set.
+        let node_ids: std::collections::HashSet<String> = body["nodes"]
+            .as_array().unwrap().iter()
+            .map(|n| n["id"].as_str().unwrap().to_string())
+            .collect();
+        for edge in body["edges"].as_array().unwrap() {
+            assert!(node_ids.contains(edge["from_id"].as_str().unwrap()));
+            assert!(node_ids.contains(edge["to_id"].as_str().unwrap()));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_cross_org_never_leaks() {
+        let (store, admin_key, _org_a) = setup_org();
+        seed_memory(&store, &admin_key).await;
+
+        // Create a second org on the SAME store/db to prove org isolation.
+        // (`bootstrap` only allows the first org per DB; `create_org` has no such guard.)
+        let key_b = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_, _, key) = q::create_org(&conn, "OrgB", "orgb", "admin@orgb.com", "Admin").unwrap();
+            key
+        };
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=default")
+                    .header("Authorization", format!("Bearer {key_b}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["node_count"], 0, "org B must not see org A's memories");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_since_narrows_results() {
+        let (store, key) = setup_with_key();
+        let old_id = seed_memory(&store, &key).await;
+        seed_memory(&store, &key).await;
+
+        // Push the first memory's created_at into the past so `since` can exclude it.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE memories SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                rusqlite::params![old_id],
+            ).unwrap();
+        }
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=default&since=2025-01-01T00:00:00Z")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let memory_nodes: Vec<_> = body["nodes"].as_array().unwrap().iter()
+            .filter(|n| n["type"] == "Memory")
+            .collect();
+        assert_eq!(memory_nodes.len(), 1, "only the recent memory must be included");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_limit_capped_at_10000() {
+        let (store, key) = setup_with_key();
+
+        // Request limit=999999 — should be silently capped to 10000, never error.
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project=default&limit=999999")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

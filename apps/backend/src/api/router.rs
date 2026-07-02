@@ -62,6 +62,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/export", get(memory::export))
+        .route("/v1/memory/graph", get(memory::get_graph))
         .route("/v1/memory/bulk", delete(memory::bulk_delete))
         .route("/v1/memory/:id", get(memory::get_by_id).delete(memory::delete).patch(memory::update))
         .route("/v1/memory/:id/archive", post(memory::archive))
