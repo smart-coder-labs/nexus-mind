@@ -516,20 +516,20 @@ pub async fn restore_project(
     }
 }
 
-/// `DELETE /v1/code/projects/:name`
+/// `DELETE /v1/code/projects/:id`
 ///
 /// Deletes a code project and all its indexed chunks. Admin only.
 pub async fn delete_project(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     if !auth.role.is_admin() {
         return Err(forbidden());
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let deleted = db_queries::delete_code_project(&conn, &auth.org_id, &name).map_err(db_err)?;
+    let deleted = db_queries::delete_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
