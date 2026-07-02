@@ -1,18 +1,24 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Extension, Json,
 };
+use serde::Deserialize;
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext},
+    models::types::{ApiError, AuthContext, MemoryPreview},
     store::sqlite::SqliteStore,
     api::helpers::require_permission,
 };
 
 // Re-export the return type alias for clarity.
 type ContextResponse = serde_json::Value;
+
+/// Max embedded conventions on `get_project_context` / `get_global_context`
+/// responses, highest `weight` first. Embedded memories are already capped at
+/// 20 by the underlying queries; conventions previously had no cap at all.
+const MAX_CONTEXT_CONVENTIONS: i64 = 50;
 
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     (
@@ -24,10 +30,19 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     )
 }
 
+#[derive(Deserialize)]
+pub struct ContextParams {
+    /// When true, embedded memories use the compact `MemoryPreview` shape
+    /// (see `api::memory`) instead of the full `Memory` row.
+    #[serde(default)]
+    pub compact: Option<bool>,
+}
+
 pub async fn get_project_context(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(project): Path<String>,
+    Query(params): Query<ContextParams>,
 ) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
@@ -38,11 +53,20 @@ pub async fn get_project_context(
         .map_err(db_err)?;
 
     // Scope to org-wide + this project's conventions (project scoping ADDS to org-wide).
-    // TODO(context-caps): limit is temporarily generous here; Change 5 caps this at 50.
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), Some(&project), 1000, 0)
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), Some(&project), MAX_CONTEXT_CONVENTIONS, 0)
         .map_err(db_err)?;
 
-    let mut ctx_json = serde_json::to_value(&ctx).map_err(|e| db_err(e.into()))?;
+    let mut ctx_json = if params.compact.unwrap_or(false) {
+        let previews: Vec<MemoryPreview> = ctx.recent_memories.iter().map(MemoryPreview::from).collect();
+        serde_json::json!({
+            "project": ctx.project,
+            "recent_memories": previews,
+            "tools": ctx.tools,
+            "last_activity": ctx.last_activity,
+        })
+    } else {
+        serde_json::to_value(&ctx).map_err(|e| db_err(e.into()))?
+    };
     if let serde_json::Value::Object(ref mut map) = ctx_json {
         map.insert(
             "conventions".to_string(),
@@ -84,6 +108,7 @@ fn build_context_response(
 pub async fn get_global_context(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
+    Query(params): Query<ContextParams>,
 ) -> Result<Json<ContextResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
@@ -98,14 +123,20 @@ pub async fn get_global_context(
     )
     .map_err(db_err)?;
 
+    let compact = params.compact.unwrap_or(false);
     let memory_values: Vec<serde_json::Value> = memories
         .iter()
-        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .map(|m| {
+            if compact {
+                serde_json::to_value(MemoryPreview::from(m)).unwrap_or(serde_json::Value::Null)
+            } else {
+                serde_json::to_value(m).unwrap_or(serde_json::Value::Null)
+            }
+        })
         .collect();
 
     // Global context has no project in scope — admin listing (everything for the org).
-    // TODO(context-caps): limit is temporarily generous here; Change 5 caps this at 50.
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None, 1000, 0)
+    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None, MAX_CONTEXT_CONVENTIONS, 0)
         .map_err(db_err)?;
 
     let mut resp = build_context_response(memory_values, "scope", serde_json::json!("global"));
