@@ -124,22 +124,32 @@ pub async fn get_global_context(
     .map_err(db_err)?;
 
     let compact = params.compact.unwrap_or(false);
-    let memory_values: Vec<serde_json::Value> = memories
+
+    // Derive tools/last_activity from the FULL memories before converting to the
+    // compact preview shape — MemoryPreview has no `tool` field, so deriving from
+    // the post-conversion values would always yield an empty tools list.
+    let full_values: Vec<serde_json::Value> = memories
         .iter()
-        .map(|m| {
-            if compact {
-                serde_json::to_value(MemoryPreview::from(m)).unwrap_or(serde_json::Value::Null)
-            } else {
-                serde_json::to_value(m).unwrap_or(serde_json::Value::Null)
-            }
-        })
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
         .collect();
+
+    let memory_values: Vec<serde_json::Value> = if compact {
+        memories
+            .iter()
+            .map(|m| serde_json::to_value(MemoryPreview::from(m)).unwrap_or(serde_json::Value::Null))
+            .collect()
+    } else {
+        full_values.clone()
+    };
 
     // Global context has no project in scope — admin listing (everything for the org).
     let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None, MAX_CONTEXT_CONVENTIONS, 0)
         .map_err(db_err)?;
 
-    let mut resp = build_context_response(memory_values, "scope", serde_json::json!("global"));
+    let mut resp = build_context_response(full_values, "scope", serde_json::json!("global"));
+    if let serde_json::Value::Object(ref mut map) = resp {
+        map.insert("recent_memories".to_string(), serde_json::Value::Array(memory_values));
+    }
     if let serde_json::Value::Object(ref mut map) = resp {
         map.insert(
             "conventions".to_string(),
@@ -584,5 +594,61 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(ctx["recent_memories"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_global_context_compact_true_still_returns_distinct_tools() {
+        let (store, admin_key, org_id) = bootstrap_store();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let user_id = conn.query_row(
+                "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                rusqlite::params![org_id],
+                |r| r.get::<_, String>(0),
+            ).unwrap();
+            for tool in ["claude", "cursor", "claude"] {
+                q::upsert_memory(&conn, &org_id, &user_id, &crate::models::types::StoreMemoryRequest {
+                    project: Some("global-compact".to_string()),
+                    tool: tool.to_string(),
+                    content: "x".repeat(300),
+                    tags: None,
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                }).unwrap();
+            }
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/context?compact=true")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let memories = ctx["recent_memories"].as_array().unwrap();
+        assert_eq!(memories.len(), 3);
+        assert!(
+            memories[0].as_object().unwrap().contains_key("preview"),
+            "compact=true must still apply the preview shape to embedded memories"
+        );
+
+        let tools_arr = ctx["tools"].as_array().unwrap();
+        assert_eq!(
+            tools_arr.len(), 2,
+            "compact=true must not lose the distinct tool list (regression: tools derived from preview shape lacking `tool` field)"
+        );
     }
 }
