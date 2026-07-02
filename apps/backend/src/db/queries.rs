@@ -8445,159 +8445,274 @@ pub fn get_memory_graph(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    if rows.is_empty() {
-        return Ok((vec![], vec![]));
-    }
-
     let mut nodes: HashMap<String, MemGraphNode> = HashMap::new();
     let mut edges: Vec<MemGraphEdge> = Vec::new();
 
-    // Memory nodes
-    for r in &rows {
-        let node_id = format!("memory:{}", r.id);
-        nodes.insert(
-            node_id.clone(),
-            MemGraphNode { id: node_id, node_type: "Memory".to_string(), label: r.label.clone() },
-        );
-    }
-
-    // Project canonicalization: one node per distinct LOGICAL project, keyed by the
-    // real project row id whenever one exists — either because `project_id` is set,
-    // or because a `projects` row with a matching name already exists (so a legacy
-    // row and an FK-linked row for the same project never split into two nodes).
-    // Only synthesize a `project:name:{name}` id when no real project row exists at all.
-    let legacy_names: HashSet<String> = rows
-        .iter()
-        .filter(|r| r.project_id.is_none())
-        .map(|r| r.project.clone())
-        .collect();
-    let name_to_id: HashMap<String, String> = if legacy_names.is_empty() {
-        HashMap::new()
-    } else {
-        let names: Vec<&String> = legacy_names.iter().collect();
-        let placeholders: Vec<String> = (2..=1 + names.len()).map(|n| format!("?{n}")).collect();
-        let sql = format!(
-            "SELECT name, id FROM projects WHERE org_id = ?1 AND name IN ({})",
-            placeholders.join(", ")
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&org_id];
-        for n in &names {
-            params.push(*n as &dyn rusqlite::ToSql);
+    // Memory nodes + satellites are only built when the anchor set is non-empty.
+    // NOTE: this does NOT early-return — the AuditEvent block below (Slice 2)
+    // always runs regardless of whether any memories matched, since audit_logs
+    // is scoped independently (org_id + since, not by `project`).
+    if !rows.is_empty() {
+        // Memory nodes
+        for r in &rows {
+            let node_id = format!("memory:{}", r.id);
+            nodes.insert(
+                node_id.clone(),
+                MemGraphNode { id: node_id, node_type: "Memory".to_string(), label: r.label.clone() },
+            );
         }
-        let mut stmt = conn.prepare(&sql)?;
-        let pairs: Vec<(String, String)> = stmt
-            .query_map(params.as_slice(), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        pairs.into_iter().collect()
-    };
 
-    let mut fk_project_ids: HashSet<String> = HashSet::new();
-    for r in &rows {
-        let canonical_id = match &r.project_id {
-            Some(pid) => {
-                fk_project_ids.insert(pid.clone());
-                format!("project:{pid}")
+        // Project canonicalization: one node per distinct LOGICAL project, keyed by the
+        // real project row id whenever one exists — either because `project_id` is set,
+        // or because a `projects` row with a matching name already exists (so a legacy
+        // row and an FK-linked row for the same project never split into two nodes).
+        // Only synthesize a `project:name:{name}` id when no real project row exists at all.
+        let legacy_names: HashSet<String> = rows
+            .iter()
+            .filter(|r| r.project_id.is_none())
+            .map(|r| r.project.clone())
+            .collect();
+        let name_to_id: HashMap<String, String> = if legacy_names.is_empty() {
+            HashMap::new()
+        } else {
+            let names: Vec<&String> = legacy_names.iter().collect();
+            let placeholders: Vec<String> = (2..=1 + names.len()).map(|n| format!("?{n}")).collect();
+            let sql = format!(
+                "SELECT name, id FROM projects WHERE org_id = ?1 AND name IN ({})",
+                placeholders.join(", ")
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&org_id];
+            for n in &names {
+                params.push(*n as &dyn rusqlite::ToSql);
             }
-            None => match name_to_id.get(&r.project) {
+            let mut stmt = conn.prepare(&sql)?;
+            let pairs: Vec<(String, String)> = stmt
+                .query_map(params.as_slice(), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            pairs.into_iter().collect()
+        };
+
+        let mut fk_project_ids: HashSet<String> = HashSet::new();
+        for r in &rows {
+            let canonical_id = match &r.project_id {
                 Some(pid) => {
                     fk_project_ids.insert(pid.clone());
                     format!("project:{pid}")
                 }
-                None => format!("project:name:{}", r.project),
-            },
-        };
-        nodes.entry(canonical_id.clone()).or_insert_with(|| MemGraphNode {
-            id:        canonical_id.clone(),
-            node_type: "Project".to_string(),
-            label:     r.project.clone(),
-        });
-        edges.push(MemGraphEdge {
-            id:        format!("belongs_to:memory:{}:{}", r.id, canonical_id),
-            from_id:   format!("memory:{}", r.id),
-            to_id:     canonical_id,
-            edge_type: "belongs_to".to_string(),
-        });
-    }
-    // Resolve real project names for FK-linked projects (overrides the legacy-name fallback).
-    let project_labels = lookup_labels(conn, "projects", "name", &fk_project_ids)?;
-    for (pid, name) in &project_labels {
-        if let Some(n) = nodes.get_mut(&format!("project:{pid}")) {
-            n.label = name.clone();
-        }
-    }
-
-    // Session nodes + `in_session` edges (omitted when session_id is NULL)
-    let session_ids: HashSet<String> = rows.iter().filter_map(|r| r.session_id.clone()).collect();
-    let session_labels = lookup_labels(conn, "sessions", "COALESCE(name, summary, id)", &session_ids)?;
-    for r in &rows {
-        if let Some(sid) = &r.session_id {
-            let node_id = format!("session:{sid}");
-            let label = session_labels.get(sid).cloned().unwrap_or_else(|| sid.clone());
-            nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                id: node_id.clone(), node_type: "Session".to_string(), label,
+                None => match name_to_id.get(&r.project) {
+                    Some(pid) => {
+                        fk_project_ids.insert(pid.clone());
+                        format!("project:{pid}")
+                    }
+                    None => format!("project:name:{}", r.project),
+                },
+            };
+            nodes.entry(canonical_id.clone()).or_insert_with(|| MemGraphNode {
+                id:        canonical_id.clone(),
+                node_type: "Project".to_string(),
+                label:     r.project.clone(),
             });
             edges.push(MemGraphEdge {
-                id:        format!("in_session:memory:{}:{}", r.id, node_id),
+                id:        format!("belongs_to:memory:{}:{}", r.id, canonical_id),
                 from_id:   format!("memory:{}", r.id),
-                to_id:     node_id,
-                edge_type: "in_session".to_string(),
+                to_id:     canonical_id,
+                edge_type: "belongs_to".to_string(),
             });
         }
-    }
+        // Resolve real project names for FK-linked projects (overrides the legacy-name fallback).
+        let project_labels = lookup_labels(conn, "projects", "name", &fk_project_ids)?;
+        for (pid, name) in &project_labels {
+            if let Some(n) = nodes.get_mut(&format!("project:{pid}")) {
+                n.label = name.clone();
+            }
+        }
 
-    // User nodes + `created_by` edges (user_id is NOT NULL on memories, always present)
-    let user_ids: HashSet<String> = rows.iter().map(|r| r.user_id.clone()).collect();
-    let user_labels = lookup_labels(conn, "users", "name", &user_ids)?;
-    for r in &rows {
-        let node_id = format!("user:{}", r.user_id);
-        let label = user_labels.get(&r.user_id).cloned().unwrap_or_else(|| r.user_id.clone());
-        nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-            id: node_id.clone(), node_type: "User".to_string(), label,
-        });
-        edges.push(MemGraphEdge {
-            id:        format!("created_by:memory:{}:{}", r.id, node_id),
-            from_id:   format!("memory:{}", r.id),
-            to_id:     node_id,
-            edge_type: "created_by".to_string(),
-        });
-    }
+        // Session nodes + `in_session` edges (omitted when session_id is NULL)
+        let session_ids: HashSet<String> = rows.iter().filter_map(|r| r.session_id.clone()).collect();
+        let session_labels = lookup_labels(conn, "sessions", "COALESCE(name, summary, id)", &session_ids)?;
+        for r in &rows {
+            if let Some(sid) = &r.session_id {
+                let node_id = format!("session:{sid}");
+                let label = session_labels.get(sid).cloned().unwrap_or_else(|| sid.clone());
+                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
+                    id: node_id.clone(), node_type: "Session".to_string(), label,
+                });
+                edges.push(MemGraphEdge {
+                    id:        format!("in_session:memory:{}:{}", r.id, node_id),
+                    from_id:   format!("memory:{}", r.id),
+                    to_id:     node_id,
+                    edge_type: "in_session".to_string(),
+                });
+            }
+        }
 
-    // Collection nodes + `in_collection` edges (omitted when collection_id is NULL)
-    let collection_ids: HashSet<String> = rows.iter().filter_map(|r| r.collection_id.clone()).collect();
-    let collection_labels = lookup_labels(conn, "collections", "name", &collection_ids)?;
-    for r in &rows {
-        if let Some(cid) = &r.collection_id {
-            let node_id = format!("collection:{cid}");
-            let label = collection_labels.get(cid).cloned().unwrap_or_else(|| cid.clone());
+        // User nodes + `created_by` edges (user_id is NOT NULL on memories, always present)
+        let user_ids: HashSet<String> = rows.iter().map(|r| r.user_id.clone()).collect();
+        let user_labels = lookup_labels(conn, "users", "name", &user_ids)?;
+        for r in &rows {
+            let node_id = format!("user:{}", r.user_id);
+            let label = user_labels.get(&r.user_id).cloned().unwrap_or_else(|| r.user_id.clone());
             nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                id: node_id.clone(), node_type: "Collection".to_string(), label,
+                id: node_id.clone(), node_type: "User".to_string(), label,
             });
             edges.push(MemGraphEdge {
-                id:        format!("in_collection:memory:{}:{}", r.id, node_id),
+                id:        format!("created_by:memory:{}:{}", r.id, node_id),
                 from_id:   format!("memory:{}", r.id),
                 to_id:     node_id,
-                edge_type: "in_collection".to_string(),
+                edge_type: "created_by".to_string(),
             });
         }
-    }
 
-    // Tag nodes + `tagged` edges (omitted when tags is empty)
-    for r in &rows {
-        for tag in &r.tags {
-            let node_id = format!("tag:{tag}");
-            nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                id: node_id.clone(), node_type: "Tag".to_string(), label: tag.clone(),
+        // Collection nodes + `in_collection` edges (omitted when collection_id is NULL)
+        let collection_ids: HashSet<String> = rows.iter().filter_map(|r| r.collection_id.clone()).collect();
+        let collection_labels = lookup_labels(conn, "collections", "name", &collection_ids)?;
+        for r in &rows {
+            if let Some(cid) = &r.collection_id {
+                let node_id = format!("collection:{cid}");
+                let label = collection_labels.get(cid).cloned().unwrap_or_else(|| cid.clone());
+                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
+                    id: node_id.clone(), node_type: "Collection".to_string(), label,
+                });
+                edges.push(MemGraphEdge {
+                    id:        format!("in_collection:memory:{}:{}", r.id, node_id),
+                    from_id:   format!("memory:{}", r.id),
+                    to_id:     node_id,
+                    edge_type: "in_collection".to_string(),
+                });
+            }
+        }
+
+        // Tag nodes + `tagged` edges (omitted when tags is empty)
+        for r in &rows {
+            for tag in &r.tags {
+                let node_id = format!("tag:{tag}");
+                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
+                    id: node_id.clone(), node_type: "Tag".to_string(), label: tag.clone(),
+                });
+                edges.push(MemGraphEdge {
+                    id:        format!("tagged:memory:{}:{}", r.id, node_id),
+                    from_id:   format!("memory:{}", r.id),
+                    to_id:     node_id,
+                    edge_type: "tagged".to_string(),
+                });
+            }
+        }
+    } // end `if !rows.is_empty()`
+
+    // ── AuditEvent nodes + performed_by/targets edges (Slice 2) ─────────────
+    // Scoped by `org_id` + `since` only — NOT by `project`. `audit_logs` has no
+    // `project` column (it records org-wide activity across every resource
+    // type), so unlike the memory anchor above there is no direct project
+    // filter to apply here. Every audit event in-scope gets an AuditEvent node
+    // and a `performed_by` edge to its actor (a User node, created if it
+    // isn't already part of the memory-derived node set). A `targets` edge is
+    // added ONLY when `(resource_type, resource_id)` resolves to a node that
+    // is ALREADY present in `nodes` — in practice this means "the audited
+    // resource belongs to the project(s) already pulled in by the memory
+    // anchor" — which keeps the no-dangling-edges invariant without needing a
+    // project column on `audit_logs` itself.
+    //
+    // Deferred: an `audit -> policy -> project` edge (audit events whose
+    // resource_type is "policy"). `policies` has no `project_id` column yet —
+    // that's staged in a PARALLEL migration (see migrations.rs:63) — so until
+    // it lands there is no way to resolve a Policy node into this project's
+    // scope. Policy resource types simply fall through `resource_node_id`
+    // below and never gain a `targets` edge; the AuditEvent + performed_by
+    // edge still appear. Do not implement the Policy node/edge here.
+    let mut audit_stmt = conn.prepare(
+        "SELECT id, user_id, action, resource_type, resource_id \
+         FROM audit_logs \
+         WHERE org_id = ?1 AND (?2 IS NULL OR timestamp >= ?2) \
+         ORDER BY timestamp DESC \
+         LIMIT ?3",
+    )?;
+    struct AuditRow {
+        id: String,
+        user_id: String,
+        action: String,
+        resource_type: String,
+        resource_id: Option<String>,
+    }
+    let audit_rows: Vec<AuditRow> = audit_stmt
+        .query_map(rusqlite::params![org_id, since, limit], |row| {
+            Ok(AuditRow {
+                id:            row.get(0)?,
+                user_id:       row.get(1)?,
+                action:        row.get(2)?,
+                resource_type: row.get(3)?,
+                resource_id:   row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if !audit_rows.is_empty() {
+        let audit_user_ids: HashSet<String> = audit_rows.iter().map(|r| r.user_id.clone()).collect();
+        let audit_user_labels = lookup_labels(conn, "users", "name", &audit_user_ids)?;
+
+        for r in &audit_rows {
+            let audit_node_id = format!("audit:{}", r.id);
+            nodes.entry(audit_node_id.clone()).or_insert_with(|| MemGraphNode {
+                id:        audit_node_id.clone(),
+                node_type: "AuditEvent".to_string(),
+                label:     format!("{} {}", r.action, r.resource_type),
+            });
+
+            // performed_by: always present — audit_logs.user_id is NOT NULL.
+            let user_node_id = format!("user:{}", r.user_id);
+            let user_label = audit_user_labels.get(&r.user_id).cloned().unwrap_or_else(|| r.user_id.clone());
+            nodes.entry(user_node_id.clone()).or_insert_with(|| MemGraphNode {
+                id: user_node_id.clone(), node_type: "User".to_string(), label: user_label,
             });
             edges.push(MemGraphEdge {
-                id:        format!("tagged:memory:{}:{}", r.id, node_id),
-                from_id:   format!("memory:{}", r.id),
-                to_id:     node_id,
-                edge_type: "tagged".to_string(),
+                id:        format!("performed_by:{}:{}", audit_node_id, user_node_id),
+                from_id:   audit_node_id.clone(),
+                to_id:     user_node_id,
+                edge_type: "performed_by".to_string(),
             });
+
+            // targets: only when the resource already resolves to a node in this graph.
+            if let Some(target_id) = resource_node_id(&r.resource_type, r.resource_id.as_deref(), &nodes) {
+                edges.push(MemGraphEdge {
+                    id:        format!("targets:{}:{}", audit_node_id, target_id),
+                    from_id:   audit_node_id,
+                    to_id:     target_id,
+                    edge_type: "targets".to_string(),
+                });
+            }
         }
     }
 
     Ok((nodes.into_values().collect(), edges))
+}
+
+/// Resolves an audit log's `(resource_type, resource_id)` to the namespaced
+/// node id it targets, IF that node is already present in `nodes`. Returns
+/// `None` when `resource_id` is absent, `resource_type` has no known mapping
+/// (e.g. "policy", "convention" — deferred, see the caller's comment), or the
+/// referenced node simply isn't in the graph. Callers MUST skip the `targets`
+/// edge when this returns `None`, to preserve the no-dangling-edges invariant.
+fn resource_node_id(
+    resource_type: &str,
+    resource_id: Option<&str>,
+    nodes: &HashMap<String, MemGraphNode>,
+) -> Option<String> {
+    let rid = resource_id?;
+    let candidate = match resource_type {
+        "memory" => format!("memory:{rid}"),
+        "session" => format!("session:{rid}"),
+        "user" => format!("user:{rid}"),
+        "collection" => format!("collection:{rid}"),
+        "project" => {
+            let by_id = format!("project:{rid}");
+            if nodes.contains_key(&by_id) {
+                by_id
+            } else {
+                format!("project:name:{rid}")
+            }
+        }
+        _ => return None,
+    };
+    nodes.contains_key(&candidate).then_some(candidate)
 }
 
 #[cfg(test)]
@@ -9001,5 +9116,60 @@ mod mem_graph_tests {
             assert!(node_ids.contains(edge.to_id.as_str()), "to_id {} not in node set", edge.to_id);
         }
         assert_eq!(nodes.len(), node_ids.len(), "node_count must equal nodes.len()");
+    }
+
+    // ── Phase 5: AuditEvent nodes/edges (Slice 2) ───────────────────────────
+
+    #[test]
+    fn get_memory_graph_audit_events_scoped_by_since_yield_performed_by_edge() {
+        let (conn, org_id, user_id) = setup();
+        let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
+        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+
+        // One audit event before `since`, one at/after `since` — only the latter must appear.
+        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m1"), serde_json::json!({}), Some("2026-01-01T00:00:00Z")).unwrap();
+        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.updated", "memory", Some("m1"), serde_json::json!({}), Some("2026-06-01T00:00:00Z")).unwrap();
+
+        let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", Some("2026-03-01T00:00:00Z"), 2000, 0).unwrap();
+
+        let audit_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "AuditEvent").collect();
+        assert_eq!(audit_nodes.len(), 1, "only the audit event at/after `since` must appear, got {}", audit_nodes.len());
+
+        let audit_node_id = &audit_nodes[0].id;
+        let performed_by: Vec<_> = edges
+            .iter()
+            .filter(|e| &e.from_id == audit_node_id && e.edge_type == "performed_by")
+            .collect();
+        assert_eq!(performed_by.len(), 1, "exactly one performed_by edge from the AuditEvent node");
+        assert_eq!(performed_by[0].to_id, format!("user:{user_id}"));
+    }
+
+    #[test]
+    fn get_memory_graph_audit_targets_edge_present_when_resource_in_graph_dropped_when_absent() {
+        let (conn, org_id, user_id) = setup();
+        let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
+        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+
+        // Targets a memory that IS in the graph (m1) -> targets edge must be present.
+        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m1"), serde_json::json!({}), Some("2026-01-02T00:00:00Z")).unwrap();
+        // Targets a memory that is NOT in the graph -> targets edge must be dropped (no dangling edge).
+        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m-does-not-exist"), serde_json::json!({}), Some("2026-01-02T00:00:01Z")).unwrap();
+
+        let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
+
+        let targets_edges: Vec<_> = edges.iter().filter(|e| e.edge_type == "targets").collect();
+        assert_eq!(targets_edges.len(), 1, "only the audit event whose resource is in the graph gets a targets edge");
+        assert_eq!(targets_edges[0].to_id, "memory:m1");
+
+        // No-dangling-edges invariant must still hold across the whole graph.
+        let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        for edge in &edges {
+            assert!(node_ids.contains(edge.from_id.as_str()), "from_id {} not in node set", edge.from_id);
+            assert!(node_ids.contains(edge.to_id.as_str()), "to_id {} not in node set", edge.to_id);
+        }
+
+        // Both audit events still produce AuditEvent nodes even though one has no targets edge.
+        let audit_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "AuditEvent").collect();
+        assert_eq!(audit_nodes.len(), 2, "both audit events must still appear as AuditEvent nodes");
     }
 }
