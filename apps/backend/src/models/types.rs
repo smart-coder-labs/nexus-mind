@@ -288,9 +288,13 @@ fn default_revision_count() -> i64 {
 }
 
 /// Pagination envelope returned by `GET /v1/memory` and `POST /v1/memory/search`.
+///
+/// Generic over the item type so the same envelope shape can carry either full
+/// `Memory` rows (default) or `MemoryPreview` rows when `compact=true` is
+/// requested — see `MemoryPreview` and `api::memory::MemoryPageResponse`.
 #[derive(Serialize)]
-pub struct MemoryPage {
-    pub memories: Vec<Memory>,
+pub struct MemoryPage<T = Memory> {
+    pub memories: Vec<T>,
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
@@ -299,6 +303,47 @@ pub struct MemoryPage {
     /// configured. Absent (not serialized) when no degradation occurred.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degraded: Option<String>,
+}
+
+/// Compact representation of a `Memory`, returned instead of the full row when
+/// `compact=true` is passed to `GET /v1/memory` or `POST /v1/memory/search`
+/// (and to the memory lists embedded in `GET /v1/context*`). `preview` is the
+/// first 200 characters of `content` (UTF-8 char-boundary safe).
+#[derive(Serialize, Clone, Debug)]
+pub struct MemoryPreview {
+    pub id: String,
+    pub title: Option<String>,
+    #[serde(rename = "type")]
+    pub memory_type: Option<String>,
+    pub project: String,
+    pub tags: Vec<String>,
+    pub pinned: bool,
+    pub created_at: String,
+    pub preview: String,
+}
+
+/// Truncates `s` to at most `max_chars` characters without panicking on
+/// multi-byte UTF-8 boundaries (a naive byte-index slice can land mid-codepoint).
+pub fn preview_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => s[..byte_idx].to_string(),
+        None => s.to_string(),
+    }
+}
+
+impl From<&Memory> for MemoryPreview {
+    fn from(m: &Memory) -> Self {
+        MemoryPreview {
+            id: m.id.clone(),
+            title: m.title.clone(),
+            memory_type: m.memory_type.clone(),
+            project: m.project.clone(),
+            tags: m.tags.clone(),
+            pinned: m.pinned,
+            created_at: m.created_at.clone(),
+            preview: preview_chars(&m.content, 200),
+        }
+    }
 }
 
 /// Request body for `POST /v1/memory/store`.

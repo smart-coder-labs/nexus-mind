@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, MemoryPreview, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
 };
@@ -158,6 +158,10 @@ pub struct SearchInput {
     pub limit: Option<i64>,
     /// Search mode: "hybrid" (default), "keyword", or "semantic".
     pub mode: Option<String>,
+    /// When true, each returned item is a compact `MemoryPreview` instead of
+    /// the full `Memory` row. Absent/false leaves the response unchanged.
+    #[serde(default)]
+    pub compact: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +185,22 @@ pub struct ListParams {
     pub to_date: Option<String>,
     /// When set, only memories belonging to this collection are returned.
     pub collection_id: Option<String>,
+    /// When true, each returned item is a compact `MemoryPreview` instead of
+    /// the full `Memory` row. Absent/false leaves the response unchanged.
+    #[serde(default)]
+    pub compact: Option<bool>,
+}
+
+/// `GET /v1/memory` and `POST /v1/memory/search` return either the full
+/// `MemoryPage<Memory>` shape (default) or `MemoryPage<MemoryPreview>` when
+/// `compact=true` is requested. `#[serde(untagged)]` serializes whichever
+/// variant is constructed as a plain object — the default shape is byte-for-byte
+/// identical to before this type existed, so existing consumers are unaffected.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum MemoryPageResponse {
+    Full(MemoryPage<Memory>),
+    Compact(MemoryPage<MemoryPreview>),
 }
 
 fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
@@ -318,7 +338,7 @@ pub async fn search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<SearchInput>,
-) -> Result<Json<MemoryPage>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MemoryPageResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| (
@@ -391,14 +411,25 @@ pub async fn search(
         }
     }
 
-    Ok(Json(MemoryPage { memories, total, limit, offset: 0, degraded }))
+    if input.compact.unwrap_or(false) {
+        let previews: Vec<MemoryPreview> = memories.iter().map(MemoryPreview::from).collect();
+        return Ok(Json(MemoryPageResponse::Compact(MemoryPage {
+            memories: previews,
+            total,
+            limit,
+            offset: 0,
+            degraded,
+        })));
+    }
+
+    Ok(Json(MemoryPageResponse::Full(MemoryPage { memories, total, limit, offset: 0, degraded })))
 }
 
 pub async fn list(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListParams>,
-) -> Result<Json<MemoryPage>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MemoryPageResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
         let conn = db.lock().map_err(|_| (
@@ -455,7 +486,19 @@ pub async fn list(
             m.admin_note = None;
         }
     }
-    Ok(Json(page))
+
+    if params.compact.unwrap_or(false) {
+        let previews: Vec<MemoryPreview> = page.memories.iter().map(MemoryPreview::from).collect();
+        return Ok(Json(MemoryPageResponse::Compact(MemoryPage {
+            memories: previews,
+            total: page.total,
+            limit: page.limit,
+            offset: page.offset,
+            degraded: page.degraded,
+        })));
+    }
+
+    Ok(Json(MemoryPageResponse::Full(page)))
 }
 
 pub async fn get_by_id(
