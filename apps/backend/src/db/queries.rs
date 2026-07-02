@@ -4587,6 +4587,93 @@ mod tests {
         assert_eq!(results.len(), 0, "org2 must not see org1 memories");
     }
 
+    // ── FTS recall fix: OR-join instead of implicit AND ──────────────────────
+
+    #[test]
+    fn search_matches_memory_with_partial_term_overlap() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Memory content only contains 3 of the 6 query terms below.
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "apple banana cherry unrelated words here",
+            &[],
+        );
+
+        // A 6-term natural-language query where only "apple banana cherry" appear
+        // in the stored memory. Under the old space-joined (implicit AND) query
+        // this required ALL 6 terms present in one row → 0 results.
+        let results =
+            search_memories(&conn, &org.id, "apple banana cherry date eggplant fig", 10).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "OR-joined FTS query must match a memory containing only a subset of query terms"
+        );
+    }
+
+    #[test]
+    fn search_ranks_more_matching_terms_higher() {
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Matches only 1 of the 4 query terms.
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "grape only appears here alone",
+            &[],
+        );
+        // Matches 3 of the 4 query terms.
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "grape kiwi mango show up together",
+            &[],
+        );
+
+        let results = search_memories(&conn, &org.id, "grape kiwi mango lemon", 10).unwrap();
+        assert_eq!(results.len(), 2, "both memories share at least one query term");
+        assert!(
+            results[0].content.contains("kiwi mango"),
+            "the memory matching more query terms must rank first, got: {:?}",
+            results.iter().map(|m| &m.content).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sanitize_fts_query_neutralizes_special_characters() {
+        // Characters that are FTS5 operators must not be able to break out of
+        // the MATCH expression or cause a query parse error.
+        let raw = r#"foo" OR 1=1 -- * - ("bar)"#;
+        let sanitized = sanitize_fts_query(raw).expect("must still produce a query");
+        // No unescaped double-quote may appear outside of the per-token wrapping —
+        // every token is individually wrapped in its own quote pair.
+        assert!(
+            !sanitized.contains("1=1"),
+            "raw SQL/FTS injection payloads must be tokenized away, got: {sanitized}"
+        );
+
+        let conn = setup();
+        let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "bar foo baz", &[]);
+
+        // Must not error even though the raw query contains FTS5 special chars.
+        let result = search_memories(&conn, &org.id, raw, 10);
+        assert!(result.is_ok(), "special characters must not cause a query error: {result:?}");
+    }
+
     #[test]
     fn list_memories_with_filters() {
         let conn = setup();
