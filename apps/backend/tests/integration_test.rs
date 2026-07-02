@@ -320,9 +320,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version is the current max (44 after policies.project_id migration)
+    // Verify user_version is the current max (45 after the agents-table backfill migration)
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
@@ -514,6 +514,62 @@ fn code_project_exclude_patterns_roundtrip() {
     let projects = queries::list_code_projects(&conn, &org.id).unwrap();
     let listed = projects.iter().find(|p| p.name == "myapp").expect("myapp must appear in list");
     assert_eq!(listed.exclude_patterns, patterns, "list_code_projects must include exclude_patterns");
+}
+
+/// Regression: `delete_code_project` must delete by the numeric `id` column, not by
+/// matching the `name` column. Deleting one project must leave a sibling project
+/// (with an unrelated name) untouched.
+#[test]
+fn delete_code_project_by_id_only_removes_target() {
+    let conn = setup();
+    let (org, _admin, _key) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let id_alpha = queries::upsert_code_project(&conn, &org.id, "alpha", "/ws/alpha").unwrap();
+    let id_beta = queries::upsert_code_project(&conn, &org.id, "beta", "/ws/beta").unwrap();
+
+    let deleted = queries::delete_code_project(&conn, &org.id, id_alpha).unwrap();
+    assert!(deleted, "delete_code_project must return true for an existing project id");
+
+    let remaining = queries::list_code_projects(&conn, &org.id).unwrap();
+    assert!(
+        remaining.iter().all(|p| p.id != id_alpha.to_string()),
+        "deleted project (alpha) must be gone: {remaining:?}"
+    );
+    assert!(
+        remaining.iter().any(|p| p.id == id_beta.to_string() && p.name == "beta"),
+        "sibling project (beta) must be untouched: {remaining:?}"
+    );
+}
+
+/// Regression (case-sensitive gotcha): reproduces the exact mechanism of the old
+/// name-based bug. If a *different* project happens to be named the same as the
+/// target project's numeric id (a plausible collision, e.g. an org with a project
+/// literally named "7"), the old `WHERE name = ?` query would delete that unrelated
+/// decoy project instead of the one the caller actually asked for by id.
+#[test]
+fn delete_code_project_id_based_deletion_avoids_name_collision_bug() {
+    let conn = setup();
+    let (org, _admin, _key) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let id_target = queries::upsert_code_project(&conn, &org.id, "target-app", "/ws/target").unwrap();
+    // Decoy project whose NAME equals the target project's id as a string — this is
+    // exactly what the old buggy query (`WHERE name = ?`) would have matched when
+    // called with the target's id.
+    let decoy_name = id_target.to_string();
+    let id_decoy = queries::upsert_code_project(&conn, &org.id, &decoy_name, "/ws/decoy").unwrap();
+
+    let deleted = queries::delete_code_project(&conn, &org.id, id_target).unwrap();
+    assert!(deleted, "delete_code_project must return true for the target project id");
+
+    let remaining = queries::list_code_projects(&conn, &org.id).unwrap();
+    assert!(
+        remaining.iter().all(|p| p.id != id_target.to_string()),
+        "target project must be deleted: {remaining:?}"
+    );
+    assert!(
+        remaining.iter().any(|p| p.id == id_decoy.to_string()),
+        "decoy project (name == target's id) must survive — the old bug would have deleted it instead: {remaining:?}"
+    );
 }
 
 #[test]

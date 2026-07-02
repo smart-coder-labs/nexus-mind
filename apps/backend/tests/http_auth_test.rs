@@ -496,3 +496,98 @@ async fn github_connection_delete_with_auth_returns_204() {
 
     assert_eq!(resp.status(), StatusCode::NO_CONTENT, "DELETE /v1/github/connection must return 204");
 }
+
+/// Regression test: GET /v1/agents must succeed (not 500 "no such table: agents").
+///
+/// Bug: `run_all()` in `db/migrations.rs` jumped from `run_v38()` straight to
+/// `run_v40()`, never invoking `run_v39()` — so the `agents` / `agent_assignments`
+/// tables were never created despite `run_v39` being fully implemented. Every
+/// `/v1/agents*` route returned HTTP 500. Fixed by restoring `run_v39()` to its
+/// normal position in `run_all()` and adding a `run_v45()` backfill migration for
+/// databases that already reached `user_version = 44` without the agents tables.
+#[tokio::test]
+async fn list_agents_returns_200_not_500() {
+    let (router, raw_key) = app_with_bearer();
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents")
+                .header("Authorization", format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET /v1/agents must return 200, not 500 'no such table: agents'"
+    );
+}
+
+/// Regression test: DELETE /v1/code/projects/:id must delete by the numeric id in
+/// the path, not by matching a project's `name` column.
+///
+/// Bug: `delete_project`'s handler extracted the path segment as a `name: String`
+/// and called `delete_code_project(conn, org_id, name)`, which ran
+/// `DELETE FROM code_projects WHERE org_id = ?1 AND name = ?2`. Deleting by the id
+/// returned from `GET /v1/code/projects` therefore always failed (404, nothing
+/// deleted) unless a project happened to be named exactly that numeric string — in
+/// which case it deleted the WRONG project. Fixed by extracting `Path<i64>` and
+/// matching on the `id` column, consistent with the sibling archive/restore routes.
+#[tokio::test]
+async fn delete_code_project_by_id_removes_only_target() {
+    let conn = connection::connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    let (org, _, raw_key) =
+        queries::bootstrap(&conn, "Code Org", "code-org", "code@test.com", "Admin").unwrap();
+
+    let id_alpha = queries::upsert_code_project(&conn, &org.id, "alpha", "/ws/alpha").unwrap();
+    let id_beta = queries::upsert_code_project(&conn, &org.id, "beta", "/ws/beta").unwrap();
+
+    let router = router::build(conn, test_config());
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/code/projects/{id_alpha}"))
+                .header("Authorization", format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "DELETE by numeric id must succeed");
+
+    let list_resp = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/code/projects")
+                .header("Authorization", format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(list_resp.into_body(), usize::MAX).await.unwrap();
+    let remaining: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let remaining = remaining.as_array().expect("list must be an array");
+    let id_alpha_str = id_alpha.to_string();
+    let id_beta_str = id_beta.to_string();
+
+    assert!(
+        remaining.iter().all(|p| p["id"].as_str() != Some(id_alpha_str.as_str())),
+        "alpha (deleted id) must be gone: {remaining:?}"
+    );
+    assert!(
+        remaining.iter().any(|p| p["id"].as_str() == Some(id_beta_str.as_str())),
+        "beta (untouched id) must still be present: {remaining:?}"
+    );
+}
