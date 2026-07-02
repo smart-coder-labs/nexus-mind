@@ -333,6 +333,14 @@ pub async fn search(
 
     let limit = input.limit.unwrap_or(20);
     let mode = input.mode.as_deref().unwrap_or("hybrid").parse::<SearchMode>().unwrap_or(SearchMode::Hybrid);
+    // `store.search` silently downgrades semantic/hybrid to keyword search when no
+    // embed service is configured (see SqliteStore::search) — surface that here so
+    // callers know results are degraded rather than assuming semantic ranking.
+    let degraded = if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && store.embed_service().is_none() {
+        Some("keyword-fallback".to_string())
+    } else {
+        None
+    };
     let mut memories = store
         .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
         .map_err(store_err)?;
@@ -383,7 +391,7 @@ pub async fn search(
         }
     }
 
-    Ok(Json(MemoryPage { memories, total, limit, offset: 0 }))
+    Ok(Json(MemoryPage { memories, total, limit, offset: 0, degraded }))
 }
 
 pub async fn list(

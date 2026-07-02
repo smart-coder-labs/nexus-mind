@@ -294,6 +294,11 @@ pub struct MemoryPage {
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
+    /// Set to `"keyword-fallback"` when a `semantic`/`hybrid` search request was
+    /// silently downgraded to keyword search because no embed service is
+    /// configured. Absent (not serialized) when no degradation occurred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
 }
 
 /// Request body for `POST /v1/memory/store`.

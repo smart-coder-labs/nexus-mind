@@ -165,6 +165,7 @@ impl MemoryStore for SqliteStore {
             total,
             limit: filters.limit,
             offset: filters.offset,
+            degraded: None,
         })
     }
 
