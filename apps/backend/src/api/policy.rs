@@ -159,6 +159,9 @@ pub struct RawCreatePolicyRequest {
     pub config: serde_json::Value,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Project to scope this policy to. None = org-wide (applies to every project).
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -230,6 +233,7 @@ pub async fn create_policy(
         &req.rule_type,
         &config_json,
         req.enabled,
+        req.project_id.as_deref(),
     )
     .map_err(internal_error)?;
 
@@ -334,7 +338,8 @@ pub async fn check_policy(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let policies = queries::list_enabled_policies(&conn, &ctx.org_id).map_err(internal_error)?;
+    let policies = queries::list_enabled_policies(&conn, &ctx.org_id, req.project.as_deref())
+        .map_err(internal_error)?;
     let stats = queries::fetch_daily_stats(&conn, &ctx.org_id).map_err(internal_error)?;
 
     // prompt_tokens counts as +1 to requests_used for budget check.
@@ -841,5 +846,190 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── check: project scoping ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_policy_with_project_id_round_trips() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let project_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            crate::db::queries::create_project(&conn, &org_id, "proj-a", None, None)
+                .unwrap()
+                .id
+        };
+
+        let payload = serde_json::json!({
+            "name": "Scoped Policy",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude-3-5-sonnet-20241022"] },
+            "project_id": project_id
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = body_json(resp).await;
+        assert_eq!(body["project_id"], project_id);
+    }
+
+    #[tokio::test]
+    async fn create_policy_without_project_id_is_org_wide() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let payload = serde_json::json!({
+            "name": "Org Wide Policy",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude-3-5-sonnet-20241022"] }
+        });
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = body_json(resp).await;
+        assert_eq!(body["project_id"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn check_project_scoped_policy_only_applies_to_matching_project() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        let (project_a, project_b) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let a = crate::db::queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap().id;
+            let b = crate::db::queries::create_project(&conn, &org_id, "proj-b", None, None).unwrap().id;
+            (a, b)
+        };
+
+        // Create a model_whitelist policy scoped to project_a only.
+        let create_payload = serde_json::json!({
+            "name": "Proj A Whitelist",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude-3-5-sonnet-20241022"] },
+            "project_id": project_a
+        });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Checking against project_a with a disallowed model must be denied.
+        let check_a = serde_json::json!({ "model": "gpt-4", "project": project_a });
+        let resp_a = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policy/check")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(check_a.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_a = body_json(resp_a).await;
+        assert_eq!(body_a["allowed"], false, "project_a scoped policy must apply when checking project_a");
+
+        // Checking against project_b (a different project) must be allowed — the
+        // project-scoped policy must not leak into another project.
+        let check_b = serde_json::json!({ "model": "gpt-4", "project": project_b });
+        let resp_b = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policy/check")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(check_b.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_b = body_json(resp_b).await;
+        assert_eq!(body_b["allowed"], true, "project_a scoped policy must NOT apply when checking project_b");
+    }
+
+    #[tokio::test]
+    async fn check_org_wide_policy_applies_regardless_of_project() {
+        let store = make_store();
+        let key = admin_key(&store);
+
+        // Create an org-wide model_whitelist policy (no project_id).
+        let create_payload = serde_json::json!({
+            "name": "Org Wide Whitelist",
+            "rule_type": "model_whitelist",
+            "config": { "allowed_models": ["claude-3-5-sonnet-20241022"] }
+        });
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(create_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let check_payload = serde_json::json!({ "model": "gpt-4", "project": "any-project" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policy/check")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(check_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_json(resp).await;
+        assert_eq!(body["allowed"], false, "org-wide policy must apply regardless of project");
     }
 }

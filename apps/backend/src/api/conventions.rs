@@ -46,6 +46,10 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
 pub struct ListParams {
     pub category: Option<String>,
     pub include_archived: Option<bool>,
+    /// When set, scopes the result to org-wide conventions UNION this project's
+    /// conventions. When absent, returns every convention for the org regardless
+    /// of project_id (admin listing behavior).
+    pub project: Option<String>,
 }
 
 pub async fn list_conventions(
@@ -60,6 +64,7 @@ pub async fn list_conventions(
         &auth.org_id,
         params.category.as_deref(),
         params.include_archived,
+        params.project.as_deref(),
     ).map_err(db_err)?;
     Ok(Json(conventions))
 }
@@ -159,5 +164,153 @@ pub async fn restore_convention(
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(not_found())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
+    };
+    use tower::util::ServiceExt;
+
+    use crate::api::middleware as auth_mw;
+    use crate::db::{connection::connect, migrations, queries};
+    use crate::db::queries::bootstrap;
+    use crate::store::sqlite::SqliteStore;
+
+    fn make_store() -> SqliteStore {
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        SqliteStore::new(conn)
+    }
+
+    fn app(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/conventions", get(super::list_conventions).post(super::create_convention))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    fn admin_key(store: &SqliteStore) -> (String, String) {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let (org, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        (org.id, key)
+    }
+
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_scoped_to_project_returns_org_wide_union_project() {
+        let store = make_store();
+        let (org_id, key) = admin_key(&store);
+
+        let project_a_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let project_a = queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+            let project_q = queries::create_project(&conn, &org_id, "proj-q", None, None).unwrap();
+
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Org-wide".to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: None,
+                tags: None,
+                project_id: None,
+            }).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Proj A".to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: None,
+                tags: None,
+                project_id: Some(project_a.id.clone()),
+            }).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Proj Q".to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: None,
+                tags: None,
+                project_id: Some(project_q.id.clone()),
+            }).unwrap();
+            project_a.id
+        };
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/conventions?project={project_a_id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let titles: Vec<&str> = body.as_array().unwrap().iter()
+            .map(|c| c["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles.len(), 2, "must return org-wide UNION project A, not project Q");
+        assert!(titles.contains(&"Org-wide"));
+        assert!(titles.contains(&"Proj A"));
+        assert!(!titles.contains(&"Proj Q"));
+    }
+
+    #[tokio::test]
+    async fn list_without_project_returns_everything_for_org() {
+        let store = make_store();
+        let (org_id, key) = admin_key(&store);
+
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let project_a = queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Org-wide".to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: None,
+                tags: None,
+                project_id: None,
+            }).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Proj A".to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: None,
+                tags: None,
+                project_id: Some(project_a.id.clone()),
+            }).unwrap();
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/conventions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 2, "no project param must return everything for the org (admin listing)");
     }
 }
