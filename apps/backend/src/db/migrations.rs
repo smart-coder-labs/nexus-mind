@@ -41,11 +41,56 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v36(conn)?;
     run_v37(conn)?;
     run_v38(conn)?;
+    run_v39(conn)?;
     run_v40(conn)?;
     run_v41(conn)?;
     run_v42(conn)?;
     run_v43(conn)?;
     run_v44(conn)?;
+    run_v45(conn)?;
+    Ok(())
+}
+
+/// Migration v45: idempotently backfills the `agents` and `agent_assignments`
+/// tables for databases that reached `user_version >= 39` WITHOUT ever running
+/// `run_v39()` — which happened because `run_all()` historically skipped it,
+/// jumping straight from `run_v38()` to `run_v40()`. On those databases the
+/// `run_v39()` guard (`if version >= 39 { return Ok(()); }`) would forever skip
+/// the migration, so this step re-creates the same schema using
+/// `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`, making it safe to
+/// run whether or not `run_v39()` already created these tables.
+/// Idempotent — guarded by PRAGMA user_version < 45.
+pub fn run_v45(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 45 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agents (
+          id TEXT PRIMARY KEY,
+          org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          model TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(org_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agents_org ON agents(org_id);
+
+        CREATE TABLE IF NOT EXISTS agent_assignments (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+          org_id TEXT NOT NULL,
+          repo_url TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(agent_id, repo_url)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_assignments_agent ON agent_assignments(agent_id);
+
+        PRAGMA user_version = 45;",
+    )?;
     Ok(())
 }
 
@@ -1665,7 +1710,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
@@ -2062,7 +2107,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
@@ -2071,7 +2116,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must remain 44 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 45, "user_version must remain 45 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2203,7 +2248,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2230,14 +2275,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
@@ -2355,7 +2400,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2374,14 +2419,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2458,14 +2503,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2548,7 +2593,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -2742,14 +2787,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
@@ -2786,14 +2831,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -2832,14 +2877,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 44, "user_version must be 44 after run_all");
+        assert_eq!(get_user_version(&conn), 45, "user_version must be 45 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -2964,7 +3009,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "user_version must remain 44 (run_all already applied v41-v44)");
+        assert_eq!(get_user_version(&conn), 45, "user_version must remain 45 (run_all already applied v41-v45)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -2975,8 +3020,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            44,
-            "user_version must be 44 after v41-v44 are included in run_all"
+            45,
+            "user_version must be 45 after v41-v45 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3068,7 +3113,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 44, "version must remain 44 on second run_all");
+        assert_eq!(get_user_version(&conn), 45, "version must remain 45 on second run_all");
     }
 
     #[test]
@@ -3095,5 +3140,114 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM github_connections WHERE org_id = 'org1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(after, 0, "github_connections must cascade-delete with org");
+    }
+
+    // ── v39 / v45 migration tests (agents) ──────────────────────────────────────
+    //
+    // Regression coverage for the bug where `run_all()` jumped from `run_v38()`
+    // straight to `run_v40()`, never invoking `run_v39()` — so the `agents` and
+    // `agent_assignments` tables were never created and `/v1/agents*` returned
+    // HTTP 500 "no such table: agents".
+
+    /// Reproduces the pre-fix `run_all()` sequence (skips `run_v39`) to simulate a
+    /// production database that already reached `user_version = 44` via the buggy
+    /// migration chain — i.e. a DB that is missing the `agents` / `agent_assignments`
+    /// tables and can no longer reach them via the normal `run_v39` guard (which
+    /// short-circuits once `user_version >= 39`).
+    fn simulate_prod_db_at_v44_missing_agents(conn: &Connection) {
+        run_v1(conn).unwrap();
+        run_v2(conn).unwrap();
+        run_v3(conn).unwrap();
+        run_v4(conn).unwrap();
+        run_v5(conn).unwrap();
+        run_v6(conn).unwrap();
+        run_v7(conn).unwrap();
+        run_v8(conn).unwrap();
+        run_v9(conn).unwrap();
+        run_v10(conn).unwrap();
+        run_v11(conn).unwrap();
+        run_v12(conn).unwrap();
+        run_v13(conn).unwrap();
+        run_v14(conn).unwrap();
+        run_v15(conn).unwrap();
+        run_v16(conn).unwrap();
+        run_v17(conn).unwrap();
+        run_v18(conn).unwrap();
+        run_v19(conn).unwrap();
+        run_v20(conn).unwrap();
+        run_v21(conn).unwrap();
+        run_v22(conn).unwrap();
+        run_v23(conn).unwrap();
+        run_v24(conn).unwrap();
+        run_v25(conn).unwrap();
+        run_v26(conn).unwrap();
+        run_v27(conn).unwrap();
+        run_v28(conn).unwrap();
+        run_v29(conn).unwrap();
+        run_v30(conn).unwrap();
+        run_v31(conn).unwrap();
+        run_v32(conn).unwrap();
+        run_v33(conn).unwrap();
+        run_v34(conn).unwrap();
+        run_v35(conn).unwrap();
+        run_v36(conn).unwrap();
+        run_v37(conn).unwrap();
+        run_v38(conn).unwrap();
+        // run_v39 intentionally skipped — this reproduces the historical bug in run_all().
+        run_v40(conn).unwrap();
+        run_v41(conn).unwrap();
+        run_v42(conn).unwrap();
+        run_v43(conn).unwrap();
+        run_v44(conn).unwrap();
+    }
+
+    #[test]
+    fn run_all_creates_agents_table_on_fresh_db() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "agents"), "agents table must exist after run_all on a fresh db");
+        assert!(
+            table_exists(&conn, "agent_assignments"),
+            "agent_assignments table must exist after run_all on a fresh db"
+        );
+    }
+
+    #[test]
+    fn run_all_backfills_agents_table_for_db_stuck_at_v44() {
+        // Sanity check: confirm the simulated prod DB really is missing the agents
+        // table before the fix runs (otherwise this test would be vacuous).
+        let sanity_conn = in_memory_db();
+        simulate_prod_db_at_v44_missing_agents(&sanity_conn);
+        assert_eq!(get_user_version(&sanity_conn), 44);
+        assert!(
+            !table_exists(&sanity_conn, "agents"),
+            "sanity: simulated prod db must be missing the agents table before the backfill runs"
+        );
+
+        // Now simulate the deployed prod DB receiving the new binary: it re-runs
+        // migrations (via run_all), which must include the new backfill step and
+        // create the agents tables even though user_version is already 44.
+        let conn = in_memory_db();
+        simulate_prod_db_at_v44_missing_agents(&conn);
+        run_all(&conn).unwrap();
+
+        assert!(
+            table_exists(&conn, "agents"),
+            "agents table must exist after the backfill migration runs on a db stuck at v44"
+        );
+        assert!(
+            table_exists(&conn, "agent_assignments"),
+            "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
+        );
+        assert_eq!(get_user_version(&conn), 45, "user_version must reach 45 after the backfill migration");
+    }
+
+    #[test]
+    fn run_all_is_idempotent_after_v45() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let result = run_all(&conn);
+        assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
+        assert_eq!(get_user_version(&conn), 45, "user_version must remain 45 on second run_all");
     }
 }
