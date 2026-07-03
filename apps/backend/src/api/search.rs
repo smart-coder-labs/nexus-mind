@@ -62,7 +62,8 @@ pub async fn get_global_search(
 
     let limit = params.limit.clamp(1, 50);
 
-    let memories = queries::search_memories(&conn, &auth.org_id, q, limit)
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let memories = queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer)
         .map_err(db_err)?;
 
     let users = if auth.role.is_admin() {
@@ -108,6 +109,31 @@ mod tests {
             [&org_id],
         ).unwrap();
         org_id
+    }
+
+    /// Global search memories honor project membership: a non-admin viewer only gets
+    /// memories of projects they belong to (plus project-less), never others'.
+    #[test]
+    fn global_search_memories_respect_project_membership() {
+        let conn = setup_db();
+        let org_id = seed_org(&conn);
+        conn.execute("INSERT INTO projects (id, org_id, name, created_at) VALUES ('psec', ?1, 'proj-secret', '2026-01-01T00:00:00Z')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, created_at) VALUES ('psha', ?1, 'proj-shared', '2026-01-01T00:00:00Z')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES ('m1', ?1, 'm@acme.com', 'M', 'member', 'active', '2026-01-01T00:00:00Z')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES ('pm1','psha','m1','member','2026-01-01T00:00:00Z')", []).unwrap();
+        conn.execute("INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count, project_id) VALUES ('ms', ?1, 'm1', 'proj-secret', 'claude', 'ZEBRAWORD secret note', '[]', datetime('now'), 'project', 1, 'psec')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count, project_id) VALUES ('mh', ?1, 'm1', 'proj-shared', 'claude', 'ZEBRAWORD shared note', '[]', datetime('now'), 'project', 1, 'psha')", [&org_id]).unwrap();
+        conn.execute("INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count, project_id) VALUES ('mo', ?1, 'm1', 'default', 'claude', 'ZEBRAWORD orgless note', '[]', datetime('now'), 'project', 1, NULL)", [&org_id]).unwrap();
+
+        // Member: shared + orgless, not secret.
+        let mut member = queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, Some("m1")).unwrap();
+        member.sort_by(|a, b| a.id.cmp(&b.id));
+        let ids: Vec<&str> = member.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["mh", "mo"], "member sees shared + org-less, not secret");
+
+        // Admin (None): all three.
+        let admin = queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, None).unwrap();
+        assert_eq!(admin.len(), 3, "admin sees everything");
     }
 
     #[test]

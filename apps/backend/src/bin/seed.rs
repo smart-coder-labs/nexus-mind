@@ -122,6 +122,16 @@ fn seed_org(
         }
     }
 
+    // Implicit project creation is disabled at the store layer, so pre-create every
+    // project referenced by demo memories. Done AFTER users are invited so
+    // get_or_create_project enrols them as members and the demo data stays visible.
+    let mut seen_projects = std::collections::HashSet::new();
+    for &(_, project, _, _) in MEMORIES.iter() {
+        if seen_projects.insert(project) {
+            queries::get_or_create_project(conn, &org.id, project)?;
+        }
+    }
+
     // Store memories round-robin across non-viewer users.
     for (i, &(tool, project, content, tags)) in MEMORIES.iter().enumerate() {
         let user_id = &non_viewer_user_ids[i % non_viewer_user_ids.len()];

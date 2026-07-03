@@ -15,6 +15,17 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::connection::connect(&config.db_path)?;
     db::migrations::run_all(&conn)?;
 
+    // Backfill the default project for orgs created before default-project onboarding
+    // existed, so agents using the standard "nexus-mind" project don't get 404s.
+    match db::queries::ensure_default_projects(&conn) {
+        Ok(n) if n > 0 => tracing::info!(
+            "Backfilled default '{}' project for {n} existing org(s)",
+            db::queries::DEFAULT_PROJECT_NAME
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Default-project backfill failed: {e}"),
+    }
+
     let app = api::router::build(conn, config.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

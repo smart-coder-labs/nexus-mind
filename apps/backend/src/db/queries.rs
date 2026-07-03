@@ -89,6 +89,44 @@ pub fn is_key_account_disabled(conn: &Connection, key_hash: &str) -> Result<bool
 /// Returns (org, user, raw_api_key).
 /// Fails if any organization already exists.
 /// Creates an org + admin user + API key with no guard. Used by seed and bootstrap.
+/// Name of the default project auto-created for every org at bootstrap. Matches the
+/// standard agent convention (CLAUDE.md: default `project` = `nexus-mind`) so that memory
+/// writes work out of the box now that implicit project creation is disabled.
+pub const DEFAULT_PROJECT_NAME: &str = "nexus-mind";
+
+/// Idempotent backfill: ensure every existing org has the default `nexus-mind` project,
+/// enrolling that org's admin users as members. Safe to run on every startup — orgs that
+/// already have the project are skipped, and existing memberships are preserved
+/// (`INSERT OR IGNORE`). Without this, agents in orgs created before the default-project
+/// change would keep getting 404s when writing to the default project.
+pub fn ensure_default_projects(conn: &Connection) -> Result<usize> {
+    let org_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT o.id FROM organizations o
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM projects p WHERE p.org_id = o.id AND p.name = ?1
+             )",
+        )?;
+        let rows = stmt.query_map([DEFAULT_PROJECT_NAME], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let mut created = 0usize;
+    for org_id in &org_ids {
+        let project = create_project(conn, org_id, DEFAULT_PROJECT_NAME, None, None)?;
+        // Enrol the org's admins (mirrors new-org semantics: only privileged owners are
+        // members; other users need an explicit invite).
+        conn.execute(
+            "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+             SELECT lower(hex(randomblob(16))), ?1, u.id, 'admin', datetime('now')
+             FROM users u WHERE u.org_id = ?2 AND u.role = 'admin'",
+            rusqlite::params![project.id, org_id],
+        )?;
+        created += 1;
+    }
+    Ok(created)
+}
+
 pub fn create_org(
     conn: &Connection,
     org_name: &str,
@@ -117,6 +155,18 @@ pub fn create_org(
         "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
          VALUES (?1, ?2, ?3, ?4, 'admin-key', ?5)",
         [&key_id, &user_id, &org_id, &key_hash, &now],
+    )?;
+
+    // Every org gets a default "nexus-mind" project at bootstrap so the standard agent
+    // convention (default project = "nexus-mind") works without an extra admin step.
+    // Only the initial admin is enrolled — normal membership semantics; other users need
+    // an explicit invite. This is a one-time onboarding step, NOT the removed
+    // auto-enroll-everyone-on-every-write behavior.
+    let default_project = create_project(conn, &org_id, DEFAULT_PROJECT_NAME, None, None)?;
+    conn.execute(
+        "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+         VALUES (?1, ?2, ?3, 'admin', ?4)",
+        rusqlite::params![Uuid::new_v4().to_string(), default_project.id, user_id, now],
     )?;
 
     let org = Org {
@@ -215,29 +265,66 @@ pub fn sanitize_fts_query(query: &str) -> Option<String> {
 }
 
 /// Full-text search over memories, scoped to the org.
+/// SQL fragment enforcing project-membership visibility for a non-admin viewer.
+///
+/// Restricts results to memories the viewer is allowed to see: those belonging to a
+/// project where the viewer appears in `project_members`, plus project-less
+/// (org-shared) memories (`project_id IS NULL`). `col` is the qualified `project_id`
+/// column (e.g. `"project_id"` or `"m.project_id"`) and `placeholder` is the bound
+/// parameter token holding the viewer's user id (e.g. `"?5"`).
+fn visibility_predicate(col: &str, placeholder: &str) -> String {
+    format!(
+        " AND ({col} IS NULL OR {col} IN (SELECT project_id FROM project_members WHERE user_id = {placeholder}))"
+    )
+}
+
 pub fn search_memories(
     conn: &Connection,
     org_id: &str,
     query: &str,
     limit: i64,
 ) -> Result<Vec<Memory>> {
+    search_memories_visible(conn, org_id, query, limit, None)
+}
+
+/// Like [`search_memories`], but when `viewer_user_id` is `Some(uid)` the result set is
+/// restricted to memories `uid` may see (see [`visibility_predicate`]). `None` applies no
+/// project-membership restriction — for admins and internal callers only.
+pub fn search_memories_visible(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Memory>> {
     let fts_query = match sanitize_fts_query(query) {
         Some(q) => q,
         None => return Ok(Vec::new()),
     };
 
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
                 m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash, m.project_id,
                 m.archived_at, m.pinned, m.collection_id, m.admin_note, m.delete_after
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
-         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL
-         ORDER BY rank
-         LIMIT ?3",
-    )?;
+         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(fts_query), Box::new(org_id.to_string())];
+    let mut idx = 3usize;
+    if let Some(vid) = viewer_user_id {
+        sql.push_str(&visibility_predicate("m.project_id", &format!("?{idx}")));
+        params.push(Box::new(vid.to_string()));
+        idx += 1;
+    }
+    sql.push_str(&format!(" ORDER BY rank LIMIT ?{idx}"));
+    params.push(Box::new(limit));
 
-    let rows = stmt.query_map(rusqlite::params![fts_query, org_id, limit], |row| {
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+
+    let rows = stmt.query_map(refs.as_slice(), |row| {
         let tags_str: String = row.get(6)?;
         Ok((
             row.get::<_, String>(0)?,
@@ -320,6 +407,33 @@ pub fn list_memories(
     to_date: Option<&str>,
     collection_id_filter: Option<&str>,
 ) -> Result<Vec<Memory>> {
+    list_memories_visible(
+        conn, org_id, user_id, tool, project, type_filter, scope_filter, session_id_filter,
+        limit, offset, include_archived, from_date, to_date, collection_id_filter, None,
+    )
+}
+
+/// Like [`list_memories`], but when `viewer_user_id` is `Some(uid)` the result set is
+/// restricted to memories `uid` may see (see [`visibility_predicate`]). `None` applies no
+/// project-membership restriction — for admins and internal callers only.
+#[allow(clippy::too_many_arguments)]
+pub fn list_memories_visible(
+    conn: &Connection,
+    org_id: &str,
+    user_id: Option<&str>,
+    tool: Option<&str>,
+    project: Option<&str>,
+    type_filter: Option<&str>,
+    scope_filter: Option<&str>,
+    session_id_filter: Option<&str>,
+    limit: i64,
+    offset: i64,
+    include_archived: bool,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+    collection_id_filter: Option<&str>,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Memory>> {
     let mut sql = String::from(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
@@ -377,6 +491,11 @@ pub fn list_memories(
     if let Some(cid) = collection_id_filter {
         sql.push_str(&format!(" AND collection_id = ?{param_idx}"));
         extra_params.push(cid.to_string());
+        param_idx += 1;
+    }
+    if let Some(vid) = viewer_user_id {
+        sql.push_str(&visibility_predicate("project_id", &format!("?{param_idx}")));
+        extra_params.push(vid.to_string());
         param_idx += 1;
     }
     sql.push_str(&format!(
@@ -475,6 +594,31 @@ pub fn count_memories(
     to_date: Option<&str>,
     collection_id_filter: Option<&str>,
 ) -> Result<i64> {
+    count_memories_visible(
+        conn, org_id, user_id, tool, project, type_filter, scope_filter, session_id_filter,
+        include_archived, from_date, to_date, collection_id_filter, None,
+    )
+}
+
+/// Like [`count_memories`], but restricts the count to memories `viewer_user_id` may see
+/// when it is `Some(uid)` (see [`visibility_predicate`]). Kept in lockstep with
+/// [`list_memories_visible`] so page totals match the rows returned.
+#[allow(clippy::too_many_arguments)]
+pub fn count_memories_visible(
+    conn: &Connection,
+    org_id: &str,
+    user_id: Option<&str>,
+    tool: Option<&str>,
+    project: Option<&str>,
+    type_filter: Option<&str>,
+    scope_filter: Option<&str>,
+    session_id_filter: Option<&str>,
+    include_archived: bool,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+    collection_id_filter: Option<&str>,
+    viewer_user_id: Option<&str>,
+) -> Result<i64> {
     let mut sql = String::from("SELECT COUNT(*) FROM memories WHERE org_id = ?1");
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
@@ -525,6 +669,11 @@ pub fn count_memories(
     if let Some(cid) = collection_id_filter {
         sql.push_str(&format!(" AND collection_id = ?{param_idx}"));
         extra_params.push(cid.to_string());
+        param_idx += 1;
+    }
+    if let Some(vid) = viewer_user_id {
+        sql.push_str(&visibility_predicate("project_id", &format!("?{param_idx}")));
+        extra_params.push(vid.to_string());
         param_idx += 1;
     }
     let _ = param_idx;
@@ -1587,8 +1736,16 @@ pub fn upsert_memory(
     user_id: &str,
     req: &StoreMemoryRequest,
 ) -> Result<Memory> {
-    let project = req.project.as_deref().unwrap_or("default");
-    let project_id = get_or_create_project(conn, org_id, project)?;
+    let project = req.project.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("default");
+    // Block implicit project creation: an explicit project name that does not already
+    // exist is rejected — an admin must create it first via the project API (which does
+    // not auto-enroll members). Absent/empty/"default" is the org-shared bucket
+    // (project_id NULL): never creates a project row and never enrolls anyone.
+    let project_id: Option<String> = match find_project_id(conn, org_id, project)? {
+        Some(id) => Some(id),
+        None if project == "default" => None,
+        None => anyhow::bail!("project_not_found:{project}"),
+    };
     let tags_json = serde_json::to_string(req.tags.as_deref().unwrap_or(&[]))?;
     let scope = req.scope.as_deref().unwrap_or("project");
     let normalized_hash = compute_normalized_hash(&req.content);
@@ -1632,7 +1789,7 @@ pub fn upsert_memory(
                     session_id: req.session_id.clone(),
                     revision_count: new_revision,
                     normalized_hash: Some(normalized_hash),
-                    project_id: Some(project_id),
+                    project_id: project_id.clone(),
                     archived_at: None,
                     pinned: false,
                     collection_id: None,
@@ -1677,7 +1834,7 @@ pub fn upsert_memory(
         session_id: req.session_id.clone(),
         revision_count: 1,
         normalized_hash: Some(normalized_hash),
-        project_id: Some(project_id),
+        project_id,
         archived_at: None,
         pinned: false,
         collection_id: None,
@@ -1798,18 +1955,68 @@ pub fn get_session(conn: &Connection, org_id: &str, session_id: &str) -> Result<
 
 /// Lists all sessions for an org, with their memory count, ordered by started_at DESC.
 pub fn list_sessions(conn: &Connection, org_id: &str) -> Result<Vec<SessionWithCount>> {
-    let mut stmt = conn.prepare(
+    list_sessions_visible(conn, org_id, None)
+}
+
+/// Returns `true` if a viewer may see a session/memory whose project NAME is `project`.
+///
+/// Admins (`viewer_user_id = None`) always may. Non-admins may when the project name has no
+/// registered `projects` row (org-shared / legacy, mirrors the `project_id IS NULL` case for
+/// memories) OR when the viewer is a `project_members` row for that project. Used by
+/// session read paths, which key projects by name rather than id.
+pub fn user_can_view_project_name(
+    conn: &Connection,
+    org_id: &str,
+    project: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<bool> {
+    let Some(vid) = viewer_user_id else { return Ok(true) };
+    let visible: i64 = conn.query_row(
+        "SELECT CASE
+                  WHEN NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = ?1 AND p.name = ?2) THEN 1
+                  WHEN EXISTS (
+                      SELECT 1 FROM projects p
+                      JOIN project_members pm ON pm.project_id = p.id
+                      WHERE p.org_id = ?1 AND p.name = ?2 AND pm.user_id = ?3
+                  ) THEN 1
+                  ELSE 0
+                END",
+        rusqlite::params![org_id, project, vid],
+        |row| row.get(0),
+    )?;
+    Ok(visible != 0)
+}
+
+/// Like [`list_sessions`], but when `viewer_user_id` is `Some(uid)` restricts results to
+/// sessions `uid` may see: sessions of projects they belong to, plus project-less
+/// (org-shared / unregistered-project) sessions. `None` = no restriction (admin).
+pub fn list_sessions_visible(conn: &Connection, org_id: &str, viewer_user_id: Option<&str>) -> Result<Vec<SessionWithCount>> {
+    let mut sql = String::from(
         "SELECT s.id, s.org_id, s.name, s.project, s.directory, s.started_at, s.ended_at, s.summary,
                 COUNT(m.id) as memory_count
          FROM sessions s
          LEFT JOIN memories m ON m.session_id = s.id AND m.org_id = s.org_id
-         WHERE s.org_id = ?1
-         GROUP BY s.id
-         ORDER BY s.started_at DESC
-         LIMIT 100",
-    )?;
+         WHERE s.org_id = ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(vid) = viewer_user_id {
+        sql.push_str(
+            " AND (
+                NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = ?1 AND p.name = s.project)
+                OR EXISTS (
+                    SELECT 1 FROM projects p
+                    JOIN project_members pm ON pm.project_id = p.id
+                    WHERE p.org_id = ?1 AND p.name = s.project AND pm.user_id = ?2
+                )
+            )",
+        );
+        params.push(Box::new(vid.to_string()));
+    }
+    sql.push_str(" GROUP BY s.id ORDER BY s.started_at DESC LIMIT 100");
 
-    let rows = stmt.query_map(rusqlite::params![org_id], |row| {
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
         Ok(SessionWithCount {
             id: row.get(0)?,
             org_id: row.get(1)?,
@@ -2010,6 +2217,19 @@ pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(St
 /// Fetch memories by a list of IDs, preserving the order of `ids`.
 /// Scoped to `org_id` for safety.
 pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> Result<Vec<Memory>> {
+    get_memories_by_ids_visible(conn, org_id, ids, None)
+}
+
+/// Like [`get_memories_by_ids`], but when `viewer_user_id` is `Some(uid)` drops any id the
+/// user may not see (see [`visibility_predicate`]). Used as the final authority for what
+/// semantic / hybrid search returns, so a non-visible id surfaced by ranking is filtered
+/// out here rather than leaked. `None` applies no restriction — admins / internal callers.
+pub fn get_memories_by_ids_visible(
+    conn: &Connection,
+    org_id: &str,
+    ids: &[String],
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Memory>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2020,7 +2240,7 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
         .collect::<Vec<_>>()
         .join(", ");
 
-    let sql = format!(
+    let mut sql = format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
                 archived_at, pinned, collection_id, admin_note, delete_after
@@ -2028,11 +2248,21 @@ pub fn get_memories_by_ids(conn: &Connection, org_id: &str, ids: &[String]) -> R
          WHERE org_id = ?1 AND id IN ({placeholders})"
     );
 
+    // Viewer id (if any) binds to the next placeholder after org_id + all ids.
+    let viewer_owned = viewer_user_id.map(|v| v.to_string());
+    if viewer_owned.is_some() {
+        let idx = ids.len() + 2;
+        sql.push_str(&visibility_predicate("project_id", &format!("?{idx}")));
+    }
+
     let mut stmt = conn.prepare(&sql)?;
 
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&org_id as &dyn rusqlite::ToSql];
     for id in ids.iter() {
         params.push(id as &dyn rusqlite::ToSql);
+    }
+    if let Some(ref v) = viewer_owned {
+        params.push(v as &dyn rusqlite::ToSql);
     }
 
     let rows = stmt.query_map(params.as_slice(), |row| {
@@ -2363,6 +2593,22 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             Ok(permissions)
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(vec![]),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Returns the id of an existing project by (org_id, name), or `None` if it does not
+/// exist. Unlike [`get_or_create_project`], this never inserts a project row and never
+/// enrolls members — it is the read-only lookup used by write paths that must reject
+/// (rather than silently create) unknown project names.
+pub fn find_project_id(conn: &Connection, org_id: &str, name: &str) -> Result<Option<String>> {
+    match conn.query_row(
+        "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, name],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
@@ -2898,7 +3144,8 @@ pub fn list_all_users(conn: &Connection) -> Result<Vec<User>> {
         Ok(User {
             id: r.get(0)?,
             org_id: r.get(1)?,
-            email: r.get(2)?,
+            // email may be NULL for some seeded users — mirror list_users and default to "".
+            email: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
             name: r.get(3)?,
             role: r.get(4)?,
             status: r.get(5)?,
@@ -4415,6 +4662,24 @@ mod tests {
     }
 
     #[test]
+    fn list_all_users_tolerates_null_email() {
+        // Regression: GET /internal/users 500'd when a seeded user had a NULL email,
+        // because list_all_users read `email` as a non-optional String. The per-org
+        // list_users already treats email as Option; list_all_users must match.
+        let conn = setup();
+        let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES ('u-null', ?1, NULL, 'No Email', 'member', 'active', datetime('now'))",
+            rusqlite::params![org.id],
+        ).unwrap();
+
+        let users = list_all_users(&conn).expect("list_all_users must not error on NULL email");
+        let null_user = users.iter().find(|u| u.id == "u-null").expect("user with NULL email must be returned");
+        assert_eq!(null_user.email, "", "NULL email must deserialize to empty string");
+    }
+
+    #[test]
     fn get_memory_owner_returns_user_id_when_found() {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
@@ -4476,6 +4741,50 @@ mod tests {
         let conn = setup();
         let result = validate_api_key(&conn, "deadbeef").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn new_org_gets_default_project_enrolling_only_admin() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        let pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME)
+            .unwrap()
+            .expect("bootstrap must create the default project");
+        let members = list_project_members(&conn, &org.id, &pid).unwrap();
+        assert_eq!(members.len(), 1, "only the initial admin is enrolled at bootstrap");
+        assert_eq!(members[0].user_id, admin.id);
+
+        // A later user is NOT auto-enrolled in the default project (needs explicit invite).
+        let (member, _) = invite_user(&conn, &org.id, "m@acme.com", "M", "member").unwrap();
+        let members_after = list_project_members(&conn, &org.id, &pid).unwrap();
+        assert!(
+            !members_after.iter().any(|m| m.user_id == member.id),
+            "an invited member must not be auto-enrolled in the default project"
+        );
+    }
+
+    #[test]
+    fn ensure_default_projects_backfills_legacy_org_idempotently() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+        // Simulate a legacy org created before default-project onboarding existed.
+        let pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME).unwrap().unwrap();
+        conn.execute("DELETE FROM project_members WHERE project_id = ?1", [&pid]).unwrap();
+        conn.execute("DELETE FROM projects WHERE id = ?1", [&pid]).unwrap();
+        assert!(find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME).unwrap().is_none());
+
+        let created = ensure_default_projects(&conn).unwrap();
+        assert_eq!(created, 1, "backfill must create the missing default project");
+        let new_pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME)
+            .unwrap()
+            .expect("backfill must create the default project");
+        let members = list_project_members(&conn, &org.id, &new_pid).unwrap();
+        assert!(members.iter().any(|m| m.user_id == admin.id), "backfill must enrol the org admin");
+
+        // Idempotent: a second run is a no-op.
+        assert_eq!(ensure_default_projects(&conn).unwrap(), 0, "backfill must be idempotent");
     }
 
     #[test]
@@ -4908,7 +5217,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "initial content".into(),
             tags: None,
@@ -4931,7 +5240,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req1 = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "first content".into(),
             tags: None,
@@ -4945,7 +5254,7 @@ mod tests {
         assert_eq!(mem1.revision_count, 1);
 
         let req2 = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "updated content".into(),
             tags: None,
@@ -4985,7 +5294,7 @@ mod tests {
         ).unwrap();
 
         let req = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "org1 content".into(),
             tags: None,
@@ -4997,7 +5306,7 @@ mod tests {
         };
 
         let req2 = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "org2 content".into(),
             tags: None,
@@ -5022,7 +5331,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "same content".into(),
             tags: None,
@@ -5048,7 +5357,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req_a = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "  Hello World  ".into(),
             tags: None,
@@ -5059,7 +5368,7 @@ mod tests {
             session_id: None,
         };
         let req_b = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "hello world".into(),
             tags: None,
@@ -5154,7 +5463,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req_bugfix = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "fixed null pointer".into(),
             tags: None,
@@ -5165,7 +5474,7 @@ mod tests {
             session_id: None,
         };
         let req_decision = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "use hexagonal arch".into(),
             tags: None,
@@ -5190,7 +5499,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let req_personal = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "personal preference".into(),
             tags: None,
@@ -5201,7 +5510,7 @@ mod tests {
             session_id: None,
         };
         let req_project = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()),
+            project: None,
             tool: "claude".into(),
             content: "project convention".into(),
             tags: None,
@@ -5237,12 +5546,12 @@ mod tests {
         ).unwrap();
 
         let req_with_session = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "session memory".into(),
+            project: None, tool: "claude".into(), content: "session memory".into(),
             tags: None, title: None, memory_type: None, scope: None, topic_key: None,
             session_id: Some(session_id.into()),
         };
         let req_without_session = crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "other memory".into(),
+            project: None, tool: "claude".into(), content: "other memory".into(),
             tags: None, title: None, memory_type: None, scope: None, topic_key: None,
             session_id: None,
         };
@@ -5261,19 +5570,19 @@ mod tests {
 
         // bugfix+project
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "c1".into(),
+            project: None, tool: "claude".into(), content: "c1".into(),
             tags: None, title: None, memory_type: Some("bugfix".into()),
             scope: Some("project".into()), topic_key: None, session_id: None,
         }).unwrap();
         // bugfix+personal
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "c2".into(),
+            project: None, tool: "claude".into(), content: "c2".into(),
             tags: None, title: None, memory_type: Some("bugfix".into()),
             scope: Some("personal".into()), topic_key: None, session_id: None,
         }).unwrap();
         // decision+project
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "c3".into(),
+            project: None, tool: "claude".into(), content: "c3".into(),
             tags: None, title: None, memory_type: Some("decision".into()),
             scope: Some("project".into()), topic_key: None, session_id: None,
         }).unwrap();
@@ -5288,7 +5597,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(), content: "content".into(),
+            project: None, tool: "claude".into(), content: "content".into(),
             tags: None, title: None, memory_type: Some("bugfix".into()),
             scope: None, topic_key: None, session_id: None,
         }).unwrap();
@@ -5305,7 +5614,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(),
+            project: None, tool: "claude".into(),
             content: "unrelated content".into(),
             tags: None, title: Some("JWT auth middleware".into()),
             memory_type: None, scope: None, topic_key: None, session_id: None,
@@ -5322,7 +5631,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: Some("proj".into()), tool: "claude".into(),
+            project: None, tool: "claude".into(),
             content: "unrelated".into(),
             tags: None, title: Some("Unrelated title".into()),
             memory_type: Some("bugfix".into()), scope: None, topic_key: None, session_id: None,
@@ -5345,6 +5654,11 @@ mod tests {
         content: &str,
         tags: &[String],
     ) -> Memory {
+        // Implicit project creation is disabled in upsert_memory, so ensure the project
+        // exists first (test scaffolding — production requires an admin to create it).
+        if project != "default" {
+            get_or_create_project(conn, org_id, project).unwrap();
+        }
         let req = crate::models::types::StoreMemoryRequest {
             project: Some(project.to_string()),
             tool: tool.to_string(),
@@ -6099,6 +6413,7 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         // Insert 2 bugfix + 1 decision
+        get_or_create_project(&conn, &org.id, "p").unwrap();
         for i in 0..2 {
             upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
                 project: Some("p".into()),
@@ -6140,6 +6455,8 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
+        get_or_create_project(&conn, &org.id, "proj-a").unwrap();
+        get_or_create_project(&conn, &org.id, "proj-b").unwrap();
         upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
             project: Some("proj-a".into()),
             tool: "claude".into(),
@@ -6191,6 +6508,8 @@ mod tests {
             rusqlite::params![user_b_id, org_b_id],
         ).unwrap();
 
+        get_or_create_project(&conn, &org_a.id, "proj-a").unwrap();
+        get_or_create_project(&conn, &org_b_id, "proj-b").unwrap();
         upsert_memory(&conn, &org_a.id, &user_a.id, &StoreMemoryRequest {
             project: Some("proj-a".into()),
             tool: "claude".into(), content: "a content".into(),
@@ -6532,6 +6851,7 @@ mod tests {
     fn trends_single_memory_appears_in_all_buckets() {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        get_or_create_project(&conn, &org.id, "myproject").unwrap();
         let req = crate::models::types::StoreMemoryRequest {
             project: Some("myproject".to_string()),
             tool: "claude".to_string(),
@@ -6562,6 +6882,8 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
+        get_or_create_project(&conn, &org.id, "proj-a").unwrap();
+        get_or_create_project(&conn, &org.id, "proj-b").unwrap();
         for (project, mem_type, content) in &[
             ("proj-a", "decision", "content a1"),
             ("proj-a", "bugfix", "content a2"),
@@ -6612,6 +6934,7 @@ mod tests {
         ).unwrap();
 
         // Insert a memory from today
+        get_or_create_project(&conn, &org.id, "new-project").unwrap();
         let req = crate::models::types::StoreMemoryRequest {
             project: Some("new-project".to_string()),
             tool: "test".to_string(),

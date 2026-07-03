@@ -54,6 +54,11 @@ fn legacy_store(
     content: &str,
     tags: &[String],
 ) -> Memory {
+    // Implicit project creation is disabled in upsert_memory; ensure the project exists
+    // first (test scaffolding — production requires an admin to create it).
+    if project != "default" {
+        queries::get_or_create_project(conn, org_id, project).unwrap();
+    }
     let req = StoreMemoryRequest {
         project: Some(project.to_string()),
         tool: tool.to_string(),
@@ -254,7 +259,7 @@ fn full_v2_request_persists_all_fields() {
     let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
     let req = nexusmind::models::types::StoreMemoryRequest {
-        project: Some("nexusmind".into()),
+        project: None,
         tool: "claude".into(),
         content: "v2 content".into(),
         tags: Some(vec!["rust".into()]),
@@ -281,7 +286,7 @@ fn upsert_on_topic_key_increments_revision() {
     let (org, user, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
     let req1 = nexusmind::models::types::StoreMemoryRequest {
-        project: Some("proj".into()),
+        project: None,
         tool: "claude".into(),
         content: "first version".into(),
         tags: None,
@@ -295,7 +300,7 @@ fn upsert_on_topic_key_increments_revision() {
     assert_eq!(mem1.revision_count, 1);
 
     let req2 = nexusmind::models::types::StoreMemoryRequest {
-        project: Some("proj".into()),
+        project: None,
         tool: "claude".into(),
         content: "second version".into(),
         tags: None,
@@ -409,10 +414,10 @@ fn project_role_overrides_integration() {
     let p_id = queries::get_or_create_project(&conn, &org.id, "payments").unwrap();
     assert!(!p_id.is_empty());
 
-    // Verify it is in list_projects
+    // Verify it is in list_projects (alongside the auto-created default "nexus-mind" project).
     let projects = queries::list_projects(&conn, &org.id).unwrap();
-    assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].name, "payments");
+    assert!(projects.iter().any(|p| p.name == "payments"), "payments project must be listed");
+    assert!(projects.iter().any(|p| p.name == queries::DEFAULT_PROJECT_NAME), "default project must exist");
 
     // 2. Invite a viewer user
     let (dev, dev_key) = queries::invite_user(&conn, &org.id, "dev@acme.com", "Dev", "viewer").unwrap();

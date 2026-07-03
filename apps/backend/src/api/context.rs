@@ -30,6 +30,16 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     )
 }
 
+/// Project-membership visibility scope: admins see all org memories (`None`),
+/// non-admins are restricted to memories they may see (`Some(user_id)`).
+fn viewer_scope(auth: &AuthContext) -> Option<&str> {
+    if auth.role.is_admin() {
+        None
+    } else {
+        Some(&auth.user_id)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ContextParams {
     /// When true, embedded memories use the compact `MemoryPreview` shape
@@ -115,11 +125,13 @@ pub async fn get_global_context(
 
     require_permission(&conn, &auth, None, "memory:read")?;
 
-    let memories = db_queries::list_memories(
+    let viewer = viewer_scope(&auth);
+    let memories = db_queries::list_memories_visible(
         &conn,
         &auth.org_id,
         None, None, None, None, None, None,
         20, 0, false, None, None, None,
+        viewer,
     )
     .map_err(db_err)?;
 
@@ -170,11 +182,13 @@ pub async fn get_type_context(
 
     require_permission(&conn, &auth, None, "memory:read")?;
 
-    let memories = db_queries::list_memories(
+    let viewer = viewer_scope(&auth);
+    let memories = db_queries::list_memories_visible(
         &conn,
         &auth.org_id,
         None, None, None, Some(&memory_type), None, None,
         20, 0, false, None, None, None,
+        viewer,
     )
     .map_err(db_err)?;
 
@@ -200,11 +214,13 @@ pub async fn get_session_context(
 
     require_permission(&conn, &auth, None, "memory:read")?;
 
-    let memories = db_queries::list_memories(
+    let viewer = viewer_scope(&auth);
+    let memories = db_queries::list_memories_visible(
         &conn,
         &auth.org_id,
         None, None, None, None, None, Some(&session_id),
         20, 0, false, None, None, None,
+        viewer,
     )
     .map_err(db_err)?;
 
@@ -267,6 +283,69 @@ mod tests {
 
     // ── T-06 tests ────────────────────────────────────────────────────────────
 
+    fn create_member_with_id(store: &SqliteStore, org_id: &str) -> (String, String) {
+        use crate::auth::api_keys;
+        use uuid::Uuid;
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, ?3, 'Test', 'member', 'active', datetime('now'))",
+            rusqlite::params![user_id, org_id, format!("{}-member@test.com", &user_id[..8])],
+        ).unwrap();
+        let key_id = Uuid::new_v4().to_string();
+        let (raw_key, key_hash) = api_keys::generate();
+        conn.execute(
+            "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+            rusqlite::params![key_id, user_id, org_id, key_hash],
+        ).unwrap();
+        (raw_key, user_id)
+    }
+
+    /// Non-admins must not see a non-member project's memory via GET /v1/context (global).
+    #[tokio::test]
+    async fn global_context_hides_non_member_project_memories() {
+        let (store, _admin_key, org_id) = bootstrap_store();
+
+        // Seed the secret memory (creating proj-secret) BEFORE the member exists, so the
+        // member is not auto-enrolled by get_or_create_project.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let admin_id: String = conn
+                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", rusqlite::params![org_id], |r| r.get(0))
+                .unwrap();
+            // create_project does NOT auto-enroll members, so the member (created below)
+            // is never a member of proj-secret.
+            q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
+            q::upsert_memory(&conn, &org_id, &admin_id, &crate::models::types::StoreMemoryRequest {
+                project: Some("proj-secret".to_string()),
+                tool: "claude".to_string(),
+                content: "SECRETALPHA in context".to_string(),
+                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+            }).unwrap();
+        }
+
+        let (member_key, _member_id) = create_member_with_id(&store, &org_id);
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/context")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = std::str::from_utf8(&bytes).unwrap();
+        assert!(!body.contains("SECRETALPHA"), "global context must not leak a non-member project's memory");
+    }
+
     #[tokio::test]
     async fn get_project_context_returns_correct_shape() {
         let (store, admin_key, org_id) = bootstrap_store();
@@ -316,6 +395,7 @@ mod tests {
                 rusqlite::params![org_id],
                 |r| r.get::<_, String>(0),
             ).unwrap();
+            q::get_or_create_project(&conn, &org_id, "nexusmind").unwrap();
             q::upsert_memory(&conn, &org_id, &user_id, &crate::models::types::StoreMemoryRequest {
                 project: Some("nexusmind".to_string()),
                 tool: tool.to_string(),
@@ -409,6 +489,7 @@ mod tests {
                 rusqlite::params![org_id_a],
                 |r| r.get::<_, String>(0),
             ).unwrap();
+            q::get_or_create_project(&conn, &org_id_a, "shared").unwrap();
             q::upsert_memory(&conn, &org_id_a, &user_id, &crate::models::types::StoreMemoryRequest {
                 project: Some("shared".to_string()),
                 tool: "claude".to_string(),
@@ -535,6 +616,7 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
+            q::get_or_create_project(&conn, &org_id, "proj-compact").unwrap();
             q::upsert_memory(&conn, &org_id, &{
                 conn.query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", rusqlite::params![org_id], |r| r.get::<_, String>(0)).unwrap()
             }, &crate::models::types::StoreMemoryRequest {
@@ -607,6 +689,7 @@ mod tests {
                 rusqlite::params![org_id],
                 |r| r.get::<_, String>(0),
             ).unwrap();
+            q::get_or_create_project(&conn, &org_id, "global-compact").unwrap();
             for tool in ["claude", "cursor", "claude"] {
                 q::upsert_memory(&conn, &org_id, &user_id, &crate::models::types::StoreMemoryRequest {
                     project: Some("global-compact".to_string()),

@@ -168,6 +168,17 @@ fn lookup_plan(conn: &Arc<Mutex<Connection>>, org_id: &str) -> String {
     .unwrap_or_else(|_| "free".to_string())
 }
 
+// ── Exempt paths ──────────────────────────────────────────────────────────────
+
+/// Authenticated paths that must never be rate-limited. A 429 on the session
+/// bootstrap (`/v1/admin/auth/me`) makes the frontend treat the session as invalid
+/// and logs the user out — so a burst of dashboard navigation could sign an admin
+/// out. These endpoints are already gated by valid auth and are cheap, so exempting
+/// them removes the logout failure mode without weakening tenant limits on real work.
+const RATE_LIMIT_EXEMPT_PATHS: &[&str] = &[
+    "/v1/admin/auth/me",
+];
+
 // ── Middleware function ───────────────────────────────────────────────────────
 
 /// Axum `from_fn_with_state` middleware that enforces per-user token-bucket rate
@@ -184,6 +195,12 @@ pub async fn rate_limit(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, axum::http::HeaderMap, Json<ApiError>)> {
+    // Session-bootstrap and other exempt paths bypass the limiter entirely so a
+    // throttle can never log the user out (see RATE_LIMIT_EXEMPT_PATHS).
+    if RATE_LIMIT_EXEMPT_PATHS.contains(&req.uri().path()) {
+        return Ok(next.run(req).await);
+    }
+
     let now = Instant::now();
     let user_key = auth.user_id.clone();
 
@@ -292,6 +309,7 @@ mod tests {
         let rate_state = RateLimitState::new(store.conn());
         Router::new()
             .route("/v1/test", get(|| async { "ok" }))
+            .route("/v1/admin/auth/me", get(|| async { "me" }))
             .layer(middleware::from_fn_with_state(
                 rate_state,
                 super::rate_limit,
@@ -299,6 +317,45 @@ mod tests {
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
+    }
+
+    /// The auth/session bootstrap path must never be rate-limited: a 429 there logs
+    /// the user out of the frontend. Even after the user's shared bucket is drained,
+    /// GET /v1/admin/auth/me must still succeed.
+    #[tokio::test]
+    async fn auth_me_bootstrap_is_exempt_from_rate_limit() {
+        let store = make_store();
+        let api_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            key
+        };
+        let app = app_with_rate_limit(store);
+
+        // Drain the free-tier bucket (100) via a non-exempt path.
+        for _ in 0..100 {
+            let _ = app.clone().oneshot(
+                Request::builder().uri("/v1/test")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty()).unwrap(),
+            ).await.unwrap();
+        }
+        // Non-exempt path is now throttled.
+        let throttled = app.clone().oneshot(
+            Request::builder().uri("/v1/test")
+                .header("Authorization", format!("Bearer {api_key}"))
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS, "non-exempt path must be throttled once drained");
+
+        // The auth bootstrap path must STILL succeed — no logout.
+        let me = app.clone().oneshot(
+            Request::builder().uri("/v1/admin/auth/me")
+                .header("Authorization", format!("Bearer {api_key}"))
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(me.status(), StatusCode::OK, "auth/me bootstrap must be exempt from rate limiting");
     }
 
     // ── Unit tests for Bucket logic ──────────────────────────────────────────

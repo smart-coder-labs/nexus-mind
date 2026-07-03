@@ -104,7 +104,7 @@ impl MemoryStore for SqliteStore {
         Ok(memory)
     }
 
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>> {
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
         // Resolve effective mode: downgrade to Keyword if no embed service.
         let effective_mode = if self.will_degrade(mode) {
             tracing::debug!("No embed service — falling back to Keyword search");
@@ -116,10 +116,10 @@ impl MemoryStore for SqliteStore {
         let memories = match effective_mode {
             SearchMode::Keyword => {
                 let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                queries::search_memories(&conn, org_id, query, limit)?
+                queries::search_memories_visible(&conn, org_id, query, limit, viewer_user_id)?
             }
-            SearchMode::Semantic => self.search_semantic(org_id, query, limit)?,
-            SearchMode::Hybrid   => self.search_hybrid(org_id, query, limit)?,
+            SearchMode::Semantic => self.search_semantic(org_id, query, limit, viewer_user_id)?,
+            SearchMode::Hybrid   => self.search_hybrid(org_id, query, limit, viewer_user_id)?,
         };
 
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
@@ -138,7 +138,7 @@ impl MemoryStore for SqliteStore {
 
     fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<MemoryPage> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        let total = queries::count_memories(
+        let total = queries::count_memories_visible(
             &conn,
             org_id,
             filters.user_id,
@@ -151,8 +151,9 @@ impl MemoryStore for SqliteStore {
             filters.from_date,
             filters.to_date,
             filters.collection_id,
+            filters.viewer_user_id,
         )?;
-        let memories = queries::list_memories(
+        let memories = queries::list_memories_visible(
             &conn,
             org_id,
             filters.user_id,
@@ -167,6 +168,7 @@ impl MemoryStore for SqliteStore {
             filters.from_date,
             filters.to_date,
             filters.collection_id,
+            filters.viewer_user_id,
         )?;
         Ok(MemoryPage {
             memories,
@@ -278,7 +280,7 @@ impl MemoryStore for SqliteStore {
 
 impl SqliteStore {
     /// Pure semantic search: embed the query, cosine-rank all org embeddings, return top-K.
-    fn search_semantic(&self, org_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>> {
+    fn search_semantic(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
         let q_vec = svc.embed_one(query)?;
 
@@ -301,11 +303,11 @@ impl SqliteStore {
 
         let ids: Vec<String> = scored.into_iter().map(|(id, _)| id).collect();
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        queries::get_memories_by_ids(&conn, org_id, &ids)
+        queries::get_memories_by_ids_visible(&conn, org_id, &ids, viewer_user_id)
     }
 
     /// Hybrid search: merge FTS5 ranks and cosine ranks via Reciprocal Rank Fusion (k=60).
-    fn search_hybrid(&self, org_id: &str, query: &str, limit: i64) -> Result<Vec<Memory>> {
+    fn search_hybrid(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
         let q_vec = svc.embed_one(query)?;
 
@@ -355,7 +357,7 @@ impl SqliteStore {
 
         let ids: Vec<String> = ranked.into_iter().map(|(id, _)| id).collect();
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        queries::get_memories_by_ids(&conn, org_id, &ids)
+        queries::get_memories_by_ids_visible(&conn, org_id, &ids, viewer_user_id)
     }
 }
 
@@ -382,7 +384,9 @@ mod tests {
 
     fn req(content: &str) -> StoreMemoryRequest {
         StoreMemoryRequest {
-            project: Some("proj".into()),
+            // No explicit project → org-shared (default). Implicit project creation is
+            // disabled, so tests that don't care about the project use the default bucket.
+            project: None,
             tool: "claude".into(),
             content: content.into(),
             tags: None,
@@ -407,7 +411,7 @@ mod tests {
         let (store, org_id, user_id) = make_store();
         store.store(&org_id, &user_id, &req("use snake_case")).unwrap();
         store.store(&org_id, &user_id, &req("unrelated content")).unwrap();
-        let results = store.search(&org_id, &user_id, "snake_case", 10, SearchMode::Keyword).unwrap();
+        let results = store.search(&org_id, &user_id, "snake_case", 10, SearchMode::Keyword, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -419,7 +423,7 @@ mod tests {
         let filters = MemoryFilters {
             user_id: None, tool: None, project: None,
             memory_type: None, scope: None, session_id: None, limit: 50, offset: 0, include_archived: false,
-            from_date: None, to_date: None, collection_id: None,
+            from_date: None, to_date: None, collection_id: None, viewer_user_id: None,
         };
         let page = store.list(&org_id, &filters).unwrap();
         assert_eq!(page.memories.len(), 2);

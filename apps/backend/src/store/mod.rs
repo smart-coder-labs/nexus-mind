@@ -24,6 +24,10 @@ pub struct MemoryFilters<'a> {
     pub to_date:          Option<&'a str>,
     /// When set, only memories belonging to this collection are returned.
     pub collection_id:    Option<&'a str>,
+    /// Project-membership visibility scope. When `Some(user_id)`, results are restricted
+    /// to memories that user may see (projects they belong to, plus project-less/org-shared
+    /// memories). `None` = no restriction — for admins and internal callers only.
+    pub viewer_user_id:   Option<&'a str>,
 }
 
 /// Controls how the `search` method retrieves memories.
@@ -62,7 +66,9 @@ pub trait MemoryStore: Send + Sync {
     /// Search memories using the given mode. Implementations that lack an embed service
     /// should silently fall back to `Keyword` for `Semantic` and `Hybrid` modes.
     /// Implementations should write a `search` audit event.
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode) -> Result<Vec<Memory>>;
+    /// `viewer_user_id` restricts results to memories that user may see (see
+    /// [`MemoryFilters::viewer_user_id`]); pass `None` for admins / internal callers.
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>) -> Result<Vec<Memory>>;
 
     /// List memories with optional filters. Returns a pagination envelope.
     fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<MemoryPage>;

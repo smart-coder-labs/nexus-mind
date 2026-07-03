@@ -16,6 +16,17 @@ use crate::{
 const EXPORT_HARD_CAP: i64 = 10_000;
 const MAX_CONTENT_BYTES: usize = 65_536; // 64 KiB
 
+/// Project-membership visibility scope for read paths: admins see all org memories
+/// (`None`), non-admins are restricted to memories they may see (`Some(user_id)`).
+/// See `db::queries::visibility_predicate`.
+fn viewer_scope(auth: &AuthContext) -> Option<&str> {
+    if auth.role.is_admin() {
+        None
+    } else {
+        Some(&auth.user_id)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ExportParams {
     #[serde(default = "default_csv")]
@@ -109,6 +120,7 @@ pub async fn export(
         from_date: None,
         to_date: None,
         collection_id: None,
+        viewer_user_id: viewer_scope(&auth),
     };
     let page = store.list(&auth.org_id, &filters).map_err(store_err)?;
     let memories = page.memories;
@@ -211,6 +223,17 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
             Json(ApiError {
                 error: msg.replacen("invalid_session_id:", "session_id '", 1) + "' not found for this org",
                 code: "invalid_session_id".to_string(),
+            }),
+        );
+    }
+    if let Some(name) = msg.strip_prefix("project_not_found:") {
+        // Implicit project creation is disabled: an admin must create the project first
+        // via the project API, then add members explicitly.
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("project '{name}' does not exist — an admin must create it first"),
+                code: "project_not_found".to_string(),
             }),
         );
     }
@@ -362,7 +385,7 @@ pub async fn search(
         None
     };
     let mut memories = store
-        .search(&auth.org_id, &auth.user_id, &input.query, limit, mode)
+        .search(&auth.org_id, &auth.user_id, &input.query, limit, mode, viewer_scope(&auth))
         .map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
     if !auth.role.is_admin() {
@@ -478,6 +501,7 @@ pub async fn list(
         from_date: params.from_date.as_deref(),
         to_date: params.to_date.as_deref(),
         collection_id: params.collection_id.as_deref(),
+        viewer_user_id: viewer_scope(&auth),
     };
     let mut page = store.list(&auth.org_id, &filters).map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
@@ -1058,6 +1082,244 @@ mod tests {
             rusqlite::params![key_id, user_id, org_id, key_hash],
         ).unwrap();
         raw_key
+    }
+
+    /// Creates a user with the given role, returns (raw_key, user_id).
+    fn create_test_user_with_id(store: &SqliteStore, org_id: &str, role: &str) -> (String, String) {
+        use crate::auth::api_keys;
+        use uuid::Uuid;
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
+            rusqlite::params![user_id, org_id, format!("{}-{role}@test.com", &user_id[..8]), role],
+        ).unwrap();
+        let key_id = Uuid::new_v4().to_string();
+        let (raw_key, key_hash) = api_keys::generate();
+        conn.execute(
+            "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+            rusqlite::params![key_id, user_id, org_id, key_hash],
+        ).unwrap();
+        (raw_key, user_id)
+    }
+
+    /// Adds `user_id` to the project named `project_name` (auto-creating the project row).
+    fn add_member_to_project(store: &SqliteStore, org_id: &str, project_name: &str, user_id: &str, role: &str) {
+        use uuid::Uuid;
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let project_id = q::get_or_create_project(&conn, org_id, project_name).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            rusqlite::params![Uuid::new_v4().to_string(), project_id, user_id, role],
+        ).unwrap();
+    }
+
+    /// Stores a memory in `project` via `key`, returns its id.
+    async fn store_in_project(store: &SqliteStore, key: &str, project: &str, content: &str) -> String {
+        let body = serde_json::json!({ "tool": "claude", "project": project, "content": content });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        mem["id"].as_str().unwrap().to_string()
+    }
+
+    /// Router exposing store + search + list + export behind auth.
+    fn app_rw(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/memory/store", post(super::store))
+            .route("/v1/memory/search", post(search))
+            .route("/v1/memory/export", get(super::export))
+            .route("/v1/memory", get(list))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    async fn list_ids(store: &SqliteStore, key: &str) -> Vec<String> {
+        let resp = app_rw(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        page["memories"].as_array().unwrap().iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    async fn search_contents(store: &SqliteStore, key: &str, query: &str) -> Vec<String> {
+        let body = serde_json::json!({ "query": query, "limit": 50 });
+        let resp = app_rw(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/search")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        page["memories"].as_array().unwrap().iter()
+            .map(|m| m["content"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// Implicit project creation is blocked: storing a memory to a project name that
+    /// does not exist must fail with 404 (not silently create the project or enroll
+    /// anyone). The default/no-project bucket is still allowed.
+    #[tokio::test]
+    async fn store_to_nonexistent_project_is_rejected_and_creates_nothing() {
+        let (store, admin_key, org_id) = setup_org();
+
+        let body = serde_json::json!({ "tool": "claude", "project": "ghost-project", "content": "x" });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "store to a nonexistent project must be 404");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"], "project_not_found");
+
+        // No project row and no memory were created.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let proj_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE org_id = ?1 AND name = 'ghost-project'",
+                rusqlite::params![org_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(proj_count, 0, "no project must be created");
+            let mem_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND project = 'ghost-project'",
+                rusqlite::params![org_id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(mem_count, 0, "no memory must be stored");
+        }
+
+        // A store with no project (org-shared default) still succeeds.
+        let ok_body = serde_json::json!({ "tool": "claude", "content": "org-shared note" });
+        let ok = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/memory/store")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(ok_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::CREATED, "no-project store must still succeed");
+    }
+
+    /// Core proof: a non-admin member sees only memories of projects they belong to,
+    /// plus project-less (org-shared) memories — never another project's memories —
+    /// via list (no project param), search, and export. Admins still see everything.
+    #[tokio::test]
+    async fn member_only_sees_member_projects_via_list_search_export() {
+        let (store, admin_key, org_id) = setup_org();
+
+        // Projects must be created explicitly (implicit creation is disabled).
+        // create_project does NOT auto-enroll members, so the member added below to
+        // proj-shared is never a member of proj-secret — the realistic
+        // "invited to specific projects only" scenario.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
+            q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap();
+        }
+        let secret_id = store_in_project(&store, &admin_key, "proj-secret", "SECRETALPHA nuclear codes").await;
+
+        let (member_key, member_id) = create_test_user_with_id(&store, &org_id, "member");
+
+        // Member's own project + explicit membership.
+        let shared_id = store_in_project(&store, &admin_key, "proj-shared", "SHAREDALPHA team notes").await;
+        add_member_to_project(&store, &org_id, "proj-shared", &member_id, "member");
+
+        // A project-less (org-shared) memory, inserted directly with project_id = NULL.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count, project_id)
+                 VALUES ('orgless-1', ?1, ?2, 'default', 'claude', 'ORGSHARED public note', '[]', datetime('now'), 'project', 1, NULL)",
+                rusqlite::params![org_id, member_id],
+            ).unwrap();
+        }
+
+        // LIST (no project param): member sees shared + org-less, NOT secret.
+        let ids = list_ids(&store, &member_key).await;
+        assert!(ids.contains(&shared_id), "member must see their project's memory");
+        assert!(ids.contains(&"orgless-1".to_string()), "member must see project-less memory");
+        assert!(!ids.contains(&secret_id), "member must NOT see a non-member project's memory via list");
+
+        // SEARCH: same visibility rule applies.
+        let secret_hits = search_contents(&store, &member_key, "SECRETALPHA").await;
+        assert!(secret_hits.is_empty(), "member must NOT find a non-member project's memory via search");
+        let shared_hits = search_contents(&store, &member_key, "SHAREDALPHA").await;
+        assert_eq!(shared_hits.len(), 1, "member must find their own project's memory via search");
+
+        // EXPORT: the export body must not contain the secret content.
+        let resp = app_rw(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/export?format=json")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = std::str::from_utf8(&bytes).unwrap();
+        assert!(!body.contains("SECRETALPHA"), "export must NOT leak a non-member project's memory");
+        assert!(body.contains("SHAREDALPHA"), "export must include the member's own project memory");
+
+        // ADMIN still sees everything (no restriction).
+        let admin_ids = list_ids(&store, &admin_key).await;
+        assert!(admin_ids.contains(&secret_id) && admin_ids.contains(&shared_id),
+            "admin must see all org memories regardless of project membership");
     }
 
     /// Stores a memory via admin key and returns its id.

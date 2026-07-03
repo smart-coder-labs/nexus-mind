@@ -235,6 +235,9 @@ pub async fn get_memory_trends_handler(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<MemoryTrends>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
     let days = params.days.unwrap_or(30).clamp(1, 365);
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
@@ -246,6 +249,9 @@ pub async fn get_tag_stats_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<NameCount>>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let tags = queries::get_tag_stats(&conn, &auth.org_id).map_err(db_err)?;
@@ -319,7 +325,22 @@ pub async fn get_org_settings_api(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let settings = queries::get_org_settings(&conn, &auth.org_id).map_err(db_err)?;
-    Ok(Json(settings))
+    // Least privilege: non-admins may read only the member-facing banner fields
+    // (announcement + logo). Org configuration — custom_instructions, retention_days,
+    // min_password_length, agent event toggles — is stripped for non-admins.
+    if auth.role.is_admin() {
+        Ok(Json(settings))
+    } else {
+        Ok(Json(OrgSettings {
+            events: Default::default(),
+            retention_days: None,
+            custom_instructions: None,
+            min_password_length: None,
+            announcement: settings.announcement,
+            announcement_type: settings.announcement_type,
+            logo_url: settings.logo_url,
+        }))
+    }
 }
 
 pub async fn update_org_settings_api(
@@ -1956,7 +1977,9 @@ mod tests {
         let protected = Router::new()
             .route("/v1/admin/stats", get(stats))
             .route("/v1/admin/stats/tags", get(get_tag_stats_handler))
+            .route("/v1/admin/stats/trends", get(get_memory_trends_handler))
             .route("/v1/admin/org", get(get_org).patch(update_org))
+            .route("/v1/admin/org/settings", get(get_org_settings_api).patch(update_org_settings_api))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
         Router::new()
@@ -2023,6 +2046,227 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Helper: create a non-admin user in the bootstrapped org and return its key.
+    fn member_key_for(store: &SqliteStore, role: &str) -> String {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let org: String = conn
+            .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let (_, key) = q::invite_user(&conn, &org, &format!("{role}@acme.com"), role, role).unwrap();
+        key
+    }
+
+    #[tokio::test]
+    async fn tag_stats_returns_200_for_admin() {
+        let (store, key) = setup_with_admin_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/tags")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn tag_stats_returns_403_for_member() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let member_key = member_key_for(&store, "member");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/tags")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn tag_stats_returns_403_for_viewer() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let viewer_key = member_key_for(&store, "viewer");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/tags")
+                    .header("Authorization", format!("Bearer {viewer_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn memory_trends_returns_200_for_admin() {
+        let (store, key) = setup_with_admin_key();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/trends")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn memory_trends_returns_403_for_member() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let member_key = member_key_for(&store, "member");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/trends")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn memory_trends_returns_403_for_viewer() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let viewer_key = member_key_for(&store, "viewer");
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/stats/trends")
+                    .header("Authorization", format!("Bearer {viewer_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    async fn patch_settings(app_store: &SqliteStore, admin_key: &str, body: serde_json::Value) {
+        let resp = app(app_store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    async fn get_settings_json(app_store: &SqliteStore, key: &str) -> serde_json::Value {
+        let resp = app(app_store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn org_settings_admin_reads_full_config() {
+        let (store, admin_key) = setup_with_admin_key();
+        patch_settings(&store, &admin_key, serde_json::json!({
+            "custom_instructions": "SECRETPROMPT",
+            "retention_days": 30,
+            "min_password_length": 12,
+            "announcement": "PUBLICBANNER",
+            "logo_url": "https://logo",
+        })).await;
+
+        let json = get_settings_json(&store, &admin_key).await;
+        assert_eq!(json["custom_instructions"], "SECRETPROMPT");
+        assert_eq!(json["retention_days"], 30);
+        assert_eq!(json["min_password_length"], 12);
+        assert_eq!(json["announcement"], "PUBLICBANNER");
+    }
+
+    #[tokio::test]
+    async fn org_settings_member_reads_only_banner_fields() {
+        let (store, admin_key) = setup_with_admin_key();
+        patch_settings(&store, &admin_key, serde_json::json!({
+            "custom_instructions": "SECRETPROMPT",
+            "retention_days": 30,
+            "min_password_length": 12,
+            "announcement": "PUBLICBANNER",
+            "announcement_type": "info",
+            "logo_url": "https://logo",
+        })).await;
+
+        let admin_json = get_settings_json(&store, &admin_key).await;
+        let member_key = member_key_for(&store, "member");
+        let json = get_settings_json(&store, &member_key).await;
+
+        // Public banner fields are visible and identical to the admin's view.
+        assert_eq!(json["announcement"], "PUBLICBANNER");
+        assert_eq!(json["announcement"], admin_json["announcement"]);
+        assert_eq!(json["logo_url"], admin_json["logo_url"]);
+        // Admin-only config is stripped for members (fields skip serialization when None)…
+        assert!(json.get("custom_instructions").is_none(), "custom_instructions must not leak to members");
+        assert!(json.get("retention_days").is_none(), "retention_days must not leak to members");
+        assert!(json.get("min_password_length").is_none(), "min_password_length must not leak to members");
+        // …while the admin genuinely has that config populated (proves it wasn't just empty).
+        assert_eq!(admin_json["custom_instructions"], "SECRETPROMPT");
+        assert_eq!(admin_json["retention_days"], 30);
+    }
+
+    #[tokio::test]
+    async fn org_settings_update_still_admin_only() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let member_key = member_key_for(&store, "member");
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "custom_instructions": "x" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
@@ -2181,7 +2425,7 @@ mod tests {
                 .unwrap();
 
             q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: Some("p1".to_string()),
+                project: None,
                 tool: "test".to_string(),
                 content: "memory one".to_string(),
                 tags: Some(vec!["rust".to_string(), "backend".to_string()]),
@@ -2193,7 +2437,7 @@ mod tests {
             }).unwrap();
 
             q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: Some("p1".to_string()),
+                project: None,
                 tool: "test".to_string(),
                 content: "memory two".to_string(),
                 tags: Some(vec!["rust".to_string(), "frontend".to_string()]),
@@ -2360,7 +2604,7 @@ mod tests {
         let body = serde_json::json!({
             "memories": [
                 { "content": "First memory content" },
-                { "content": "Second memory content", "project": "myproject" },
+                { "content": "Second memory content" },
                 { "content": "Third memory content", "type": "decision" }
             ]
         });
@@ -2424,7 +2668,7 @@ mod tests {
 
         let body = serde_json::json!([
             { "content": "Raw array memory one" },
-            { "content": "Raw array memory two", "project": "myproject" }
+            { "content": "Raw array memory two" }
         ]);
 
         let resp = app_with_import(store)
@@ -2502,7 +2746,7 @@ mod tests {
                 .unwrap();
 
             let keep = q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: Some("p1".to_string()),
+                project: None,
                 tool: "test".to_string(),
                 content: "Content A".to_string(),
                 tags: None,
@@ -2514,7 +2758,7 @@ mod tests {
             }).unwrap();
 
             let merge = q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: Some("p1".to_string()),
+                project: None,
                 tool: "test".to_string(),
                 content: "Content B".to_string(),
                 tags: None,
@@ -2575,7 +2819,7 @@ mod tests {
             let (other_org, other_user, _) =
                 q::create_org(&conn, "Other Corp", "other-corp", "admin@other.com", "Admin Other").unwrap();
             let mem = q::upsert_memory(&conn, &other_org.id, &other_user.id, &StoreMemoryRequest {
-                project: Some("p2".to_string()),
+                project: None,
                 tool: "test".to_string(),
                 content: "Foreign content".to_string(),
                 tags: None,
@@ -2626,7 +2870,7 @@ mod tests {
             // Insert 3 memories with tool "claude-code" and 1 with "cursor"
             for i in 0..3 {
                 q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                    project: Some("p1".to_string()),
+                    project: None,
                     tool: "claude-code".to_string(),
                     content: format!("claude memory {i}"),
                     tags: None,
@@ -2638,7 +2882,7 @@ mod tests {
                 }).unwrap();
             }
             q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: Some("p1".to_string()),
+                project: None,
                 tool: "cursor".to_string(),
                 content: "cursor memory".to_string(),
                 tags: None,
@@ -2852,7 +3096,7 @@ mod tests {
 
             for i in 0..3 {
                 q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                    project: Some("p1".to_string()),
+                    project: None,
                     tool: "test".to_string(),
                     content: format!("memory {i}"),
                     tags: Some(vec!["foo".to_string()]),

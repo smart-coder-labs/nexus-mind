@@ -31,6 +31,27 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn not_found() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Session not found".to_string(),
+            code: "not_found".to_string(),
+        }),
+    )
+}
+
+/// Whether the caller may see a session in `project`. Admins always may; non-admins only
+/// when the project is org-shared (no registered project row) or they are a member of it.
+fn session_project_visible(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    project: &str,
+) -> Result<bool, (StatusCode, Json<ApiError>)> {
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    queries::user_can_view_project_name(conn, &auth.org_id, project, viewer).map_err(db_err)
+}
+
 #[derive(serde::Serialize)]
 pub struct CreateSessionResponse {
     pub id: String,
@@ -61,14 +82,10 @@ pub async fn get_session_handler(
     let result = queries::get_session(&conn, &auth.org_id, &session_id).map_err(db_err)?;
 
     match result {
-        Some(session) => Ok(Json(session)),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Session not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        // Non-admins may only read a session whose project they can see; otherwise 404
+        // (indistinguishable from a non-existent session — no existence leak).
+        Some(session) if session_project_visible(&conn, &auth, &session.project)? => Ok(Json(session)),
+        _ => Err(not_found()),
     }
 }
 
@@ -103,7 +120,8 @@ pub async fn list_sessions_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let sessions = queries::list_sessions(&conn, &auth.org_id).map_err(db_err)?;
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let sessions = queries::list_sessions_visible(&conn, &auth.org_id, viewer).map_err(db_err)?;
 
     Ok(Json(sessions))
 }
@@ -117,17 +135,15 @@ pub async fn list_session_memories_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let session = queries::get_session(&conn, &auth.org_id, &session_id).map_err(db_err)?;
-    if session.is_none() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Session not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
+    match session {
+        // Non-members of the session's project get 404 (no existence leak), consistent
+        // with get_session_handler.
+        Some(ref s) if session_project_visible(&conn, &auth, &s.project)? => {}
+        _ => return Err(not_found()),
     }
 
-    let memories = queries::list_memories(
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let memories = queries::list_memories_visible(
         &conn,
         &auth.org_id,
         None,
@@ -142,6 +158,7 @@ pub async fn list_session_memories_handler(
         None,
         None,
         None,
+        viewer,
     )
     .map_err(db_err)?;
 
@@ -193,6 +210,125 @@ mod tests {
             key
         };
         (store, raw_key)
+    }
+
+    fn create_member_with_id(store: &SqliteStore, org_id: &str, role: &str) -> (String, String) {
+        use crate::auth::api_keys;
+        use uuid::Uuid;
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
+            rusqlite::params![user_id, org_id, format!("{}-{role}@test.com", &user_id[..8]), role],
+        ).unwrap();
+        let key_id = Uuid::new_v4().to_string();
+        let (raw_key, key_hash) = api_keys::generate();
+        conn.execute(
+            "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
+            rusqlite::params![key_id, user_id, org_id, key_hash],
+        ).unwrap();
+        (raw_key, user_id)
+    }
+
+    async fn session_ids(store: &SqliteStore, key: &str) -> Vec<String> {
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/sessions")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let arr: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        arr.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    async fn get_session_status(store: &SqliteStore, key: &str, id: &str) -> StatusCode {
+        app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/sessions/{id}"))
+                    .header("Authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Non-admins may only see sessions of projects they belong to, plus sessions whose
+    /// project is org-shared (no registered project row). Never another project's sessions —
+    /// via list, get-by-id (404, no existence leak), or session-memories.
+    #[tokio::test]
+    async fn member_only_sees_member_and_orgshared_sessions() {
+        let (store, admin_key) = setup_with_key();
+        let org_id: String = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+        };
+
+        // Registered projects (create_project does NOT auto-seed members) and one org-shared
+        // session whose project has no projects row.
+        let (secret_sid, shared_sid, orphan_sid, member_key) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let _secret = q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
+            let shared_id = q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap().id;
+            let mk = |p: &str| q::create_session(&conn, &org_id, &crate::models::types::CreateSessionRequest {
+                project: p.to_string(), name: None, directory: None, summary: None,
+            }).unwrap().id;
+            let secret_sid = mk("proj-secret");
+            let shared_sid = mk("proj-shared");
+            let orphan_sid = mk("no-such-project"); // org-shared: no projects row
+            drop(conn);
+            let (member_key, member_id) = create_member_with_id(&store, &org_id, "member");
+            // Member belongs to proj-shared only.
+            let db2 = store.conn();
+            let conn2 = db2.lock().unwrap();
+            conn2.execute(
+                "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+                 VALUES (?1, ?2, ?3, 'member', datetime('now'))",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), shared_id, member_id],
+            ).unwrap();
+            (secret_sid, shared_sid, orphan_sid, member_key)
+        };
+
+        // LIST: member sees shared + orphan, not secret.
+        let ids = session_ids(&store, &member_key).await;
+        assert!(ids.contains(&shared_sid), "member must see their project's session");
+        assert!(ids.contains(&orphan_sid), "member must see org-shared session");
+        assert!(!ids.contains(&secret_sid), "member must NOT see a non-member project's session");
+
+        // GET by id: 404 for secret, 200 for shared.
+        assert_eq!(get_session_status(&store, &member_key, &secret_sid).await, StatusCode::NOT_FOUND);
+        assert_eq!(get_session_status(&store, &member_key, &shared_sid).await, StatusCode::OK);
+
+        // SESSION MEMORIES: 404 for a session the member cannot see.
+        let mem_status = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/sessions/{secret_sid}/memories"))
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(mem_status, StatusCode::NOT_FOUND);
+
+        // ADMIN sees all three sessions.
+        let admin_ids = session_ids(&store, &admin_key).await;
+        assert!(admin_ids.contains(&secret_sid) && admin_ids.contains(&shared_sid) && admin_ids.contains(&orphan_sid));
     }
 
     #[tokio::test]
@@ -499,6 +635,7 @@ mod tests {
             };
             let db = store.conn();
             let conn = db.lock().unwrap();
+            q::get_or_create_project(&conn, &org_id, "nexusmind").unwrap();
             q::upsert_memory(&conn, &org_id, &user_id, &req).unwrap();
         }
 
