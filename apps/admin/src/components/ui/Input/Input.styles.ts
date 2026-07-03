@@ -9,21 +9,20 @@ export const baseInputStyles = `
   text-text-primary
   placeholder:text-text-quaternary
   transition-apple
-  focus:outline-none
-  focus:border-accent-blue/60
+  focus:outline-2 focus:outline-offset-2 focus:outline-focus-ring
   disabled:opacity-40
   disabled:cursor-not-allowed
 `;
 
 export const inputSizeStyles = {
-    sm: 'h-8 px-3 text-xs rounded-[8px]',
-    md: 'h-10 px-4 text-xs rounded-[8px]',
-    lg: 'h-12 px-5 text-xs rounded-[8px]',
+    sm: 'h-8 px-3 text-[13px] rounded-[11px]',
+    md: 'h-9 px-4 text-[13px] rounded-[11px]',
+    lg: 'h-11 px-5 text-[13px] rounded-[11px]',
 };
 
-export const errorStyles = 'border-status-error focus:border-status-error/60';
+export const errorStyles = 'border-status-error';
 
-export const labelStyles = 'block text-[10px] text-text-quaternary mb-1.5';
+export const labelStyles = 'block text-xs font-medium text-text-secondary mb-1.5';
 
 export const helperTextStyles = 'mt-1.5 text-xs text-text-tertiary';
 

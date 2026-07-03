@@ -20,6 +20,7 @@
   --color-accent-blue-active: #0058a8;    /* Pressed */
   --color-accent-blue-tint: rgba(0, 102, 204, 0.12);
   --color-accent-on-dark: #2997ff;        /* Sky Link Blue — for dark tiles */
+  --color-accent-purple: #bf5af2;         /* memory-type accent (Dashboard TYPE_COLORS) */
 
   /* Background — Apple near-black tile family */
   --color-bg-primary: #000000;           /* surface-black: true black, nav bg */
@@ -44,6 +45,7 @@
   --color-border-primary: rgba(255, 255, 255, 0.08);   /* hairline on dark */
   --color-border-secondary: rgba(255, 255, 255, 0.04);
   --color-border-focus: #0066cc;
+  --color-focus-ring: #0071e3;            /* Focus Blue — keyboard focus only */
 
   /* Status — semantic clarity */
   --color-status-success: #30d158;
@@ -84,12 +86,14 @@
   --color-border-primary: var(--color-border-primary);
   --color-border-secondary: var(--color-border-secondary);
   --color-border-focus: var(--color-border-focus);
+  --color-focus-ring: var(--color-focus-ring);
 
   /* Accent */
   --color-accent-blue: var(--color-accent-blue);
   --color-accent-blue-hover: var(--color-accent-blue-hover);
   --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
+  --color-accent-purple: var(--color-accent-purple);
 
   /* Status */
   --color-status-success: var(--color-status-success);
@@ -246,4 +250,23 @@
 
 .animate-slide-down {
   animation: slideDown 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+
+/* ========================================
+   REDUCED MOTION
+   ======================================== */
+
+/* Accessibility floor: honor the OS "reduce motion" setting.
+   Neutralizes CSS keyframe animations and transitions app-wide;
+   framer-motion springs read the same media query via useReducedMotion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

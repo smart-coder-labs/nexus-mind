@@ -1,5 +1,5 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 
 import type { ButtonProps, ButtonVariant, ButtonSize } from './Button.types';
 
@@ -10,7 +10,7 @@ import type { ButtonProps, ButtonVariant, ButtonSize } from './Button.types';
 const baseStyles = `
   inline-flex items-center justify-center gap-2
   font-semibold transition-apple
-  focus:outline-none
+  focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring
   cursor-pointer
   disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none
   select-none
@@ -34,9 +34,9 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-accent-blue-tint
   `,
     subtle: `
-    bg-[#272729] text-text-primary
-    hover:bg-[#1d1d1f]
-    active:bg-[#272729]
+    bg-background-tertiary text-text-primary
+    hover:bg-background-secondary
+    active:bg-background-tertiary
   `,
     outline: `
     bg-transparent text-text-primary
@@ -77,6 +77,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         },
         ref
     ) => {
+        const prefersReducedMotion = useReducedMotion();
+
         const combinedClassName = `
       ${baseStyles}
       ${variantStyles[variant]}
@@ -100,7 +102,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
                 disabled={disabled || loading}
                 aria-busy={loading || undefined}
                 whileHover={{}}
-                whileTap={{ scale: disabled || loading ? 1 : 0.95 }}
+                whileTap={{ scale: disabled || loading || prefersReducedMotion ? 1 : 0.95 }}
                 transition={{
                     type: 'spring',
                     stiffness: 400,

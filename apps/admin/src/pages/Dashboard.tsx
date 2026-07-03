@@ -25,6 +25,11 @@ function downloadBlob(blob: Blob, filename = 'download.json') {
 
 const ONBOARDING_DISMISSED_KEY = 'onboardingDismissed'
 
+// Keyboard focus rings (design direction §6): 2px --color-focus-ring with a 2px
+// offset matching the surface behind the control (canvas vs. tile).
+const FOCUS_CANVAS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-secondary'
+const FOCUS_TILE = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-tertiary'
+
 function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
   // Build a map from day-string → count
   const dayMap = new Map(data.map(d => [d.day, d.count]))
@@ -390,11 +395,11 @@ export default function Dashboard() {
   }, [stats, trends, usageStats])
 
   return (
-    <div className="p-8 space-y-8 max-w-7xl mx-auto">
+    <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-base font-semibold text-text-primary">Dashboard</h1>
-          <p className="text-xs text-text-tertiary mt-0.5">
+          <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Dashboard</h1>
+          <p className="text-[13px] text-text-secondary mt-1">
             {session?.org.name} — organization overview
           </p>
         </div>
@@ -406,10 +411,11 @@ export default function Dashboard() {
                   key={d}
                   onClick={() => setPeriod(d)}
                   className={cn(
-                    'text-[10px] px-2 py-0.5 transition-colors',
+                    'text-[11px] px-2 py-0.5 rounded-full transition-colors',
+                    FOCUS_CANVAS,
                     period === d
-                      ? 'bg-accent-blue/10 text-accent-blue rounded-[5px]'
-                      : 'text-text-quaternary hover:text-text-secondary'
+                      ? 'bg-accent-blue/10 text-accent-blue'
+                      : 'text-text-tertiary hover:text-text-secondary'
                   )}
                 >
                   {d}d
@@ -421,19 +427,20 @@ export default function Dashboard() {
             <div ref={customizeRef} className="relative">
               <button
                 onClick={() => setShowCustomize(prev => !prev)}
-                className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                className={cn('border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors', FOCUS_CANVAS)}
               >
                 <LayoutGrid className="w-3 h-3" /> Customize
               </button>
               {showCustomize && (
-                <div className="absolute right-0 top-full mt-2 bg-[#272729] border border-border-primary rounded-[11px] py-2 min-w-[200px] shadow-xl z-20">
+                <div className="absolute right-0 top-full mt-2 bg-background-tertiary border border-border-primary rounded-[18px] py-2 min-w-[200px] z-20">
                   {ALL_CARDS.map(key => (
                     <label key={key} className="flex items-center justify-between px-3 py-2 hover:bg-white/[0.04] cursor-pointer">
-                      <span className="text-xs text-text-secondary capitalize">{key.replace(/-/g, ' ')}</span>
+                      <span className="text-[13px] text-text-secondary capitalize">{key.replace(/-/g, ' ')}</span>
                       <button
                         onClick={() => toggleCard(key)}
                         className={cn(
                           'w-8 h-4 rounded-full transition-colors relative shrink-0',
+                          FOCUS_TILE,
                           isVisible(key) ? 'bg-accent-blue' : 'bg-white/[0.12]'
                         )}
                         aria-label={`${isVisible(key) ? 'Hide' : 'Show'} ${key} card`}
@@ -460,12 +467,12 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div className="flex items-center">
                 <Sparkles className="w-4 h-4 text-accent-blue" />
-                <span className="text-xs font-semibold text-text-primary ml-2">Getting started</span>
+                <span className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary ml-2">Getting started</span>
               </div>
               <button
                 onClick={handleDismiss}
                 aria-label="Dismiss"
-                className="text-text-quaternary hover:text-text-tertiary transition-colors"
+                className={cn('text-text-tertiary hover:text-text-secondary transition-colors rounded-full', FOCUS_CANVAS)}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -474,19 +481,19 @@ export default function Dashboard() {
             {allDone ? (
               <div className="text-center py-2 space-y-1">
                 <CheckCircle className="w-6 h-6 text-status-success mx-auto" />
-                <p className="text-xs font-semibold text-text-primary">You're all set!</p>
+                <p className="text-[13px] font-semibold text-text-primary">You're all set!</p>
               </div>
             ) : (
               <>
                 {/* Progress bar */}
                 <div className="w-full">
-                  <div className="h-1 bg-[#272729] rounded-full w-full">
+                  <div className="h-1 bg-background-tertiary rounded-full w-full">
                     <div
                       className="h-1 bg-accent-blue rounded-full transition-all duration-500"
                       style={{ width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-text-quaternary">{doneCount} of {totalCount} complete</span>
+                  <span className="text-[12px] text-text-tertiary">{doneCount} of {totalCount} complete</span>
                 </div>
 
                 {/* Items */}
@@ -501,10 +508,10 @@ export default function Dashboard() {
                         <div className="w-5 h-5 rounded-full border border-border-primary flex items-center justify-center shrink-0 mt-0.5" />
                       )}
                       <div>
-                        <p className={`text-xs leading-tight ${item.done ? 'line-through text-text-quaternary opacity-50' : 'text-accent-blue'}`}>
+                        <p className={`text-[13px] leading-tight ${item.done ? 'line-through text-text-quaternary opacity-50' : 'text-accent-blue'}`}>
                           {item.label}
                         </p>
-                        <p className="text-[10px] text-text-quaternary mt-0.5">
+                        <p className="text-[12px] text-text-tertiary mt-0.5">
                           {item.description}
                         </p>
                       </div>
@@ -521,29 +528,29 @@ export default function Dashboard() {
       {isAdmin && (
         <section aria-label="Organization statistics">
           {statsError ? (
-            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-xs text-status-error">
+            <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-[13px] text-status-error">
               Failed to load statistics. Check your connection and try again.
             </div>
           ) : statsLoading || trendsLoading || usageLoading ? (
-            <div className="flex flex-wrap gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {Array.from({ length: 7 }).map((_, i) => (
-                <Skeleton key={i} className="h-7 w-32 rounded-full" />
+                <Skeleton key={i} className="h-[92px] rounded-[18px]" />
               ))}
             </div>
           ) : (
-            <div className="flex flex-wrap gap-2" role="list" aria-label="Key statistics">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4" role="list" aria-label="Key statistics">
               {metrics.map((metric) => (
-                <span
+                <div
                   key={metric.id}
                   role="listitem"
                   className={cn(
-                    'inline-flex items-baseline gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
+                    'flex flex-col gap-1 rounded-[18px] border p-5 transition-colors',
                     BADGE_ACCENT[metric.id ?? ''] ?? 'bg-white/[0.06] border-border-primary'
                   )}
                 >
-                  <span className="font-bold text-text-primary tabular-nums">{metric.value}</span>
-                  <span className="text-text-quaternary">{metric.label}</span>
-                </span>
+                  <span className="text-[28px] font-semibold leading-none text-text-primary tabular-nums truncate">{metric.value}</span>
+                  <span className="text-[12px] text-text-tertiary">{metric.label}</span>
+                </div>
               ))}
             </div>
           )}
@@ -553,10 +560,10 @@ export default function Dashboard() {
       {/* Activity timeline */}
       {isAdmin && (
         <section aria-label="Recent activity">
-          <h2 className="text-xs font-semibold text-text-primary mb-4">
+          <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-4">
             Recent Activity
           </h2>
-          <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-5">
+          <div className="bg-background-tertiary border border-white/[0.06] rounded-[18px] p-5">
             {activityLoading ? (
               <div className="space-y-4">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -586,7 +593,7 @@ export default function Dashboard() {
                 <div className="space-y-5">
                   {groups.map(({ label, entries }) => (
                     <div key={label}>
-                      <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wider mb-3 pl-5">
+                      <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-3 pl-5">
                         {label}
                       </p>
                       <div className="relative">
@@ -643,7 +650,7 @@ export default function Dashboard() {
                               const dot = (
                                 <div
                                   className={cn(
-                                    'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-[#272729] relative z-10',
+                                    'w-[15px] h-[15px] rounded-full shrink-0 mt-0.5 ring-2 ring-background-tertiary relative z-10',
                                     timelineDotClass(entry.action)
                                   )}
                                   aria-hidden="true"
@@ -677,23 +684,23 @@ export default function Dashboard() {
                                       <button
                                         type="button"
                                         onClick={() => toggleActivity(entry.id)}
-                                        className="w-full flex items-baseline justify-between gap-3 text-left"
+                                        className={cn('w-full flex items-baseline justify-between gap-3 text-left rounded-[8px]', FOCUS_TILE)}
                                       >
-                                        <span className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                        <span className="text-[13px] text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
                                           <ChevronRight className={cn('w-3 h-3 text-text-quaternary transition-transform shrink-0', open && 'rotate-90')} />
                                           {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                           <Badge variant={variant} size="sm">{actionLabel}</Badge>
                                           <span className="text-text-secondary">{entry.resource_type}</span>
                                           {isSearch && query && <span className="text-text-primary truncate">“{query}”</span>}
                                           {isSearch && resultCount != null && (
-                                            <span className="text-[10px] text-text-quaternary tabular-nums">· {resultCount} result{resultCount === 1 ? '' : 's'}</span>
+                                            <span className="text-[12px] text-text-tertiary tabular-nums">· {resultCount} result{resultCount === 1 ? '' : 's'}</span>
                                           )}
                                           {!isSearch && project && (
                                             <span className="text-text-quaternary">in <span className="text-text-secondary">{project}</span></span>
                                           )}
                                           {!isSearch && title && <span className="text-text-primary truncate">— {title}</span>}
                                         </span>
-                                        <time dateTime={entry.timestamp} className="shrink-0 text-[10px] text-text-quaternary tabular-nums" title={formatAbsTime(entry.timestamp)}>
+                                        <time dateTime={entry.timestamp} className="shrink-0 text-[12px] text-text-tertiary tabular-nums" title={formatAbsTime(entry.timestamp)}>
                                           {relativeTime(entry.timestamp)}
                                         </time>
                                       </button>
@@ -714,14 +721,14 @@ export default function Dashboard() {
                                                       </p>
                                                       <ul className="ml-4 mt-0.5 space-y-0.5">
                                                         {rs.map((r, i) => (
-                                                          <li key={r.id ?? i} className="text-text-quaternary truncate">• {r.title || r.id}</li>
+                                                          <li key={r.id ?? i} className="text-text-tertiary truncate">• {r.title || r.id}</li>
                                                         ))}
                                                       </ul>
                                                     </div>
                                                   ))}
                                                 </div>
                                               ) : (
-                                                <p className="text-text-quaternary">no results captured for this search</p>
+                                                <p className="text-text-tertiary">no results captured for this search</p>
                                               )}
                                             </>
                                           ) : (
@@ -743,7 +750,7 @@ export default function Dashboard() {
                                                 </div>
                                               )}
                                               {preview && (
-                                                <p className="text-text-quaternary line-clamp-3 whitespace-pre-wrap">{preview}</p>
+                                                <p className="text-text-tertiary line-clamp-3 whitespace-pre-wrap">{preview}</p>
                                               )}
                                             </>
                                           )}
@@ -759,18 +766,18 @@ export default function Dashboard() {
                                 <li key={entry.id} className="flex items-start gap-3 group">
                                   {dot}
                                   <div className="flex-1 min-w-0 flex items-baseline justify-between gap-3 max-w-2xl">
-                                    <p className="text-xs text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
+                                    <p className="text-[13px] text-text-primary leading-snug flex items-center flex-wrap gap-1 min-w-0">
                                       {displayName !== 'System' && <span className="font-semibold">{displayName}</span>}
                                       <Badge variant={variant} size="sm">{actionLabel}</Badge>
                                       {entry.resource_type && <span className="text-text-secondary">{entry.resource_type}</span>}
                                       {count > 1 && (
-                                        <span className="text-[10px] font-semibold text-text-quaternary tabular-nums">×{count}</span>
+                                        <span className="text-[12px] font-semibold text-text-tertiary tabular-nums">×{count}</span>
                                       )}
                                       {typeof entry.metadata?.description === 'string' && (
-                                        <span className="text-text-quaternary truncate">— {entry.metadata.description}</span>
+                                        <span className="text-text-tertiary truncate">— {entry.metadata.description}</span>
                                       )}
                                     </p>
-                                    <time dateTime={entry.timestamp} className="shrink-0 text-[10px] text-text-quaternary tabular-nums" title={formatAbsTime(entry.timestamp)}>
+                                    <time dateTime={entry.timestamp} className="shrink-0 text-[12px] text-text-tertiary tabular-nums" title={formatAbsTime(entry.timestamp)}>
                                       {count > 1
                                         ? `${relativeTime(lastTimestamp)} – ${relativeTime(entry.timestamp)}`
                                         : relativeTime(entry.timestamp)}
@@ -790,7 +797,7 @@ export default function Dashboard() {
                         type="button"
                         onClick={() => setActivityLimit(l => l + 20)}
                         disabled={activityFetching}
-                        className="text-[11px] text-text-quaternary hover:text-text-secondary transition-colors disabled:opacity-50"
+                        className={cn('text-[13px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 rounded-[8px] px-1', FOCUS_TILE)}
                       >
                         {activityFetching ? 'Loading…' : 'Show more'}
                       </button>
@@ -808,12 +815,12 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Usage */}
           {isVisible('usage') && <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-            <p className="text-xs font-semibold text-text-primary">Usage</p>
+            <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Usage</p>
             {usageLoading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="flex items-center justify-between animate-pulse">
-                  <div className="h-3 w-24 rounded-[8px] bg-[#272729]" />
-                  <div className="h-3 w-10 rounded-[8px] bg-[#272729]" />
+                  <div className="h-3 w-24 rounded-[8px] bg-background-tertiary" />
+                  <div className="h-3 w-10 rounded-[8px] bg-background-tertiary" />
                 </div>
               ))
             ) : usageStats ? (
@@ -827,51 +834,51 @@ export default function Dashboard() {
                 ] as const).map(({ icon: Icon, label, value }) => (
                   <div key={label} className="flex items-center gap-3">
                     <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
-                    <span className="text-xs text-text-secondary flex-1">{label}</span>
-                    <span className="text-xs font-semibold text-text-primary tabular-nums">
+                    <span className="text-[13px] text-text-secondary flex-1">{label}</span>
+                    <span className="text-[13px] font-semibold text-text-primary tabular-nums">
                       {value.toLocaleString()}
                     </span>
                   </div>
                 ))}
               </>
             ) : (
-              <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
+              <div className="text-[13px] text-text-tertiary text-center py-4">No data yet</div>
             )}
           </div>}
 
           {/* Agent Activity */}
-          {isVisible('agent-activity') && <div className="rounded-[18px] bg-[#272729] border border-border-primary p-5 space-y-4">
-            <p className="text-xs font-semibold text-text-primary">Agent Activity</p>
+          {isVisible('agent-activity') && <div className="rounded-[18px] bg-background-tertiary border border-border-primary p-5 space-y-4">
+            <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Agent Activity</p>
             {agentActivityLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="space-y-1.5 animate-pulse">
-                  <div className="h-3 w-32 rounded bg-[#1d1d1f]" />
-                  <div className="h-1 w-full rounded-full bg-[#1d1d1f]" />
-                  <div className="h-2 w-20 rounded bg-[#1d1d1f]" />
+                  <div className="h-3 w-32 rounded bg-background-secondary" />
+                  <div className="h-1 w-full rounded-full bg-background-secondary" />
+                  <div className="h-2 w-20 rounded bg-background-secondary" />
                 </div>
               ))
             ) : !agentActivity || agentActivity.length === 0 ? (
-              <div className="text-xs text-text-quaternary text-center py-4">No agent activity yet</div>
+              <div className="text-[13px] text-text-tertiary text-center py-4">No agent activity yet</div>
             ) : (() => {
               const maxMemoriesLast7d = Math.max(...(agentActivity as AgentActivity[]).map(a => a.memories_last_7d), 1)
               return (agentActivity as AgentActivity[]).map(agent => (
                 <div key={agent.tool} className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-text-primary truncate">{agent.tool}</span>
+                    <span className="text-[13px] font-semibold text-text-primary truncate">{agent.tool}</span>
                     <div className="flex items-center gap-2 shrink-0">
                       {agent.memories_last_24h > 0 && (
                         <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
                       )}
-                      <span className="text-[10px] text-text-quaternary">{agent.memories_last_7d} this week</span>
+                      <span className="text-[12px] text-text-tertiary">{agent.memories_last_7d} this week</span>
                     </div>
                   </div>
-                  <div className="h-1 bg-[#1d1d1f] rounded-full">
+                  <div className="h-1 bg-background-secondary rounded-full">
                     <div
                       className="h-1 bg-accent-blue/60 rounded-full transition-all duration-500"
                       style={{ width: `${(agent.memories_last_7d / maxMemoriesLast7d) * 100}%` }}
                     />
                   </div>
-                  <p className="text-[10px] text-text-quaternary">Last seen {relativeTime(agent.last_seen)}</p>
+                  <p className="text-[12px] text-text-tertiary">Last seen {relativeTime(agent.last_seen)}</p>
                 </div>
               ))
             })()}
@@ -886,14 +893,14 @@ export default function Dashboard() {
           {/* Last 30 days sparkline */}
           {trendsLoading ? (
             <div className="border border-border-primary rounded-[18px] p-5 animate-pulse">
-              <div className="h-4 bg-[#272729] rounded w-1/3 mb-4" />
-              <div className="h-12 bg-[#272729] rounded" />
+              <div className="h-4 bg-background-tertiary rounded w-1/3 mb-4" />
+              <div className="h-12 bg-background-tertiary rounded" />
             </div>
           ) : trends ? (
             <div className="border border-border-primary rounded-[18px] p-5">
-              <p className="text-[10px] text-text-quaternary mb-3">Last {period} Days</p>
+              <p className="text-[12px] text-text-tertiary mb-3">Last {period} Days</p>
               {trends.daily_counts.length === 0 ? (
-                <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
+                <div className="text-[13px] text-text-tertiary text-center py-4">No data yet</div>
               ) : (() => {
                 const maxDay = Math.max(...trends.daily_counts.map((d: DailyCount) => d.count), 1)
                 const first = trends.daily_counts[0]?.date ?? ''
@@ -912,9 +919,9 @@ export default function Dashboard() {
                       ))}
                     </div>
                     <div className="flex justify-between mt-1">
-                      <span className="text-[10px] text-text-quaternary">{first}</span>
-                      <span className="text-[10px] text-text-quaternary">{mid}</span>
-                      <span className="text-[10px] text-text-quaternary">{last}</span>
+                      <span className="text-[12px] text-text-tertiary">{first}</span>
+                      <span className="text-[12px] text-text-tertiary">{mid}</span>
+                      <span className="text-[12px] text-text-tertiary">{last}</span>
                     </div>
                   </>
                 )
@@ -925,14 +932,14 @@ export default function Dashboard() {
           {/* Top Projects */}
           {trendsLoading ? (
             <div className="border border-border-primary rounded-[18px] p-5 animate-pulse">
-              <div className="h-4 bg-[#272729] rounded w-1/3 mb-4" />
-              <div className="h-12 bg-[#272729] rounded" />
+              <div className="h-4 bg-background-tertiary rounded w-1/3 mb-4" />
+              <div className="h-12 bg-background-tertiary rounded" />
             </div>
           ) : trends ? (
             <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-              <p className="text-xs font-semibold text-text-primary mb-3">Top Projects</p>
+              <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-3">Top Projects</p>
               {trends.by_project.length === 0 ? (
-                <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
+                <div className="text-[13px] text-text-tertiary text-center py-4">No data yet</div>
               ) : (() => {
                 const maxCount = Math.max(...trends.by_project.map((p: NameCount) => p.count), 1)
                 return (
@@ -940,10 +947,10 @@ export default function Dashboard() {
                     {trends.by_project.map((p: NameCount) => (
                       <div key={p.name} className="space-y-1">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs text-text-secondary truncate max-w-[60%]">{p.name}</span>
-                          <span className="text-xs text-text-quaternary">{p.count.toLocaleString()}</span>
+                          <span className="text-[13px] text-text-secondary truncate max-w-[60%]">{p.name}</span>
+                          <span className="text-[13px] text-text-tertiary">{p.count.toLocaleString()}</span>
                         </div>
-                        <div className="h-1 bg-[#272729] rounded-full">
+                        <div className="h-1 bg-background-tertiary rounded-full">
                           <div
                             className="h-1 bg-accent-blue/50 rounded-full transition-all"
                             style={{ width: `${(p.count / maxCount) * 100}%` }}
@@ -960,14 +967,14 @@ export default function Dashboard() {
           {/* Memory Types */}
           {trendsLoading ? (
             <div className="border border-border-primary rounded-[18px] p-5 animate-pulse">
-              <div className="h-4 bg-[#272729] rounded w-1/3 mb-4" />
-              <div className="h-12 bg-[#272729] rounded" />
+              <div className="h-4 bg-background-tertiary rounded w-1/3 mb-4" />
+              <div className="h-12 bg-background-tertiary rounded" />
             </div>
           ) : trends ? (
             <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
-              <p className="text-xs font-semibold text-text-primary mb-3">Memory Types</p>
+              <p className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-3">Memory Types</p>
               {trends.by_type.length === 0 ? (
-                <div className="text-xs text-text-quaternary text-center py-4">No data yet</div>
+                <div className="text-[13px] text-text-tertiary text-center py-4">No data yet</div>
               ) : (() => {
                 const maxTypeCount = Math.max(...trends.by_type.map((t: NameCount) => t.count), 1)
                 return (
@@ -975,10 +982,10 @@ export default function Dashboard() {
                     {trends.by_type.map((t: NameCount, i: number) => (
                       <div key={t.name} className="space-y-1">
                         <div className="flex justify-between items-center">
-                          <span className="text-xs text-text-secondary truncate max-w-[60%]">{t.name || 'unset'}</span>
-                          <span className="text-xs font-semibold text-text-primary">{t.count}</span>
+                          <span className="text-[13px] text-text-secondary truncate max-w-[60%]">{t.name || 'unset'}</span>
+                          <span className="text-[13px] font-semibold text-text-primary">{t.count}</span>
                         </div>
-                        <div className="h-1 bg-[#1d1d1f] rounded-full">
+                        <div className="h-1 bg-background-secondary rounded-full">
                           <div
                             className="h-1 rounded-full transition-all duration-500"
                             style={{
@@ -1000,10 +1007,10 @@ export default function Dashboard() {
 
       {/* Memory Activity Heatmap */}
       {isAdmin && isVisible('heatmap') && (
-        <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
+        <div className="bg-background-tertiary rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Memory Activity</h3>
-            <span className="text-[10px] text-text-quaternary">Last {period} days</span>
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Activity</h3>
+            <span className="text-[12px] text-text-tertiary">Last {period} days</span>
           </div>
           {heatmapData ? (
             <MemoryHeatmap data={heatmapData} />
@@ -1011,21 +1018,21 @@ export default function Dashboard() {
             <div className="h-[78px] bg-white/[0.04] animate-pulse rounded-[8px]" />
           )}
           <div className="flex items-center gap-1 mt-3">
-            <span className="text-[10px] text-text-quaternary">Less</span>
+            <span className="text-[12px] text-text-tertiary">Less</span>
             {(['bg-white/[0.04]', 'bg-accent-blue/20', 'bg-accent-blue/40', 'bg-accent-blue/60', 'bg-accent-blue'] as const).map((c, i) => (
               <div key={i} className={`w-[10px] h-[10px] rounded-[2px] ${c}`} />
             ))}
-            <span className="text-[10px] text-text-quaternary">More</span>
+            <span className="text-[12px] text-text-tertiary">More</span>
           </div>
         </div>
       )}
 
       {/* Top Contributors */}
       {isAdmin && isVisible('contributors') && (
-        <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
+        <div className="bg-background-tertiary rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Top Contributors</h3>
-            <span className="text-[10px] text-text-quaternary">Last {period} days</span>
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Contributors</h3>
+            <span className="text-[12px] text-text-tertiary">Last {period} days</span>
           </div>
           {contributorsLoading ? (
             <div className="space-y-3">
@@ -1040,42 +1047,42 @@ export default function Dashboard() {
                 const displayName = c.user_name || c.user_email || c.user_id
                 return (
                   <div key={c.user_id} className="flex items-center gap-3">
-                    <span className="text-[10px] text-text-quaternary w-3 text-right">{i + 1}</span>
-                    <span className="text-xs text-text-secondary truncate flex-1 font-mono">{displayName}</span>
+                    <span className="text-[12px] text-text-tertiary w-3 text-right">{i + 1}</span>
+                    <span className="text-[13px] text-text-secondary truncate flex-1 font-mono">{displayName}</span>
                     <div className="w-24 h-1 bg-white/[0.06] rounded-full overflow-hidden">
                       <div
                         className="h-full bg-accent-blue rounded-full"
                         style={{ width: `${(c.memory_count / max) * 100}%` }}
                       />
                     </div>
-                    <span className="text-[10px] text-text-quaternary w-6 text-right">{c.memory_count}</span>
+                    <span className="text-[12px] text-text-tertiary w-6 text-right">{c.memory_count}</span>
                   </div>
                 )
               })}
             </div>
           ) : (
-            <p className="text-xs text-text-quaternary">No activity in the last 30 days.</p>
+            <p className="text-[13px] text-text-tertiary">No activity in the last 30 days.</p>
           )}
         </div>
       )}
 
       {/* Conventions */}
       {isAdmin && isVisible('conventions') && (
-        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+        <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Conventions</h3>
-            <a href="/conventions" className="text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors">
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Conventions</h3>
+            <a href="/conventions" className={cn('text-[12px] text-accent-blue hover:text-accent-blue/80 transition-colors rounded-[8px]', FOCUS_TILE)}>
               View all →
             </a>
           </div>
           {conventionStats.map(cat => (
             <div key={cat.category} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
-              <span className="text-xs text-text-secondary capitalize">{cat.category}</span>
-              <span className="text-[10px] text-text-quaternary">{cat.count}</span>
+              <span className="text-[13px] text-text-secondary capitalize">{cat.category}</span>
+              <span className="text-[12px] text-text-tertiary">{cat.count}</span>
             </div>
           ))}
           {conventionStats.length === 0 && (
-            <p className="text-xs text-text-quaternary">No conventions yet. <a href="/conventions" className="text-accent-blue">Add one →</a></p>
+            <p className="text-[13px] text-text-tertiary">No conventions yet. <a href="/conventions" className={cn('text-accent-blue rounded-[8px]', FOCUS_TILE)}>Add one →</a></p>
           )}
         </div>
       )}
@@ -1111,15 +1118,15 @@ export default function Dashboard() {
         ]
         const completedCount = checklistItems.filter(i => i.done).length
         return (
-          <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+          <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xs font-semibold text-text-primary">Getting Started</h3>
-              <span className="text-[10px] text-text-quaternary">{completedCount}/5 completed</span>
+              <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Getting Started</h3>
+              <span className="text-[12px] text-text-tertiary">{completedCount}/5 completed</span>
             </div>
             {completedCount === 5 ? (
               <div className="flex flex-col items-center py-4 gap-2">
                 <CheckCircle2 className="w-8 h-8 text-status-success" />
-                <p className="text-xs text-text-secondary">All set up! Your team is ready.</p>
+                <p className="text-[13px] text-text-secondary">All set up! Your team is ready.</p>
               </div>
             ) : (
               checklistItems.map(item => (
@@ -1129,8 +1136,8 @@ export default function Dashboard() {
                     : <Circle className="w-4 h-4 text-text-quaternary shrink-0" />
                   }
                   {item.done
-                    ? <span className="text-xs text-text-quaternary line-through">{item.label}</span>
-                    : <Link to={item.href} className="text-xs text-accent-blue hover:text-accent-blue/80 transition-colors">{item.label}</Link>
+                    ? <span className="text-[13px] text-text-quaternary line-through">{item.label}</span>
+                    : <Link to={item.href} className={cn('text-[13px] text-accent-blue hover:text-accent-blue/80 transition-colors rounded-[8px]', FOCUS_TILE)}>{item.label}</Link>
                   }
                 </div>
               ))
@@ -1141,10 +1148,10 @@ export default function Dashboard() {
 
       {/* Recent Activity feed */}
       {isAdmin && isVisible('recent-activity') && (
-        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+        <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Recent Activity</h3>
-            <span className="text-[10px] text-text-quaternary">Live · 30s</span>
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Recent Activity</h3>
+            <span className="text-[12px] text-text-tertiary">Live · 30s</span>
           </div>
           {recentActivity && recentActivity.length > 0 ? (
             recentActivity.map(entry => {
@@ -1155,10 +1162,10 @@ export default function Dashboard() {
                     <Icon className="w-4 h-4 text-text-quaternary" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs text-text-secondary line-clamp-1">
+                    <p className="text-[13px] text-text-secondary line-clamp-1">
                       {(entry.metadata?.description as string) || entry.action}
                     </p>
-                    <p className="text-[10px] text-text-quaternary mt-0.5">
+                    <p className="text-[12px] text-text-tertiary mt-0.5">
                       {relativeTime(entry.timestamp)} · {(entry.metadata?.user_email as string) || userMap.get(entry.user_id) || 'System'}
                     </p>
                   </div>
@@ -1166,20 +1173,20 @@ export default function Dashboard() {
               )
             })
           ) : (
-            <p className="text-xs text-text-quaternary text-center py-4">No recent activity</p>
+            <p className="text-[13px] text-text-tertiary text-center py-4">No recent activity</p>
           )}
         </div>
       )}
 
       {/* Memory Trends sparkline */}
       {isAdmin && isVisible('memory-trends') && (
-        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5">
+        <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Memory Trends</h3>
-            <span className="text-[10px] text-text-quaternary">Last {period} days</span>
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Trends</h3>
+            <span className="text-[12px] text-text-tertiary">Last {period} days</span>
           </div>
           {!trends || !trends.daily_counts || trends.daily_counts.length === 0 ? (
-            <p className="text-xs text-text-quaternary text-center py-4">No data yet</p>
+            <p className="text-[13px] text-text-tertiary text-center py-4">No data yet</p>
           ) : (() => {
             const ptsN = trends.daily_counts.slice(-period)
             const max = Math.max(...ptsN.map((t: DailyCount) => t.count), 1)
@@ -1199,10 +1206,10 @@ export default function Dashboard() {
             )
           })()}
           <div className="flex items-center justify-between mt-2">
-            <span className="text-[10px] text-text-quaternary">
+            <span className="text-[12px] text-text-tertiary">
               {trends?.daily_counts?.slice(-7).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} this week
             </span>
-            <span className="text-[10px] text-text-quaternary">
+            <span className="text-[12px] text-text-tertiary">
               {trends?.daily_counts?.slice(-period).reduce((s: number, t: DailyCount) => s + t.count, 0) ?? 0} last {period}d
             </span>
           </div>
@@ -1211,10 +1218,10 @@ export default function Dashboard() {
 
       {/* Memory Health */}
       {isAdmin && isVisible('memory-health') && (
-        <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
+        <div className="rounded-[18px] border border-border-primary bg-background-tertiary p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-semibold text-text-primary">Memory Health</h3>
-            <span className="text-[10px] text-text-quaternary">Last 30 days</span>
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Health</h3>
+            <span className="text-[12px] text-text-tertiary">Last 30 days</span>
           </div>
           <div className="grid grid-cols-2 gap-3">
             {[
@@ -1226,9 +1233,9 @@ export default function Dashboard() {
               <div key={label} className="rounded-[11px] bg-white/[0.04] p-3">
                 <div className="flex items-center gap-1.5 mb-1">
                   <Icon className="w-3 h-3 text-text-quaternary" />
-                  <span className="text-[10px] text-text-quaternary">{label}</span>
+                  <span className="text-[12px] text-text-tertiary">{label}</span>
                 </div>
-                <span className={`text-xl font-semibold ${ok ? 'text-text-primary' : 'text-status-warning'}`}>
+                <span className={`text-[28px] font-semibold leading-none tabular-nums ${ok ? 'text-text-primary' : 'text-status-warning'}`}>
                   {value}
                 </span>
               </div>
@@ -1247,15 +1254,15 @@ export default function Dashboard() {
           { label: 'Manage webhooks', href: '/settings', icon: Zap },
         ] as const
         return (
-          <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary">
-            <h3 className="text-xs font-semibold text-text-primary mb-4">Quick Actions</h3>
+          <div className="bg-background-tertiary rounded-[18px] p-5 border border-border-primary">
+            <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-4">Quick Actions</h3>
             <div className="grid grid-cols-2 gap-2">
               {QUICK_ACTIONS.map(action => (
                 'href' in action ? (
                   <Link
                     key={action.label}
                     to={action.href}
-                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs font-semibold text-text-primary transition-colors border border-border-secondary/30"
+                    className={cn('flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-[13px] font-semibold text-text-primary transition-colors border border-border-secondary/30', FOCUS_TILE)}
                   >
                     <action.icon className="w-4 h-4" />
                     {action.label}
@@ -1264,7 +1271,7 @@ export default function Dashboard() {
                   <button
                     key={action.label}
                     onClick={action.action}
-                    className="flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-xs font-semibold text-text-primary transition-colors border border-border-secondary/30"
+                    className={cn('flex items-center gap-2 px-3 py-2 rounded-[8px] bg-white/[0.03] hover:bg-white/[0.06] text-[13px] font-semibold text-text-primary transition-colors border border-border-secondary/30', FOCUS_TILE)}
                   >
                     <action.icon className="w-4 h-4" />
                     {action.label}
@@ -1277,11 +1284,11 @@ export default function Dashboard() {
       })()}
 
       {!isAdmin && (
-        <div className="border border-white/[0.08] bg-[#272729] rounded-[18px] p-6 max-w-xl">
-          <p className="text-xs text-text-secondary leading-relaxed">
+        <div className="border border-white/[0.08] bg-background-tertiary rounded-[18px] p-6 max-w-xl">
+          <p className="text-[13px] text-text-secondary leading-relaxed">
             Welcome to <strong>{session?.org.name}</strong> on NexusMind.
           </p>
-          <p className="text-xs text-text-tertiary mt-2">
+          <p className="text-[13px] text-text-tertiary mt-2">
             Use the navigation sidebar to browse, search, and manage your team's shared AI memories.
           </p>
         </div>

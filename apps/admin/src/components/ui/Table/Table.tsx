@@ -1,12 +1,16 @@
 import * as React from "react";
 import { cn } from '../../../lib/utils';;
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
     ArrowUpDown,
     ChevronLeft,
     ChevronRight,
     Check,
 } from "lucide-react";
+
+// Visible keyboard-focus indicator (DESIGN_DIRECTION §6).
+const FOCUS_RING =
+    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring";
 
 /* -------------------------------------------------------------------------- */
 /*                                   TYPES                                    */
@@ -42,7 +46,7 @@ export function Table<T>({
     columns,
     data,
     selectable = false,
-    striped = true,
+    striped = false,
     hoverable = true,
     density = "comfortable",
     page = 1,
@@ -56,6 +60,7 @@ export function Table<T>({
         "asc"
     );
     const [selectedRows, setSelectedRows] = React.useState<Set<number>>(new Set());
+    const prefersReducedMotion = useReducedMotion();
 
     const handleSort = (col: Column<T>) => {
         if (!col.sortable) return;
@@ -92,10 +97,10 @@ export function Table<T>({
         density === "compact" ? "py-2" : "py-3";
 
     return (
-        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#1d1d1f]">
+        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-background-secondary">
             {/* TABLE */}
             <table className="w-full border-collapse text-left">
-                <thead className="bg-[#272729]/50 border-b border-border-primary">
+                <thead className="bg-background-tertiary/50 border-b border-border-primary">
                     <tr>
                         {selectable && (
                             <th className="w-10 px-4">
@@ -110,15 +115,17 @@ export function Table<T>({
                             <th
                                 key={String(col.key)}
                                 className={cn(
-                                    "px-4 py-3 text-[10px] font-semibold text-text-quaternary uppercase tracking-wide select-none whitespace-nowrap",
+                                    "px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide select-none whitespace-nowrap",
                                     col.width && `w-[${col.width}]`
                                 )}
                             >
                                 <button
                                     className={cn(
+                                        "rounded-[4px]",
+                                        FOCUS_RING,
                                         col.sortable
                                             ? "flex items-center gap-1 hover:text-text-primary transition-colors"
-                                            : ""
+                                            : "cursor-default"
                                     )}
                                     onClick={() => handleSort(col)}
                                 >
@@ -158,16 +165,16 @@ export function Table<T>({
                         return (
                             <motion.tr
                                 key={globalIndex}
-                                initial={{ opacity: 0 }}
+                                initial={prefersReducedMotion ? false : { opacity: 0 }}
                                 animate={{ opacity: 1 }}
-                                transition={{ duration: 0.18 }}
+                                transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
                                 className={cn(
-                                    "border-b border-border-primary/50 transition-colors",
+                                    "border-b border-border-secondary transition-colors",
                                     striped && index % 2 === 1
-                                        ? "bg-[#272729]/40"
+                                        ? "bg-background-tertiary/40"
                                         : "",
                                     hoverable &&
-                                    "hover:bg-[#272729]/70 cursor-pointer"
+                                    "hover:bg-white/[0.03] cursor-pointer"
                                 )}
                                 onClick={() => onRowClick?.(row)}
                             >
@@ -184,7 +191,7 @@ export function Table<T>({
                                     <td
                                         key={String(col.key)}
                                         className={cn(
-                                            "px-4 text-xs text-text-secondary",
+                                            "px-4 text-[13px] text-text-secondary",
                                             rowPadding
                                         )}
                                     >
@@ -200,7 +207,7 @@ export function Table<T>({
             </table>
 
             {/* PAGINATION */}
-            <div className="flex items-center justify-between px-4 py-3 bg-[#272729]/40 border-t border-border-primary">
+            <div className="flex items-center justify-between px-4 py-3 bg-background-tertiary/40 border-t border-border-primary">
                 <p className="text-xs text-text-tertiary">
                     Page {page} of {totalPages}
                 </p>
@@ -243,7 +250,8 @@ function PaginationButton({
             onClick={onClick}
             className={cn(
                 "p-2 rounded-[8px] border border-border-primary text-text-secondary transition-all",
-                "hover:bg-[#272729] hover:text-text-primary",
+                "hover:bg-background-tertiary hover:text-text-primary",
+                FOCUS_RING,
                 "disabled:opacity-40 disabled:cursor-not-allowed"
             )}
         >
@@ -283,6 +291,7 @@ function Checkbox({
                 "h-4 w-4 rounded-[5px] border border-border-primary bg-white/[0.04] flex items-center justify-center",
                 "data-[state=checked]:bg-accent-blue data-[state=checked]:border-accent-blue",
                 "transition-colors",
+                FOCUS_RING,
                 disabled && "opacity-50 cursor-not-allowed"
             )}
         >

@@ -44,6 +44,11 @@ const ALL_NOTIF_TYPES: NotifEventType[] = [
 ]
 const NOTIF_PREFS_KEY = 'nexusmind-notif-prefs'
 
+// Visible keyboard-focus indicator (accessibility floor, DESIGN_DIRECTION §6):
+// 2px focus-ring outline with 2px offset. Applied to every interactive element.
+const FOCUS_RING =
+  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
 function relativeTime(isoString: string): string {
   const now = Date.now()
   const then = new Date(isoString).getTime()
@@ -74,14 +79,14 @@ function ShortcutsPanel({ onClose }: { onClose: () => void }) {
       aria-label="Keyboard shortcuts"
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-md w-full shadow-2xl mx-4"
+        className="bg-background-secondary rounded-[18px] border border-border-primary p-6 max-w-md w-full mx-4"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xs font-semibold text-text-primary">Keyboard Shortcuts</h2>
+          <h2 className="text-[15px] font-semibold text-text-primary">Keyboard Shortcuts</h2>
           <button
             onClick={onClose}
-            className="text-text-quaternary hover:text-text-secondary transition-colors"
+            className={cn('rounded-[6px] text-text-tertiary hover:text-text-primary transition-colors', FOCUS_RING)}
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -98,7 +103,7 @@ function ShortcutsPanel({ onClose }: { onClose: () => void }) {
                 {keys.map((k, i) => (
                   <kbd
                     key={i}
-                    className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-text-quaternary border border-border-primary"
+                    className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-text-tertiary border border-border-primary"
                   >
                     {k}
                   </kbd>
@@ -116,80 +121,108 @@ interface NavItem {
   label: string
   href: string
   icon: React.ComponentType<{ className?: string }>
+  adminOnly?: boolean
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { label: 'Search',       href: '/search',       icon: Search },
-  { label: 'Dashboard',    href: '/',             icon: LayoutDashboard },
-  { label: 'Users',        href: '/users',        icon: Users },
-  { label: 'Roles',        href: '/roles',        icon: Shield },
-  { label: 'Projects',     href: '/projects',     icon: FolderGit },
-  { label: 'Code',         href: '/code',         icon: Code2 },
-  { label: 'API Keys',     href: '/api-keys',     icon: Key },
-  { label: 'Agents',       href: '/agents',       icon: Bot },
-  { label: 'Conventions',  href: '/conventions',  icon: BookMarked },
-  { label: 'Policies',     href: '/policies',     icon: ShieldAlert },
-  { label: 'Webhooks',     href: '/webhooks',     icon: Zap },
-  { label: 'Memories',     href: '/memories',     icon: Brain },
-  { label: 'Sessions',     href: '/sessions',     icon: MessageSquare },
-  { label: 'Tags',         href: '/tags',         icon: Hash },
-  { label: 'Collections',  href: '/collections',  icon: FolderOpen },
-  { label: 'Audit Log',    href: '/audit',        icon: ScrollText },
-  { label: 'Settings',     href: '/settings',     icon: Settings },
+interface NavGroup {
+  label: string
+  items: NavItem[]
+}
+
+// Sidebar nav grouped by domain (DESIGN_DIRECTION §4). adminOnly items are
+// visible to admins only — this preserves the prior per-href visibility filter.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: 'Overview',
+    items: [
+      { label: 'Search',      href: '/search',      icon: Search },
+      { label: 'Dashboard',   href: '/',            icon: LayoutDashboard },
+    ],
+  },
+  {
+    label: 'Knowledge',
+    items: [
+      { label: 'Memories',    href: '/memories',    icon: Brain },
+      { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true },
+      { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true },
+      { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true },
+      { label: 'Sessions',    href: '/sessions',    icon: MessageSquare },
+    ],
+  },
+  {
+    label: 'Code',
+    items: [
+      { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true },
+      { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true },
+    ],
+  },
+  {
+    label: 'Access',
+    items: [
+      { label: 'Users',       href: '/users',       icon: Users,         adminOnly: true },
+      { label: 'Roles',       href: '/roles',       icon: Shield,        adminOnly: true },
+      { label: 'API Keys',    href: '/api-keys',    icon: Key,           adminOnly: true },
+      { label: 'Agents',      href: '/agents',      icon: Bot,           adminOnly: true },
+      { label: 'Policies',    href: '/policies',    icon: ShieldAlert,   adminOnly: true },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { label: 'Webhooks',    href: '/webhooks',    icon: Zap,           adminOnly: true },
+      { label: 'Audit Log',   href: '/audit',       icon: ScrollText,    adminOnly: true },
+      { label: 'Settings',    href: '/settings',    icon: Settings },
+    ],
+  },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation()
   const { session } = useAuth()
-
-  const visibleItems = NAV_ITEMS.filter(item => {
-    if (
-      item.href === '/users' ||
-      item.href === '/audit' ||
-      item.href === '/roles' ||
-      item.href === '/projects' ||
-      item.href === '/code' ||
-      item.href === '/api-keys' ||
-      item.href === '/agents' ||
-      item.href === '/conventions' ||
-      item.href === '/policies' ||
-      item.href === '/webhooks' ||
-      item.href === '/collections' ||
-      item.href === '/tags'
-    ) {
-      return session?.user.role === 'admin'
-    }
-    return true
-  })
+  const isAdmin = session?.user.role === 'admin'
 
   return (
-    <nav className="flex flex-col gap-0.5 px-2">
-      {visibleItems.map(({ href, label, icon: Icon }) => {
-        const isActive =
-          href === '/'
-            ? location.pathname === '/'
-            : location.pathname.startsWith(href)
+    <nav className="flex flex-col gap-4 px-2">
+      {NAV_GROUPS.map(group => {
+        const items = group.items.filter(item => !item.adminOnly || isAdmin)
+        if (items.length === 0) return null
 
         return (
-          <Link
-            key={href}
-            to={href}
-            onClick={onNavigate}
-            className={cn(
-              'group flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-xs transition-colors duration-150 focus-visible:outline-none',
-              isActive
-                ? 'bg-white/[0.06] text-text-primary font-semibold'
-                : 'text-text-quaternary hover:text-text-secondary hover:bg-white/[0.04] font-normal',
-            )}
-          >
-            <Icon
-              className={cn(
-                'w-4 h-4 flex-shrink-0',
-                isActive ? 'text-text-primary' : 'text-text-quaternary group-hover:text-text-secondary',
-              )}
-            />
-            {label}
-          </Link>
+          <div key={group.label} className="flex flex-col gap-0.5">
+            <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-tertiary">
+              {group.label}
+            </p>
+            {items.map(({ href, label, icon: Icon }) => {
+              const isActive =
+                href === '/'
+                  ? location.pathname === '/'
+                  : location.pathname.startsWith(href)
+
+              return (
+                <Link
+                  key={href}
+                  to={href}
+                  onClick={onNavigate}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={cn(
+                    'group flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-[13px] transition-colors duration-150',
+                    FOCUS_RING,
+                    isActive
+                      ? 'bg-white/[0.06] text-text-primary font-semibold'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04] font-normal',
+                  )}
+                >
+                  <Icon
+                    className={cn(
+                      'w-4 h-4 flex-shrink-0',
+                      isActive ? 'text-text-primary' : 'text-text-tertiary group-hover:text-text-secondary',
+                    )}
+                  />
+                  {label}
+                </Link>
+              )
+            })}
+          </div>
         )
       })}
     </nav>
@@ -272,7 +305,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
       <div className="px-5 pt-6 pb-5">
         <div className="flex items-center gap-2">
           <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-          <p className="text-xs font-semibold text-text-primary">NexusMind</p>
+          <p className="text-[13px] font-semibold text-text-primary">NexusMind</p>
         </div>
         {session?.org.name && (
           <div className="mt-2 flex items-center gap-1.5">
@@ -283,7 +316,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
                 alt="org logo"
               />
             )}
-            <span className="text-xs font-semibold text-text-primary truncate max-w-full">
+            <span className="text-[13px] font-semibold text-text-primary truncate max-w-full">
               {session.org.name}
             </span>
           </div>
@@ -303,20 +336,20 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
         <div className="relative" ref={notifRef}>
           <button
             onClick={handleNotifOpen}
-            className="flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-text-quaternary hover:text-text-secondary hover:bg-white/[0.04] transition-colors duration-150 focus-visible:outline-none"
+            className={cn('flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-[13px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors duration-150', FOCUS_RING)}
             aria-label="Notifications"
           >
             <Bell className="w-4 h-4 shrink-0" />
-            <span className="text-xs">Notifications</span>
+            <span>Notifications</span>
             {unreadCount > 0 && (
-              <span className="ml-auto w-5 h-5 rounded-full bg-status-error text-white text-[9px] font-semibold flex items-center justify-center shrink-0">
+              <span className="ml-auto w-5 h-5 rounded-full bg-status-error text-white text-[11px] font-semibold flex items-center justify-center shrink-0">
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
           </button>
 
           {notifOpen && (
-            <div className="absolute bottom-full left-0 mb-2 w-72 bg-[#1d1d1f] border border-border-primary rounded-[18px] shadow-xl z-50 overflow-hidden">
+            <div className="absolute bottom-full left-0 mb-2 w-72 bg-background-secondary border border-border-primary rounded-[18px] z-50 overflow-hidden">
               <div className="px-4 py-3 border-b border-border-secondary/50">
                 <p className="text-xs font-semibold text-text-primary">Notifications</p>
               </div>
@@ -331,15 +364,15 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
                   >
                     <p className="text-xs text-text-secondary">{n.message}</p>
                     {n.actor && (
-                      <p className="text-[10px] text-text-quaternary mt-0.5">by {n.actor}</p>
+                      <p className="text-[11px] text-text-tertiary mt-0.5">by {n.actor}</p>
                     )}
-                    <p className="text-[10px] text-text-quaternary mt-0.5">
+                    <p className="text-[11px] text-text-tertiary mt-0.5">
                       {relativeTime(n.created_at)}
                     </p>
                   </div>
                 ))}
                 <hr className="border-border-secondary/30 my-1" />
-                <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold px-3 pb-1">Preferences</p>
+                <p className="text-[11px] text-text-tertiary uppercase tracking-wide font-semibold px-3 pb-1">Preferences</p>
                 {ALL_NOTIF_TYPES.map(type => (
                   <label key={type} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-white/[0.04] rounded-[8px]">
                     <input
@@ -360,14 +393,14 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
         <div className="flex items-center gap-1">
           <button
             onClick={handleLogout}
-            className="flex flex-1 items-center gap-3 px-3 py-2 rounded-[8px] text-xs text-text-quaternary hover:text-status-error hover:bg-white/[0.04] transition-colors duration-150 focus-visible:outline-none"
+            className={cn('flex flex-1 items-center gap-3 px-3 py-2 rounded-[8px] text-[13px] text-text-secondary hover:text-status-error hover:bg-white/[0.04] transition-colors duration-150', FOCUS_RING)}
           >
-            <LogOut className="w-4 h-4 flex-shrink-0 text-text-quaternary" />
+            <LogOut className="w-4 h-4 flex-shrink-0 text-text-secondary" />
             Sign out
           </button>
           <button
             onClick={onOpenShortcuts}
-            className="p-2 rounded-[8px] text-text-quaternary hover:text-text-secondary transition-colors"
+            className={cn('p-2 rounded-[8px] text-text-secondary hover:text-text-primary transition-colors', FOCUS_RING)}
             title="Keyboard shortcuts (?)"
             aria-label="Keyboard shortcuts"
           >
@@ -385,6 +418,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const { session } = useAuth()
   const navigate = useNavigate()
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
 
   const { data: orgSettings } = useQuery({
     queryKey: ['org-settings'],
@@ -421,8 +455,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [navigate])
 
+  // Escape closes the mobile drawer and returns focus to the trigger.
+  useEffect(() => {
+    if (!drawerOpen) return
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDrawerOpen(false)
+        menuButtonRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [drawerOpen])
+
   return (
-    <div className="h-screen overflow-hidden bg-[#1d1d1f] flex">
+    <div className="h-screen overflow-hidden bg-background-secondary flex">
+      {/* Skip to content — first tab stop, visible only when focused */}
+      <a
+        href="#main-content"
+        className={cn(
+          'sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2 focus:rounded-[8px] focus:bg-accent-blue focus:text-white focus:text-[13px] focus:font-medium',
+          FOCUS_RING,
+        )}
+      >
+        Skip to content
+      </a>
+
       {/* Desktop sidebar */}
       <aside className="hidden lg:flex flex-col fixed inset-y-0 left-0 w-52 border-r border-white/[0.06] bg-black z-30">
         <SidebarContent onOpenShortcuts={() => setShowShortcuts(true)} orgSettings={orgSettings} />
@@ -438,8 +496,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         />
       )}
 
-      {/* Mobile drawer */}
+      {/* Mobile drawer — inert + hidden from a11y tree while closed so its
+          links are not reachable by keyboard or screen readers offscreen */}
       <aside
+        inert={!drawerOpen}
+        aria-hidden={!drawerOpen || undefined}
         className={cn(
           'fixed inset-y-0 left-0 z-50 w-52 flex flex-col bg-black border-r border-white/[0.06] lg:hidden transition-transform duration-200',
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
@@ -448,7 +509,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="flex items-center justify-end px-4 py-4">
           <button
             onClick={() => setDrawerOpen(false)}
-            className="p-1 rounded-[5px] text-text-tertiary hover:text-text-secondary transition-colors"
+            className={cn('p-1 rounded-[5px] text-text-tertiary hover:text-text-primary transition-colors', FOCUS_RING)}
             aria-label="Close menu"
           >
             <X className="w-4 h-4" />
@@ -462,22 +523,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* Mobile top bar */}
         <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-black">
           <button
+            ref={menuButtonRef}
             onClick={() => setDrawerOpen(true)}
-            className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
+            className={cn('p-1.5 rounded-[5px] text-text-secondary hover:text-text-primary transition-colors', FOCUS_RING)}
             aria-label="Open menu"
           >
             <Menu className="w-4 h-4" />
           </button>
           <div className="flex items-center gap-2">
             <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-            <p className="text-xs font-semibold text-text-primary">NexusMind</p>
+            <p className="text-[13px] font-semibold text-text-primary">NexusMind</p>
           </div>
           {session?.org.name && (
-            <span className="ml-1 text-[10px] text-text-quaternary truncate">{session.org.name}</span>
+            <span className="ml-1 text-[11px] text-text-tertiary truncate">{session.org.name}</span>
           )}
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto focus:outline-none">
           {announcement && !dismissed && (
             <div className="mx-6 mt-4 mb-0 flex items-start gap-3 rounded-[11px] border border-accent-blue/30 bg-accent-blue/[0.08] px-4 py-3">
               <Megaphone className="w-4 h-4 text-accent-blue mt-0.5 shrink-0" />
@@ -487,7 +549,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   setDismissed(true)
                   sessionStorage.setItem(`nexusmind_announcement_dismissed_${announcement.slice(0, 20)}`, '1')
                 }}
-                className="text-text-quaternary hover:text-text-secondary transition-colors shrink-0"
+                className={cn('rounded-[5px] text-text-tertiary hover:text-text-primary transition-colors shrink-0', FOCUS_RING)}
                 aria-label="Dismiss announcement"
               >
                 <X className="w-3.5 h-3.5" />

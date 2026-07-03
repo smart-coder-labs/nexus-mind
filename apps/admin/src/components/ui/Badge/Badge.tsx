@@ -1,5 +1,5 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 
 import type { BadgeProps, BadgeVariant, BadgeSize } from './Badge.types';
 
@@ -9,20 +9,23 @@ import type { BadgeProps, BadgeVariant, BadgeSize } from './Badge.types';
 
 const baseStyles = `
   inline-flex items-center justify-center gap-1.5
-  font-semibold
+  font-medium
   rounded-full
   transition-apple
 `;
 
+// Single badge grammar (DESIGN_DIRECTION §5): tinted background at ~10% of a
+// status/accent color plus a 20% border. `default` is the neutral surface variant.
 const variantStyles: Record<BadgeVariant, string> = {
   default: `
-    bg-[#272729]
-    text-text-primary
+    bg-background-tertiary
+    text-text-secondary
     border border-border-primary
   `,
   primary: `
-    bg-accent-blue
-    text-white
+    bg-accent-blue/10
+    text-accent-blue
+    border border-accent-blue/20
   `,
   success: `
     bg-status-success/10
@@ -44,12 +47,17 @@ const variantStyles: Record<BadgeVariant, string> = {
     text-status-info
     border border-status-info/20
   `,
+  purple: `
+    bg-accent-purple/10
+    text-accent-purple
+    border border-accent-purple/20
+  `,
 };
 
 const sizeStyles: Record<BadgeSize, string> = {
-  sm: 'h-5 px-2 text-xs',
-  md: 'h-6 px-2.5 text-xs',
-  lg: 'h-7 px-3 text-base',
+  sm: 'h-5 px-2 text-[11px]',
+  md: 'h-6 px-2.5 text-[11px]',
+  lg: 'h-7 px-3 text-xs',
 };
 
 /* ========================================
@@ -68,6 +76,8 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
     },
     ref
   ) => {
+    const prefersReducedMotion = useReducedMotion();
+
     const combinedClassName = `
       ${baseStyles}
       ${variantStyles[variant]}
@@ -82,12 +92,13 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
     };
 
     const dotColorMap: Record<BadgeVariant, string> = {
-      default: 'bg-text-primary',
-      primary: 'bg-white',
+      default: 'bg-text-secondary',
+      primary: 'bg-accent-blue',
       success: 'bg-status-success',
       warning: 'bg-status-warning',
       error: 'bg-status-error',
       info: 'bg-status-info',
+      purple: 'bg-accent-purple',
     };
 
     return (
@@ -95,7 +106,7 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
         ref={ref}
         className={combinedClassName}
         role="status"
-        initial={{ opacity: 0, scale: 0.9 }}
+        initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{
           duration: 0.16,
@@ -141,6 +152,7 @@ export const NotificationBadge: React.FC<NotificationBadgeProps> = ({
   children,
   className = '',
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const displayCount = count > max ? `${max}+` : count;
   const shouldShow = count > 0 || showZero;
 
@@ -163,7 +175,7 @@ export const NotificationBadge: React.FC<NotificationBadgeProps> = ({
             rounded-full
             border-2 border-background-primary
           `}
-          initial={{ scale: 0 }}
+          initial={prefersReducedMotion ? false : { scale: 0 }}
           animate={{ scale: 1 }}
           transition={{
             type: 'spring',

@@ -1,5 +1,5 @@
 import React, { forwardRef } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import type { InputProps } from './Input.types';
 import {
     baseInputStyles,
@@ -41,13 +41,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         ref
     ) => {
         const hasError = !!error;
+        const prefersReducedMotion = useReducedMotion();
 
         const inputClassName = `
       ${baseInputStyles}
       ${sizeStyles[inputSize]}
       ${leftIcon ? withIconPadding.left[inputSize] : ''}
       ${rightIcon ? withIconPadding.right[inputSize] : ''}
-      ${hasError ? 'border-status-error focus:border-status-error/60' : ''}
+      ${hasError ? 'border-status-error' : ''}
       ${className}
     `.trim().replace(/\s+/g, ' ');
 
@@ -73,7 +74,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-[10px] text-text-quaternary mb-2">
+                    <label className="block text-xs font-medium text-text-secondary mb-2">
                         {label}
                     </label>
                 )}
@@ -100,7 +101,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                         disabled={disabled}
                         // Only set role="textbox" for text-like input types
                         role={(!props.type || ['text','email','password','search','tel','url'].includes(props.type as string)) ? 'textbox' : undefined}
-                        whileFocus={{
+                        whileFocus={prefersReducedMotion ? undefined : {
                             scale: 1.005,
                         }}
                         transition={{
@@ -133,7 +134,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-[10px]
+              mt-2 text-xs
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >
@@ -172,21 +173,23 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         ref
     ) => {
         const hasError = !!error;
+        const prefersReducedMotion = useReducedMotion();
 
         const textareaClassName = `
       ${baseInputStyles}
       px-4 py-3
+      text-[13px]
       rounded-[11px]
       min-h-[100px]
       resize-${resize}
-      ${hasError ? 'border-status-error focus:border-status-error/60' : ''}
+      ${hasError ? 'border-status-error' : ''}
       ${className}
     `.trim().replace(/\s+/g, ' ');
 
         return (
             <div className="w-full">
                 {label && (
-                    <label className="block text-[10px] text-text-quaternary mb-2">
+                    <label className="block text-xs font-medium text-text-secondary mb-2">
                         {label}
                     </label>
                 )}
@@ -197,7 +200,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
                     disabled={disabled}
                     role="textbox"
                     aria-multiline="true"
-                    whileFocus={{
+                    whileFocus={prefersReducedMotion ? undefined : {
                         scale: 1.005,
                     }}
                     transition={{
@@ -214,7 +217,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16 }}
                         className={`
-              mt-2 text-[10px]
+              mt-2 text-xs
               ${hasError ? 'text-status-error' : 'text-text-secondary'}
             `}
                     >

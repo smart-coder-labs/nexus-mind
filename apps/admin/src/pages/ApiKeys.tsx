@@ -6,46 +6,58 @@ import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { ApiKeyWithUser } from '../types'
 
+// Keyboard focus rings (design direction §6): 2px --color-focus-ring, 2px offset.
+const FOCUS_CANVAS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-secondary'
+
+// Server timestamps from SQLite datetime('now') are naive UTC (no zone). Parse
+// them as UTC so past events don't render in the future. No-op for zoned or
+// date-only strings (a bare date is already parsed as UTC midnight).
+function toDate(iso: string): Date {
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso)) return new Date(iso)
+  if (/\d{2}:\d{2}/.test(iso)) return new Date(iso.replace(' ', 'T') + 'Z')
+  return new Date(iso)
+}
+
 function RelativeTime({ iso }: { iso: string | null }) {
   if (!iso)
-    return <span className="text-xs text-text-quaternary italic">Never</span>
+    return <span className="text-[13px] text-text-tertiary">Never</span>
 
-  const days = differenceInDays(new Date(), new Date(iso))
+  const days = differenceInDays(new Date(), toDate(iso))
   const colorClass =
     days < 7 ? 'text-status-success' :
     days < 30 ? 'text-text-secondary' :
-    'text-text-quaternary'
+    'text-text-tertiary'
 
   return (
-    <span className={`text-xs ${colorClass}`} title={iso}>
-      {formatDistanceToNow(new Date(iso), { addSuffix: true })}
+    <span className={`text-[13px] ${colorClass}`} title={iso}>
+      {formatDistanceToNow(toDate(iso), { addSuffix: true })}
     </span>
   )
 }
 
 function ExpiryCell({ expiresAt }: { expiresAt: string | null }) {
   if (!expiresAt) {
-    return <span className="text-[10px] text-text-quaternary">Never</span>
+    return <span className="text-[12px] text-text-tertiary">Never</span>
   }
-  const expired = isPast(new Date(expiresAt))
+  const expired = isPast(toDate(expiresAt))
   if (expired) {
     return (
-      <span className="bg-status-error/10 text-status-error rounded-[5px] text-[10px] px-1.5 py-0.5">
+      <span className="bg-status-error/10 text-status-error rounded-full text-[11px] font-medium px-2 py-0.5">
         Expired
       </span>
     )
   }
-  const daysLeft = differenceInDays(new Date(expiresAt), new Date())
+  const daysLeft = differenceInDays(toDate(expiresAt), new Date())
   if (daysLeft < 7) {
     return (
-      <span className="bg-status-warning/10 text-status-warning rounded-[5px] text-[10px] px-1.5 py-0.5" title={expiresAt}>
-        {formatDistanceToNow(new Date(expiresAt), { addSuffix: true })}
+      <span className="bg-status-warning/10 text-status-warning rounded-full text-[11px] font-medium px-2 py-0.5" title={expiresAt}>
+        {formatDistanceToNow(toDate(expiresAt), { addSuffix: true })}
       </span>
     )
   }
   return (
-    <span className="bg-status-success/10 text-status-success rounded-[5px] text-[10px] px-1.5 py-0.5" title={expiresAt}>
-      {formatDistanceToNow(new Date(expiresAt), { addSuffix: true })}
+    <span className="bg-status-success/10 text-status-success rounded-full text-[11px] font-medium px-2 py-0.5" title={expiresAt}>
+      {formatDistanceToNow(toDate(expiresAt), { addSuffix: true })}
     </span>
   )
 }
@@ -56,32 +68,32 @@ function SkeletonRow() {
       {/* User cell */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="animate-pulse w-7 h-7 rounded-full bg-[#272729] shrink-0" />
+          <div className="animate-pulse w-7 h-7 rounded-full bg-background-tertiary shrink-0" />
           <div className="space-y-1.5">
-            <div className="animate-pulse h-3.5 bg-[#272729] rounded-[8px] w-24" />
-            <div className="animate-pulse h-3 bg-[#272729] rounded-[8px] w-32" />
+            <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-24" />
+            <div className="animate-pulse h-3 bg-background-tertiary rounded-[8px] w-32" />
           </div>
         </div>
       </td>
       {/* Label */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-[#272729] rounded-[8px] w-28" />
+        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-28" />
       </td>
       {/* Last used */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-[#272729] rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-20" />
       </td>
       {/* Created */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-[#272729] rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-20" />
       </td>
       {/* Expires */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-[#272729] rounded-[8px] w-16" />
+        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-16" />
       </td>
       {/* Action */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-6 bg-[#272729] rounded-[8px] w-14 ml-auto" />
+        <div className="animate-pulse h-6 bg-background-tertiary rounded-[8px] w-14 ml-auto" />
       </td>
     </tr>
   )
@@ -164,13 +176,13 @@ function CreateKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1d1d1f] shadow-2xl">
+      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-background-secondary">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">New API Key</h2>
           <button
             onClick={onClose}
-            className="rounded-full p-1 text-text-quaternary hover:text-text-secondary hover:bg-white/[0.06] transition-colors"
+            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06] transition-colors ${FOCUS_CANVAS}`}
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -180,14 +192,14 @@ function CreateKeyModal({
         {/* Form */}
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
           {error && (
-            <div className="rounded-[10px] border border-status-error/20 bg-status-error/5 px-3 py-2 text-xs text-status-error">
+            <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-3 py-2 text-[13px] text-status-error">
               {error}
             </div>
           )}
 
           {/* Name */}
           <div className="space-y-1.5">
-            <label className="block text-[10px] text-text-quaternary mb-1">
+            <label className="block text-[12px] font-medium text-text-secondary mb-1">
               Key Name <span className="text-status-error">*</span>
             </label>
             <input
@@ -195,20 +207,20 @@ function CreateKeyModal({
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               placeholder="e.g. CI/CD pipeline"
-              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary"
+              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary ${FOCUS_CANVAS}`}
               required
             />
           </div>
 
           {/* Role */}
           <div className="space-y-1.5">
-            <label className="block text-[10px] text-text-quaternary mb-1">
+            <label className="block text-[12px] font-medium text-text-secondary mb-1">
               Role
             </label>
             <select
               value={form.role}
               onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full"
+              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
             >
               <option value="admin">admin</option>
               <option value="member">member</option>
@@ -218,7 +230,7 @@ function CreateKeyModal({
 
           {/* Expiry */}
           <div className="space-y-1.5">
-            <label className="block text-[10px] text-text-quaternary mb-1">
+            <label className="block text-[12px] font-medium text-text-secondary mb-1">
               Expiry Date <span className="text-text-quaternary">(optional)</span>
             </label>
             <input
@@ -226,13 +238,13 @@ function CreateKeyModal({
               value={form.expires_at}
               onChange={(e) => setForm((f) => ({ ...f, expires_at: e.target.value }))}
               min={new Date().toISOString().slice(0, 10)}
-              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full"
+              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 h-9 focus:outline-none focus:border-accent-blue/60 w-full ${FOCUS_CANVAS}`}
             />
           </div>
 
           {/* Description */}
           <div className="space-y-1.5">
-            <label className="block text-[10px] text-text-quaternary mb-1">
+            <label className="block text-[12px] font-medium text-text-secondary mb-1">
               Description <span className="text-text-quaternary">(optional)</span>
             </label>
             <textarea
@@ -240,7 +252,7 @@ function CreateKeyModal({
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="What is this key for?"
               rows={2}
-              className="rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary resize-none"
+              className={`rounded-[11px] bg-white/[0.04] border border-border-primary text-[13px] text-text-secondary px-3 py-2 focus:outline-none focus:border-accent-blue/60 w-full placeholder:text-text-quaternary resize-none ${FOCUS_CANVAS}`}
             />
           </div>
 
@@ -249,14 +261,14 @@ function CreateKeyModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] transition-colors"
+              className={`flex-1 rounded-full border border-border-primary px-4 py-1.5 text-[13px] text-text-secondary hover:bg-white/[0.04] transition-colors ${FOCUS_CANVAS}`}
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMut.isPending}
-              className="flex-1 rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+              className={`flex-1 rounded-full bg-accent-blue px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors disabled:opacity-40 ${FOCUS_CANVAS}`}
             >
               {createMut.isPending ? 'Creating…' : 'Create Key'}
             </button>
@@ -286,13 +298,13 @@ function CreatedKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-[#1d1d1f] shadow-2xl">
+      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-background-secondary">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">Key Created</h2>
           <button
             onClick={onClose}
-            className="rounded-full p-1 text-text-quaternary hover:text-text-secondary hover:bg-white/[0.06] transition-colors"
+            className={`rounded-full p-1 text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06] transition-colors ${FOCUS_CANVAS}`}
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -301,24 +313,24 @@ function CreatedKeyModal({
 
         <div className="px-5 py-4 space-y-4">
           {/* Warning */}
-          <div className="rounded-[11px] bg-status-warning/10 border border-status-warning/30 p-3 text-xs text-status-warning leading-relaxed">
+          <div className="rounded-[11px] bg-status-warning/10 border border-status-warning/30 p-3 text-[13px] text-status-warning leading-relaxed">
             Save this key now — it won't be shown again.
           </div>
 
           <div className="space-y-1.5">
-            <p className="text-[10px] text-text-quaternary mb-1">
+            <p className="text-[12px] text-text-tertiary mb-1">
               {created.name}
             </p>
             <div className="relative flex items-center gap-2">
               <code
                 ref={codeRef}
-                className="flex-1 font-mono text-xs bg-white/[0.06] rounded-[8px] px-3 py-2 break-all text-text-primary select-all"
+                className="flex-1 font-mono text-[13px] bg-white/[0.06] rounded-[11px] px-3 py-2 break-all text-text-primary select-all"
               >
                 {created.key}
               </code>
               <button
                 onClick={handleCopy}
-                className="shrink-0 p-1.5 transition-colors"
+                className={`shrink-0 p-1.5 rounded-[8px] transition-colors ${FOCUS_CANVAS}`}
                 aria-label="Copy key"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5 text-text-quaternary hover:text-text-primary" />}
@@ -328,7 +340,7 @@ function CreatedKeyModal({
 
           <button
             onClick={onClose}
-            className="w-full rounded-full bg-accent-blue px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
+            className={`w-full rounded-full bg-accent-blue px-4 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors ${FOCUS_CANVAS}`}
           >
             Done
           </button>
@@ -375,7 +387,7 @@ export default function ApiKeys() {
     revokeMut.mutate(key.id)
   }
 
-  const expiredKeys = (keys ?? []).filter((k: any) => k.expires_at && isPast(new Date(k.expires_at)))
+  const expiredKeys = (keys ?? []).filter((k: any) => k.expires_at && isPast(toDate(k.expires_at)))
 
   const handleKeyCreated = (key: CreatedKey) => {
     setShowCreateModal(false)
@@ -384,12 +396,12 @@ export default function ApiKeys() {
   }
 
   return (
-    <div className="p-8 max-w-5xl mx-auto space-y-8">
+    <div className="p-6 max-w-5xl mx-auto space-y-8">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-[21px] font-semibold tracking-[0.231px] text-text-primary">API Keys</h1>
-          <p className="mt-1 text-[14px] text-text-tertiary tracking-[-0.224px]">
+          <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">API Keys</h1>
+          <p className="mt-1 text-[13px] text-text-secondary">
             All active API keys in this organization.
           </p>
         </div>
@@ -399,7 +411,7 @@ export default function ApiKeys() {
             <button
               onClick={() => bulkRevokeExpiredMut.mutate(expiredKeys.map((k: any) => k.id))}
               disabled={bulkRevokeExpiredMut.isPending}
-              className="border border-status-error/40 text-status-error rounded-full px-3 py-1.5 text-xs hover:bg-status-error/10 transition-colors disabled:opacity-40 flex items-center gap-1.5"
+              className={`border border-status-error/40 text-status-error rounded-full px-3 py-1.5 text-[13px] hover:bg-status-error/10 transition-colors disabled:opacity-40 flex items-center gap-1.5 ${FOCUS_CANVAS}`}
             >
               <Trash2 className="w-3 h-3" />
               {bulkRevokeExpiredMut.isPending ? 'Revoking…' : `Revoke ${expiredKeys.length} expired`}
@@ -408,7 +420,7 @@ export default function ApiKeys() {
 
           <button
             onClick={() => setShowCreateModal(true)}
-            className="flex items-center gap-1.5 rounded-full bg-accent-blue px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
+            className={`flex items-center gap-1.5 rounded-full bg-accent-blue px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-accent-blue-hover transition-colors ${FOCUS_CANVAS}`}
           >
             <Plus className="w-3.5 h-3.5" />
             New Key
@@ -418,12 +430,12 @@ export default function ApiKeys() {
 
       {/* Error notifications */}
       {revokeError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-xs text-status-error">
+        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-[13px] text-status-error">
           {revokeError}
         </div>
       )}
       {bulkError && (
-        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-xs text-status-error">
+        <div className="rounded-[11px] border border-status-error/20 bg-status-error/5 px-4 py-3 text-[13px] text-status-error">
           {bulkError}
         </div>
       )}
@@ -431,15 +443,15 @@ export default function ApiKeys() {
       {/* Table */}
       <div className="rounded-[18px] border border-border-primary overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full text-[13px]">
             <thead>
-              <tr className="border-b border-border-primary bg-[#272729]/40">
-                <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">User</th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">Label</th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">Last used</th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">Created</th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">Expires</th>
-                <th className="px-4 py-3 text-right text-[10px] font-semibold text-text-quaternary uppercase tracking-wider">Action</th>
+              <tr className="border-b border-border-primary bg-background-tertiary/40">
+                <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">User</th>
+                <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Label</th>
+                <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Last used</th>
+                <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Created</th>
+                <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Expires</th>
+                <th className="px-4 py-3 text-right text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -450,8 +462,8 @@ export default function ApiKeys() {
                   <td colSpan={6} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <KeyIcon />
-                      <p className="text-xs font-semibold text-text-tertiary">No active API keys</p>
-                      <p className="text-xs text-text-quaternary">
+                      <p className="text-[13px] font-semibold text-text-tertiary">No active API keys</p>
+                      <p className="text-[13px] text-text-tertiary">
                         API keys created by organization members will appear here.
                       </p>
                     </div>
@@ -467,18 +479,18 @@ export default function ApiKeys() {
                   {/* User cell */}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 text-accent-blue text-xs font-semibold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 text-accent-blue text-[13px] font-semibold flex items-center justify-center shrink-0">
                         {key.user_name?.charAt(0).toUpperCase() ?? '?'}
                       </div>
                       <div>
-                        <div className="text-xs text-text-primary font-semibold">{key.user_name}</div>
-                        <div className="text-xs text-text-tertiary mt-0.5">{key.user_email}</div>
+                        <div className="text-[13px] text-text-primary font-semibold">{key.user_name}</div>
+                        <div className="text-[13px] text-text-tertiary mt-0.5">{key.user_email}</div>
                       </div>
                     </div>
                   </td>
 
                   {/* Label cell */}
-                  <td className="px-4 py-3 text-xs text-text-secondary">
+                  <td className="px-4 py-3 text-[13px] text-text-secondary">
                     {key.label}
                   </td>
 
@@ -486,15 +498,15 @@ export default function ApiKeys() {
                   <td className="px-4 py-3">
                     <div className="space-y-0.5">
                       <RelativeTime iso={key.last_used} />
-                      <div className="text-xs text-text-quaternary">
+                      <div className="text-[12px] text-text-tertiary">
                         {(key.times_used ?? 0)} {(key.times_used ?? 0) === 1 ? 'use' : 'uses'}
                       </div>
                     </div>
                   </td>
 
                   {/* Created cell */}
-                  <td className="px-4 py-3 text-text-tertiary text-xs">
-                    {new Date(key.created_at).toLocaleDateString()}
+                  <td className="px-4 py-3 text-text-tertiary text-[13px]">
+                    {toDate(key.created_at).toLocaleDateString()}
                   </td>
 
                   {/* Expires cell */}
@@ -507,7 +519,7 @@ export default function ApiKeys() {
                     <button
                       onClick={() => handleRevoke(key)}
                       disabled={revokeMut.isPending}
-                      className="text-xs border border-status-error/30 rounded-[8px] px-3 py-1 text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50"
+                      className={`text-[13px] border border-status-error/30 rounded-[8px] px-3 py-1 text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50 ${FOCUS_CANVAS}`}
                       aria-label={`Revoke key for ${key.user_name}`}
                     >
                       Revoke

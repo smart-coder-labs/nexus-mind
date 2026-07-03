@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+
+// Visible keyboard-focus indicator (DESIGN_DIRECTION §6).
+const FOCUS_RING =
+    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring';
 
 /* ========================================
    TYPES
@@ -81,6 +85,7 @@ export const Modal: React.FC<ModalProps> = ({
     position = 'center',
 }) => {
     const [mounted, setMounted] = useState(false);
+    const prefersReducedMotion = useReducedMotion();
 
     useEffect(() => {
         setMounted(true);
@@ -193,6 +198,14 @@ export const Modal: React.FC<ModalProps> = ({
     const positionKey = position === 'bottom' && size === 'full' ? 'bottomFull' : position;
     const config = modalConfig[positionKey] || modalConfig.center;
 
+    // Respect prefers-reduced-motion (DESIGN_DIRECTION §6): drop transforms, fade only.
+    const resolvedVariants = prefersReducedMotion
+        ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
+        : variants[config.variant];
+    const contentTransition = prefersReducedMotion
+        ? { duration: 0 }
+        : { type: 'spring' as const, stiffness: 300, damping: 30, mass: 0.8 };
+
     // Prevent scrolling behind modal
     useEffect(() => {
         if (open) {
@@ -216,7 +229,7 @@ export const Modal: React.FC<ModalProps> = ({
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{
-                            duration: 0.22,
+                            duration: prefersReducedMotion ? 0 : 0.22,
                             ease: [0.16, 1, 0.3, 1],
                         }}
                         onClick={() => onOpenChange(false)}
@@ -226,16 +239,11 @@ export const Modal: React.FC<ModalProps> = ({
                     {/* Content */}
                     <motion.div
                         ref={contentRef}
-                        className={`w-full ${sizeStyles[size]} bg-[#1d1d1f] border border-border-primary p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
-                        initial={variants[config.variant]?.initial}
-                        animate={variants[config.variant]?.animate}
-                        exit={variants[config.variant]?.exit}
-                        transition={{
-                            type: 'spring',
-                            stiffness: 300,
-                            damping: 30,
-                            mass: 0.8,
-                        }}
+                        className={`w-full ${sizeStyles[size]} bg-background-secondary border border-border-primary p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
+                        initial={resolvedVariants?.initial}
+                        animate={resolvedVariants?.animate}
+                        exit={resolvedVariants?.exit}
+                        transition={contentTransition}
                         role="dialog"
                         aria-modal="true"
                         tabIndex={-1}
@@ -272,7 +280,7 @@ export const ModalTitle: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <h2 className={`text-xs font-semibold text-text-primary ${className}`}>
+    <h2 className={`text-[15px] font-semibold text-text-primary ${className}`}>
         {children}
     </h2>
 );
@@ -281,7 +289,7 @@ export const ModalDescription: React.FC<{
     children: React.ReactNode;
     className?: string;
 }> = ({ children, className = '' }) => (
-    <p className={`text-xs text-text-secondary mt-2 ${className}`}>
+    <p className={`text-[13px] text-text-secondary mt-2 ${className}`}>
         {children}
     </p>
 );
@@ -322,6 +330,7 @@ export const ModalCloseButton: React.FC<{ className?: string }> = ({
     className = '',
 }) => {
     const { onClose } = React.useContext(ModalContext);
+    const prefersReducedMotion = useReducedMotion();
     return (
         <motion.button
             onClick={onClose}
@@ -330,17 +339,16 @@ export const ModalCloseButton: React.FC<{ className?: string }> = ({
         w-8 h-8
         flex items-center justify-center
         rounded-full
-        bg-[#272729]
+        bg-background-tertiary
         text-text-secondary
-        hover:bg-[#1d1d1f]
+        hover:bg-background-secondary
         hover:text-text-primary
         transition-apple
-        focus:outline-none
-        focus-visible:outline-none
+        ${FOCUS_RING}
         ${className}
       `}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={prefersReducedMotion ? undefined : { scale: 1.05 }}
+            whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
             aria-label="Close"
         >
             <svg
