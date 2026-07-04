@@ -27,11 +27,13 @@
   --color-surface-glass: rgba(6, 5, 9, 0.72);
   --color-surface-glass-dark: rgba(6, 5, 9, 0.85);
 
-  /* Text */
+  /* Text — neutral ladder; violet is reserved for links/emphasis (accent-violet).
+     Values chosen for AA contrast on the near-black canvas (#060509):
+     secondary 9.6:1, tertiary 5.8:1; quaternary is dim/decorative only. */
   --color-text-primary: #faf5ff;
-  --color-text-secondary: #a78bfa;
-  --color-text-tertiary: #7c3aed;
-  --color-text-quaternary: #6d28d9;
+  --color-text-secondary: #b5b0c4;
+  --color-text-tertiary: #8b8698;
+  --color-text-quaternary: #6b6676;
   --color-text-inverse: #060509;
 
   /* Border */
@@ -39,11 +41,18 @@
   --color-border-secondary: rgba(167, 139, 250, 0.06);
   --color-border-focus: rgba(167, 139, 250, 0.5);
 
-  /* Accent — amber/violet for internal ops distinction */
-  --color-accent-blue: #f59e0b;
-  --color-accent-blue-hover: #d97706;
-  --color-accent-blue-active: #b45309;
-  --color-accent-blue-tint: rgba(245, 158, 11, 0.12);
+  /* Accent — amber primary for internal-ops distinction */
+  --color-accent-primary: #f59e0b;
+  --color-accent-primary-hover: #d97706;
+  --color-accent-primary-active: #b45309;
+  --color-accent-primary-tint: rgba(245, 158, 11, 0.12);
+
+  /* Deprecated aliases — keep existing `accent-blue` classes working during
+     migration. The accent is amber, not blue; prefer `accent-primary` in new code. */
+  --color-accent-blue: var(--color-accent-primary);
+  --color-accent-blue-hover: var(--color-accent-primary-hover);
+  --color-accent-blue-active: var(--color-accent-primary-active);
+  --color-accent-blue-tint: var(--color-accent-primary-tint);
 
   /* Secondary accent */
   --color-accent-violet: #a78bfa;
@@ -88,6 +97,12 @@
   --color-border-secondary: var(--color-border-secondary);
   --color-border-focus: var(--color-border-focus);
 
+  --color-accent-primary: var(--color-accent-primary);
+  --color-accent-primary-hover: var(--color-accent-primary-hover);
+  --color-accent-primary-active: var(--color-accent-primary-active);
+  --color-accent-primary-tint: var(--color-accent-primary-tint);
+
+  /* Deprecated aliases — keep `accent-blue` utilities working during migration */
   --color-accent-blue: var(--color-accent-blue);
   --color-accent-blue-hover: var(--color-accent-blue-hover);
   --color-accent-blue-active: var(--color-accent-blue-active);

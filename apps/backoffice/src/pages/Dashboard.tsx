@@ -160,7 +160,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
-                  <span className="text-xs text-text-quaternary">
+                  <span className="text-xs text-text-tertiary">
                     {org.user_count} users · {org.memory_count} memories
                   </span>
                   <span className="text-xs text-text-tertiary">
