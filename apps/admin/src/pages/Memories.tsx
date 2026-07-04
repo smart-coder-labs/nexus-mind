@@ -1,4 +1,8 @@
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import React, { useMemo, useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
+
+// Lazy-load the 3D graph tab so react-force-graph-3d is only bundled/loaded
+// when the Graph tab is actually activated.
+const MemoryGraphTab = lazy(() => import('./memories/MemoryGraphTab'))
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
@@ -7,7 +11,7 @@ import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
-import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus } from 'lucide-react'
+import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, Share2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
@@ -1060,7 +1064,7 @@ export default function Memories() {
   const [mode, setMode] = useState<'keyword' | 'hybrid'>('hybrid')
   const [selected, setSelected] = useState<Memory | null>(null)
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections'>('memories')
+  const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections' | 'graph'>('memories')
   const [createMemoryOpen, setCreateMemoryOpen] = useState(false)
 
   // Open create modal when navigated here with ?new=1 (e.g. via Cmd+N from Layout)
@@ -1771,7 +1775,7 @@ export default function Memories() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Select mode controls — admin only, memories tab only */}
           {isAdmin && activeTab === 'memories' && (
             selectMode ? (
@@ -2042,12 +2046,12 @@ export default function Memories() {
       )}
 
       {/* Tabs */}
-      <div className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 flex w-fit">
-        {(['memories', 'sessions', 'tags', 'duplicates', 'collections'] as const).map(tab => (
+      <div className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 flex w-fit overflow-x-auto">
+        {(['memories', 'sessions', 'tags', 'duplicates', 'collections', 'graph'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors whitespace-nowrap ${
               activeTab === tab
                 ? 'bg-white/[0.08] text-text-primary font-semibold'
                 : 'text-text-secondary hover:text-text-primary font-normal'
@@ -2069,6 +2073,8 @@ export default function Memories() {
                     </span>
                   )}
                 </>
+              : tab === 'graph'
+              ? <><Share2 className="w-3.5 h-3.5" /> Graph</>
               : <>
                   <Folder className="w-3.5 h-3.5" />
                   Collections
@@ -3338,6 +3344,17 @@ export default function Memories() {
             })
           )}
         </div>
+      )}
+
+      {/* Graph Tab */}
+      {activeTab === 'graph' && (
+        <Suspense fallback={
+          <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
+            <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
+          </div>
+        }>
+          <MemoryGraphTab />
+        </Suspense>
       )}
 
       {/* Create Memory Modal */}

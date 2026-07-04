@@ -4,8 +4,10 @@ import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters } from '../types'
-import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, X, Share2, List } from 'lucide-react'
 import { ActivityTimeline } from '../components/ActivityTimeline'
+import ForceGraph3D from 'react-force-graph-3d'
+import { escapeHtml } from '@/lib/utils'
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -78,8 +80,46 @@ export default function AuditLog() {
     setPage(0)
   }
 
+  const [viewMode, setViewMode] = useState<'list' | 'graph'>('list')
   const [exporting, setExporting] = useState(false)
   const [exportingServer, setExportingServer] = useState(false)
+
+  // Derive graph data from audit entries (client-side, no extra fetch)
+  const auditGraphData = useMemo(() => {
+    if (!entries || entries.length === 0) return { nodes: [], links: [] }
+
+    type GNode = { id: string; type: string; label: string }
+    type GLink = { source: string; target: string; type: string }
+
+    const nodeMap = new Map<string, GNode>()
+    const links: GLink[] = []
+
+    for (const entry of entries) {
+      // Actor node (user)
+      const actorId = `user:${entry.user_id}`
+      if (!nodeMap.has(actorId)) {
+        nodeMap.set(actorId, {
+          id: actorId,
+          type: 'Actor',
+          label: userMap.get(entry.user_id) ?? entry.user_id.slice(0, 8),
+        })
+      }
+
+      // Resource node
+      const resourceKey = `${entry.resource_type}:${entry.resource_id ?? 'unknown'}`
+      if (!nodeMap.has(resourceKey)) {
+        nodeMap.set(resourceKey, {
+          id: resourceKey,
+          type: 'Resource',
+          label: `${entry.resource_type} ${(entry.resource_id ?? '').slice(0, 8)}`,
+        })
+      }
+
+      links.push({ source: actorId, target: resourceKey, type: entry.action })
+    }
+
+    return { nodes: Array.from(nodeMap.values()), links }
+  }, [entries, userMap])
 
   const handleExportCsv = useCallback(async () => {
     setExporting(true)
@@ -160,28 +200,58 @@ export default function AuditLog() {
           <h1 className="text-base font-semibold text-text-primary">Audit Log</h1>
           <p className="text-xs text-text-quaternary mt-0.5">All actions performed in your organization</p>
         </div>
-        {session?.user.role === 'admin' && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          {/* View toggle */}
+          <div className="flex items-center gap-0.5 bg-white/[0.04] rounded-full p-0.5">
             <button
-              onClick={handleExportCsv}
-              disabled={exporting || exportingServer}
-              className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
-              aria-label="Export audit log as CSV"
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-white/[0.08] text-text-primary'
+                  : 'text-text-quaternary hover:text-text-secondary'
+              }`}
+              aria-label="List view"
             >
-              <Download className="w-3 h-3" />
-              {exporting ? 'Exporting…' : 'Export CSV'}
+              <List className="w-3 h-3" /> List
             </button>
             <button
-              onClick={handleExportServer}
-              disabled={exporting || exportingServer}
-              className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
-              aria-label="Export audit log via API"
+              type="button"
+              onClick={() => setViewMode('graph')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors ${
+                viewMode === 'graph'
+                  ? 'bg-white/[0.08] text-text-primary'
+                  : 'text-text-quaternary hover:text-text-secondary'
+              }`}
+              aria-label="Graph view"
             >
-              <Download className="w-3 h-3" />
-              {exportingServer ? 'Exporting…' : 'Export'}
+              <Share2 className="w-3 h-3" /> Graph
             </button>
           </div>
-        )}
+
+          {session?.user.role === 'admin' && (
+            <>
+              <button
+                onClick={handleExportCsv}
+                disabled={exporting || exportingServer}
+                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                aria-label="Export audit log as CSV"
+              >
+                <Download className="w-3 h-3" />
+                {exporting ? 'Exporting…' : 'Export CSV'}
+              </button>
+              <button
+                onClick={handleExportServer}
+                disabled={exporting || exportingServer}
+                className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                aria-label="Export audit log via API"
+              >
+                <Download className="w-3 h-3" />
+                {exportingServer ? 'Exporting…' : 'Export'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
@@ -244,7 +314,7 @@ export default function AuditLog() {
       )}
 
       {/* Timeline (same design as the dashboard Recent Activity) */}
-      {!entriesError && (
+      {!entriesError && viewMode === 'list' && (
         <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-5">
           <ActivityTimeline
             entries={entries}
@@ -256,6 +326,74 @@ export default function AuditLog() {
               ? 'No events match the current filters. Try adjusting or clearing them.'
               : 'Actions performed in your organization will appear here as they happen.'}
           />
+        </div>
+      )}
+
+      {/* Graph view */}
+      {!entriesError && viewMode === 'graph' && (
+        <div>
+          {isLoading ? (
+            <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
+              <div className="w-5 h-5 animate-spin rounded-full border-2 border-text-quaternary border-t-transparent" />
+            </div>
+          ) : !entries || entries.length === 0 ? (
+            <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
+              <Share2 className="w-6 h-6 text-text-quaternary/40 mx-auto" />
+              <p className="text-xs font-semibold text-text-secondary">No audit events</p>
+              <p className="text-xs text-text-quaternary">
+                Apply filters or wait for activity to appear in the graph.
+              </p>
+            </div>
+          ) : (
+            <div className="relative border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 500 }}>
+              <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
+                <span>{auditGraphData.nodes.length} nodes</span>
+                <span>·</span>
+                <span>{auditGraphData.links.length} actions</span>
+                <span className="ml-auto">
+                  <span
+                    className="inline-flex items-center gap-1 mr-3"
+                    style={{ color: '#fb923c' }}
+                  >
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#fb923c' }} />
+                    Actor
+                  </span>
+                  <span
+                    className="inline-flex items-center gap-1"
+                    style={{ color: '#2997ff' }}
+                  >
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#2997ff' }} />
+                    Resource
+                  </span>
+                </span>
+                <span className="text-text-quaternary/70">hover for info · drag to rotate</span>
+              </div>
+              <ForceGraph3D
+                graphData={auditGraphData}
+                nodeColor={(node: object) => {
+                  const n = node as { type: string }
+                  return n.type === 'Actor' ? '#fb923c' : '#2997ff'
+                }}
+                nodeLabel={(node: object) => {
+                  const n = node as { id: string; type: string; label: string }
+                  const color = n.type === 'Actor' ? '#fb923c' : '#2997ff'
+                  return `<div style="padding:6px 9px;background:#16161a;border:1px solid #2a2a2e;border-radius:8px;font-family:ui-sans-serif,system-ui;">
+                    <div style="font-size:12px;font-weight:600;color:#e5e7eb;">${escapeHtml(n.label)}</div>
+                    <div style="font-size:10px;color:${color};margin-top:1px;">${n.type}</div>
+                  </div>`
+                }}
+                linkColor={() => '#475569'}
+                linkWidth={0.5}
+                linkOpacity={0.5}
+                linkDirectionalArrowLength={2.5}
+                linkDirectionalArrowRelPos={1}
+                nodeRelSize={4}
+                nodeOpacity={0.9}
+                backgroundColor="#111113"
+                showNavInfo={false}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

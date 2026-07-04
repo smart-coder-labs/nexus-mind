@@ -55,6 +55,7 @@ import type {
   Convention,
   CreateConventionRequest,
   UpdateConventionRequest,
+  MemoryGraphResponse,
 } from '../types'
 
 export class NexusMindClient {
@@ -462,6 +463,17 @@ export class NexusMindClient {
     if (opts.limit != null) qs.set('limit', String(opts.limit))
     if (opts.offset != null) qs.set('offset', String(opts.offset))
     return this.request(`/v1/code/graph?${qs}`)
+  }
+
+  getMemoryGraph(
+    project: string,
+    opts: { since?: string; limit?: number; offset?: number } = {},
+  ): Promise<MemoryGraphResponse> {
+    const qs = new URLSearchParams({ project })
+    if (opts.since) qs.set('since', opts.since)
+    if (opts.limit != null) qs.set('limit', String(opts.limit))
+    if (opts.offset != null) qs.set('offset', String(opts.offset))
+    return this.request<MemoryGraphResponse>(`/v1/memory/graph?${qs}`)
   }
 
   getCodeSnippet(project: string, file: string, start?: number, end?: number): Promise<CodeSnippet> {

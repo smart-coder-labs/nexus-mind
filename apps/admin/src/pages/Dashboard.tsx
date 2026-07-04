@@ -6,13 +6,16 @@ import { createClient } from '../api/client'
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { Badge } from '@/components/ui/Badge/Badge'
-import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight } from 'lucide-react'
+import { cn, escapeHtml } from '@/lib/utils'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight, Share2, List } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
+import { DISABLED_NAV_HREFS } from '../config/disabled-sections'
+import ForceGraph3D from 'react-force-graph-3d'
 
 type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends' | 'memory-health'
 const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'memory-trends', 'memory-health', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
+const DASHBOARD_VIEW_KEY = 'nexusmind-dashboard-view'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
   const url = URL.createObjectURL(blob)
@@ -168,6 +171,20 @@ export default function Dashboard() {
 
   const [period, setPeriod] = useState<7 | 30 | 90>(30)
 
+  const [dashboardView, setDashboardView] = useState<'list' | 'graph'>(() => {
+    try {
+      const stored = localStorage.getItem(DASHBOARD_VIEW_KEY)
+      return stored === 'graph' ? 'graph' : 'list'
+    } catch {
+      return 'list'
+    }
+  })
+
+  const handleDashboardViewChange = (view: 'list' | 'graph') => {
+    setDashboardView(view)
+    try { localStorage.setItem(DASHBOARD_VIEW_KEY, view) } catch { /* ignore */ }
+  }
+
   const [hiddenCards, setHiddenCards] = useState<CardKey[]>(() => {
     try { return JSON.parse(localStorage.getItem(CARDS_STORAGE_KEY) ?? '[]') }
     catch { return [] }
@@ -295,7 +312,8 @@ export default function Dashboard() {
     queryKey: ['api-keys-check'],
     queryFn: () => client.listOrgKeys(),
     staleTime: 5 * 60_000,
-    enabled: isAdmin,
+    // Only feeds the "Create an API key" checklist item — skip while that section is disabled.
+    enabled: isAdmin && !DISABLED_NAV_HREFS.has('/api-keys'),
   })
 
   const { data: healthData } = useQuery({
@@ -312,6 +330,50 @@ export default function Dashboard() {
     conventions.forEach(c => counts.set(c.category ?? 'uncategorized', (counts.get(c.category ?? 'uncategorized') ?? 0) + 1))
     return [...counts.entries()].map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count)
   }, [conventions])
+
+  // Derive overview graph topology from already-fetched dashboard data
+  const dashboardGraphData = useMemo(() => {
+    type GNode = { id: string; type: string; label: string }
+    type GLink = { source: string; target: string; type: string }
+
+    const nodes: GNode[] = []
+    const links: GLink[] = []
+
+    // Project nodes
+    const activeProjects = (projects ?? []).filter(p => !p.archived_at)
+    for (const p of activeProjects) {
+      nodes.push({ id: `project:${p.id}`, type: 'Project', label: p.name })
+    }
+
+    // User nodes
+    for (const u of (users ?? [])) {
+      nodes.push({ id: `user:${u.id}`, type: 'User', label: u.name })
+    }
+
+    // Tag nodes — top 10 from trends by_project (project names → tags via tag stats)
+    const tagStats = (trends?.by_project ?? []).slice(0, 10)
+    for (const t of tagStats) {
+      const tagId = `tag:${t.name}`
+      if (!nodes.find(n => n.id === tagId)) {
+        nodes.push({ id: tagId, type: 'Tag', label: t.name })
+      }
+      // Link project to tag if matching project found
+      const matchingProject = activeProjects.find(p => p.name === t.name)
+      if (matchingProject) {
+        links.push({ source: `project:${matchingProject.id}`, target: tagId, type: 'has_tag' })
+      }
+    }
+
+    // User → Project links (no direct contributor data, link all users to their org)
+    // For topology interest, link each user to the first project (if any)
+    if (activeProjects.length > 0 && users && users.length > 0) {
+      for (const u of users.slice(0, 5)) {
+        links.push({ source: `user:${u.id}`, target: `project:${activeProjects[0].id}`, type: 'member_of' })
+      }
+    }
+
+    return { nodes, links }
+  }, [projects, users, trends])
 
   const [dismissed, setDismissed] = useState(
     () => localStorage.getItem(ONBOARDING_DISMISSED_KEY) === 'true'
@@ -401,6 +463,38 @@ export default function Dashboard() {
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
+            {/* Overview / Graph toggle */}
+            <div className="flex items-center gap-0.5 bg-white/[0.04] rounded-full p-0.5">
+              <button
+                type="button"
+                onClick={() => handleDashboardViewChange('list')}
+                className={cn(
+                  'flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition-colors',
+                  FOCUS_CANVAS,
+                  dashboardView === 'list'
+                    ? 'bg-white/[0.08] text-text-primary'
+                    : 'text-text-quaternary hover:text-text-secondary'
+                )}
+                aria-label="Overview"
+              >
+                <List className="w-3 h-3" /> Overview
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDashboardViewChange('graph')}
+                className={cn(
+                  'flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition-colors',
+                  FOCUS_CANVAS,
+                  dashboardView === 'graph'
+                    ? 'bg-white/[0.08] text-text-primary'
+                    : 'text-text-quaternary hover:text-text-secondary'
+                )}
+                aria-label="Graph"
+              >
+                <Share2 className="w-3 h-3" /> Graph
+              </button>
+            </div>
+
             <div className="flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5">
               {([7, 30, 90] as const).map(d => (
                 <button
@@ -454,6 +548,73 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Graph view — topology overview of projects, users, and tags */}
+      {dashboardView === 'graph' && isAdmin && (
+        <div>
+          {(!projects && !users) ? (
+            <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
+              <div className="w-5 h-5 animate-spin rounded-full border-2 border-text-quaternary border-t-transparent" />
+            </div>
+          ) : dashboardGraphData.nodes.length === 0 ? (
+            <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
+              <Share2 className="w-6 h-6 text-text-quaternary/40 mx-auto" />
+              <p className="text-xs font-semibold text-text-secondary">No data to visualize</p>
+              <p className="text-xs text-text-quaternary">
+                Add projects and invite users to see the organization topology.
+              </p>
+            </div>
+          ) : (
+            <div className="border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 500 }}>
+              <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
+                <span>{dashboardGraphData.nodes.length} nodes</span>
+                <span>·</span>
+                <span>{dashboardGraphData.links.length} relationships</span>
+                <span className="ml-auto">
+                  <span className="inline-flex items-center gap-1 mr-3" style={{ color: '#6366f1' }}>
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#6366f1' }} /> Project
+                  </span>
+                  <span className="inline-flex items-center gap-1 mr-3" style={{ color: '#fb923c' }}>
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#fb923c' }} /> User
+                  </span>
+                  <span className="inline-flex items-center gap-1" style={{ color: '#34d399' }}>
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: '#34d399' }} /> Tag
+                  </span>
+                </span>
+                <span className="text-text-quaternary/70">hover for info · drag to rotate</span>
+              </div>
+              <ForceGraph3D
+                graphData={dashboardGraphData}
+                nodeColor={(node: object) => {
+                  const n = node as { type: string }
+                  if (n.type === 'Project') return '#6366f1'
+                  if (n.type === 'User') return '#fb923c'
+                  if (n.type === 'Tag') return '#34d399'
+                  return '#94a3b8'
+                }}
+                nodeLabel={(node: object) => {
+                  const n = node as { id: string; type: string; label: string }
+                  const colors: Record<string, string> = { Project: '#6366f1', User: '#fb923c', Tag: '#34d399' }
+                  const color = colors[n.type] ?? '#94a3b8'
+                  return `<div style="padding:6px 9px;background:#16161a;border:1px solid #2a2a2e;border-radius:8px;font-family:ui-sans-serif,system-ui;">
+                    <div style="font-size:12px;font-weight:600;color:#e5e7eb;">${escapeHtml(n.label)}</div>
+                    <div style="font-size:10px;color:${color};margin-top:1px;">${n.type}</div>
+                  </div>`
+                }}
+                linkColor={() => '#475569'}
+                linkWidth={0.5}
+                linkOpacity={0.5}
+                linkDirectionalArrowLength={2.5}
+                linkDirectionalArrowRelPos={1}
+                nodeRelSize={4}
+                nodeOpacity={0.9}
+                backgroundColor="#111113"
+                showNavInfo={false}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Onboarding checklist */}
       {isVisible('onboarding') && showOnboarding && (
@@ -519,6 +680,9 @@ export default function Dashboard() {
           </div>
         </section>
       )}
+
+      {/* Overview content — hidden in graph mode */}
+      {dashboardView === 'list' && <>
 
       {/* Stat cards */}
       {isAdmin && (
@@ -1085,7 +1249,7 @@ export default function Dashboard() {
 
       {/* Getting Started */}
       {isAdmin && isVisible('getting-started') && (() => {
-        const checklistItems = [
+        const allChecklistItems = [
           {
             label: 'Create your first memory',
             done: (stats?.total_memories ?? 0) > 0,
@@ -1112,14 +1276,18 @@ export default function Dashboard() {
             href: '/api-keys',
           },
         ]
+        // Hide items whose destination section is currently disabled — reversible:
+        // remove the href from DISABLED_NAV_HREFS in src/config/disabled-sections.ts to restore.
+        const checklistItems = allChecklistItems.filter(i => !DISABLED_NAV_HREFS.has(i.href))
         const completedCount = checklistItems.filter(i => i.done).length
+        const totalCount = checklistItems.length
         return (
           <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Getting Started</h3>
-              <span className="text-[12px] text-text-tertiary">{completedCount}/5 completed</span>
+              <span className="text-[12px] text-text-tertiary">{completedCount}/{totalCount} completed</span>
             </div>
-            {completedCount === 5 ? (
+            {completedCount === totalCount ? (
               <div className="flex flex-col items-center py-4 gap-2">
                 <CheckCircle2 className="w-8 h-8 text-status-success" />
                 <p className="text-[13px] text-text-secondary">All set up! Your team is ready.</p>
@@ -1278,6 +1446,8 @@ export default function Dashboard() {
           </div>
         )
       })()}
+
+      </>}
 
       {!isAdmin && (
         <div className="border border-white/[0.08] bg-background-tertiary rounded-[18px] p-6 max-w-xl">

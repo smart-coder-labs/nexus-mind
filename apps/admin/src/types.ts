@@ -553,3 +553,26 @@ export interface CodeSnippet {
   end_line: number
   content: string
 }
+
+// ── Memory Knowledge Graph (v45+) ─────────────────────────────────────────────
+
+export interface MemGraphNode {
+  id: string        // namespaced: "memory:uuid", "project:uuid", "tag:name", etc.
+  type: string      // "Memory" | "Project" | "Session" | "User" | "Collection" | "Tag" | "AuditEvent"
+  label: string     // display label (truncated content, name, etc.)
+}
+
+export interface MemGraphEdge {
+  id: string
+  from_id: string
+  to_id: string
+  type: string      // "belongs_to" | "in_session" | "created_by" | "in_collection" | "tagged" | "performed_by" | "targets"
+}
+
+export interface MemoryGraphResponse {
+  project: string
+  node_count: number
+  edge_count: number
+  nodes: MemGraphNode[]
+  edges: MemGraphEdge[]
+}
