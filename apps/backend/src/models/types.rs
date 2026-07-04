@@ -577,6 +577,15 @@ pub struct ProjectStats {
     pub top_tags: Vec<String>,
 }
 
+/// A single entry in the over-enrolled projects diagnostic report.
+/// Returned by `GET /v1/admin/org/projects/over-enrolled`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OverEnrolledProject {
+    pub project_name: String,
+    pub member_count: i64,
+    pub active_user_count: i64,
+}
+
 // ── Policy types ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

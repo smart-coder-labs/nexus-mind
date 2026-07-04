@@ -607,3 +607,80 @@ fn update_org_settings_persists_announcement() {
     let cleared = queries::update_org_settings(&conn, &org.id, &clear_input).unwrap();
     assert!(cleared.announcement.is_none(), "empty string must clear announcement to NULL");
 }
+
+// ── over-enrolled projects diagnostic tests ───────────────────────────────────
+
+/// When every active user in the org is a member of a project, that project must
+/// appear in the over-enrolled list.
+#[test]
+fn over_enrolled_project_appears_when_all_users_are_members() {
+    let conn = setup();
+    let (org, admin, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Invite one more user so we have 2 active users total.
+    let (member, _) = queries::invite_user(&conn, &org.id, "dev@acme.com", "Dev", "member").unwrap();
+
+    // Use create_project (no auto-enroll), then manually add both users.
+    let project = queries::create_project(&conn, &org.id, "all-hands", None, None).unwrap();
+    queries::upsert_project_member(&conn, &project.id, &admin.id, "admin").unwrap();
+    queries::upsert_project_member(&conn, &project.id, &member.id, "member").unwrap();
+
+    let results = queries::list_over_enrolled_projects(&conn, &org.id).unwrap();
+    let found = results.iter().find(|p| p.project_name == "all-hands");
+    assert!(found.is_some(), "all-hands project must appear in over-enrolled list");
+    let entry = found.unwrap();
+    assert_eq!(entry.member_count, 2, "member_count must be 2");
+    assert_eq!(entry.active_user_count, 2, "active_user_count must be 2");
+}
+
+/// A project with only a subset of users enrolled must NOT appear in the list.
+#[test]
+fn partial_enrollment_not_over_enrolled() {
+    let conn = setup();
+    let (org, admin, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Two extra users so there are 3 active users total.
+    let (member1, _) = queries::invite_user(&conn, &org.id, "dev1@acme.com", "Dev1", "member").unwrap();
+    let (_member2, _) = queries::invite_user(&conn, &org.id, "dev2@acme.com", "Dev2", "member").unwrap();
+
+    // Use create_project (no auto-enroll), then manually add only 2 of 3 users.
+    let project = queries::create_project(&conn, &org.id, "partial-project", None, None).unwrap();
+    queries::upsert_project_member(&conn, &project.id, &admin.id, "admin").unwrap();
+    queries::upsert_project_member(&conn, &project.id, &member1.id, "member").unwrap();
+
+    let results = queries::list_over_enrolled_projects(&conn, &org.id).unwrap();
+    let found = results.iter().find(|p| p.project_name == "partial-project");
+    assert!(
+        found.is_none(),
+        "partial-project must NOT appear in over-enrolled list (only 2/3 users enrolled)"
+    );
+}
+
+/// Suspended users are excluded from active_user_count, so a project with all
+/// active (non-suspended) users enrolled is still flagged even when a suspended
+/// user is not a member.
+#[test]
+fn suspended_users_excluded_from_active_count() {
+    let conn = setup();
+    let (org, admin, _) = queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let (active_member, _) = queries::invite_user(&conn, &org.id, "active@acme.com", "Active", "member").unwrap();
+    let (suspended_member, _) = queries::invite_user(&conn, &org.id, "suspended@acme.com", "Suspended", "member").unwrap();
+
+    // Suspend one user — they must not count toward active_user_count.
+    queries::suspend_user(&conn, &org.id, &suspended_member.id).unwrap();
+
+    // Use create_project (no auto-enroll), then manually enroll only the two active users.
+    let project = queries::create_project(&conn, &org.id, "active-only", None, None).unwrap();
+    queries::upsert_project_member(&conn, &project.id, &admin.id, "admin").unwrap();
+    queries::upsert_project_member(&conn, &project.id, &active_member.id, "member").unwrap();
+
+    let results = queries::list_over_enrolled_projects(&conn, &org.id).unwrap();
+    let found = results.iter().find(|p| p.project_name == "active-only");
+    assert!(
+        found.is_some(),
+        "active-only project must appear — all 2 active users are enrolled (suspended user is excluded)"
+    );
+    let entry = found.unwrap();
+    assert_eq!(entry.active_user_count, 2, "active_user_count must exclude the suspended user");
+}

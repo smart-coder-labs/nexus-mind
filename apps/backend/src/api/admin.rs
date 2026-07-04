@@ -22,7 +22,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     config::Config,
     db::queries,
-    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
+    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
     store::sqlite::SqliteStore,
 };
 
@@ -1766,6 +1766,25 @@ pub async fn get_project_stats_api(
     }
 }
 
+/// `GET /v1/admin/org/projects/over-enrolled` — admin-only diagnostic endpoint.
+///
+/// Returns projects where `member_count >= active_user_count`, i.e. every active user
+/// in the org is a member. This is the signature of a project that was auto-enrolled
+/// by the legacy `get_or_create_project` behaviour. Read-only; does not mutate any state.
+pub async fn over_enrolled_projects_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let projects: Vec<OverEnrolledProject> =
+        queries::list_over_enrolled_projects(&conn, &auth.org_id).map_err(db_err)?;
+    Ok(Json(serde_json::json!({ "projects": projects })))
+}
+
 /// `POST /v1/admin/tags/rename` — admin-only.
 /// Renames a tag across all memories in the org.
 /// Body: `{ from: String, to: String }`.
@@ -3201,6 +3220,112 @@ mod tests {
         assert_eq!(json["retention_days"], 365, "retention_days must be updated");
         // min_password_length was not in the request — DB default is 8, must still be 8.
         assert_eq!(json["min_password_length"], 8, "min_password_length must be preserved");
+    }
+
+    // ── over_enrolled_projects_handler tests ─────────────────────────────────
+
+    fn app_with_over_enrolled(store: SqliteStore) -> Router {
+        let superuser_key: Option<String> = Some("test-superuser-key".to_string());
+        let email_config: Option<Arc<EmailConfig>> = None;
+
+        let protected = Router::new()
+            .route(
+                "/v1/admin/org/projects/over-enrolled",
+                get(over_enrolled_projects_handler),
+            )
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
+
+        Router::new()
+            .merge(protected)
+            .layer(Extension(email_config))
+            .layer(Extension(superuser_key))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    #[tokio::test]
+    async fn over_enrolled_returns_403_for_non_admin() {
+        let (store, _admin_key) = setup_with_admin_key();
+        let member_key = member_key_for(&store, "member");
+
+        let resp = app_with_over_enrolled(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/org/projects/over-enrolled")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn over_enrolled_returns_200_for_admin_with_over_enrolled_project() {
+        let (store, admin_key) = setup_with_admin_key();
+
+        // Create a second user so we have 2 active users total (admin + member).
+        let member_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let (user, _) =
+                q::invite_user(&conn, &org, "member2@acme.com", "Member2", "member").unwrap();
+            user.id
+        };
+
+        // Create a project and enroll BOTH users.
+        let (project_id, admin_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let pid = q::get_or_create_project(&conn, &org, "full-enrollment").unwrap();
+            let aid: String = conn
+                .query_row("SELECT id FROM users WHERE org_id = ?1 AND role = 'admin'", [&org], |r| r.get(0))
+                .unwrap();
+            (pid, aid)
+        };
+
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::upsert_project_member(&conn, &project_id, &admin_id, "admin").unwrap();
+            q::upsert_project_member(&conn, &project_id, &member_id, "member").unwrap();
+        }
+
+        let resp = app_with_over_enrolled(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/org/projects/over-enrolled")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "expected 200 but got error: {json}");
+
+        let projects = json["projects"].as_array().expect("projects must be an array");
+        let found = projects
+            .iter()
+            .find(|p| p["project_name"] == "full-enrollment");
+        assert!(
+            found.is_some(),
+            "full-enrollment project must appear in response: {json}"
+        );
+        let entry = found.unwrap();
+        assert_eq!(entry["member_count"], 2, "member_count must be 2");
+        assert_eq!(entry["active_user_count"], 2, "active_user_count must be 2");
     }
 }
 

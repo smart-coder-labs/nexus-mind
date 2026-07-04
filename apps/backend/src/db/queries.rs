@@ -7690,6 +7690,47 @@ pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> R
     })
 }
 
+/// Returns projects where every active org user is already enrolled as a member
+/// (`member_count >= active_user_count`). This is the signature of a project that was
+/// auto-enrolled by the old `get_or_create_project` behaviour.
+///
+/// Used by `GET /v1/admin/org/projects/over-enrolled`.
+pub fn list_over_enrolled_projects(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<crate::models::types::OverEnrolledProject>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           p.name AS project_name,
+           COUNT(pm.user_id) AS member_count,
+           (SELECT COUNT(*) FROM users
+            WHERE org_id = ?1
+              AND status = 'active'
+              AND disabled_at IS NULL) AS active_user_count
+         FROM projects p
+         JOIN project_members pm ON pm.project_id = p.id
+         WHERE p.org_id = ?1
+           AND p.archived_at IS NULL
+         GROUP BY p.id, p.name
+         HAVING member_count >= active_user_count
+         ORDER BY p.name ASC",
+    )?;
+
+    let rows = stmt.query_map(rusqlite::params![org_id], |row| {
+        Ok(crate::models::types::OverEnrolledProject {
+            project_name: row.get(0)?,
+            member_count: row.get(1)?,
+            active_user_count: row.get(2)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 /// Returns memory creation counts per day for the last 90 days (non-archived only).
 /// Used by `GET /v1/admin/stats/memory-heatmap`.
 /// Returns the top contributing agents (by memory count) in the last 30 days.

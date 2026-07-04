@@ -125,6 +125,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/admin/stats/top-contributors", get(admin::get_top_contributors))
         .route("/v1/admin/stats/usage", get(admin::usage_stats))
         .route("/v1/admin/onboarding", get(admin::get_onboarding))
+        .route("/v1/admin/org/projects/over-enrolled", get(admin::over_enrolled_projects_handler))
         .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
         .route("/v1/admin/org/settings", get(admin::get_org_settings_api).patch(admin::update_org_settings_api))
         .route("/v1/admin/settings/retention-preview", get(admin::get_retention_preview))
