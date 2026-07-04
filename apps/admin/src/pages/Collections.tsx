@@ -5,6 +5,8 @@ import { createClient } from '../api/client'
 import type { Collection, Memory } from '../types'
 import { FolderOpen, Pencil, Trash2, X, Plus, Search } from 'lucide-react'
 
+const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
 function CollectionIcon() {
   return (
     <svg
@@ -414,9 +416,9 @@ export default function Collections() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 text-xs px-4 py-2 rounded-full border border-border-primary text-text-secondary hover:text-text-primary hover:border-accent-blue/40 transition-colors flex-shrink-0"
+          className={`flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors flex-shrink-0 ${FOCUS}`}
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus className="w-4 h-4" />
           New collection
         </button>
       </div>

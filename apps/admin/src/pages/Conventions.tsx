@@ -7,6 +7,8 @@ import type { Convention, CreateConventionRequest } from '../types'
 
 const client = createClient()
 
+const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
 const CONVENTION_TEMPLATES = [
   {
     label: 'Clean Architecture',
@@ -185,12 +187,12 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        className="bg-background-secondary rounded-[18px] border border-border-primary p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xs font-semibold text-text-primary">Import from Markdown</h2>
-          <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
+          <h2 className="text-[15px] font-semibold text-text-primary">Import from Markdown</h2>
+          <button onClick={onClose} aria-label="Close" className={`text-text-quaternary hover:text-text-secondary transition-colors ${FOCUS}`}>
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -211,7 +213,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
           <button
             onClick={handlePreview}
             disabled={!mdText.trim()}
-            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] disabled:opacity-40 transition-colors"
+            className={`border border-border-primary rounded-full px-3 py-1.5 text-[13px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] disabled:opacity-40 transition-colors ${FOCUS}`}
           >
             Preview
           </button>
@@ -219,7 +221,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
           {mdParsed.length > 0 && !importing && (
             <button
               onClick={handleImport}
-              className="bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold"
+              className={`bg-accent-blue hover:bg-accent-blue-hover text-white rounded-full px-4 py-1.5 text-[13px] font-semibold transition-colors ${FOCUS}`}
             >
               Import {mdParsed.length} convention{mdParsed.length !== 1 ? 's' : ''}
             </button>
@@ -312,11 +314,11 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
       onClick={onClose}
     >
       <div
-        className="bg-[#272729] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        className="bg-background-tertiary rounded-[18px] border border-border-primary p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xs font-semibold text-text-primary">
+          <h2 className="text-[15px] font-semibold text-text-primary">
             New Convention
           </h2>
           <div className="flex items-center gap-2">
@@ -324,19 +326,19 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
               <button
                 type="button"
                 onClick={() => setTemplatesOpen(v => !v)}
-                className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+                className={`border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors ${FOCUS}`}
               >
                 <Layers className="w-3 h-3" />
                 Templates
               </button>
               {templatesOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] py-1 shadow-xl z-50 min-w-[200px]">
+                <div className="absolute right-0 top-full mt-1 bg-background-tertiary border border-border-primary rounded-[11px] py-1 z-50 min-w-[200px]">
                   {CONVENTION_TEMPLATES.map(tpl => (
                     <button
                       key={tpl.label}
                       type="button"
                       onClick={() => applyTemplate(tpl)}
-                      className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-white/[0.04] cursor-pointer"
+                      className={`w-full text-left px-3 py-2 text-[13px] text-text-secondary hover:bg-white/[0.04] cursor-pointer ${FOCUS}`}
                     >
                       {tpl.label}
                     </button>
@@ -344,7 +346,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
                 </div>
               )}
             </div>
-            <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary transition-colors">
+            <button onClick={onClose} aria-label="Close" className={`text-text-quaternary hover:text-text-secondary transition-colors ${FOCUS}`}>
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -416,14 +418,14 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-[8px] text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+              className={`px-4 py-2 rounded-[8px] text-[13px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
+              className={`px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold disabled:opacity-50 transition-colors ${FOCUS}`}
             >
               {saving ? 'Saving…' : 'Create convention'}
             </button>
@@ -503,7 +505,7 @@ function ConventionCard({
 
   return (
     <div
-      className={`bg-[#272729] rounded-[18px] border border-border-primary p-5 group ${isArchived ? 'opacity-60' : ''}`}
+      className={`bg-background-tertiary rounded-[18px] border border-border-primary p-5 group ${isArchived ? 'opacity-60' : ''}`}
       onKeyDown={handleKeyDown}
     >
       <div className="flex items-start justify-between mb-2 gap-3">
@@ -554,7 +556,8 @@ function ConventionCard({
           {!isArchived && !editing && (
             <button
               onClick={enterEdit}
-              className="p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+              aria-label="Edit convention"
+              className={`p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors ${FOCUS}`}
               title="Edit (E)"
             >
               <Pencil className="w-3.5 h-3.5" />
@@ -565,7 +568,8 @@ function ConventionCard({
               {!isArchived ? (
                 <button
                   onClick={() => onArchive(conv.id)}
-                  className="p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  aria-label="Archive convention"
+                  className={`p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors ${FOCUS}`}
                   title="Archive"
                 >
                   <Archive className="w-3.5 h-3.5" />
@@ -573,7 +577,8 @@ function ConventionCard({
               ) : (
                 <button
                   onClick={() => onRestore(conv.id)}
-                  className="p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                  aria-label="Restore convention"
+                  className={`p-1.5 rounded-[6px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.06] transition-colors ${FOCUS}`}
                   title="Restore"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
@@ -581,7 +586,8 @@ function ConventionCard({
               )}
               <button
                 onClick={() => onDelete(conv.id)}
-                className="p-1.5 rounded-[6px] text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors"
+                aria-label="Delete convention"
+                className={`p-1.5 rounded-[6px] text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
                 title="Delete"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -627,13 +633,13 @@ function ConventionCard({
             <button
               onClick={handleSave}
               disabled={saving}
-              className="bg-accent-blue text-white rounded-full px-3 py-1.5 text-xs font-semibold hover:bg-accent-blue/90 disabled:opacity-50 transition-colors"
+              className={`bg-accent-blue hover:bg-accent-blue-hover text-white rounded-full px-3 py-1.5 text-[13px] font-semibold disabled:opacity-50 transition-colors ${FOCUS}`}
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               onClick={cancelEdit}
-              className="rounded-full px-3 py-1.5 text-xs text-text-secondary border border-border-primary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+              className={`rounded-full px-3 py-1.5 text-[13px] text-text-secondary border border-border-primary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
             >
               Cancel
             </button>
@@ -645,9 +651,9 @@ function ConventionCard({
           <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center mb-2 w-fit">
             <button
               onClick={() => setViewMode('raw')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
                 viewMode === 'raw'
-                  ? 'bg-[#272729] text-text-primary font-semibold'
+                  ? 'bg-background-tertiary text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -655,9 +661,9 @@ function ConventionCard({
             </button>
             <button
               onClick={() => setViewMode('preview')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
                 viewMode === 'preview'
-                  ? 'bg-[#272729] text-text-primary font-semibold'
+                  ? 'bg-background-tertiary text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -839,37 +845,36 @@ export default function Conventions() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-2.5">
-          <BookMarked className="w-4 h-4 text-accent-blue" />
-          <h1 className="text-base font-semibold text-text-primary">Conventions</h1>
-          <span className="text-xs text-text-quaternary">
+      {/* Header — §4 page skeleton: title+subtitle left, primary action right */}
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
+        <div>
+          <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Conventions</h1>
+          <p className="mt-1 text-[13px] text-text-secondary truncate max-w-sm">
             Team-wide rules that agents must follow
-          </span>
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleExport}
-            className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors ${FOCUS}`}
           >
             <Download className="w-3 h-3" />
             Export
           </button>
           <button
             onClick={() => setShowMdImport(true)}
-            className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors ${FOCUS}`}
           >
             <Upload className="w-3 h-3" />
             Import MD
           </button>
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="border border-border-primary rounded-full px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-[13px] text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors ${FOCUS}`}
           >
             <Upload className="w-3 h-3" />
             {importProgress
-              ? <span className="text-[10px] text-text-quaternary">{importProgress}</span>
+              ? <span className="text-[13px] text-text-quaternary">{importProgress}</span>
               : 'Import'}
           </button>
           <input
@@ -881,7 +886,7 @@ export default function Conventions() {
           />
           <button
             onClick={() => setShowArchived(v => !v)}
-            className={`border border-border-primary rounded-full px-2.5 py-1 text-xs transition-colors ${
+            className={`border border-border-primary rounded-full px-2.5 py-1 text-[13px] transition-colors ${FOCUS} ${
               showArchived
                 ? 'text-text-primary bg-white/[0.06]'
                 : 'text-text-quaternary hover:text-text-secondary'
@@ -891,9 +896,9 @@ export default function Conventions() {
           </button>
           <button
             onClick={handleNewConvention}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:bg-accent-blue/90 transition-colors"
+            className={`flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-4 h-4" />
             New convention
           </button>
         </div>
@@ -907,7 +912,7 @@ export default function Conventions() {
               <button
                 key={cat.value}
                 onClick={() => setSelectedCategory(cat.value)}
-                className={`text-left px-3 py-2 rounded-[8px] text-xs transition-colors ${
+                className={`text-left px-3 py-2 rounded-[8px] text-[13px] transition-colors ${FOCUS} ${
                   selectedCategory === cat.value
                     ? 'bg-accent-blue/10 text-accent-blue font-semibold'
                     : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04]'
@@ -932,22 +937,22 @@ export default function Conventions() {
               placeholder="Search conventions..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 flex-1 placeholder:text-text-quaternary"
+              className={`rounded-[8px] border border-border-primary bg-white/[0.04] text-[13px] text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 flex-1 placeholder:text-text-quaternary ${FOCUS}`}
             />
             <div className="bg-white/[0.04] rounded-full p-0.5 flex shrink-0">
               <button
                 onClick={() => setSortBy('weight')}
-                className={sortBy === 'weight'
-                  ? 'bg-[#272729] text-text-primary font-semibold rounded-full px-3 py-1 text-xs shadow-sm'
-                  : 'text-text-quaternary px-3 py-1 text-xs rounded-full hover:text-text-secondary transition-colors'}
+                className={`${FOCUS} ${sortBy === 'weight'
+                  ? 'bg-background-tertiary text-text-primary font-semibold rounded-full px-3 py-1 text-[13px]'
+                  : 'text-text-quaternary px-3 py-1 text-[13px] rounded-full hover:text-text-secondary transition-colors'}`}
               >
                 Weight ↓
               </button>
               <button
                 onClick={() => setSortBy('recent')}
-                className={sortBy === 'recent'
-                  ? 'bg-[#272729] text-text-primary font-semibold rounded-full px-3 py-1 text-xs shadow-sm'
-                  : 'text-text-quaternary px-3 py-1 text-xs rounded-full hover:text-text-secondary transition-colors'}
+                className={`${FOCUS} ${sortBy === 'recent'
+                  ? 'bg-background-tertiary text-text-primary font-semibold rounded-full px-3 py-1 text-[13px]'
+                  : 'text-text-quaternary px-3 py-1 text-[13px] rounded-full hover:text-text-secondary transition-colors'}`}
               >
                 Recent
               </button>
@@ -957,12 +962,19 @@ export default function Conventions() {
             <div className="animate-pulse h-24 bg-[#272729] rounded-[18px]" />
           )}
           {!isLoading && filtered.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
+            <div className="flex flex-col items-center justify-center py-16 text-center bg-background-tertiary rounded-[18px] border border-border-primary px-6">
               <BookMarked className="w-8 h-8 text-text-quaternary mb-3" />
-              <p className="text-xs text-text-secondary font-semibold">No conventions yet</p>
-              <p className="text-xs text-text-quaternary mt-1">
+              <p className="text-[15px] font-semibold text-text-secondary">No conventions yet</p>
+              <p className="text-[13px] text-text-quaternary mt-1 max-w-xs">
                 Create your first convention to define team-wide rules for agents.
               </p>
+              <button
+                onClick={handleNewConvention}
+                className={`mt-4 flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}
+              >
+                <Plus className="w-4 h-4" />
+                New convention
+              </button>
             </div>
           )}
           {filtered.map(conv => (

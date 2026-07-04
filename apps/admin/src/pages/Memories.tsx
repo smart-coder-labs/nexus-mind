@@ -1898,9 +1898,9 @@ export default function Memories() {
           {/* New memory */}
           <button
             onClick={() => setCreateMemoryOpen(true)}
-            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary flex items-center gap-1.5 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
           >
-            <Plus className="w-3 h-3" />
+            <Plus className="w-4 h-4" />
             New memory
           </button>
 
