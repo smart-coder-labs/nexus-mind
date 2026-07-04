@@ -16,9 +16,12 @@ echo "$health" | grep -q '"status":"ok"' || { echo "FAIL: backend not healthy"; 
 echo "    OK"
 
 echo "==> Storing a test memory..."
+# Project must already exist: implicit project creation was removed in the
+# project-membership hardening (see commit 38f0238). The seed pre-creates
+# "nexusmind" for every org and enrolls all non-viewer users as members.
 store=$(auth -X POST "$BASE_URL/v1/memory/store" \
   -H "Content-Type: application/json" \
-  -d '{"content":"MCP smoke test memory","project":"mcp-test","tool":"test-script","tags":["test"]}')
+  -d '{"content":"MCP smoke test memory","project":"nexusmind","tool":"test-script","tags":["smoke-test"]}')
 id=$(echo "$store" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "    Stored id: $id"
 
