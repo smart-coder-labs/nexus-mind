@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './pages/Login'
 import SetPassword from './pages/SetPassword'
 import { Layout } from './components/Layout'
+import { DISABLED_NAV_HREFS } from './config/disabled-sections'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Users     = lazy(() => import('./pages/Users'))
@@ -22,6 +23,12 @@ const Collections = lazy(() => import('./pages/Collections'))
 const Tags        = lazy(() => import('./pages/Tags'))
 const Search      = lazy(() => import('./pages/Search'))
 const Sessions    = lazy(() => import('./pages/Sessions'))
+
+/** Redirects to / when the given href is in DISABLED_NAV_HREFS; otherwise renders children. */
+function MaybeDisabled({ href, children }: { href: string; children: React.ReactNode }) {
+  if (DISABLED_NAV_HREFS.has(href)) return <Navigate to="/" replace />
+  return <>{children}</>
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
@@ -66,14 +73,14 @@ function AppRoutes() {
                 <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
                 <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
                 <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
-                <Route path="/api-keys" element={<AdminRoute><ApiKeys /></AdminRoute>} />
-                <Route path="/agents"  element={<AdminRoute><Agents /></AdminRoute>} />
-                <Route path="/policies"     element={<AdminRoute><Policies /></AdminRoute>} />
+                <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
+                <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
+                <Route path="/policies"     element={<MaybeDisabled href="/policies"><AdminRoute><Policies /></AdminRoute></MaybeDisabled>} />
                 <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
-                <Route path="/webhooks"    element={<AdminRoute><Webhooks /></AdminRoute>} />
+                <Route path="/webhooks"    element={<MaybeDisabled href="/webhooks"><AdminRoute><Webhooks /></AdminRoute></MaybeDisabled>} />
                 <Route path="/collections" element={<AdminRoute><Collections /></AdminRoute>} />
                 <Route path="/search"   element={<Search />} />
-                <Route path="/sessions" element={<Sessions />} />
+                <Route path="/sessions" element={<MaybeDisabled href="/sessions"><Sessions /></MaybeDisabled>} />
                 <Route path="/memories" element={<Memories />} />
                 <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />

@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { CommandPalette } from './CommandPalette'
 import { createClient } from '../api/client'
 import type { OrgSettings } from '../types'
+import { DISABLED_NAV_HREFS, NOTIFICATIONS_DISABLED } from '../config/disabled-sections'
 
 const client = createClient()
 
@@ -184,7 +185,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav className="flex flex-col gap-4 px-2">
       {NAV_GROUPS.map(group => {
-        const items = group.items.filter(item => !item.adminOnly || isAdmin)
+        const items = group.items.filter(item => (!item.adminOnly || isAdmin) && !DISABLED_NAV_HREFS.has(item.href))
         if (items.length === 0) return null
 
         return (
@@ -249,6 +250,8 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
     queryKey: ['notifications'],
     queryFn: () => client.getNotifications(),
     refetchInterval: 60000,
+    // TEMPORARY: disabled while NOTIFICATIONS_DISABLED is true
+    enabled: !NOTIFICATIONS_DISABLED,
   })
 
   const toggleType = (type: NotifEventType) => {
@@ -332,8 +335,8 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
 
       {/* Bottom: notifications + sign out */}
       <div className="px-2 pb-3 flex flex-col gap-0.5">
-        {/* Notification bell */}
-        <div className="relative" ref={notifRef}>
+        {/* Notification bell — hidden while NOTIFICATIONS_DISABLED */}
+        {!NOTIFICATIONS_DISABLED && <div className="relative" ref={notifRef}>
           <button
             onClick={handleNotifOpen}
             className={cn('flex items-center gap-3 w-full px-3 py-2 rounded-[8px] text-[13px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors duration-150', FOCUS_RING)}
@@ -387,7 +390,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Sign out + shortcuts */}
         <div className="flex items-center gap-1">
