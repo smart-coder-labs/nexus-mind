@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText } from 'lucide-react'
+import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject, CodeSearchResult } from '../types'
@@ -42,6 +42,53 @@ function downloadBlob(data: object, filename: string) {
 
 const INPUT_CLS =
   'w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+
+// ── Private-repo detection ─────────────────────────────────────────────────────
+
+/** Parses a GitHub URL and returns owner/repo or null if not a GitHub URL. */
+function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
+  try {
+    const u = new URL(url)
+    if (u.hostname !== 'github.com') return null
+    const parts = u.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
+    if (parts.length < 2 || !parts[0] || !parts[1]) return null
+    return { owner: parts[0], repo: parts[1] }
+  } catch {
+    return null
+  }
+}
+
+type RepoAccessState = 'idle' | 'checking' | 'accessible' | 'needs-token' | 'token-invalid'
+
+/**
+ * Check whether a GitHub repository is accessible with or without a PAT.
+ * Calls the GitHub REST API directly from the browser (CORS is allowed for unauthenticated
+ * and PAT-authenticated requests). Returns 'accessible', 'needs-token', or 'token-invalid'.
+ */
+async function checkGitHubAccess(
+  url: string,
+  token?: string,
+): Promise<'accessible' | 'needs-token' | 'token-invalid'> {
+  const parsed = parseGitHubRepo(url)
+  if (!parsed) return 'accessible' // Non-GitHub URL — skip check
+
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.v3+json',
+  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`,
+      { headers },
+    )
+    if (res.status === 200) return 'accessible'
+    if (!token) return 'needs-token'
+    return 'token-invalid'
+  } catch {
+    return 'accessible' // Network error — let the server handle it
+  }
+}
 
 // ── Code highlight helper ──────────────────────────────────────────────────────
 
@@ -684,6 +731,12 @@ function RepositoriesTab({
   const [indexError, setIndexError] = useState<string | null>(null)
   const [expandedFiles, setExpandedFiles] = useState<string | null>(null)
 
+  // Private-repo PAT state
+  const [repoAccess, setRepoAccess] = useState<RepoAccessState>('idle')
+  const [githubToken, setGithubToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [tokenValidating, setTokenValidating] = useState(false)
+
   const { data: files, isLoading: filesLoading } = useQuery({
     queryKey: ['code-project-files', expandedFiles],
     queryFn: () => client.getCodeProjectFiles(expandedFiles!),
@@ -697,11 +750,14 @@ function RepositoriesTab({
   })
 
   const indexMut = useMutation({
-    mutationFn: (data: { project: string; repo_url?: string; root_path?: string; graph_only?: boolean }) => client.indexProject(data),
+    mutationFn: (data: { project: string; repo_url?: string; root_path?: string; github_token?: string; graph_only?: boolean }) => client.indexProject(data),
     onSuccess: () => {
       setRepoUrl('')
       setSelectedProject('')
       setNewProjectName('')
+      setGithubToken('')
+      setShowToken(false)
+      setRepoAccess('idle')
       setShowForm(false)
       setIndexError(null)
       qc.invalidateQueries({ queryKey: ['code-projects'] })
@@ -741,12 +797,50 @@ function RepositoriesTab({
     onSuccess: () => qc.invalidateQueries({ queryKey: ['code-projects'] }),
   })
 
+  // Check repo accessibility on URL blur; if inaccessible, reveal the PAT field.
+  const handleRepoUrlBlur = useCallback(async () => {
+    const url = repoUrl.trim()
+    if (!url || !parseGitHubRepo(url)) {
+      setRepoAccess('idle')
+      return
+    }
+    setRepoAccess('checking')
+    const result = await checkGitHubAccess(url)
+    setRepoAccess(result === 'accessible' ? 'accessible' : 'needs-token')
+  }, [repoUrl])
+
+  // Validate the token against the repo when user changes the token field.
+  const handleTokenBlur = useCallback(async () => {
+    const url = repoUrl.trim()
+    const tok = githubToken.trim()
+    if (!url || !tok || repoAccess !== 'needs-token') return
+    setTokenValidating(true)
+    const result = await checkGitHubAccess(url, tok)
+    if (result === 'accessible') {
+      setRepoAccess('accessible')
+    } else {
+      setRepoAccess('token-invalid')
+    }
+    setTokenValidating(false)
+  }, [repoUrl, githubToken, repoAccess])
+
   const handleIndex = (e: React.FormEvent) => {
     e.preventDefault()
     setIndexError(null)
     const project = projectMode === 'existing' ? selectedProject : newProjectName.trim()
-    indexMut.mutate({ project, repo_url: repoUrl.trim(), graph_only: graphOnly })
+    const tokenToSend = githubToken.trim() || undefined
+    indexMut.mutate({ project, repo_url: repoUrl.trim(), github_token: tokenToSend, graph_only: graphOnly })
   }
+
+  // Clear PAT state when the form is reset
+  const resetForm = useCallback(() => {
+    setShowForm(false)
+    setIndexError(null)
+    setRepoUrl('')
+    setGithubToken('')
+    setShowToken(false)
+    setRepoAccess('idle')
+  }, [])
 
   const handleDelete = (p: CodeProject) => {
     if (!window.confirm(`Delete "${p.name}"? This removes all indexed chunks.`)) return
@@ -843,15 +937,74 @@ function RepositoriesTab({
               <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-1.5">
                 GitHub repository URL
               </label>
-              <input
-                className={INPUT_CLS}
-                placeholder="https://github.com/owner/repo"
-                value={repoUrl}
-                onChange={e => setRepoUrl(e.target.value)}
-                disabled={indexMut.isPending}
-                type="url"
-                required
-              />
+              <div className="relative">
+                <input
+                  className={INPUT_CLS}
+                  placeholder="https://github.com/owner/repo"
+                  value={repoUrl}
+                  onChange={e => { setRepoUrl(e.target.value); setRepoAccess('idle') }}
+                  onBlur={handleRepoUrlBlur}
+                  disabled={indexMut.isPending}
+                  type="url"
+                  required
+                />
+                {repoAccess === 'checking' && (
+                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-text-quaternary" />
+                )}
+                {repoAccess === 'accessible' && (
+                  <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-status-success" />
+                )}
+                {(repoAccess === 'needs-token' || repoAccess === 'token-invalid') && (
+                  <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-status-warning" />
+                )}
+              </div>
+
+              {/* PAT field — revealed when the repo isn't publicly accessible */}
+              {(repoAccess === 'needs-token' || repoAccess === 'token-invalid') && (
+                <div className="mt-3 space-y-1.5">
+                  <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary">
+                    GitHub Personal Access Token
+                  </label>
+                  <div className="relative">
+                    <input
+                      className={INPUT_CLS}
+                      placeholder="ghp_…"
+                      value={githubToken}
+                      onChange={e => { setGithubToken(e.target.value); setRepoAccess('needs-token') }}
+                      onBlur={handleTokenBlur}
+                      type={showToken ? 'text' : 'password'}
+                      autoComplete="off"
+                      disabled={indexMut.isPending || tokenValidating}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-secondary transition-colors"
+                      aria-label={showToken ? 'Hide token' : 'Show token'}
+                    >
+                      {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  {tokenValidating && (
+                    <p className="text-[10px] text-text-quaternary flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Validating token…
+                    </p>
+                  )}
+                  {repoAccess === 'token-invalid' && !tokenValidating && (
+                    <p className="text-[10px] text-status-error">
+                      Token cannot access this repository. Verify it has the{' '}
+                      <code className="font-mono">repo</code> scope and access to this repo.
+                    </p>
+                  )}
+                  {repoAccess === 'needs-token' && !tokenValidating && (
+                    <p className="text-[10px] text-text-quaternary">
+                      This repository isn't publicly accessible. Provide a GitHub PAT with{' '}
+                      <code className="font-mono">repo</code> (read) scope. The token is
+                      stored encrypted and never returned in API responses.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <label className="flex items-start gap-2 cursor-pointer select-none">
@@ -873,7 +1026,7 @@ function RepositoriesTab({
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => { setShowForm(false); setIndexError(null) }}
+                onClick={resetForm}
                 disabled={indexMut.isPending}
                 className="rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
               >

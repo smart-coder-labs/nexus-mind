@@ -6,6 +6,57 @@ use axum::{
 use serde::Deserialize;
 use chrono::Utc;
 
+// ── Token cipher (AES-256-GCM) ────────────────────────────────────────────────
+//
+// Env var NEXUSMIND_TOKEN_ENCRYPTION_KEY must be a 64-char hex string (32 bytes).
+// If not set, `encrypt_pat` returns None and the token is NOT persisted for reindex;
+// it is still used for the current index operation.
+
+mod token_cipher {
+    use aes_gcm::{
+        aead::{Aead, AeadCore, KeyInit, OsRng},
+        Aes256Gcm,
+    };
+
+    const KEY_ENV: &str = "NEXUSMIND_TOKEN_ENCRYPTION_KEY";
+
+    fn cipher() -> Option<Aes256Gcm> {
+        let key_hex = std::env::var(KEY_ENV).ok()?;
+        let key_bytes = hex::decode(key_hex.trim()).ok()?;
+        if key_bytes.len() != 32 {
+            tracing::warn!(
+                "{KEY_ENV} must be 64 hex chars (32 bytes); token will not be persisted"
+            );
+            return None;
+        }
+        Some(Aes256Gcm::new_from_slice(&key_bytes).ok()?)
+    }
+
+    /// Encrypt `plaintext` with AES-256-GCM. Returns hex(nonce || ciphertext).
+    /// Returns None if NEXUSMIND_TOKEN_ENCRYPTION_KEY is not configured or invalid.
+    pub fn encrypt(plaintext: &str) -> Option<String> {
+        let c = cipher()?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ct = c.encrypt(&nonce, plaintext.as_bytes()).ok()?;
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ct);
+        Some(hex::encode(blob))
+    }
+
+    /// Decrypt a blob produced by `encrypt`. Returns None on any failure.
+    pub fn decrypt(blob: &str) -> Option<String> {
+        let c = cipher()?;
+        let bytes = hex::decode(blob).ok()?;
+        if bytes.len() < 12 {
+            return None;
+        }
+        let (nonce_bytes, ct) = bytes.split_at(12);
+        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+        let plain = c.decrypt(nonce, ct).ok()?;
+        String::from_utf8(plain).ok()
+    }
+}
+
 use crate::{
     api::helpers::{require_permission, AppJson},
     db::queries as db_queries,
@@ -44,37 +95,128 @@ fn redact_credentials(s: &str) -> String {
     re.replace_all(s, "://***@").into_owned()
 }
 
-/// Clone (or `git pull`, if already cloned) `effective_url` into `dest`.
+/// Returns true when a git stderr message indicates an authentication / access
+/// denial rather than a network or other error.
+fn is_auth_failure(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    lower.contains("authentication failed")
+        || lower.contains("could not read username")
+        || lower.contains("permission denied")
+        || lower.contains("repository not found")
+        || lower.contains("access denied")
+        || lower.contains("403")
+        || lower.contains("401")
+}
+
+/// Perform a lightweight, unauthenticated HEAD check against the GitHub REST API
+/// to determine whether a repository is publicly accessible.
 ///
-/// Returns `Err` with a **credential-redacted** message when git exits non-zero —
-/// e.g. an authentication failure cloning a PRIVATE repository without a valid
-/// token. This is the fix for "indexing private projects silently does nothing":
-/// previously the clone result was discarded (`let _ = …output()`), so a failed
-/// private clone fell through to indexing an empty directory and reported
-/// `indexed` with 0 files instead of surfacing the auth error.
-fn clone_or_pull(effective_url: &str, dest: &str) -> Result<(), String> {
+/// - Returns `Ok(())` for public repos (200 OK) or non-GitHub URLs.
+/// - Returns a machine-readable `ApiError` with `code = "PRIVATE_REPO_TOKEN_REQUIRED"`
+///   when the repo appears private/inaccessible without credentials.
+/// - Returns `Ok(())` on network failures — the real clone will surface those.
+///
+/// When `token` is `Some`, the check is authenticated. A 404 with a valid token
+/// means the token cannot access the repo → `code = "TOKEN_ACCESS_DENIED"`.
+async fn check_repo_access(url: &str, token: Option<&str>) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if !url.starts_with("https://github.com/") {
+        return Ok(());
+    }
+    let path = url["https://github.com/".len()..].trim_end_matches(".git");
+    let parts: Vec<&str> = path.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Ok(()); // Not a standard owner/repo URL — skip check
+    }
+    let api_url = format!("https://api.github.com/repos/{}/{}", parts[0], parts[1]);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_default();
+    let mut req = client
+        .get(&api_url)
+        .header("User-Agent", "nexusmind")
+        .header("Accept", "application/vnd.github.v3+json");
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {}", t));
+    }
+    let status = match req.send().await {
+        Ok(r) => r.status().as_u16(),
+        Err(_) => return Ok(()), // Network error — let git handle it
+    };
+    if status == 200 || status == 301 || status == 302 {
+        return Ok(());
+    }
+    // 404 / 403 = private or nonexistent
+    if token.is_none() {
+        Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "This repository is not accessible without authentication. \
+                        It may be private — provide a GitHub Personal Access Token \
+                        with the 'repo' (read) scope.".to_string(),
+                code: "PRIVATE_REPO_TOKEN_REQUIRED".to_string(),
+            }),
+        ))
+    } else {
+        Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "The provided token cannot access this repository. \
+                        Verify it has the 'repo' scope and grants access to this repository.".to_string(),
+                code: "TOKEN_ACCESS_DENIED".to_string(),
+            }),
+        ))
+    }
+}
+
+/// Clone (or `git pull`, if already cloned) `bare_url` into `dest`.
+///
+/// `token` is an optional GitHub credential (PAT or OAuth token). When provided it
+/// is injected via a shell credential helper that reads from the `GIT_TOKEN` env var —
+/// the secret is **never embedded in the URL**, so it never appears in `.git/config`,
+/// process argv, or error messages.
+///
+/// On the pull path, any credential-bearing origin URL that may have been written by
+/// an older version of this code is defensively reset to `bare_url` before the pull.
+fn clone_or_pull(bare_url: &str, token: Option<&str>, dest: &str) -> Result<(), String> {
     let already_cloned = std::path::Path::new(dest).join(".git").exists();
+
+    if already_cloned {
+        // Reset origin to the bare URL in case a previous version wrote credentials there.
+        let _ = git_cmd()
+            .args(["-C", dest, "remote", "set-url", "origin", bare_url])
+            .output();
+    }
+
+    // Inject the token via a credential helper that reads GIT_TOKEN from the environment.
+    // This keeps the secret out of the command line (not visible in `ps aux`) and out of
+    // .git/config (which git clone writes the remote URL into verbatim).
+    const CRED_HELPER: &str =
+        r#"credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f"#;
+
+    let mut cmd = git_cmd();
+    if let Some(tok) = token {
+        cmd.env("GIT_TOKEN", tok).arg("-c").arg(CRED_HELPER);
+    }
+
     let output = if already_cloned {
-        git_cmd()
-            .args(["-C", dest, "pull", "--rebase", "--quiet"])
-            .output()
+        cmd.args(["-C", dest, "pull", "--rebase", "--quiet"]).output()
     } else {
         let _ = std::fs::create_dir_all(dest);
-        // effective_url may carry an OAuth token — never log it directly.
-        git_cmd()
-            .args(["clone", "--depth=1", "--quiet", effective_url, dest])
-            .output()
+        cmd.args(["clone", "--depth=1", "--quiet", bare_url, dest]).output()
     };
+
     match output {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let op = if already_cloned { "pull" } else { "clone" };
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            Err(format!(
-                "git {op} failed ({}): {}",
-                o.status,
-                redact_credentials(stderr.trim())
-            ))
+            let stderr_raw = String::from_utf8_lossy(&o.stderr);
+            let stderr = redact_credentials(stderr_raw.trim());
+            if is_auth_failure(&stderr_raw) {
+                Err(format!("PRIVATE_REPO_AUTH_FAILURE: git {op} failed ({}): {}", o.status, stderr))
+            } else {
+                Err(format!("git {op} failed ({}): {}", o.status, stderr))
+            }
         }
         Err(e) => Err(format!("failed to run git: {e}")),
     }
@@ -159,23 +301,53 @@ pub async fn post_index(
         input.root_path.as_ref().unwrap().trim().to_string()
     };
 
-    // Inject GitHub OAuth token before spawning. The token-bearing URL is used only
-    // for git commands and is NEVER logged or returned.
-    let effective_repo_url: Option<String> = if has_repo {
+    // Check repository accessibility BEFORE spawning the background task so the
+    // client receives a synchronous, machine-readable error instead of a deferred
+    // failure that would require polling the status endpoint.
+    //
+    // We check only for GitHub URLs; non-GitHub remotes skip this step.
+    // The check is skipped when an org-level OAuth connection already exists —
+    // in that case we can assume the token covers the repo.
+    let provided_pat: Option<String> = input.github_token.as_ref()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().to_string());
+
+    if has_repo {
         let url = input.repo_url.as_ref().unwrap().trim();
         if url.starts_with("https://github.com/") {
-            let gh_result = {
-                match store.conn().lock() {
-                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
-                    Err(_) => None,
-                }
-            };
-            Some(match gh_result {
-                Some(gh) => url.replacen("https://", &format!("https://oauth2:{}@", gh.access_token), 1),
-                None => url.to_string(),
+            // Only pre-check when no OAuth connection and no PAT provided,
+            // or when a PAT is explicitly provided (validate it grants access).
+            let oauth_exists = store.conn().lock().ok()
+                .and_then(|conn| db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten())
+                .is_some();
+            if !oauth_exists || provided_pat.is_some() {
+                let token_ref = provided_pat.as_deref();
+                check_repo_access(url, token_ref).await?;
+            }
+        }
+    }
+
+    // Bare clone URL (no credentials embedded — token is injected out-of-band).
+    let bare_repo_url: Option<String> = if has_repo {
+        Some(input.repo_url.as_ref().unwrap().trim().to_string())
+    } else {
+        None
+    };
+
+    // Resolve the clone token independently of the URL. Priority:
+    //   1. Provided PAT (per-request, validated above)
+    //   2. Org-level GitHub OAuth connection
+    // The token is passed to clone_or_pull via GIT_TOKEN env var, never embedded in the URL.
+    let clone_token: Option<String> = if has_repo {
+        let url = input.repo_url.as_ref().unwrap().trim();
+        if url.starts_with("https://github.com/") {
+            provided_pat.clone().or_else(|| {
+                store.conn().lock().ok()
+                    .and_then(|conn| db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten())
+                    .map(|gh| gh.access_token)
             })
         } else {
-            Some(url.to_string())
+            None
         }
     } else {
         None
@@ -191,6 +363,21 @@ pub async fn post_index(
         if let Some(url) = &input.repo_url {
             let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &project_name, url);
         }
+        // Persist the encrypted PAT so future reindex operations can re-authenticate.
+        // If NEXUSMIND_TOKEN_ENCRYPTION_KEY is not set, the token is only used for this
+        // request and will not be available for scheduled reindexes.
+        if let Some(ref pat) = provided_pat {
+            match token_cipher::encrypt(pat) {
+                Some(blob) => {
+                    let _ = db_queries::set_code_project_token(&conn, pid, Some(&blob));
+                }
+                None => {
+                    tracing::warn!(
+                        "NEXUSMIND_TOKEN_ENCRYPTION_KEY not set — PAT will not be persisted for reindex"
+                    );
+                }
+            }
+        }
         let _ = db_queries::set_code_project_indexing(&conn, pid);
         pid
     };
@@ -203,10 +390,10 @@ pub async fn post_index(
     let spawn_path = effective_root_path.clone();
     let graph_only = input.graph_only.unwrap_or(false);
     tokio::spawn(async move {
-        if let Some(ref effective_url) = effective_repo_url {
+        if let Some(ref bare_url) = bare_repo_url {
             // Surface clone/pull failures (e.g. auth failure on a private repo)
             // as a project error instead of silently indexing an empty directory.
-            if let Err(e) = clone_or_pull(effective_url, &spawn_path) {
+            if let Err(e) = clone_or_pull(bare_url, clone_token.as_deref(), &spawn_path) {
                 let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                 if let Ok(conn) = db.lock() {
                     let _ = db_queries::set_code_project_error(&conn, project_id, &e, &now);
@@ -227,6 +414,8 @@ pub async fn post_index(
         if let Some(msg) = err_msg {
             let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             if let Ok(conn) = db.lock() {
+                // Preserve the PRIVATE_REPO_AUTH_FAILURE prefix if present so the
+                // status endpoint can expose it as a machine-readable signal.
                 let _ = db_queries::set_code_project_error(&conn, project_id, &msg, &now);
             }
         }
@@ -744,37 +933,48 @@ pub async fn post_reindex(
     let root_path = project.root_path.clone();
     let repo_url = project.repo_url.clone();
 
-    // Compute effective clone URL with injected GitHub token BEFORE spawning.
-    // The token-bearing URL is passed into the spawn closure but NEVER logged or returned.
-    let effective_repo_url: Option<String> = if let Some(ref url) = repo_url {
-        if url.trim().starts_with("https://github.com/") {
+    // Resolve the clone token BEFORE spawning. Priority: stored PAT → org OAuth.
+    // The token is injected via GIT_TOKEN env var in clone_or_pull — never embedded in the URL.
+    let clone_token: Option<String> = if repo_url.as_deref().map(|u| u.trim().starts_with("https://github.com/")).unwrap_or(false) {
+        // Attempt to decrypt the per-project PAT stored during the original index.
+        let stored_token: Option<String> = {
             let spawn_db = store.conn();
-            // Extract the result in an inner block so the MutexGuard is dropped before spawn_db.
-            let gh_result = {
-                match spawn_db.lock() {
-                    Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten(),
-                    Err(_) => None,
+            let result = match spawn_db.lock() {
+                Ok(conn) => {
+                    let encrypted = db_queries::get_code_project_token(&conn, id)
+                        .ok()
+                        .flatten();
+                    encrypted.as_deref().and_then(token_cipher::decrypt)
                 }
+                Err(_) => None,
             };
-            if let Some(gh_conn) = gh_result {
-                Some(url.trim().replacen("https://", &format!("https://oauth2:{}@", gh_conn.access_token), 1))
-            } else {
-                Some(url.trim().to_string())
-            }
-        } else {
-            Some(url.trim().to_string())
-        }
+            result
+        };
+        // Fall back to org-level OAuth connection if no per-project PAT.
+        stored_token.or_else(|| {
+            let spawn_db = store.conn();
+            let result = match spawn_db.lock() {
+                Ok(conn) => db_queries::get_github_connection(&conn, &auth.org_id)
+                    .ok()
+                    .flatten()
+                    .map(|gh| gh.access_token),
+                Err(_) => None,
+            };
+            result
+        })
     } else {
         None
     };
+    // Bare clone URL — credentials are never embedded here.
+    let bare_repo_url: Option<String> = repo_url.as_deref().map(|u| u.trim().to_string());
 
     tokio::spawn(async move {
         // If a repo URL is set, git pull/clone first. Resolve the path to index.
-        let effective_path = if let Some(ref effective_url) = effective_repo_url {
+        let effective_path = if let Some(ref bare_url) = bare_repo_url {
             let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);
             // Surface clone/pull failures (e.g. auth failure on a private repo)
             // as a project error instead of silently indexing an empty directory.
-            if let Err(e) = clone_or_pull(effective_url, &clone_dir) {
+            if let Err(e) = clone_or_pull(bare_url, clone_token.as_deref(), &clone_dir) {
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                 if let Ok(conn) = db.lock() {
                     let _ = db_queries::set_code_project_error(&conn, id, &e, &now);
@@ -1054,6 +1254,7 @@ mod tests {
         let dest = tmp.path().join("clone");
         let res = clone_or_pull(
             "/nonexistent/nexusmind-private-repo-xyz/repo.git",
+            None,
             dest.to_str().unwrap(),
         );
         assert!(res.is_err(), "a failed clone must return Err, not silently succeed");
@@ -1081,7 +1282,7 @@ mod tests {
 
         let dst = tempfile::TempDir::new().unwrap();
         let dest = dst.path().join("clone");
-        let res = clone_or_pull(src_path, dest.to_str().unwrap());
+        let res = clone_or_pull(src_path, None, dest.to_str().unwrap());
         assert!(res.is_ok(), "cloning a valid local repo must succeed: {res:?}");
         assert!(dest.join(".git").exists(), "clone must produce a .git dir");
     }

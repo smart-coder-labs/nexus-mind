@@ -753,6 +753,12 @@ pub struct IndexProjectRequest {
     pub project: String,
     pub root_path: Option<String>,
     pub repo_url: Option<String>,
+    /// GitHub Personal Access Token for private repositories. Requires the `repo`
+    /// (or `contents:read`) scope. Never logged or returned in API responses.
+    /// When provided, takes priority over the org-level GitHub OAuth connection.
+    /// Stored encrypted at rest (AES-256-GCM) for future reindex operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
     /// When true, build the structural + symbol graph only and skip the slow
     /// embedding pass (no semantic search). Fast, codebase-memory-style indexing.
     #[serde(default)]
@@ -1938,6 +1944,7 @@ mod tests {
             project: "myapp".into(),
             root_path: Some("/workspace/myapp".into()),
             repo_url: None,
+            github_token: None,
             graph_only: None,
         };
         let s = serde_json::to_string(&req).unwrap();

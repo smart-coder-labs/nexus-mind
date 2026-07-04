@@ -8383,6 +8383,27 @@ pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool>
     Ok(n > 0)
 }
 
+// ── Per-project encrypted token queries ──────────────────────────────────────
+
+/// Store an AES-256-GCM–encrypted PAT for a code project.
+/// Pass the already-encrypted blob (hex-encoded). Clears it when `None`.
+pub fn set_code_project_token(conn: &Connection, project_id: i64, encrypted: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET github_token_encrypted = ?1 WHERE id = ?2",
+        rusqlite::params![encrypted, project_id],
+    )?;
+    Ok(())
+}
+
+/// Retrieve the encrypted PAT blob for a code project, or None if not set.
+pub fn get_code_project_token(conn: &Connection, project_id: i64) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT github_token_encrypted FROM code_projects WHERE id = ?1",
+        [project_id],
+        |row| row.get(0),
+    ).optional().map_err(Into::into)
+}
+
 // ── Agent queries ─────────────────────────────────────────────────────────────
 
 fn agent_from_row(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
