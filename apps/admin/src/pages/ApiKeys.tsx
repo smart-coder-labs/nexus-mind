@@ -6,8 +6,9 @@ import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { ApiKeyWithUser } from '../types'
 
-// Keyboard focus rings (design direction §6): 2px --color-focus-ring, 2px offset.
-const FOCUS_CANVAS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-secondary'
+// Keyboard focus indicator (design direction §6): 2px --color-focus-ring outline,
+// 2px offset. Uses outline (not ring) so it isn't clipped by overflow-hidden ancestors.
+const FOCUS_CANVAS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
 // Server timestamps from SQLite datetime('now') are naive UTC (no zone). Parse
 // them as UTC so past events don't render in the future. No-op for zoned or

@@ -25,10 +25,11 @@ function downloadBlob(blob: Blob, filename = 'download.json') {
 
 const ONBOARDING_DISMISSED_KEY = 'onboardingDismissed'
 
-// Keyboard focus rings (design direction §6): 2px --color-focus-ring with a 2px
-// offset matching the surface behind the control (canvas vs. tile).
-const FOCUS_CANVAS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-secondary'
-const FOCUS_TILE = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background-tertiary'
+// Keyboard focus indicator (design direction §6): 2px --color-focus-ring outline
+// with a 2px offset. Uses outline (not ring) so it isn't clipped by overflow-hidden
+// ancestors. Both aliases are identical now; kept for call-site readability.
+const FOCUS_CANVAS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+const FOCUS_TILE = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
 function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
   // Build a map from day-string → count

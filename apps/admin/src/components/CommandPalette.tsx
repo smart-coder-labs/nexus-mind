@@ -7,6 +7,17 @@ import type { GlobalSearchResult } from '../types'
 const HISTORY_KEY = 'nexusmind-search-history'
 const MAX_HISTORY = 8
 
+// A fully-empty result. Used as a fallback so a completed search always yields a
+// non-null object — membership-filtered responses may omit domains entirely, and
+// we must render a clear empty state rather than a blank/broken list.
+const EMPTY_RESULT: GlobalSearchResult = {
+  memories: [],
+  users: [],
+  projects: [],
+  policies: [],
+  conventions: [],
+}
+
 function saveToHistory(query: string) {
   if (!query || query.length < 2) return
   const prev: string[] = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
@@ -28,7 +39,9 @@ type FlatResult = { path: string; primary: string; secondary: string; icon: 'mem
 
 function flattenResults(results: GlobalSearchResult): FlatResult[] {
   const flat: FlatResult[] = []
-  for (const m of results.memories) {
+  // Membership filtering can omit whole domains, so each array may be missing at
+  // runtime even though the type says otherwise — guard every iteration.
+  for (const m of results.memories ?? []) {
     flat.push({
       path: '/memories',
       primary: m.title ?? m.content.slice(0, 60),
@@ -36,10 +49,10 @@ function flattenResults(results: GlobalSearchResult): FlatResult[] {
       icon: 'memory',
     })
   }
-  for (const u of results.users) {
+  for (const u of results.users ?? []) {
     flat.push({ path: '/users', primary: u.name, secondary: u.email, icon: 'user' })
   }
-  for (const p of results.projects) {
+  for (const p of results.projects ?? []) {
     flat.push({ path: '/projects', primary: p.name, secondary: p.description ?? p.id, icon: 'project' })
   }
   return flat
@@ -119,9 +132,9 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     const timer = setTimeout(async () => {
       try {
         const data = await client.globalSearch(query.trim())
-        setResults(data)
+        setResults(data ?? EMPTY_RESULT)
       } catch {
-        setResults({ memories: [], users: [], projects: [], policies: [], conventions: [] })
+        setResults(EMPTY_RESULT)
       } finally {
         setLoading(false)
       }
@@ -277,11 +290,19 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             </div>
           )}
 
-          {/* No results */}
+          {/* No results — clear empty state (also covers membership-filtered
+              searches where every accessible domain returned nothing) */}
           {!loading && isEmpty && (
-            <p className="text-xs text-text-tertiary text-center py-8">
-              No results for "{query}"
-            </p>
+            <div
+              role="status"
+              className="flex flex-col items-center justify-center gap-2 py-10 px-6 text-center"
+            >
+              <Search className="w-5 h-5 text-text-quaternary" />
+              <p className="text-xs font-medium text-text-secondary">No results for "{query}"</p>
+              <p className="text-[11px] text-text-tertiary">
+                Try a different term — you only see items you have access to.
+              </p>
+            </div>
           )}
 
           {/* Memories section */}
