@@ -29,7 +29,7 @@ mod token_cipher {
             );
             return None;
         }
-        Some(Aes256Gcm::new_from_slice(&key_bytes).ok()?)
+        Aes256Gcm::new_from_slice(&key_bytes).ok()
     }
 
     /// Encrypt `plaintext` with AES-256-GCM. Returns hex(nonce || ciphertext).
