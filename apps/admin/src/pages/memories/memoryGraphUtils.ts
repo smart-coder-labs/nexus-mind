@@ -20,6 +20,8 @@ export const MEM_EDGE_COLORS: Record<string, string> = {
   tagged:        '#34d399',
   performed_by:  '#fb923c',
   targets:       '#2997ff',
+  // Project hierarchy — lighter indigo to distinguish from belongs_to
+  child_of:      '#818cf8',
 }
 
 // ── Force-graph data shapes ───────────────────────────────────────────────────

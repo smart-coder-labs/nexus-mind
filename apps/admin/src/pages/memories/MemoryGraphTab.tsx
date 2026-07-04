@@ -1,26 +1,69 @@
 import { useMemo, useState, useCallback, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { Loader2, Share2, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../../auth/AuthContext'
 import { createClient } from '../../api/client'
 import ForceGraph3D from 'react-force-graph-3d'
 import {
   mapMemGraphData,
-  filterMemNodesByTypes,
   filterMemLinksByNodes,
   MEM_NODE_COLORS,
   MEM_EDGE_COLORS,
   type MemForceNode,
+  type MemForceLink,
 } from './memoryGraphUtils'
+import { escapeHtml } from '@/lib/utils'
+import type { Project } from '../../types'
 
 // All possible memory graph node types
 const ALL_NODE_TYPES = ['Memory', 'Project', 'Session', 'User', 'Collection', 'Tag', 'AuditEvent']
-const DEFAULT_VISIBLE_TYPES = new Set<string>(ALL_NODE_TYPES)
+const PER_PROJECT_LIMIT = 1000
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, c => (
-    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'
-  ))
+/**
+ * BFS walk that collects the full connected family of a project:
+ * ancestors (via parent_id) AND descendants (via children).
+ * Returns project names (not IDs). Guarded against parent_id cycles
+ * via a visited set on project IDs.
+ */
+function buildProjectFamily(selectedName: string, allProjects: Project[]): string[] {
+  const byId = new Map<string, Project>()
+  const byName = new Map<string, Project>()
+  allProjects.forEach(p => {
+    byId.set(p.id, p)
+    byName.set(p.name, p)
+  })
+
+  const selected = byName.get(selectedName)
+  if (!selected) return [selectedName]
+
+  const family = new Set<string>()
+  const queue = [selected.id]
+  const visitedIds = new Set<string>()
+
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (visitedIds.has(id)) continue
+    visitedIds.add(id)
+
+    const p = byId.get(id)
+    if (!p) continue
+    family.add(p.name)
+
+    // Walk up to parent
+    if (p.parent_id && !visitedIds.has(p.parent_id)) {
+      queue.push(p.parent_id)
+    }
+
+    // Walk down to children
+    for (const child of allProjects) {
+      if (child.parent_id === id && !visitedIds.has(child.id)) {
+        queue.push(child.id)
+      }
+    }
+  }
+
+  return Array.from(family)
 }
 
 export default function MemoryGraphTab() {
@@ -28,7 +71,7 @@ export default function MemoryGraphTab() {
   const client = useMemo(() => createClient(), [session])
 
   const [selectedProject, setSelectedProject] = useState('')
-  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(DEFAULT_VISIBLE_TYPES))
+  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES))
   const [selectedNode, setSelectedNode] = useState<MemForceNode | null>(null)
 
   // Clear detail panel when switching projects
@@ -40,21 +83,99 @@ export default function MemoryGraphTab() {
     staleTime: 60_000,
   })
 
-  const { data: graph, isLoading, isError, error } = useQuery({
-    queryKey: ['memory-graph', selectedProject],
-    queryFn: () => client.getMemoryGraph(selectedProject),
-    enabled: selectedProject.trim().length > 0,
-    retry: false,
+  const activeProjects = useMemo(() => projects?.filter(p => !p.archived_at) ?? [], [projects])
+
+  // Compute the connected family (selected + ancestors + descendants)
+  const familyProjects = useMemo(() => {
+    if (!selectedProject || activeProjects.length === 0) return []
+    return buildProjectFamily(selectedProject, activeProjects)
+  }, [selectedProject, activeProjects])
+
+  // Fetch every project in the family in parallel
+  const familyGraphQueries = useQueries({
+    queries: familyProjects.map(projectName => ({
+      queryKey: ['memory-graph', projectName],
+      queryFn: () => client.getMemoryGraph(projectName, { limit: PER_PROJECT_LIMIT }),
+      enabled: projectName.trim().length > 0,
+      retry: false,
+      staleTime: 120_000,
+    })),
   })
 
+  const someDataAvailable = familyGraphQueries.some(q => q.data != null)
+  const isLoading = familyProjects.length > 0 && familyGraphQueries.some(q => q.isLoading)
+  const isInitialLoading = isLoading && !someDataAvailable
+  const isError = !someDataAvailable && familyGraphQueries.length > 0 && familyGraphQueries[0]?.isError
+  const primaryError = familyGraphQueries[0]?.error
+
+  // Merge all family graphs into one deduplicated scene and inject hierarchy edges
+  const { mergedNodes, mergedLinks, truncatedProjects } = useMemo(() => {
+    const nodeMap = new Map<string, MemForceNode>()
+    const linkMap = new Map<string, MemForceLink>()
+    const truncatedProjects: string[] = []
+
+    // Step 1: Merge API responses
+    familyProjects.forEach((projectName, i) => {
+      const result = familyGraphQueries[i]?.data
+      if (!result) return
+
+      if (result.node_count > PER_PROJECT_LIMIT) {
+        truncatedProjects.push(projectName)
+      }
+
+      const { nodes, links } = mapMemGraphData(result)
+
+      for (const node of nodes) {
+        if (!nodeMap.has(node.id)) {
+          nodeMap.set(node.id, node)
+        }
+      }
+
+      for (const link of links) {
+        const srcId = String((link.source as unknown as { id?: string })?.id ?? link.source)
+        const tgtId = String((link.target as unknown as { id?: string })?.id ?? link.target)
+        const key = `${srcId}|${link.type}|${tgtId}`
+        if (!linkMap.has(key)) {
+          linkMap.set(key, link)
+        }
+      }
+    })
+
+    // Step 2: Inject project nodes for ALL active projects (ensures hierarchy edges connect)
+    for (const p of activeProjects) {
+      const id = `project:${p.id}`
+      if (!nodeMap.has(id)) {
+        nodeMap.set(id, { id, type: 'Project', label: p.name })
+      }
+    }
+
+    // Step 3: Inject parent_id hierarchy edges (child_of) for all active projects
+    for (const p of activeProjects) {
+      if (!p.parent_id) continue
+      const childId = `project:${p.id}`
+      const parentId = `project:${p.parent_id}`
+      if (nodeMap.has(childId) && nodeMap.has(parentId)) {
+        const key = `${childId}|child_of|${parentId}`
+        if (!linkMap.has(key)) {
+          linkMap.set(key, { source: childId, target: parentId, type: 'child_of' })
+        }
+      }
+    }
+
+    return {
+      mergedNodes: Array.from(nodeMap.values()),
+      mergedLinks: Array.from(linkMap.values()),
+      truncatedProjects,
+    }
+  }, [familyGraphQueries, familyProjects, activeProjects])
+
+  // Apply type filter
   const graphData = useMemo(() => {
-    if (!graph) return { nodes: [] as MemForceNode[], links: [] }
-    const mapped = mapMemGraphData(graph)
-    const filteredNodes = filterMemNodesByTypes(mapped.nodes, visibleTypes)
+    const filteredNodes = mergedNodes.filter(n => visibleTypes.has(n.type))
     const nodeIds = new Set(filteredNodes.map(n => n.id))
-    const filteredLinks = filterMemLinksByNodes(mapped.links, nodeIds)
+    const filteredLinks = filterMemLinksByNodes(mergedLinks, nodeIds)
     return { nodes: filteredNodes, links: filteredLinks }
-  }, [graph, visibleTypes])
+  }, [mergedNodes, mergedLinks, visibleTypes])
 
   const handleTypeToggle = useCallback((type: string) => {
     setVisibleTypes(prev => {
@@ -65,18 +186,32 @@ export default function MemoryGraphTab() {
     })
   }, [])
 
+  const handleNodeClick = useCallback((node: object) => {
+    setSelectedNode(node as MemForceNode)
+  }, [])
+
+  // Extract memory UUID from namespaced id "memory:uuid"
+  const memoryUUID = useMemo(() => {
+    if (!selectedNode || selectedNode.type !== 'Memory') return null
+    const { id } = selectedNode
+    return id.startsWith('memory:') ? id.slice('memory:'.length) : null
+  }, [selectedNode])
+
+  const { data: memoryDetail, isLoading: memoryDetailLoading } = useQuery({
+    queryKey: ['memory-detail', memoryUUID],
+    queryFn: () => client.getMemory(memoryUUID!),
+    enabled: memoryUUID != null,
+    staleTime: 300_000,
+  })
+
   const nodeLabel = useCallback((node: object) => {
     const n = node as MemForceNode
     const color = MEM_NODE_COLORS[n.type] ?? '#94a3b8'
     return `<div style="padding:6px 9px;background:#16161a;border:1px solid #2a2a2e;border-radius:8px;font-family:ui-sans-serif,system-ui;max-width:320px;">
       <div style="font-size:12px;font-weight:600;color:#e5e7eb;">${escapeHtml(n.label)}</div>
-      <div style="font-size:10px;color:${color};margin-top:1px;">${n.type}</div>
+      <div style="font-size:10px;color:${color};margin-top:1px;">${escapeHtml(n.type)}</div>
       <div style="font-size:10px;color:#9ca3af;margin-top:3px;font-family:ui-monospace,monospace;">${escapeHtml(n.id)}</div>
     </div>`
-  }, [])
-
-  const handleNodeClick = useCallback((node: object) => {
-    setSelectedNode(node as MemForceNode)
   }, [])
 
   const linkColor = useCallback((link: object) => {
@@ -89,7 +224,10 @@ export default function MemoryGraphTab() {
     return MEM_NODE_COLORS[n.type] ?? '#94a3b8'
   }, [])
 
-  const activeProjects = useMemo(() => projects?.filter(p => !p.archived_at) ?? [], [projects])
+  const totalNodeCount = familyGraphQueries.reduce((sum, q) => sum + (q.data?.node_count ?? 0), 0)
+  const totalEdgeCount = familyGraphQueries.reduce((sum, q) => sum + (q.data?.edge_count ?? 0), 0)
+
+  const isFamilyExpanded = familyProjects.length > 1
 
   return (
     <div className="space-y-4">
@@ -107,7 +245,7 @@ export default function MemoryGraphTab() {
           ))}
         </select>
 
-        {graph && (
+        {someDataAvailable && (
           <div className="flex items-center gap-1.5 flex-wrap">
             {ALL_NODE_TYPES.map(type => (
               <button
@@ -137,7 +275,7 @@ export default function MemoryGraphTab() {
         </div>
       )}
 
-      {selectedProject && isLoading && (
+      {selectedProject && isInitialLoading && (
         <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
           <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
         </div>
@@ -145,12 +283,12 @@ export default function MemoryGraphTab() {
 
       {selectedProject && isError && (
         <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
-          {(error as Error)?.message ?? 'Failed to load memory graph.'}
+          {(primaryError as Error)?.message ?? 'Failed to load memory graph.'}
         </div>
       )}
 
-      {selectedProject && !isLoading && !isError && graph && (
-        graph.node_count === 0 ? (
+      {selectedProject && !isInitialLoading && !isError && someDataAvailable && (
+        mergedNodes.length === 0 ? (
           <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
             <Share2 className="w-6 h-6 text-text-quaternary/40 mx-auto" />
             <p className="text-xs font-semibold text-text-secondary">No graph data</p>
@@ -160,16 +298,41 @@ export default function MemoryGraphTab() {
           </div>
         ) : (
           <div className="relative border border-border-primary rounded-[18px] overflow-hidden" style={{ height: 600 }}>
-            {/* Stats */}
+            {/* Stats bar */}
             <div className="flex items-center gap-3 px-4 py-2 border-b border-border-primary bg-white/[0.02] text-[10px] text-text-quaternary">
               <span>{graphData.nodes.length} nodes visible</span>
               <span>·</span>
               <span>{graphData.links.length} edges visible</span>
               <span>·</span>
-              <span>{graph.node_count} total nodes</span>
+              <span>{totalNodeCount} total nodes</span>
               <span>·</span>
-              <span>{graph.edge_count} total edges</span>
-              <span className="ml-auto text-text-quaternary/70">hover for info · click a node for details · drag to rotate</span>
+              <span>{totalEdgeCount} total edges</span>
+              {isFamilyExpanded && (
+                <>
+                  <span>·</span>
+                  <span className="text-accent-blue/70">
+                    {familyProjects.length} projects in family
+                  </span>
+                </>
+              )}
+              {truncatedProjects.length > 0 && (
+                <>
+                  <span>·</span>
+                  <span className="text-status-warning">
+                    capped at {PER_PROJECT_LIMIT}: {truncatedProjects.join(', ')}
+                  </span>
+                </>
+              )}
+              {isLoading && someDataAvailable && (
+                <>
+                  <span>·</span>
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    loading family…
+                  </span>
+                </>
+              )}
+              <span className="ml-auto text-text-quaternary/70">hover for info · click a node · drag to rotate</span>
             </div>
 
             <ForceGraph3D
@@ -188,12 +351,17 @@ export default function MemoryGraphTab() {
               showNavInfo={false}
             />
 
-            {/* Detail panel */}
+            {/* Detail panel — slides in over the right side when a node is selected */}
             {selectedNode && (
-              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col">
-                <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary">
+              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col overflow-hidden">
+                {/* Panel header */}
+                <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary shrink-0">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-text-primary truncate">{selectedNode.label}</p>
+                    <p className="text-sm font-semibold text-text-primary truncate">
+                      {selectedNode.type === 'Memory' && memoryDetail?.title
+                        ? memoryDetail.title
+                        : selectedNode.label}
+                    </p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <span
                         className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
@@ -205,30 +373,122 @@ export default function MemoryGraphTab() {
                     <p className="text-[10px] text-text-quaternary font-mono mt-1 break-all">
                       {selectedNode.id}
                     </p>
-                    {selectedNode.type === 'Memory' && (
-                      <p className="text-[10px] text-text-quaternary mt-2">
-                        View this memory in the Memories tab to see full content.
-                      </p>
-                    )}
                   </div>
                   <button
                     type="button"
                     onClick={() => setSelectedNode(null)}
-                    className="text-text-quaternary hover:text-text-primary transition-colors shrink-0"
+                    className="text-text-quaternary hover:text-text-primary transition-colors shrink-0 mt-0.5"
                     aria-label="Close detail panel"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                <div className="flex-1 overflow-auto p-4 space-y-3">
-                  <div>
-                    <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Type</p>
-                    <p className="text-xs text-text-secondary">{selectedNode.type}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Label</p>
-                    <p className="text-xs text-text-secondary">{selectedNode.label}</p>
-                  </div>
+
+                {/* Panel body */}
+                <div className="flex-1 overflow-auto p-4">
+                  {selectedNode.type === 'Memory' ? (
+                    memoryDetailLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="w-4 h-4 animate-spin text-text-quaternary" />
+                      </div>
+                    ) : memoryDetail ? (
+                      <div className="space-y-4">
+                        {memoryDetail.type && (
+                          <div>
+                            <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Type</p>
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-text-secondary">
+                              {memoryDetail.type}
+                            </span>
+                          </div>
+                        )}
+                        {memoryDetail.tags.length > 0 && (
+                          <div>
+                            <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Tags</p>
+                            <div className="flex flex-wrap gap-1">
+                              {memoryDetail.tags.map(t => (
+                                <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/[0.06] text-text-tertiary">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Project</p>
+                          <p className="text-xs text-text-secondary">{memoryDetail.project}</p>
+                        </div>
+                        {memoryDetail.session_id && (
+                          <div>
+                            <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Session</p>
+                            <p className="text-[10px] text-text-tertiary font-mono break-all">{memoryDetail.session_id}</p>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Created</p>
+                          <p className="text-xs text-text-secondary">
+                            {new Date(memoryDetail.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Content</p>
+                          <ReactMarkdown
+                            components={{
+                              p: ({ children }) => (
+                                <p className="text-xs text-text-secondary leading-relaxed mb-2 last:mb-0">{children}</p>
+                              ),
+                              h1: ({ children }) => (
+                                <h1 className="text-sm font-semibold text-text-primary mt-4 mb-1.5 first:mt-0">{children}</h1>
+                              ),
+                              h2: ({ children }) => (
+                                <h2 className="text-xs font-semibold text-text-primary mt-3 mb-1 first:mt-0">{children}</h2>
+                              ),
+                              h3: ({ children }) => (
+                                <h3 className="text-xs font-semibold text-accent-blue mt-2 mb-0.5 first:mt-0">{children}</h3>
+                              ),
+                              ul: ({ children }) => <ul className="mb-2 ml-3 space-y-0.5 last:mb-0">{children}</ul>,
+                              ol: ({ children }) => (
+                                <ol className="mb-2 ml-3 space-y-0.5 list-decimal last:mb-0">{children}</ol>
+                              ),
+                              li: ({ children }) => (
+                                <li className="text-xs text-text-secondary leading-relaxed list-disc">{children}</li>
+                              ),
+                              strong: ({ children }) => (
+                                <strong className="font-semibold text-text-primary">{children}</strong>
+                              ),
+                              em: ({ children }) => (
+                                <em className="italic text-text-secondary">{children}</em>
+                              ),
+                              code: ({ children }) => (
+                                <code className="text-[10px] font-mono text-accent-blue bg-accent-blue/10 rounded px-1 py-0.5">
+                                  {children}
+                                </code>
+                              ),
+                              pre: ({ children }) => (
+                                <pre className="bg-[#1d1d1f] border border-border-primary rounded-[8px] px-3 py-2 overflow-x-auto mb-2 text-[10px] font-mono">
+                                  {children}
+                                </pre>
+                              ),
+                            }}
+                          >
+                            {memoryDetail.content}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-text-quaternary">Failed to load memory details.</p>
+                    )
+                  ) : (
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Type</p>
+                        <p className="text-xs text-text-secondary">{selectedNode.type}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-1">Label</p>
+                        <p className="text-xs text-text-secondary">{selectedNode.label}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
