@@ -41,6 +41,16 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn forbidden() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError {
+            error: "Access denied to this project".to_string(),
+            code: "forbidden".to_string(),
+        }),
+    )
+}
+
 /// Whether the caller may see a session in `project`. Admins always may; non-admins only
 /// when the project is org-shared (no registered project row) or they are a member of it.
 fn session_project_visible(
@@ -65,6 +75,13 @@ pub async fn create_session_handler(
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+
+    // A non-admin may only open a session under a project they can see: their own
+    // projects or an org-shared/unregistered project name. Creating one under another
+    // project is denied (403).
+    if !session_project_visible(&conn, &auth, &input.project)? {
+        return Err(forbidden());
+    }
 
     let session = queries::create_session(&conn, &auth.org_id, &input).map_err(db_err)?;
 
@@ -98,18 +115,19 @@ pub async fn patch_session_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
+    // Gate on the existing session's project before mutating: a non-member of that
+    // project gets 404 (no existence leak), consistent with the read handlers.
+    match queries::get_session(&conn, &auth.org_id, &session_id).map_err(db_err)? {
+        Some(ref s) if session_project_visible(&conn, &auth, &s.project)? => {}
+        _ => return Err(not_found()),
+    }
+
     let result = queries::patch_session(&conn, &auth.org_id, &session_id, &input)
         .map_err(db_err)?;
 
     match result {
         Some(session) => Ok(Json(session)),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Session not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        None => Err(not_found()),
     }
 }
 
@@ -329,6 +347,87 @@ mod tests {
         // ADMIN sees all three sessions.
         let admin_ids = session_ids(&store, &admin_key).await;
         assert!(admin_ids.contains(&secret_sid) && admin_ids.contains(&shared_sid) && admin_ids.contains(&orphan_sid));
+    }
+
+    /// A non-admin cannot create a session under a real project they are not a member of
+    /// (403), but CAN create one under an org-shared/unregistered project or their own.
+    #[tokio::test]
+    async fn create_session_write_path_respects_membership() {
+        let (store, _admin_key) = setup_with_key();
+        let org_id: String = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+        };
+        let (member_key, member_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let shared = q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap().id;
+            q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
+            drop(conn);
+            let (mk, mid) = create_member_with_id(&store, &org_id, "member");
+            let db2 = store.conn();
+            let conn2 = db2.lock().unwrap();
+            conn2.execute(
+                "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+                 VALUES (?1, ?2, ?3, 'member', datetime('now'))",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), shared, mid],
+            ).unwrap();
+            (mk, mid)
+        };
+        let _ = member_id;
+
+        let create = |project: &str| {
+            let store = store.clone();
+            let key = member_key.clone();
+            let project = project.to_string();
+            async move {
+                app(store).oneshot(
+                    Request::builder().method("POST").uri("/v1/sessions")
+                        .header("Authorization", format!("Bearer {key}"))
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(serde_json::json!({ "project": project }).to_string())).unwrap(),
+                ).await.unwrap().status()
+            }
+        };
+
+        assert_eq!(create("proj-secret").await, StatusCode::FORBIDDEN, "non-member project must be 403");
+        assert_eq!(create("proj-shared").await, StatusCode::CREATED, "member's own project must be allowed");
+        assert_eq!(create("scratch-adhoc").await, StatusCode::CREATED, "org-shared/unregistered project must be allowed");
+    }
+
+    /// A non-member cannot patch a session belonging to a project they can't see: 404
+    /// (no existence leak), even with a valid session id.
+    #[tokio::test]
+    async fn patch_session_non_member_returns_404() {
+        let (store, _admin_key) = setup_with_key();
+        let org_id: String = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+        };
+        let (secret_sid, member_key) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
+            let sid = q::create_session(&conn, &org_id, &crate::models::types::CreateSessionRequest {
+                project: "proj-secret".to_string(), name: None, directory: None, summary: None,
+            }).unwrap().id;
+            drop(conn);
+            let (mk, _mid) = create_member_with_id(&store, &org_id, "member");
+            (sid, mk)
+        };
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder().method("PATCH").uri(format!("/v1/sessions/{secret_sid}"))
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "summary": "hijacked" }).to_string())).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "patching a non-member project's session must be 404");
     }
 
     #[tokio::test]
