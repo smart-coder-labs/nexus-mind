@@ -299,11 +299,15 @@ export class NexusMindClient {
     return this.request<Memory>(`/v1/memory/${encodeURIComponent(id)}`)
   }
 
-  searchMemory(params: { query: string; limit?: number }): Promise<Memory[]> {
-    return this.request<Memory[]>('/v1/memory/search', {
+  async searchMemory(params: { query: string; limit?: number }): Promise<Memory[]> {
+    // /v1/memory/search returns a paginated MemoryPage — unwrap to the array.
+    // Without this, the caller gets { memories: [...], total, ... } and any
+    // .filter() / .map() on the result throws (see admin crash on memory open).
+    const res = await this.request<Memory[] | { memories?: Memory[] }>('/v1/memory/search', {
       method: 'POST',
       body: JSON.stringify({ query: params.query, limit: params.limit ?? 5, mode: 'hybrid' }),
     })
+    return Array.isArray(res) ? res : (res?.memories ?? [])
   }
 
   async searchMemories(query: string, limit = 20, mode: 'keyword' | 'hybrid' | 'semantic' = 'hybrid'): Promise<Memory[]> {
