@@ -115,15 +115,10 @@ function activityIcon(action: string) {
 }
 
 // --- Stat pill badge accent mapping ---
-const BADGE_ACCENT: Record<string, string> = {
-  'total-memories': 'bg-status-success/10 border-status-success/20',
-  'active-users':   'bg-accent-blue/10 border-accent-blue/20',
-  'searches-today': 'bg-accent-blue/[0.07] border-accent-blue/[0.14]',
-  'top-tool':       'bg-white/[0.06] border-border-primary',
-  'total-sessions': 'bg-status-warning/10 border-status-warning/20',
-  'this-week':      'bg-status-success/[0.07] border-status-success/[0.14]',
-  'this-month':     'bg-accent-blue/[0.05] border-accent-blue/[0.10]',
-}
+// Design direction §5: stat tiles use one neutral treatment only.
+// Color on a metric encodes state (e.g. status-error for an error count), never identity.
+const BADGE_ACCENT: Record<string, string> = {}
+const STAT_TILE_BASE = 'bg-white/[0.04] border-border-primary'
 
 // --- Timeline helpers ---
 function timelineActionVariant(action: string): 'primary' | 'success' | 'error' | 'warning' | 'default' {
@@ -546,7 +541,7 @@ export default function Dashboard() {
                   role="listitem"
                   className={cn(
                     'flex flex-col gap-1 rounded-[18px] border p-5 transition-colors',
-                    BADGE_ACCENT[metric.id ?? ''] ?? 'bg-white/[0.06] border-border-primary'
+                    BADGE_ACCENT[metric.id ?? ''] ?? STAT_TILE_BASE
                   )}
                 >
                   <span className="text-[28px] font-semibold leading-none text-text-primary tabular-nums truncate">{metric.value}</span>
