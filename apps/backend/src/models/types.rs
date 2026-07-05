@@ -892,9 +892,27 @@ pub struct MemGraphEdge {
     pub edge_type: String,
 }
 
+/// One project that participated in a memory-graph response — used to color
+/// the legend and to disambiguate nodes that belong to different projects in
+/// the same family. `color` is a stable CSS color string the frontend can use
+/// directly (the backend picks from a fixed palette so the frontend never has
+/// to know the palette itself).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectGraphInfo {
+    pub id:        String,
+    pub name:      String,
+    pub color:     String,
+    pub parent_id: Option<String>,
+}
+
 /// Response envelope for `GET /v1/memory/graph`. Mirrors `GraphResponse`'s field
 /// names so the frontend force-graph seam can be reused, even though node/edge
 /// ids are strings here instead of integers.
+///
+/// `projects` lists the project(s) that contributed to this response. When the
+/// request is scoped to a project family (via `project_id`), `projects` is
+/// the resolved family (root + descendants). For the legacy single-project
+/// lookup (`?project=name`), it contains a single entry for that project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MemoryGraphResponse {
     pub project:    String,
@@ -902,6 +920,7 @@ pub struct MemoryGraphResponse {
     pub edge_count: usize,
     pub nodes:      Vec<MemGraphNode>,
     pub edges:      Vec<MemGraphEdge>,
+    pub projects:   Vec<ProjectGraphInfo>,
 }
 
 /// Response body for `GET /v1/code/snippet` — the source of the chunk covering a symbol.

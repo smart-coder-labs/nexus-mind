@@ -1,16 +1,11 @@
-import React, { useMemo, useState, useCallback, lazy, Suspense } from 'react'
+import React, { useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters } from '../types'
-import { ChevronLeft, ChevronRight, Download, X, Share2, List } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react'
 import { ActivityTimeline } from '../components/ActivityTimeline'
-import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
-
-const AUDIT_VIEW_KEY = 'nexusmind-audit-view'
-
-const OrgMemoryGraph = lazy(() => import('../components/OrgMemoryGraph'))
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -83,14 +78,6 @@ export default function AuditLog() {
     setPage(0)
   }
 
-  // Persist the list/graph view toggle so reloading keeps the user where
-  // they were last. Shared hook handles localStorage + graceful fallback
-  // for missing/corrupt values.
-  const [viewMode, setViewMode] = usePersistedGraphState<'list' | 'graph'>(
-    AUDIT_VIEW_KEY,
-    'list',
-    { validate: v => v === 'list' || v === 'graph' },
-  )
   const [exporting, setExporting] = useState(false)
   const [exportingServer, setExportingServer] = useState(false)
 
@@ -175,34 +162,6 @@ export default function AuditLog() {
           <p className="text-xs text-text-quaternary mt-0.5">All actions performed in your organization</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* View toggle */}
-          <div className="flex items-center gap-0.5 bg-white/[0.04] rounded-full p-0.5">
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors ${
-                viewMode === 'list'
-                  ? 'bg-white/[0.08] text-text-primary'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-              aria-label="List view"
-            >
-              <List className="w-3 h-3" /> List
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('graph')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors ${
-                viewMode === 'graph'
-                  ? 'bg-white/[0.08] text-text-primary'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-              aria-label="Graph view"
-            >
-              <Share2 className="w-3 h-3" /> Graph
-            </button>
-          </div>
-
           {session?.user.role === 'admin' && (
             <>
               <button
@@ -288,7 +247,7 @@ export default function AuditLog() {
       )}
 
       {/* Timeline (same design as the dashboard Recent Activity) */}
-      {!entriesError && viewMode === 'list' && (
+      {!entriesError && (
         <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-5">
           <ActivityTimeline
             entries={entries}
@@ -298,20 +257,9 @@ export default function AuditLog() {
             emptyTitle="No audit events found"
             emptyDescription={(Object.values(filters).some(Boolean) || debouncedSearch)
               ? 'No events match the current filters. Try adjusting or clearing them.'
-              : 'Actions performed in your organization will appear here as they happen.'}
+              : 'Actions performed by your team will appear here as they happen.'}
           />
         </div>
-      )}
-
-      {/* Graph view — org-wide memory graph (all projects merged) */}
-      {!entriesError && viewMode === 'graph' && (
-        <Suspense fallback={
-          <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
-            <div className="w-5 h-5 animate-spin rounded-full border-2 border-text-quaternary border-t-transparent" />
-          </div>
-        }>
-          <OrgMemoryGraph storageKey="audit" height={500} />
-        </Suspense>
       )}
     </div>
   )

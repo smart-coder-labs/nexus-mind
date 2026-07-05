@@ -2722,6 +2722,140 @@ pub fn list_project_ids_for_org(conn: &Connection, org_id: &str) -> Result<Vec<S
     Ok(ids)
 }
 
+/// Stable 8-color palette used to color memory-graph nodes and legend swatches
+/// per project. The frontend never has to know the palette — the backend
+/// picks a color via `color_for_project_id` and ships it in the response.
+pub const PROJECT_COLOR_PALETTE: &[&str] = &[
+    "#2997ff", // sky blue
+    "#34d399", // mint
+    "#fb923c", // amber
+    "#a78bfa", // violet
+    "#facc15", // yellow
+    "#f472b6", // pink
+    "#22d3ee", // cyan
+    "#fb7185", // rose
+];
+
+/// Returns a stable CSS color for a project id. The same id always maps to
+/// the same color, so a project's color never changes between reloads.
+pub fn color_for_project_id(project_id: &str) -> String {
+    // FNV-1a 32-bit — cheap, stable, and the mod 8 means the palette wraps
+    // deterministically. We don't need cryptographic quality, just determinism.
+    let mut hash: u32 = 0x811c9dc5;
+    for byte in project_id.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    let idx = (hash as usize) % PROJECT_COLOR_PALETTE.len();
+    PROJECT_COLOR_PALETTE[idx].to_string()
+}
+
+/// Resolves a project to its full family: the project itself + every
+/// descendant in `parent_id` (recursive children). Accepts either a project id
+/// (UUID) or a project name. Returns the projects in BFS order (root first).
+///
+/// Cycle-safe: tracks visited ids so a pre-existing `parent_id` cycle in the
+/// data terminates without infinite looping.
+///
+/// Returns an empty Vec if the root project doesn't exist in the org.
+pub fn resolve_project_family(
+    conn: &Connection,
+    org_id: &str,
+    root: &str,
+) -> Result<Vec<Project>> {
+    let root_project = if root.contains('-') && root.len() >= 32 {
+        // Heuristic: UUID-shaped id (contains dashes and is long enough). Tries
+        // id first, falls back to name on miss. Cheap because both are
+        // indexed lookups.
+        match get_project_by_id(conn, org_id, root)? {
+            Some(p) => p,
+            None => match conn.query_row(
+                "SELECT id, org_id, name, description, created_at, parent_id, archived_at \
+                 FROM projects WHERE org_id = ?1 AND name = ?2",
+                rusqlite::params![org_id, root],
+                |row| {
+                    Ok(Project {
+                        id:         row.get(0)?,
+                        org_id:     row.get(1)?,
+                        name:       row.get(2)?,
+                        description: row.get(3)?,
+                        created_at: row.get(4)?,
+                        parent_id:  row.get(5)?,
+                        archived_at: row.get(6)?,
+                    })
+                },
+            ) {
+                Ok(p) => p,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            },
+        }
+    } else {
+        match conn.query_row(
+            "SELECT id, org_id, name, description, created_at, parent_id, archived_at \
+             FROM projects WHERE org_id = ?1 AND name = ?2",
+            rusqlite::params![org_id, root],
+            |row| {
+                Ok(Project {
+                    id:         row.get(0)?,
+                    org_id:     row.get(1)?,
+                    name:       row.get(2)?,
+                    description: row.get(3)?,
+                    created_at: row.get(4)?,
+                    parent_id:  row.get(5)?,
+                    archived_at: row.get(6)?,
+                })
+            },
+        ) {
+            Ok(p) => p,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        }
+    };
+
+    // BFS: every project whose `parent_id` is in the current frontier gets
+    // added. The visited set prevents infinite loops if a cycle exists in
+    // the data (which would be a data integrity bug, but we don't want the
+    // graph endpoint to hang if it ever happens).
+    let mut family: Vec<Project> = Vec::new();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut frontier: Vec<String> = vec![root_project.id.clone()];
+
+    while let Some(current_id) = frontier.pop() {
+        if !visited.insert(current_id.clone()) {
+            continue;
+        }
+        // Resolve the current node. We already loaded the root, so for the
+        // root iteration we already have it; for descendants we re-fetch by
+        // id. (We could optimize by inlining a batch query, but the typical
+        // family size is < 50 — keep it simple.)
+        let p = if current_id == root_project.id {
+            root_project.clone()
+        } else {
+            match get_project_by_id(conn, org_id, &current_id)? {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+        family.push(p.clone());
+
+        // Enqueue every child (parent_id == current_id) not yet visited.
+        let mut child_stmt = conn.prepare(
+            "SELECT id FROM projects WHERE org_id = ?1 AND parent_id = ?2",
+        )?;
+        let child_ids: Vec<String> = child_stmt
+            .query_map(rusqlite::params![org_id, &current_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for cid in child_ids {
+            if !visited.contains(&cid) {
+                frontier.push(cid);
+            }
+        }
+    }
+
+    Ok(family)
+}
+
 pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>, parent_id: Option<&str>) -> Result<Project> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -9246,6 +9380,97 @@ fn resource_node_id(
         _ => return None,
     };
     nodes.contains_key(&candidate).then_some(candidate)
+}
+
+/// Maximum cap for the family-graph endpoint. Generous on purpose — the user
+/// explicitly wants no pagination on the new Graph page, so we return every
+/// memory in the resolved family in one shot. Keep this aligned with the
+/// frontend's expectation (a single fetch, no "capped at N" warning).
+pub const MAX_FAMILY_GRAPH_LIMIT: i64 = 50_000;
+
+/// Fetches the memory knowledge graph for a project family: the root project
+/// plus every descendant in `parent_id`. Calls the per-project primitive
+/// `get_memory_graph` for each project in the family and merges the results
+/// into a single dedup'd node/edge set.
+///
+/// `family` is the list of resolved projects (root first, BFS). Caller must
+/// resolve the family via `resolve_project_family` so the order is stable and
+/// the hierarchy edges (added below) connect the right nodes.
+///
+/// The per-project primitive already runs the audit-logs query (which is
+/// project-independent — see its doc comment) and adds audit nodes/edges to
+/// every per-project result. Merging via `HashMap<node_id, _>` collapses the
+/// duplicates; the `seen_edge_keys` set dedupes the matching edges. Net
+/// result: every audit event appears exactly once in the merged graph.
+pub fn get_memory_graph_for_family(
+    conn: &Connection,
+    org_id: &str,
+    family: &[Project],
+    since: Option<&str>,
+    limit: i64,
+) -> Result<(Vec<MemGraphNode>, Vec<MemGraphEdge>)> {
+    use std::collections::HashSet;
+    let cap = limit.clamp(1, MAX_FAMILY_GRAPH_LIMIT);
+
+    let mut nodes: HashMap<String, MemGraphNode> = HashMap::new();
+    let mut edges: Vec<MemGraphEdge> = Vec::new();
+    let mut seen_edge_keys: HashSet<String> = HashSet::new();
+
+    // Per-project queries. Allocate the full cap per project so a 10-project
+    // family of 5,000 memories each returns all of them rather than starving
+    // the last projects. The overall envelope is still bounded by `cap`.
+    for project in family {
+        let (proj_nodes, proj_edges) = get_memory_graph(
+            conn,
+            org_id,
+            &project.name,
+            since,
+            cap,
+            0,
+        )?;
+        for n in proj_nodes {
+            // Last-write-wins for nodes — labels can vary slightly across
+            // per-project calls but the id is the source of truth.
+            nodes.insert(n.id.clone(), n);
+        }
+        for e in proj_edges {
+            let key = format!("{}|{}|{}", e.from_id, e.edge_type, e.to_id);
+            if seen_edge_keys.insert(key) {
+                edges.push(e);
+            }
+        }
+    }
+
+    // Inject Project nodes for every family member — guarantees the family
+    // has visible anchors even when no memories exist for some descendants.
+    for p in family {
+        let id = format!("project:{}", p.id);
+        nodes.entry(id.clone()).or_insert(MemGraphNode {
+            id,
+            node_type: "Project".to_string(),
+            label: p.name.clone(),
+        });
+    }
+
+    // Inject parent_id hierarchy edges so the family structure is visible
+    // in the rendered graph. These are in addition to the per-project
+    // primitive's "belongs_to" edges from memories to their project.
+    for p in family {
+        let Some(parent_id) = p.parent_id.as_deref() else { continue };
+        let child_id = format!("project:{}", p.id);
+        let parent_node = format!("project:{parent_id}");
+        let key = format!("{child_id}|child_of|{parent_node}");
+        if seen_edge_keys.insert(key) {
+            edges.push(MemGraphEdge {
+                id:        format!("child_of:{child_id}:{parent_node}"),
+                from_id:   child_id,
+                to_id:     parent_node,
+                edge_type: "child_of".to_string(),
+            });
+        }
+    }
+
+    Ok((nodes.into_values().collect(), edges))
 }
 
 #[cfg(test)]

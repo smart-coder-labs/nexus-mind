@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
@@ -7,17 +7,13 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { Badge } from '@/components/ui/Badge/Badge'
 import { cn } from '@/lib/utils'
-import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight, Share2, List } from 'lucide-react'
+import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 import { DISABLED_NAV_HREFS } from '../config/disabled-sections'
-import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
-
-const OrgMemoryGraph = lazy(() => import('../components/OrgMemoryGraph'))
 
 type CardKey = 'onboarding' | 'trends' | 'heatmap' | 'contributors' | 'agent-activity' | 'usage' | 'quick-actions' | 'conventions' | 'recent-activity' | 'getting-started' | 'memory-trends' | 'memory-health'
 const ALL_CARDS: CardKey[] = ['onboarding', 'trends', 'heatmap', 'contributors', 'conventions', 'getting-started', 'recent-activity', 'memory-trends', 'memory-health', 'agent-activity', 'usage', 'quick-actions']
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
-const DASHBOARD_VIEW_KEY = 'nexusmind-dashboard-view'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
   const url = URL.createObjectURL(blob)
@@ -172,21 +168,6 @@ export default function Dashboard() {
   const isAdmin = session?.user.role === 'admin'
 
   const [period, setPeriod] = useState<7 | 30 | 90>(30)
-
-  // Persist the list/graph view toggle across reloads via the shared hook.
-  // A `validate` predicate ensures legacy non-JSON values (from before the
-  // hook was introduced) fall back to the default 'list' view.
-  const [dashboardView, setDashboardView] = usePersistedGraphState<'list' | 'graph'>(
-    DASHBOARD_VIEW_KEY,
-    'list',
-    {
-      validate: v => v === 'list' || v === 'graph',
-    },
-  )
-
-  const handleDashboardViewChange = (view: 'list' | 'graph') => {
-    setDashboardView(view)
-  }
 
   const [hiddenCards, setHiddenCards] = useState<CardKey[]>(() => {
     try { return JSON.parse(localStorage.getItem(CARDS_STORAGE_KEY) ?? '[]') }
@@ -423,38 +404,6 @@ export default function Dashboard() {
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
-            {/* Overview / Graph toggle */}
-            <div className="flex items-center gap-0.5 bg-white/[0.04] rounded-full p-0.5">
-              <button
-                type="button"
-                onClick={() => handleDashboardViewChange('list')}
-                className={cn(
-                  'flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition-colors',
-                  FOCUS_CANVAS,
-                  dashboardView === 'list'
-                    ? 'bg-white/[0.08] text-text-primary'
-                    : 'text-text-quaternary hover:text-text-secondary'
-                )}
-                aria-label="Overview"
-              >
-                <List className="w-3 h-3" /> Overview
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDashboardViewChange('graph')}
-                className={cn(
-                  'flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition-colors',
-                  FOCUS_CANVAS,
-                  dashboardView === 'graph'
-                    ? 'bg-white/[0.08] text-text-primary'
-                    : 'text-text-quaternary hover:text-text-secondary'
-                )}
-                aria-label="Graph"
-              >
-                <Share2 className="w-3 h-3" /> Graph
-              </button>
-            </div>
-
             <div className="flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5">
               {([7, 30, 90] as const).map(d => (
                 <button
@@ -508,17 +457,6 @@ export default function Dashboard() {
           </div>
         )}
       </div>
-
-      {/* Graph view — org-wide memory graph (all projects merged via real API) */}
-      {dashboardView === 'graph' && isAdmin && (
-        <Suspense fallback={
-          <div className="border border-border-primary rounded-[18px] flex items-center justify-center py-20">
-            <div className="w-5 h-5 animate-spin rounded-full border-2 border-text-quaternary border-t-transparent" />
-          </div>
-        }>
-          <OrgMemoryGraph storageKey="dashboard" height={500} />
-        </Suspense>
-      )}
 
       {/* Onboarding checklist */}
       {isVisible('onboarding') && showOnboarding && (
@@ -585,8 +523,8 @@ export default function Dashboard() {
         </section>
       )}
 
-      {/* Overview content — hidden in graph mode */}
-      {dashboardView === 'list' && <>
+      {/* Overview content */}
+      <>
 
       {/* Stat cards */}
       {isAdmin && (
@@ -1351,7 +1289,7 @@ export default function Dashboard() {
         )
       })()}
 
-      </>}
+      </>
 
       {!isAdmin && (
         <div className="border border-white/[0.08] bg-background-tertiary rounded-[18px] p-6 max-w-xl">

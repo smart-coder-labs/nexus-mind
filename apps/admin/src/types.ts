@@ -566,7 +566,19 @@ export interface MemGraphEdge {
   id: string
   from_id: string
   to_id: string
-  type: string      // "belongs_to" | "in_session" | "created_by" | "in_collection" | "tagged" | "performed_by" | "targets"
+  type: string      // "belongs_to" | "in_session" | "created_by" | "in_collection" | "tagged" | "performed_by" | "targets" | "child_of"
+}
+
+/**
+ * One project that contributed to a memory-graph response. The backend
+ * picks a stable color from its 8-color palette (FNV-1a hash of the id,
+ * mod 8) and ships it here so the frontend never has to know the palette.
+ */
+export interface ProjectGraphInfo {
+  id: string
+  name: string
+  color: string          // CSS hex like "#2997ff"
+  parent_id: string | null
 }
 
 export interface MemoryGraphResponse {
@@ -575,6 +587,14 @@ export interface MemoryGraphResponse {
   edge_count: number
   nodes: MemGraphNode[]
   edges: MemGraphEdge[]
+  /**
+   * Projects that contributed to this response. For a family-scoped fetch
+   * (via `?project_id=...`), this is the resolved family (root + descendants).
+   * For a legacy single-project fetch (`?project=name`), it's a one-element
+   * array. The frontend uses this to color the legend and to set per-node
+   * border colors by the memory's owning project.
+   */
+  projects: ProjectGraphInfo[]
 }
 
 // ── Postgres backups (admin) ──────────────────────────────────────────────────

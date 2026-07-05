@@ -25,6 +25,7 @@ import {
   Megaphone,
   MessageSquare,
   Database,
+  Network,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -145,6 +146,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Knowledge',
     items: [
       { label: 'Memories',    href: '/memories',    icon: Brain },
+      { label: 'Graph',       href: '/graph',       icon: Network,       adminOnly: true },
       { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true },
       { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true },
       { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true },
