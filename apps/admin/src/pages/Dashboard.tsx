@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { Sparkles, X, Check, CheckCircle, CheckCircle2, Circle, Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap, LayoutGrid, User, Key, BookMarked, Webhook, Activity, Copy, Tag, ChevronRight, Share2, List } from 'lucide-react'
 import type { NameCount, DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
 import { DISABLED_NAV_HREFS } from '../config/disabled-sections'
+import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
 
 const OrgMemoryGraph = lazy(() => import('../components/OrgMemoryGraph'))
 
@@ -172,18 +173,19 @@ export default function Dashboard() {
 
   const [period, setPeriod] = useState<7 | 30 | 90>(30)
 
-  const [dashboardView, setDashboardView] = useState<'list' | 'graph'>(() => {
-    try {
-      const stored = localStorage.getItem(DASHBOARD_VIEW_KEY)
-      return stored === 'graph' ? 'graph' : 'list'
-    } catch {
-      return 'list'
-    }
-  })
+  // Persist the list/graph view toggle across reloads via the shared hook.
+  // A `validate` predicate ensures legacy non-JSON values (from before the
+  // hook was introduced) fall back to the default 'list' view.
+  const [dashboardView, setDashboardView] = usePersistedGraphState<'list' | 'graph'>(
+    DASHBOARD_VIEW_KEY,
+    'list',
+    {
+      validate: v => v === 'list' || v === 'graph',
+    },
+  )
 
   const handleDashboardViewChange = (view: 'list' | 'graph') => {
     setDashboardView(view)
-    try { localStorage.setItem(DASHBOARD_VIEW_KEY, view) } catch { /* ignore */ }
   }
 
   const [hiddenCards, setHiddenCards] = useState<CardKey[]>(() => {
