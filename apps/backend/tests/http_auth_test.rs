@@ -37,6 +37,8 @@ fn test_config() -> Config {
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,
+        backup_database_url: None,
+        backup_interval_hours: 6,
     }
 }
 

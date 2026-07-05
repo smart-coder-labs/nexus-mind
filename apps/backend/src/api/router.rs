@@ -8,13 +8,24 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, agents, audit, auth, code, context, conventions, github_auth, health, internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks};
+use crate::api::{admin, agents, audit, auth, backup, code, context, conventions, github_auth, health, internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
 use crate::store::sqlite::SqliteStore;
 
 pub fn build(conn: Connection, config: Config) -> Router {
+    // Build the store so we can also return a cloneable handle to the
+    // underlying connection. Callers that need a long-lived reference to the
+    // SQLite store (e.g. the background backup job) should use `build_with_store`
+    // and clone the returned `SqliteStore`.
+    let (router, _store) = build_with_store(conn, config);
+    router
+}
+
+/// Same as [`build`] but also returns the constructed [`SqliteStore`] so the
+/// caller can hold an extra reference for background tasks.
+pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStore) {
     let config = Arc::new(config);
     let embed = if std::env::var("NEXUSMIND_EMBED_ENABLED").as_deref() == Ok("true") {
         match EmbedService::init() {
@@ -167,6 +178,10 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/v1/agents", get(agents::list_agents).post(agents::create_agent))
         .route("/v1/agents/:id", get(agents::get_agent).patch(agents::update_agent))
         .route("/v1/agents/:id/assignments", get(agents::list_agent_assignments))
+        .route("/v1/backups", get(backup::list_backups_handler).post(backup::create_backup_handler))
+        .route("/v1/backups/:id", get(backup::get_backup_handler))
+        .route("/v1/backups/:id/restore", post(backup::restore_backup_handler))
+        .route("/v1/backups/:id/download", get(backup::download_backup_handler))
         .route("/v1/github/auth", get(github_auth::get_auth_url))
         .route("/v1/github/callback", post(github_auth::post_callback))
         .route("/v1/github/status", get(github_auth::get_status))
@@ -238,7 +253,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .route("/internal/audit", get(internal::list_audit))
         .route("/internal/search", get(internal::internal_search));
 
-    Router::new()
+    let router = Router::new()
         .route("/v1/health", get(health::handler))
         .route("/v1/orgs", get(admin::list_orgs).post(admin::create_org))
         .route("/v1/orgs/:id/users", get(admin::list_org_users))
@@ -259,5 +274,7 @@ pub fn build(conn: Connection, config: Config) -> Router {
         .layer(CookieManagerLayer::new())
         .layer(middleware::from_fn(api_mw::accept_json))
         .layer(TraceLayer::new_for_http())
-        .with_state(store)
+        .with_state(store.clone());
+
+    (router, store)
 }
