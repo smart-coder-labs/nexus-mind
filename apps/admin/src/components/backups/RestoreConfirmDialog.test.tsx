@@ -51,7 +51,6 @@ describe('RestoreConfirmDialog', () => {
 
   it('confirm button is disabled until the user types the exact org slug', () => {
     const { onConfirm } = renderDialog()
-    const dialog = screen.getByRole('dialog', { name: /restore database/i })
     const confirmBtn = screen.getByRole('button', { name: /restore database/i })
     const input = screen.getByLabelText(/type/i) as HTMLInputElement
 
