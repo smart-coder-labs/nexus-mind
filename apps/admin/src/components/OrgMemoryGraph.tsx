@@ -1,6 +1,6 @@
-import { useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { Loader2, Share2, X } from 'lucide-react'
+import { Loader2, RotateCcw, Share2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
@@ -13,6 +13,7 @@ import {
   type MemForceNode,
   type MemForceLink,
 } from '../pages/memories/memoryGraphUtils'
+import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
 import { escapeHtml } from '@/lib/utils'
 
 const PER_PROJECT_LIMIT = 1000
@@ -31,25 +32,21 @@ export default function OrgMemoryGraph({ storageKey, height = 500 }: OrgMemoryGr
   const projectsKey = `nexusmind-org-graph-projects-${storageKey}`
   const typesKey = `nexusmind-org-graph-types-${storageKey}`
 
-  const [hiddenProjects, setHiddenProjects] = useState<Set<string>>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(projectsKey) ?? '[]')
-      return new Set<string>(Array.isArray(stored) ? stored : [])
-    } catch {
-      return new Set<string>()
-    }
-  })
+  // Persist filter state across reloads. Keys are stable per page so the
+  // Dashboard and AuditLog graphs each remember their own configuration.
+  // Storage format stays as a plain JSON array of strings for back-compat
+  // with the previous manual implementation and the OrgMemoryGraph tests.
+  const [hiddenProjects, setHiddenProjects, resetHiddenProjects] = usePersistedGraphState<string[]>(
+    projectsKey,
+    [],
+  )
+  const [visibleTypes, setVisibleTypes, resetVisibleTypes] = usePersistedGraphState<string[]>(
+    typesKey,
+    ALL_NODE_TYPES,
+  )
 
-  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(typesKey) ?? 'null')
-      return stored && Array.isArray(stored)
-        ? new Set<string>(stored)
-        : new Set<string>(ALL_NODE_TYPES)
-    } catch {
-      return new Set<string>(ALL_NODE_TYPES)
-    }
-  })
+  const hiddenSet = useMemo(() => new Set(hiddenProjects), [hiddenProjects])
+  const visibleTypeSet = useMemo(() => new Set(visibleTypes), [visibleTypes])
 
   const [selectedNode, setSelectedNode] = useState<MemForceNode | null>(null)
 
@@ -152,14 +149,28 @@ export default function OrgMemoryGraph({ storageKey, height = 500 }: OrgMemoryGr
   }, [projectGraphQueries, activeProjects])
 
   const visibleProjects = useMemo(
-    () => new Set(activeProjects.map(p => p.name).filter(n => !hiddenProjects.has(n))),
-    [activeProjects, hiddenProjects],
+    () => new Set(activeProjects.map(p => p.name).filter(n => !hiddenSet.has(n))),
+    [activeProjects, hiddenSet],
   )
+
+  // Prune stored hidden projects that no longer correspond to an active
+  // project — prevents stale entries from accumulating in localStorage when
+  // projects are archived or renamed.
+  useEffect(() => {
+    if (!projects) return
+    const valid = new Set(activeProjects.map(p => p.name))
+    const filtered = hiddenProjects.filter(name => valid.has(name))
+    if (filtered.length !== hiddenProjects.length) {
+      setHiddenProjects(filtered)
+    }
+    // Only re-run when the set of valid project names actually changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProjects, projects])
 
   // Apply both project and type filters
   const graphData = useMemo(() => {
     const filteredNodes = mergedNodes.filter(n => {
-      if (!visibleTypes.has(n.type)) return false
+      if (!visibleTypeSet.has(n.type)) return false
       const refs = nodeProjectMap.get(n.id)
       // Keep nodes not tracked to any project (safety) and nodes referenced by a visible project
       if (!refs || refs.size === 0) return true
@@ -170,27 +181,24 @@ export default function OrgMemoryGraph({ storageKey, height = 500 }: OrgMemoryGr
     const filteredLinks = filterMemLinksByNodes(mergedLinks, nodeIds)
 
     return { nodes: filteredNodes, links: filteredLinks }
-  }, [mergedNodes, mergedLinks, nodeProjectMap, visibleTypes, visibleProjects])
+  }, [mergedNodes, mergedLinks, nodeProjectMap, visibleTypeSet, visibleProjects])
 
   const handleTypeToggle = useCallback((type: string) => {
-    setVisibleTypes(prev => {
-      const next = new Set(prev)
-      if (next.has(type)) next.delete(type)
-      else next.add(type)
-      try { localStorage.setItem(typesKey, JSON.stringify([...next])) } catch { /* ignore */ }
-      return next
-    })
-  }, [typesKey])
+    setVisibleTypes(prev =>
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type],
+    )
+  }, [setVisibleTypes])
 
   const handleProjectToggle = useCallback((name: string) => {
-    setHiddenProjects(prev => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      try { localStorage.setItem(projectsKey, JSON.stringify([...next])) } catch { /* ignore */ }
-      return next
-    })
-  }, [projectsKey])
+    setHiddenProjects(prev =>
+      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name],
+    )
+  }, [setHiddenProjects])
+
+  const handleResetFilters = useCallback(() => {
+    resetHiddenProjects()
+    resetVisibleTypes()
+  }, [resetHiddenProjects, resetVisibleTypes])
 
   const handleNodeClick = useCallback((node: object) => {
     setSelectedNode(node as MemForceNode)
@@ -264,7 +272,7 @@ export default function OrgMemoryGraph({ storageKey, height = 500 }: OrgMemoryGr
         {/* Per-project filter pills */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {activeProjects.map(p => {
-            const isVisible = !hiddenProjects.has(p.name)
+            const isVisible = !hiddenSet.has(p.name)
             return (
               <button
                 key={p.id}
@@ -293,18 +301,31 @@ export default function OrgMemoryGraph({ storageKey, height = 500 }: OrgMemoryGr
               type="button"
               onClick={() => handleTypeToggle(type)}
               className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border transition-colors cursor-pointer ${
-                visibleTypes.has(type)
+                visibleTypeSet.has(type)
                   ? 'border-transparent text-white opacity-100'
                   : 'border-border-primary text-text-quaternary opacity-50'
               }`}
-              style={visibleTypes.has(type) ? { backgroundColor: MEM_NODE_COLORS[type] ?? '#94a3b8' } : undefined}
-              aria-pressed={visibleTypes.has(type)}
+              style={visibleTypeSet.has(type) ? { backgroundColor: MEM_NODE_COLORS[type] ?? '#94a3b8' } : undefined}
+              aria-pressed={visibleTypeSet.has(type)}
               aria-label={`Toggle ${type} nodes`}
             >
               {type}
             </button>
           ))}
         </div>
+
+        {/* Reset filters — clears persisted state for this graph */}
+        {(hiddenProjects.length > 0 || visibleTypeSet.size !== ALL_NODE_TYPES.length) && (
+          <button
+            type="button"
+            onClick={handleResetFilters}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border border-border-primary text-text-quaternary hover:text-text-secondary transition-colors"
+            aria-label="Reset graph filters"
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Reset filters
+          </button>
+        )}
       </div>
 
       {/* Graph scene */}

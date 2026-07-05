@@ -6,6 +6,9 @@ import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters } from '../types'
 import { ChevronLeft, ChevronRight, Download, X, Share2, List } from 'lucide-react'
 import { ActivityTimeline } from '../components/ActivityTimeline'
+import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
+
+const AUDIT_VIEW_KEY = 'nexusmind-audit-view'
 
 const OrgMemoryGraph = lazy(() => import('../components/OrgMemoryGraph'))
 
@@ -80,7 +83,14 @@ export default function AuditLog() {
     setPage(0)
   }
 
-  const [viewMode, setViewMode] = useState<'list' | 'graph'>('list')
+  // Persist the list/graph view toggle so reloading keeps the user where
+  // they were last. Shared hook handles localStorage + graceful fallback
+  // for missing/corrupt values.
+  const [viewMode, setViewMode] = usePersistedGraphState<'list' | 'graph'>(
+    AUDIT_VIEW_KEY,
+    'list',
+    { validate: v => v === 'list' || v === 'graph' },
+  )
   const [exporting, setExporting] = useState(false)
   const [exportingServer, setExportingServer] = useState(false)
 

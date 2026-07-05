@@ -1,6 +1,6 @@
-import { useMemo, useState, useCallback, useEffect } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { Loader2, Share2, X } from 'lucide-react'
+import { Loader2, RotateCcw, Share2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../../auth/AuthContext'
 import { createClient } from '../../api/client'
@@ -13,12 +13,18 @@ import {
   type MemForceNode,
   type MemForceLink,
 } from './memoryGraphUtils'
+import { usePersistedGraphState } from '../../hooks/usePersistedGraphState'
 import { escapeHtml } from '@/lib/utils'
 import type { Project } from '../../types'
 
 // All possible memory graph node types
 const ALL_NODE_TYPES = ['Memory', 'Project', 'Session', 'User', 'Collection', 'Tag', 'AuditEvent']
 const PER_PROJECT_LIMIT = 1000
+
+// localStorage keys (versioned to allow future schema migration)
+const SELECTED_PROJECT_KEY = 'nexusmind-memory-graph-project'
+const VISIBLE_TYPES_KEY = 'nexusmind-memory-graph-types'
+const STORAGE_VERSION = 1
 
 /**
  * BFS walk that collects the full connected family of a project:
@@ -70,8 +76,21 @@ export default function MemoryGraphTab() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
 
-  const [selectedProject, setSelectedProject] = useState('')
-  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(ALL_NODE_TYPES))
+  // Persist the user's selection across reloads so the graph returns to the
+  // same project and node-type visibility they last viewed.
+  const [selectedProject, setSelectedProject, resetSelectedProject] = usePersistedGraphState<string>(
+    SELECTED_PROJECT_KEY,
+    '',
+    { version: STORAGE_VERSION },
+  )
+  const [visibleTypes, setVisibleTypes, resetVisibleTypes] = usePersistedGraphState<string[]>(
+    VISIBLE_TYPES_KEY,
+    ALL_NODE_TYPES,
+    { version: STORAGE_VERSION },
+  )
+
+  const visibleTypeSet = useMemo(() => new Set(visibleTypes), [visibleTypes])
+
   const [selectedNode, setSelectedNode] = useState<MemForceNode | null>(null)
 
   // Clear detail panel when switching projects
@@ -171,20 +190,22 @@ export default function MemoryGraphTab() {
 
   // Apply type filter
   const graphData = useMemo(() => {
-    const filteredNodes = mergedNodes.filter(n => visibleTypes.has(n.type))
+    const filteredNodes = mergedNodes.filter(n => visibleTypeSet.has(n.type))
     const nodeIds = new Set(filteredNodes.map(n => n.id))
     const filteredLinks = filterMemLinksByNodes(mergedLinks, nodeIds)
     return { nodes: filteredNodes, links: filteredLinks }
-  }, [mergedNodes, mergedLinks, visibleTypes])
+  }, [mergedNodes, mergedLinks, visibleTypeSet])
 
   const handleTypeToggle = useCallback((type: string) => {
-    setVisibleTypes(prev => {
-      const next = new Set(prev)
-      if (next.has(type)) next.delete(type)
-      else next.add(type)
-      return next
-    })
-  }, [])
+    setVisibleTypes(prev =>
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type],
+    )
+  }, [setVisibleTypes])
+
+  const handleResetFilters = useCallback(() => {
+    resetSelectedProject()
+    resetVisibleTypes()
+  }, [resetSelectedProject, resetVisibleTypes])
 
   const handleNodeClick = useCallback((node: object) => {
     setSelectedNode(node as MemForceNode)
@@ -253,18 +274,31 @@ export default function MemoryGraphTab() {
                 type="button"
                 onClick={() => handleTypeToggle(type)}
                 className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border transition-colors cursor-pointer ${
-                  visibleTypes.has(type)
+                  visibleTypeSet.has(type)
                     ? 'border-transparent text-white opacity-100'
                     : 'border-border-primary text-text-quaternary opacity-50'
                 }`}
-                style={visibleTypes.has(type) ? { backgroundColor: MEM_NODE_COLORS[type] ?? '#94a3b8' } : undefined}
-                aria-pressed={visibleTypes.has(type)}
+                style={visibleTypeSet.has(type) ? { backgroundColor: MEM_NODE_COLORS[type] ?? '#94a3b8' } : undefined}
+                aria-pressed={visibleTypeSet.has(type)}
                 aria-label={`Toggle ${type} nodes`}
               >
                 {type}
               </button>
             ))}
           </div>
+        )}
+
+        {/* Reset filters — clears persisted project + type selection */}
+        {(selectedProject || visibleTypeSet.size !== ALL_NODE_TYPES.length) && (
+          <button
+            type="button"
+            onClick={handleResetFilters}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border border-border-primary text-text-quaternary hover:text-text-secondary transition-colors"
+            aria-label="Reset graph filters"
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Reset filters
+          </button>
         )}
       </div>
 
