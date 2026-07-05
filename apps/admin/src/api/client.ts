@@ -479,6 +479,22 @@ export class NexusMindClient {
     return this.request<MemoryGraphResponse>(`/v1/memory/graph?${qs}`)
   }
 
+  /**
+   * Fetches the memory knowledge graph for a project family — the given
+   * root project plus every descendant in `parent_id`. The backend resolves
+   * the family server-side, merges per-project graphs, and returns the
+   * `projects` array with stable per-project colors for the legend.
+   */
+  getMemoryGraphForFamily(
+    projectId: string,
+    opts: { since?: string; limit?: number } = {},
+  ): Promise<MemoryGraphResponse> {
+    const qs = new URLSearchParams({ project_id: projectId })
+    if (opts.since) qs.set('since', opts.since)
+    if (opts.limit != null) qs.set('limit', String(opts.limit))
+    return this.request<MemoryGraphResponse>(`/v1/memory/graph?${qs}`)
+  }
+
   getCodeSnippet(project: string, file: string, start?: number, end?: number): Promise<CodeSnippet> {
     const qs = new URLSearchParams({ project, file })
     if (start != null) qs.set('start', String(start))

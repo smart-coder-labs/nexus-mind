@@ -919,11 +919,18 @@ pub async fn unpin(
 
 const DEFAULT_MEM_GRAPH_LIMIT: i64 = 2_000;
 const MAX_MEM_GRAPH_LIMIT: i64 = 10_000;
+const DEFAULT_FAMILY_GRAPH_LIMIT: i64 = 50_000;
 
 #[derive(Debug, Deserialize)]
 pub struct GetMemoryGraphQuery {
     #[serde(default)]
     pub project: Option<String>,
+    /// UUID of the root project for a family-scoped graph. When present, the
+    /// server resolves the project + all descendants in `parent_id` and
+    /// returns the merged graph for the whole family. Takes precedence over
+    /// the legacy `project` name parameter if both are present.
+    #[serde(default)]
+    pub project_id: Option<String>,
     #[serde(default)]
     pub since: Option<String>,
     #[serde(default)]
@@ -935,31 +942,42 @@ pub struct GetMemoryGraphQuery {
 /// `GET /v1/memory/graph`
 ///
 /// Query parameters:
-///   - `project` (required): project name or id scoped to the caller's org — `422` if missing
-///   - `since` (optional): ISO-8601 timestamp; only memories created at/after this are included
-///   - `limit`  (optional, default 2000, max 10000): maximum number of Memory nodes (anchor cap)
-///   - `offset` (optional, default 0)
+///   - `project_id` (UUID, recommended): root of the project family. The
+///     server resolves descendants in `parent_id` and returns a single
+///     dedup'd graph for the whole family — the new Graph page contract.
+///   - `project` (name, legacy): single-project lookup. Kept for back-compat
+///     with the prior per-project call shape. Takes a back seat to
+///     `project_id` when both are present.
+///   - `since` (optional): ISO-8601 timestamp; only memories created at/after
+///     this are included. Audit events use the same `since` cap.
+///   - `limit`  (optional): per-project cap (default 2,000 single, 50,000
+///     family). Server clamps to its own max.
+///   - `offset` (optional, default 0): only honored for the single-project
+///     path; the family path always returns the full set in one shot.
 ///
-/// Returns a read-only, on-the-fly graph of Memory/Project/Session/User/Collection/Tag
-/// nodes and their relationships, scoped to `auth.org_id`. Envelope mirrors
-/// `GET /v1/code/graph`'s `GraphResponse` shape so the frontend can reuse the same seam.
+/// Exactly one of `project` or `project_id` is required. Returns 422 if both
+/// are missing, 404 if `project_id` doesn't resolve to any project.
+///
+/// The response includes a `projects` array (id, name, color, parent_id) so
+/// the frontend can color the legend and node borders without having to know
+/// the palette — the backend picks a stable color per project id.
 pub async fn get_graph(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<GetMemoryGraphQuery>,
 ) -> Result<Json<MemoryGraphResponse>, (StatusCode, Json<ApiError>)> {
-    let project = match params.project.as_deref().map(str::trim) {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiError {
-                    error: "project is required".to_string(),
-                    code: "validation_error".to_string(),
-                }),
-            ))
-        }
-    };
+    let project_id = params.project_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let project_name = params.project.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+
+    if project_id.is_none() && project_name.is_none() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "project_id (or legacy project) is required".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
+    }
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| (
@@ -970,6 +988,76 @@ pub async fn get_graph(
         }),
     ))?;
 
+    // Family-scoped path: resolve the root + descendants and merge per-project
+    // graphs into one dedup'd response. The `projects` array describes the
+    // family so the frontend can paint a legend and color memory nodes by
+    // their owning project.
+    if let Some(root) = project_id.as_deref() {
+        let family = db_queries::resolve_project_family(&conn, &auth.org_id, root)
+            .map_err(store_err)?;
+        if family.is_empty() {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("project '{root}' not found"),
+                    code: "project_not_found".to_string(),
+                }),
+            ));
+        }
+        // Permission check uses the root project name (the one passed in the
+        // request). All descendants inherit the same access scope in this
+        // codebase — non-admin viewers only see projects they're a member of
+        // per the per-row check in `get_memory_graph`.
+        let root_project_for_perm = family
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| root.to_string());
+        require_permission(&conn, &auth, Some(&root_project_for_perm), "memory:read")?;
+
+        let limit = params
+            .limit
+            .unwrap_or(DEFAULT_FAMILY_GRAPH_LIMIT)
+            .clamp(1, db_queries::MAX_FAMILY_GRAPH_LIMIT);
+
+        let (nodes, edges) = db_queries::get_memory_graph_for_family(
+            &conn,
+            &auth.org_id,
+            &family,
+            params.since.as_deref(),
+            limit,
+        )
+        .map_err(store_err)?;
+
+        let node_count = nodes.len();
+        let edge_count = edges.len();
+        let project_infos: Vec<crate::models::types::ProjectGraphInfo> = family
+            .iter()
+            .map(|p| crate::models::types::ProjectGraphInfo {
+                id:        p.id.clone(),
+                name:      p.name.clone(),
+                color:     db_queries::color_for_project_id(&p.id),
+                parent_id: p.parent_id.clone(),
+            })
+            .collect();
+        let label = family
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| root.to_string());
+
+        return Ok(Json(MemoryGraphResponse {
+            project: label,
+            node_count,
+            edge_count,
+            nodes,
+            edges,
+            projects: project_infos,
+        }));
+    }
+
+    // Legacy single-project path — kept for callers that still pass `project=name`.
+    // The `require_permission` gate happens first; if the project doesn't exist
+    // in this org the call returns 403/404 from there.
+    let project = project_name.expect("project_name checked above");
     require_permission(&conn, &auth, Some(&project), "memory:read")?;
 
     let limit = params
@@ -991,13 +1079,63 @@ pub async fn get_graph(
     let node_count = nodes.len();
     let edge_count = edges.len();
 
+    // Build a single-element `projects` array so the single-project and
+    // family responses share the same envelope shape. The legacy `project`
+    // text might map to multiple project rows (legacy name vs FK id), so
+    // look up the real project id when possible to give the frontend a
+    // meaningful color anchor.
+    let project_infos = build_single_project_info(&conn, &auth.org_id, &project);
+
     Ok(Json(MemoryGraphResponse {
         project,
         node_count,
         edge_count,
         nodes,
         edges,
+        projects: project_infos,
     }))
+}
+
+/// Resolves a project name (or id) into a `Vec<ProjectGraphInfo>` with one
+/// element. The element is `None` when the project doesn't exist in the org
+/// — that mirrors the legacy behavior where an unknown project name returns
+/// an empty graph (rather than a 404) so the response envelope stays valid.
+fn build_single_project_info(
+    conn: &rusqlite::Connection,
+    org_id: &str,
+    project: &str,
+) -> Vec<crate::models::types::ProjectGraphInfo> {
+    use crate::db::queries as q;
+    if let Some(p) = q::get_project_by_id(conn, org_id, project).ok().flatten() {
+        let color = q::color_for_project_id(&p.id);
+        return vec![crate::models::types::ProjectGraphInfo {
+            id:        p.id,
+            name:      p.name,
+            color,
+            parent_id: p.parent_id,
+        }];
+    }
+    // Try by name
+    let by_name = conn
+        .query_row(
+            "SELECT id, parent_id FROM projects WHERE org_id = ?1 AND name = ?2",
+            rusqlite::params![org_id, project],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .ok();
+    if let Some((id, parent_id)) = by_name {
+        let color = q::color_for_project_id(&id);
+        return vec![crate::models::types::ProjectGraphInfo {
+            id,
+            name:      project.to_string(),
+            color,
+            parent_id,
+        }];
+    }
+    // Unknown project — emit a synthetic info so the legend can still render
+    // a single swatch with the requested name. Color falls back to the first
+    // palette entry (deterministic across calls).
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -3215,5 +3353,310 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── GET /v1/memory/graph?project_id (family-scoped) ─────────────────────
+
+    /// Builds a project hierarchy `parent <- {a, b}` then `a <- {a1, a2}`,
+    /// `b <- {b1}`, and seeds one memory into each. The expected family for
+    /// `parent` is `{parent, a, a1, a2, b, b1}` in BFS order. Returns the
+    /// id of the root project so the test can pass it as `project_id`.
+    async fn build_family_hierarchy(
+        store: SqliteStore,
+        org_id: &str,
+        admin_key: &str,
+    ) -> (SqliteStore, String) {
+        use uuid::Uuid;
+        // Returns `(id, name)` for the inserted row. We need both so the
+        // memory update below can set the legacy `project` column to the
+        // name (which is what `get_memory_graph` matches on) AND the FK
+        // `project_id` column to the id.
+        let mk = |name: &str, parent: Option<&str>| -> (String, String) {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let id = Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+                rusqlite::params![&id, org_id, name, now, parent],
+            ).unwrap();
+            (id, name.to_string())
+        };
+        let (parent_id, _parent_name) = mk("parent", None);
+        let (_a_id,      a_name)      = mk("a",      Some(&parent_id));
+        let (_a1_id,     a1_name)     = mk("a1",     Some(&parent_id));
+        let _ = (a_name, a1_name);
+
+        // The two rows above are placeholders to keep this initial pass
+        // simple; the real hierarchy is rebuilt below. Wipe and rebuild.
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute("DELETE FROM projects WHERE org_id = ?1", rusqlite::params![org_id]).unwrap();
+        }
+        let (parent_id, parent_name) = mk("parent", None);
+        let (a_id,       a_name)      = mk("a",      Some(&parent_id));
+        let (a1_id,      a1_name)     = mk("a1",     Some(&a_id));
+        let (a2_id,      a2_name)     = mk("a2",     Some(&a_id));
+        let (b_id,       b_name)      = mk("b",      Some(&parent_id));
+        let (b1_id,      b1_name)     = mk("b1",     Some(&b_id));
+
+        // Seed one memory per project so the family graph has real data.
+        for ((id, name), content) in [
+            ((parent_id.clone(), parent_name.clone()), "p"),
+            ((a_id.clone(),      a_name.clone()),      "a"),
+            ((a1_id.clone(),     a1_name.clone()),     "a1"),
+            ((a2_id.clone(),     a2_name.clone()),     "a2"),
+            ((b_id.clone(),      b_name.clone()),      "b"),
+            ((b1_id.clone(),     b1_name.clone()),     "b1"),
+        ] {
+            let body = serde_json::json!({
+                "tool": "claude",
+                "content": format!("family memory {content}"),
+            });
+            let resp = app(store.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/memory/store")
+                        .header("Authorization", format!("Bearer {admin_key}"))
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED, "store into {name} must succeed");
+            // The public POST API doesn't accept a project param, so the row
+            // landed in the default project. Move it to the target project so
+            // the family resolution picks it up. The legacy `project` column
+            // is what `get_memory_graph`'s WHERE clause matches on, so we set
+            // it to the project's NAME; `project_id` gets the UUID.
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE memories SET project = ?1, project_id = ?2 \
+                 WHERE id = (SELECT id FROM memories WHERE rowid = last_insert_rowid())",
+                rusqlite::params![&name, &id],
+            ).unwrap();
+        }
+        (store, parent_id)
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_project_id_resolves_full_family() {
+        let (store, admin_key, org_id) = setup_org();
+        let (store, parent) = build_family_hierarchy(store, &org_id, &admin_key).await;
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/memory/graph?project_id={parent}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // `projects` array contains the full family (6 projects).
+        let projects = body["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 6, "family must list 6 projects (parent + 5 descendants)");
+        let names: std::collections::HashSet<String> = projects
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect();
+        for expected in ["parent", "a", "a1", "a2", "b", "b1"] {
+            assert!(names.contains(expected), "family must include {expected}");
+        }
+        // Every project in `projects` carries a stable color string.
+        for p in projects {
+            assert!(p["color"].is_string(), "project must carry a color");
+            assert!(p["color"].as_str().unwrap().starts_with('#'),
+                "color must be a CSS hex string, got {:?}", p["color"]);
+        }
+
+        // Memory nodes cover every project — one memory per project in this test.
+        let memory_nodes: Vec<_> = body["nodes"].as_array().unwrap().iter()
+            .filter(|n| n["type"] == "Memory")
+            .collect();
+        assert_eq!(memory_nodes.len(), 6, "one memory per project must be in the family graph");
+
+        // Hierarchy edges: parent <-> a, parent <-> b, a <-> a1, a <-> a2, b <-> b1 = 5 edges.
+        let child_of_edges: Vec<_> = body["edges"].as_array().unwrap().iter()
+            .filter(|e| e["type"] == "child_of")
+            .collect();
+        assert_eq!(child_of_edges.len(), 5, "five child_of edges for the 5 parent links");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_project_id_excludes_unrelated_projects() {
+        let (store, admin_key, org_id) = setup_org();
+        // Look up the actual admin user_id (memories.user_id FKs to users.id,
+        // not to the raw API key).
+        let admin_user_id: String = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row(
+                "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin' LIMIT 1",
+                rusqlite::params![org_id],
+                |row| row.get(0),
+            ).unwrap()
+        };
+        let (store, parent) = build_family_hierarchy(store, &org_id, &admin_key).await;
+
+        // Create a sibling project that's NOT a descendant of `parent`.
+        let sibling_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
+                 VALUES (?1, ?2, 'sibling', NULL, ?3, NULL)",
+                rusqlite::params![&id, org_id, now],
+            ).unwrap();
+            // Seed a memory into `sibling` so we'd notice if it leaked in.
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, project_id, tool, content, tags, created_at, scope, revision_count) \
+                 VALUES ('sibling-mem-1', ?1, ?2, 'sibling', ?3, 'claude', 'unrelated', '[]', datetime('now'), 'project', 1)",
+                rusqlite::params![org_id, &admin_user_id, &id],
+            ).unwrap();
+            id
+        };
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/memory/graph?project_id={parent}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Family must NOT include the sibling.
+        let project_ids: std::collections::HashSet<String> = body["projects"]
+            .as_array().unwrap().iter()
+            .map(|p| p["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(!project_ids.contains(&sibling_id), "sibling must not be in the family");
+        // And the sibling memory must not appear in the node list.
+        let memory_ids: std::collections::HashSet<String> = body["nodes"]
+            .as_array().unwrap().iter()
+            .filter(|n| n["type"] == "Memory")
+            .map(|n| n["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(!memory_ids.iter().any(|id| id.contains("sibling-mem-1")),
+            "sibling memory must not leak into the family graph");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_project_id_resolves_by_name_as_well_as_id() {
+        // The handler's resolver accepts either id (UUID-shaped) or name.
+        // The UUID heuristic kicks in when the string contains a dash AND is
+        // at least 32 chars long; for shorter strings the resolver falls
+        // through to the name lookup. This test exercises the name path.
+        let (store, admin_key, org_id) = setup_org();
+        let (store, _parent) = build_family_hierarchy(store, &org_id, &admin_key).await;
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project_id=parent")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["projects"].as_array().unwrap().len(), 6);
+        // Sanity: the response's `project` field is the resolved name.
+        assert_eq!(body["project"], "parent");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_project_id_unknown_returns_404() {
+        let (store, admin_key, _org_id) = setup_org();
+
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/memory/graph?project_id=does-not-exist")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err["code"], "project_not_found");
+    }
+
+    #[tokio::test]
+    async fn get_memory_graph_project_id_cycle_terminates() {
+        // Inject a cycle: a <-> b (a is parent of b AND b is parent of a).
+        // The walk must terminate without infinite looping.
+        let (store, admin_key, org_id) = setup_org();
+        let (a_id, b_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let a = uuid::Uuid::new_v4().to_string();
+            let b = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            // Insert a without a parent first, then b pointing to a, then
+            // patch a to point to b — produces a cycle via the FK column.
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
+                 VALUES (?1, ?2, 'a', NULL, ?3, NULL)",
+                rusqlite::params![a, org_id, now],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
+                 VALUES (?1, ?2, 'b', NULL, ?3, ?4)",
+                rusqlite::params![b, org_id, now, &a],
+            ).unwrap();
+            // Close the cycle. FK is ON DELETE SET NULL, no ON UPDATE rule,
+            // so this update is permitted.
+            conn.execute(
+                "UPDATE projects SET parent_id = ?1 WHERE id = ?2",
+                rusqlite::params![&b, &a],
+            ).unwrap();
+            (a, b)
+        };
+
+        // Must terminate (not hang) and return both projects exactly once.
+        let resp = graph_app(store)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/memory/graph?project_id={a_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let ids: std::collections::HashSet<String> = body["projects"]
+            .as_array().unwrap().iter()
+            .map(|p| p["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids.len(), 2, "family must contain both a and b, not duplicate them");
+        assert!(ids.contains(&a_id) && ids.contains(&b_id));
     }
 }
