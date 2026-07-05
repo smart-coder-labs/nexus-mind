@@ -11,7 +11,7 @@ import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
-import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, Share2 } from 'lucide-react'
+import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, Share2, List } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
@@ -1134,6 +1134,10 @@ export default function Memories() {
   const [toDate, setToDate] = useState('')
   // Pinned-only toggle
   const [pinnedOnly, setPinnedOnly] = useState(false)
+  // View all: bypass the default 50-item pagination and load every memory
+  // matching the current filters. Capped at VIEW_ALL_LIMIT to mirror the
+  // backend's EXPORT_HARD_CAP so a runaway query can't OOM the browser.
+  const [viewAll, setViewAll] = useState(false)
   // Sort
   type SortBy = 'newest' | 'oldest' | 'most-used'
   const [sortBy, setSortBy] = useState<SortBy>('newest')
@@ -1157,6 +1161,10 @@ export default function Memories() {
 
   const isSearching = debouncedQuery.trim().length > 0
 
+  // VIEW_ALL_LIMIT must match `EXPORT_HARD_CAP` in the backend (apps/backend/src/api/memory.rs)
+  // so the page never asks for more than the server is willing to return in one shot.
+  const VIEW_ALL_LIMIT = 10_000
+
   const { data: listData, isLoading: listLoading } = useQuery({
     queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter],
     queryFn: () => client.listMemories({
@@ -1170,7 +1178,24 @@ export default function Memories() {
       collection_id: filterCollection || undefined,
       session_id: sessionIdFilter || undefined,
     }),
-    enabled: !isSearching,
+    enabled: !isSearching && !viewAll,
+  })
+
+  const { data: allData, isLoading: allLoading } = useQuery({
+    queryKey: ['memories', 'all', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter],
+    queryFn: () => client.listMemories({
+      limit: VIEW_ALL_LIMIT,
+      offset: 0,
+      type: filterType || undefined,
+      scope: filterScope || undefined,
+      project: filterProject || undefined,
+      include_archived: showArchived || undefined,
+      from_date: fromDate || undefined,
+      to_date: toDate || undefined,
+      collection_id: filterCollection || undefined,
+      session_id: sessionIdFilter || undefined,
+    }),
+    enabled: !isSearching && viewAll,
   })
 
   const { data: searchData, isLoading: searchLoading } = useQuery({
@@ -1179,7 +1204,7 @@ export default function Memories() {
     enabled: isSearching,
   })
 
-  const memoriesRaw = isSearching ? searchData : listData
+  const memoriesRaw = isSearching ? searchData : (viewAll ? allData : listData)
   const memories = useMemo(() => {
     if (!memoriesRaw) return memoriesRaw
     let result = [...memoriesRaw]
@@ -1190,7 +1215,7 @@ export default function Memories() {
     else if (sortBy === 'most-used') result = result.sort((a, b) => (b.revision_count ?? 0) - (a.revision_count ?? 0))
     return result
   }, [memoriesRaw, showFavoritesOnly, favorites, pinnedOnly, sortBy])
-  const isLoading = isSearching ? searchLoading : listLoading
+  const isLoading = isSearching ? searchLoading : (viewAll ? allLoading : listLoading)
 
   const { data: sessions, isLoading: sessionsLoading } = useQuery({
     queryKey: ['sessions'],
@@ -2258,6 +2283,25 @@ export default function Memories() {
           >
             <Star className="w-3 h-3" />
             Favorites
+          </button>
+          {/* View all — bypass the default 50-item pagination. Disabled while
+              the larger request is in flight, and re-enabled when it completes. */}
+          <button
+            onClick={() => setViewAll(v => !v)}
+            disabled={isLoading}
+            aria-pressed={viewAll}
+            aria-label={viewAll ? 'Back to paginated view' : 'View all memories'}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              viewAll
+                ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30'
+                : 'border border-border-primary text-text-quaternary hover:text-text-secondary'
+            }`}
+          >
+            {isLoading && viewAll
+              ? <Loader2 className="w-3 h-3 animate-spin" />
+              : <List className="w-3 h-3" />
+            }
+            {viewAll ? 'Paginated view' : 'View all'}
           </button>
         </div>
       )}
