@@ -5,6 +5,7 @@ pub mod helpers;
 pub mod memory;
 pub mod context;
 pub mod audit;
+pub mod backup;
 pub mod code;
 pub mod policy;
 pub mod rate_limit;

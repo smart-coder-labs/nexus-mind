@@ -50,4 +50,15 @@ pub struct Config {
 
     #[arg(long, env = "GITHUB_REDIRECT_URI")]
     pub github_redirect_uri: Option<String>,
+
+    /// Connection string for the Postgres backup layer. When unset, the backup
+    /// subsystem is disabled (background job is skipped, API endpoints return
+    /// 503). Treat this value as a credential — never commit it.
+    #[arg(long, env = "BACKUP_DATABASE_URL")]
+    pub backup_database_url: Option<String>,
+
+    /// Hours between automatic backups. Default 6. Manual backups via the API
+    /// are unaffected by this setting.
+    #[arg(long, env = "BACKUP_INTERVAL_HOURS", default_value_t = 6)]
+    pub backup_interval_hours: u64,
 }
