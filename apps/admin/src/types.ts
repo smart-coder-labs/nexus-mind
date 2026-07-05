@@ -612,14 +612,13 @@ export interface Backup {
   metadata?: Record<string, unknown> | null
 }
 
-export interface BackupTable {
-  name: string
+export interface BackupTableInfo {
+  table_name: string
   row_count: number
-  size_bytes?: number | null
 }
 
 export interface BackupDetail extends Backup {
-  tables: BackupTable[]
+  table_list: BackupTableInfo[]
 }
 
 export interface BackupRestoreSummary {
