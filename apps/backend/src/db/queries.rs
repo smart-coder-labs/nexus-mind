@@ -2741,6 +2741,48 @@ pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: 
 }
 
 pub fn update_project(conn: &Connection, org_id: &str, project_id: &str, parent_id: Option<&str>) -> Result<bool> {
+    if let Some(new_parent) = parent_id {
+        // Self-parenting is a cycle
+        if new_parent == project_id {
+            anyhow::bail!("cycle_detected: a project cannot be its own parent");
+        }
+        // Cross-org check: parent must belong to the same org
+        let parent_in_org: bool = conn.query_row(
+            "SELECT count(*) > 0 FROM projects WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![new_parent, org_id],
+            |row| row.get(0),
+        )?;
+        if !parent_in_org {
+            anyhow::bail!("not_found: parent project not found in this organization");
+        }
+        // Cycle check: walk the ancestor chain of the proposed new parent
+        let mut visited = std::collections::HashSet::new();
+        let mut current = new_parent.to_string();
+        loop {
+            let row: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT parent_id FROM projects WHERE id = ?1 AND org_id = ?2",
+                    rusqlite::params![current, org_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?;
+            match row {
+                None => break,          // not found in this org — safe to stop
+                Some(None) => break,    // root project reached — no cycle
+                Some(Some(next)) => {
+                    if next == project_id {
+                        anyhow::bail!("cycle_detected: assigning this parent would create a circular hierarchy");
+                    }
+                    // Guard against pre-existing cycles in the data: if we revisit
+                    // a node, the chain loops without involving project_id — stop.
+                    if !visited.insert(current.clone()) {
+                        break;
+                    }
+                    current = next;
+                }
+            }
+        }
+    }
     let rows = conn.execute(
         "UPDATE projects SET parent_id = ?1 WHERE id = ?2 AND org_id = ?3",
         rusqlite::params![parent_id, project_id, org_id],

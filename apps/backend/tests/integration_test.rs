@@ -684,3 +684,80 @@ fn suspended_users_excluded_from_active_count() {
     let entry = found.unwrap();
     assert_eq!(entry.active_user_count, 2, "active_user_count must exclude the suspended user");
 }
+
+/// parent_id update — happy path, cycle rejection, cross-org rejection.
+#[test]
+fn update_project_parent_id_validation() {
+    let conn = setup();
+    let (org, _admin, _) = queries::bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin").unwrap();
+
+    // Create three projects in org: A, B, C (A → B → C chain)
+    let a = queries::create_project(&conn, &org.id, "proj-a", None, None).unwrap();
+    let b = queries::create_project(&conn, &org.id, "proj-b", None, None).unwrap();
+    let c = queries::create_project(&conn, &org.id, "proj-c", None, None).unwrap();
+
+    // Happy path: set B's parent to A
+    let updated = queries::update_project(&conn, &org.id, &b.id, Some(&a.id)).unwrap();
+    assert!(updated, "setting parent should return true");
+
+    // Happy path: set C's parent to B (creating chain A → B → C)
+    let updated2 = queries::update_project(&conn, &org.id, &c.id, Some(&b.id)).unwrap();
+    assert!(updated2);
+
+    // Happy path: clear parent (set to None)
+    let cleared = queries::update_project(&conn, &org.id, &c.id, None).unwrap();
+    assert!(cleared);
+
+    // Re-establish A → B → C chain for cycle tests
+    queries::update_project(&conn, &org.id, &c.id, Some(&b.id)).unwrap();
+
+    // Cycle: try to set A's parent to C (would create C → A → B → C cycle)
+    let cycle_err = queries::update_project(&conn, &org.id, &a.id, Some(&c.id));
+    assert!(cycle_err.is_err(), "cycle must be rejected");
+    assert!(cycle_err.unwrap_err().to_string().contains("cycle_detected"));
+
+    // Self-parenting: A cannot be its own parent
+    let self_err = queries::update_project(&conn, &org.id, &a.id, Some(&a.id));
+    assert!(self_err.is_err(), "self-parenting must be rejected");
+    assert!(self_err.unwrap_err().to_string().contains("cycle_detected"));
+
+    // Cross-org: set up second org and try to use its project as parent
+    let org2_id = conn.query_row(
+        "INSERT INTO organizations (id, name, slug) VALUES (?, 'Org2', 'org2') RETURNING id",
+        [uuid::Uuid::new_v4().to_string()],
+        |row| row.get::<_, String>(0),
+    ).unwrap();
+    let other_org_project = queries::create_project(&conn, &org2_id, "other-org-proj", None, None).unwrap();
+    let cross_org_err = queries::update_project(&conn, &org.id, &a.id, Some(&other_org_project.id));
+    assert!(cross_org_err.is_err(), "cross-org parent must be rejected");
+    assert!(cross_org_err.unwrap_err().to_string().contains("not_found"));
+}
+
+/// A pre-existing cycle in the data (created by bypassing validation) must not
+/// hang update_project — the ancestor walk must terminate.
+#[test]
+fn update_project_terminates_on_pre_existing_cycle() {
+    let conn = setup();
+    let (org, _admin, _) = queries::bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin").unwrap();
+
+    let a = queries::create_project(&conn, &org.id, "cyc-a", None, None).unwrap();
+    let b = queries::create_project(&conn, &org.id, "cyc-b", None, None).unwrap();
+    let c = queries::create_project(&conn, &org.id, "cyc-c", None, None).unwrap();
+
+    // Manually create a pre-existing cycle A → B → A via raw SQL, bypassing validation.
+    conn.execute(
+        "UPDATE projects SET parent_id = ?1 WHERE id = ?2",
+        rusqlite::params![b.id, a.id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE projects SET parent_id = ?1 WHERE id = ?2",
+        rusqlite::params![a.id, b.id],
+    )
+    .unwrap();
+
+    // Pointing C at a member of the cyclic pair must terminate (Ok or Err — no hang).
+    let result = queries::update_project(&conn, &org.id, &c.id, Some(&a.id));
+    // The important assertion is that we got here at all; either outcome is acceptable.
+    let _ = result;
+}

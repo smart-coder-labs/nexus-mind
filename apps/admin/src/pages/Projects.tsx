@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
@@ -6,7 +6,7 @@ import { useAuth } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
-  Archive, RotateCcw, BookMarked, Settings,
+  Archive, RotateCcw, BookMarked, Settings, X,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -509,10 +509,12 @@ export default function Projects() {
   const [showArchived, setShowArchived] = useState(false)
 
   // Project settings modal
-  const [editingProject, setEditingProject] = useState<NonNullable<typeof projects>[number] | null>(null)
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [settingsDescription, setSettingsDescription] = useState('')
   const [settingsCustomInstructions, setSettingsCustomInstructions] = useState('')
   const [settingsRetentionDays, setSettingsRetentionDays] = useState<number | ''>('')
+  const [addChildQuery, setAddChildQuery] = useState('')
+  const [addChildOpen, setAddChildOpen] = useState(false)
 
   // Create Project Form
   const [name, setName] = useState('')
@@ -540,6 +542,11 @@ export default function Projects() {
     queryKey: ['conventions'],
     queryFn: () => client.listConventions(),
   })
+
+  const editingProject = useMemo(
+    () => projects?.find(p => p.id === editingProjectId) ?? null,
+    [projects, editingProjectId],
+  )
 
   const selectedProject = useMemo(
     () => projects?.find(p => p.id === selectedProjectId) ?? null,
@@ -570,6 +577,74 @@ export default function Projects() {
     () => (projects ?? []).filter(p => p.id !== selectedProjectId),
     [projects, selectedProjectId],
   )
+
+  // Descendants of the editing project (for parent selector — exclude to prevent cycles)
+  const editingProjectDescendants = useMemo(() => {
+    if (!editingProject || !projects) return new Set<string>()
+    const descendants = new Set<string>()
+    const queue = [editingProject.id]
+    while (queue.length) {
+      const curr = queue.shift()!
+      for (const p of projects) {
+        if (p.parent_id === curr && !descendants.has(p.id)) {
+          descendants.add(p.id)
+          queue.push(p.id)
+        }
+      }
+    }
+    return descendants
+  }, [projects, editingProject])
+
+  // Valid parent options for the editing project (exclude itself, descendants, archived)
+  const parentOptionsForEdit = useMemo(
+    () => (projects ?? []).filter(p =>
+      p.id !== editingProject?.id &&
+      !editingProjectDescendants.has(p.id) &&
+      !p.archived_at,
+    ),
+    [projects, editingProject, editingProjectDescendants],
+  )
+
+  // Current children of the editing project
+  const currentChildren = useMemo(
+    () => (projects ?? []).filter(p => p.parent_id === editingProject?.id),
+    [projects, editingProject],
+  )
+
+  // Ancestors of the editing project (for cycle prevention in add-child)
+  const editingProjectAncestors = useMemo(() => {
+    if (!editingProject || !projects) return new Set<string>()
+    const ancestors = new Set<string>()
+    const projectMap = new Map(projects.map(p => [p.id, p]))
+    let cur: typeof projects[number] | undefined = editingProject.parent_id
+      ? projectMap.get(editingProject.parent_id)
+      : undefined
+    while (cur) {
+      if (ancestors.has(cur.id)) break // guard against cyclic parent chains in data
+      ancestors.add(cur.id)
+      cur = cur.parent_id ? projectMap.get(cur.parent_id) : undefined
+    }
+    return ancestors
+  }, [projects, editingProject])
+
+  // Candidate projects that can be assigned as children
+  const childCandidates = useMemo(() => {
+    if (!editingProject || !projects) return []
+    const childrenIds = new Set(currentChildren.map(c => c.id))
+    return projects.filter(p =>
+      p.id !== editingProject.id &&
+      !p.archived_at &&
+      !childrenIds.has(p.id) &&
+      !editingProjectAncestors.has(p.id),
+    )
+  }, [projects, editingProject, currentChildren, editingProjectAncestors])
+
+  // Filtered candidate list by search query
+  const filteredChildCandidates = useMemo(() => {
+    const q = addChildQuery.toLowerCase().trim()
+    if (!q) return childCandidates
+    return childCandidates.filter(p => p.name.toLowerCase().includes(q))
+  }, [childCandidates, addChildQuery])
 
   const allAvailableRoles = useMemo(() => {
     const standard = ['admin', 'member', 'viewer']
@@ -640,17 +715,22 @@ export default function Projects() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects'] })
-      setEditingProject(null)
+      setEditingProjectId(null)
     },
   })
 
+  const lastInitializedId = useRef<string | null>(null)
   useEffect(() => {
-    if (editingProject) {
+    if (editingProjectId && editingProject && lastInitializedId.current !== editingProjectId) {
+      lastInitializedId.current = editingProjectId
       setSettingsDescription(editingProject.description ?? '')
       setSettingsCustomInstructions('')
       setSettingsRetentionDays('')
+      setAddChildQuery('')
+      setAddChildOpen(false)
     }
-  }, [editingProject])
+    if (!editingProjectId) lastInitializedId.current = null
+  }, [editingProjectId, editingProject])
 
   const handleMemoriesClick = (projectId: string) => {
     setSelectedProjectId(projectId)
@@ -744,7 +824,7 @@ export default function Projects() {
 
                 {/* Project settings button */}
                 <button
-                  onClick={(e) => { e.stopPropagation(); setEditingProject(project) }}
+                  onClick={(e) => { e.stopPropagation(); setEditingProjectId(project.id) }}
                   aria-label={`Settings for ${project.name}`}
                   title="Project settings"
                   className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-[#272729]/60 opacity-0 group-hover:opacity-100 transition-all"
@@ -959,7 +1039,7 @@ export default function Projects() {
       </div>
 
       {/* Project Settings Modal */}
-      <Modal open={!!editingProject} onOpenChange={(open) => { if (!open) setEditingProject(null) }}>
+      <Modal open={!!editingProjectId} onOpenChange={(open) => { if (!open) setEditingProjectId(null) }}>
         <ModalCloseButton />
         {editingProject && (
           <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
@@ -1019,10 +1099,128 @@ export default function Projects() {
                 />
               </div>
 
+              {/* Parent project */}
+              <div className="space-y-1">
+                <label className="text-[10px] text-text-quaternary">Parent project</label>
+                <Select
+                  key={editingProject.id + '-parent'}
+                  value={editingProject.parent_id ?? ''}
+                  onValueChange={v =>
+                    updateProjectMut.mutate({ id: editingProject.id, parent_id: v || null })
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs" disabled={updateProjectMut.isPending}>
+                    <SelectValue placeholder="— No parent (root) —" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">— No parent (root) —</SelectItem>
+                    {parentOptionsForEdit.map(p => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Child projects */}
+              <div className="space-y-2 pt-1">
+                <span className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+                  Child projects
+                </span>
+
+                {/* Current children list */}
+                {currentChildren.length === 0 ? (
+                  <p className="text-xs text-text-quaternary py-1">No child projects assigned.</p>
+                ) : (
+                  <div className="space-y-0 divide-y divide-border-secondary/40">
+                    {currentChildren.map(child => (
+                      <div key={child.id} className="flex items-center justify-between py-1.5">
+                        <span className="text-xs text-text-secondary font-mono">{child.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`Remove "${child.name}" as a child of "${editingProject.name}"?`)) {
+                              updateProjectMut.mutate({ id: child.id, parent_id: null })
+                            }
+                          }}
+                          disabled={updateProjectMut.isPending}
+                          aria-label={`Remove ${child.name} as child`}
+                          className="text-text-quaternary hover:text-status-error transition-colors disabled:opacity-40"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add child — searchable combobox */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Add child project…"
+                    value={addChildQuery}
+                    disabled={updateProjectMut.isPending}
+                    onFocus={() => setAddChildOpen(true)}
+                    onChange={e => {
+                      setAddChildQuery(e.target.value)
+                      setAddChildOpen(true)
+                    }}
+                    className="w-full rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary disabled:opacity-40"
+                  />
+                  {addChildOpen && filteredChildCandidates.length > 0 && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setAddChildOpen(false)}
+                      />
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-border-primary bg-[#1d1d1f] z-50 max-h-48 overflow-y-auto shadow-xl">
+                        {filteredChildCandidates.map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            disabled={updateProjectMut.isPending}
+                            onClick={() => {
+                              updateProjectMut.mutate({ id: p.id, parent_id: editingProject.id })
+                              setAddChildQuery('')
+                              setAddChildOpen(false)
+                            }}
+                            className="w-full px-3 py-2 text-xs text-left text-text-secondary hover:bg-white/[0.06] flex items-center justify-between gap-2 first:rounded-t-[11px] last:rounded-b-[11px] disabled:opacity-40"
+                          >
+                            <span className="font-mono">{p.name}</span>
+                            {p.parent_id && (
+                              <span className="text-[10px] text-text-quaternary shrink-0">
+                                currently under {projects?.find(x => x.id === p.parent_id)?.name ?? '…'}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {addChildOpen && filteredChildCandidates.length === 0 && addChildQuery && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setAddChildOpen(false)}
+                      />
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-border-primary bg-[#1d1d1f] z-50 px-3 py-2 shadow-xl">
+                        <p className="text-xs text-text-quaternary">No assignable projects found.</p>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {updateProjectMut.isError && (
+                  <p className="text-xs text-status-error/80">
+                    {(updateProjectMut.error as Error)?.message ?? 'Failed to update project hierarchy'}
+                  </p>
+                )}
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setEditingProject(null)}
+                  onClick={() => setEditingProjectId(null)}
                   className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
                 >
                   Cancel
