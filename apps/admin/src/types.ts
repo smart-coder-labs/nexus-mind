@@ -576,3 +576,35 @@ export interface MemoryGraphResponse {
   nodes: MemGraphNode[]
   edges: MemGraphEdge[]
 }
+
+// ── Postgres backups (admin) ──────────────────────────────────────────────────
+
+export type BackupKind = 'manual' | 'scheduled' | string
+export type BackupStatus = 'pending' | 'running' | 'completed' | 'failed' | string
+
+export interface Backup {
+  id: string
+  org_id: string
+  created_at: string
+  kind: BackupKind
+  status: BackupStatus
+  size_bytes: number
+  metadata?: Record<string, unknown> | null
+}
+
+export interface BackupTable {
+  name: string
+  row_count: number
+  size_bytes?: number | null
+}
+
+export interface BackupDetail extends Backup {
+  tables: BackupTable[]
+}
+
+export interface BackupRestoreSummary {
+  backup_id: string
+  restored_at: string
+  tables_restored: number
+  rows_restored: number
+}

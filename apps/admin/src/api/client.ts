@@ -56,6 +56,9 @@ import type {
   CreateConventionRequest,
   UpdateConventionRequest,
   MemoryGraphResponse,
+  Backup,
+  BackupDetail,
+  BackupRestoreSummary,
 } from '../types'
 
 export class NexusMindClient {
@@ -781,6 +784,41 @@ export class NexusMindClient {
 
   restoreConvention(id: number): Promise<void> {
     return this.request(`/v1/conventions/${id}/restore`, { method: 'POST' })
+  }
+
+  // ── Postgres backups (admin) ────────────────────────────────────────────────
+
+  listBackups(): Promise<Backup[]> {
+    return this.request<Backup[]>('/v1/backups')
+  }
+
+  getBackup(id: string): Promise<BackupDetail> {
+    return this.request<BackupDetail>(`/v1/backups/${encodeURIComponent(id)}`)
+  }
+
+  createBackup(): Promise<Backup> {
+    return this.request<Backup>('/v1/backups', { method: 'POST' })
+  }
+
+  restoreBackup(id: string): Promise<BackupRestoreSummary> {
+    return this.request<BackupRestoreSummary>(
+      `/v1/backups/${encodeURIComponent(id)}/restore?confirm=true`,
+      { method: 'POST' },
+    )
+  }
+
+  async downloadBackup(id: string): Promise<Blob> {
+    const res = await fetch(`${this.baseUrl}/v1/backups/${encodeURIComponent(id)}/download`, {
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw Object.assign(new Error(body.error ?? res.statusText), {
+        code: body.code,
+        status: res.status,
+      })
+    }
+    return res.blob()
   }
 }
 

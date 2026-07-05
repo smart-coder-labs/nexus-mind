@@ -24,6 +24,7 @@ import {
   Search,
   Megaphone,
   MessageSquare,
+  Database,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -172,6 +173,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Webhooks',    href: '/webhooks',    icon: Zap,           adminOnly: true },
       { label: 'Audit Log',   href: '/audit',       icon: ScrollText,    adminOnly: true },
+      { label: 'Backups',     href: '/backups',     icon: Database,      adminOnly: true },
       { label: 'Settings',    href: '/settings',    icon: Settings },
     ],
   },

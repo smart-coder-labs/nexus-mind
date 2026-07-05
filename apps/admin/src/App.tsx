@@ -23,6 +23,7 @@ const Collections = lazy(() => import('./pages/Collections'))
 const Tags        = lazy(() => import('./pages/Tags'))
 const Search      = lazy(() => import('./pages/Search'))
 const Sessions    = lazy(() => import('./pages/Sessions'))
+const Backups     = lazy(() => import('./pages/Backups'))
 
 /** Redirects to / when the given href is in DISABLED_NAV_HREFS; otherwise renders children. */
 function MaybeDisabled({ href, children }: { href: string; children: React.ReactNode }) {
@@ -85,6 +86,7 @@ function AppRoutes() {
                 <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/backups" element={<AdminRoute><Backups /></AdminRoute>} />
               </Routes>
             </ProtectedRoute>
           }
