@@ -510,10 +510,6 @@ export default function Projects() {
 
   // Project settings modal
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
-  const editingProject = useMemo(
-    () => projects?.find(p => p.id === editingProjectId) ?? null,
-    [projects, editingProjectId],
-  )
   const [settingsDescription, setSettingsDescription] = useState('')
   const [settingsCustomInstructions, setSettingsCustomInstructions] = useState('')
   const [settingsRetentionDays, setSettingsRetentionDays] = useState<number | ''>('')
@@ -546,6 +542,11 @@ export default function Projects() {
     queryKey: ['conventions'],
     queryFn: () => client.listConventions(),
   })
+
+  const editingProject = useMemo(
+    () => projects?.find(p => p.id === editingProjectId) ?? null,
+    [projects, editingProjectId],
+  )
 
   const selectedProject = useMemo(
     () => projects?.find(p => p.id === selectedProjectId) ?? null,
