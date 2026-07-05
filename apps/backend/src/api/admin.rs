@@ -697,7 +697,28 @@ pub async fn update_project_api(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let found = queries::update_project(&conn, &auth.org_id, &project_id, input.parent_id.as_deref())
-        .map_err(db_err)?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.starts_with("cycle_detected:") {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: msg.strip_prefix("cycle_detected: ").unwrap_or(&msg).to_string(),
+                        code: "cycle_detected".to_string(),
+                    }),
+                )
+            } else if msg.starts_with("not_found:") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: msg.strip_prefix("not_found: ").unwrap_or(&msg).to_string(),
+                        code: "not_found".to_string(),
+                    }),
+                )
+            } else {
+                db_err(e)
+            }
+        })?;
 
     if !found {
         return Err((
