@@ -69,9 +69,9 @@ describe('Backups page', () => {
     mockList.mockResolvedValue(baseBackups)
     mockGet.mockResolvedValue({
       ...baseBackups[0],
-      tables: [
-        { name: 'memories', row_count: 100, size_bytes: 4096 },
-        { name: 'users',    row_count: 5,   size_bytes: 1024 },
+      table_list: [
+        { table_name: 'memories', row_count: 100 },
+        { table_name: 'users',    row_count: 5 },
       ],
     })
     mockCreate.mockResolvedValue({ ...baseBackups[0], id: 'bk-new' })

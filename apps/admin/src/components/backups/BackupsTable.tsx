@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Database, Download, RefreshCw, Table2 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import type { Backup, BackupDetail, BackupTable } from '../../types'
+import type { Backup, BackupDetail, BackupTableInfo } from '../../types'
 import { BackupStatusBadge } from './BackupStatusBadge'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
@@ -36,7 +36,7 @@ interface BackupsTableProps {
   onRestore: (b: Backup) => void
 }
 
-function TableList({ tables }: { tables: BackupTable[] }) {
+function TableList({ tables }: { tables: BackupTableInfo[] }) {
   if (tables.length === 0) {
     return (
       <p className="text-[12px] text-text-quaternary italic px-4 py-2">No tables in this backup.</p>
@@ -48,15 +48,13 @@ function TableList({ tables }: { tables: BackupTable[] }) {
         <tr className="text-text-quaternary">
           <th className="px-4 py-1.5 text-left font-medium uppercase tracking-wide text-[10px]">Table</th>
           <th className="px-4 py-1.5 text-right font-medium uppercase tracking-wide text-[10px]">Rows</th>
-          <th className="px-4 py-1.5 text-right font-medium uppercase tracking-wide text-[10px]">Size</th>
         </tr>
       </thead>
       <tbody>
         {tables.map(t => (
-          <tr key={t.name} className="border-t border-border-secondary/40">
-            <td className="px-4 py-1.5 text-text-secondary font-mono">{t.name}</td>
+          <tr key={t.table_name} className="border-t border-border-secondary/40">
+            <td className="px-4 py-1.5 text-text-secondary font-mono">{t.table_name}</td>
             <td className="px-4 py-1.5 text-text-secondary text-right tabular-nums">{formatNumber(t.row_count)}</td>
-            <td className="px-4 py-1.5 text-text-secondary text-right tabular-nums">{formatBytes(t.size_bytes ?? null)}</td>
           </tr>
         ))}
       </tbody>
@@ -85,7 +83,7 @@ function ExpandedPanel({
     return <div className="px-4 py-3 text-[12px] text-status-error">{error}</div>
   }
   if (!detail) return null
-  return <TableList tables={detail.tables} />
+  return <TableList tables={detail.table_list} />
 }
 
 export function BackupsTable({
