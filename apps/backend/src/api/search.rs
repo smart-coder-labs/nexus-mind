@@ -62,11 +62,11 @@ pub async fn get_global_search(
 
     let limit = params.limit.clamp(1, 50);
 
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     let memories = queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer)
         .map_err(db_err)?;
 
-    let users = if auth.role.is_admin() {
+    let users = if auth.role.is_privileged() {
         queries::search_users_by_query(&conn, &auth.org_id, q, limit)
             .map_err(db_err)?
     } else {

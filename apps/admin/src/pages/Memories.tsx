@@ -2,7 +2,7 @@ import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
@@ -1107,7 +1107,7 @@ export default function Memories() {
     setSelectedIds(new Set())
     setSelectMode(false)
   }, [])
-  const isAdmin = session?.user.role === 'admin'
+  const isAdmin = isPrivileged(session?.user.role)
 
   const PAGE_SIZE = 50
   const [page, setPage] = useState(0)
@@ -1116,6 +1116,7 @@ export default function Memories() {
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
     staleTime: 60_000,
+    enabled: isPrivileged(session?.user.role),
   })
 
   const userMap = useMemo(() => {

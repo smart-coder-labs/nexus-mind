@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { downloadExport, todayStamp } from '../lib/download'
 import type { AuditFilters } from '../types'
@@ -162,7 +162,7 @@ export default function AuditLog() {
           <p className="text-xs text-text-quaternary mt-0.5">All actions performed in your organization</p>
         </div>
         <div className="flex items-center gap-2">
-          {session?.user.role === 'admin' && (
+          {isPrivileged(session?.user.role) && (
             <>
               <button
                 onClick={handleExportCsv}

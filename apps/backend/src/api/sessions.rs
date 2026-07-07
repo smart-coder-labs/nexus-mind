@@ -58,7 +58,7 @@ fn session_project_visible(
     auth: &AuthContext,
     project: &str,
 ) -> Result<bool, (StatusCode, Json<ApiError>)> {
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     queries::user_can_view_project_name(conn, &auth.org_id, project, viewer).map_err(db_err)
 }
 
@@ -138,7 +138,7 @@ pub async fn list_sessions_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     let sessions = queries::list_sessions_visible(&conn, &auth.org_id, viewer).map_err(db_err)?;
 
     Ok(Json(sessions))
@@ -160,7 +160,7 @@ pub async fn list_session_memories_handler(
         _ => return Err(not_found()),
     }
 
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     let memories = queries::list_memories_visible(
         &conn,
         &auth.org_id,

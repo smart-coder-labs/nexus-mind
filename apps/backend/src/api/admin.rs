@@ -221,7 +221,8 @@ pub async fn memory_facets(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let facets = queries::get_memory_facets(&conn, &auth.org_id).map_err(db_err)?;
+    let is_super_user = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+    let facets = queries::get_memory_facets(&conn, &auth.org_id, &auth.user_id, is_super_user).map_err(db_err)?;
     Ok(Json(facets))
 }
 

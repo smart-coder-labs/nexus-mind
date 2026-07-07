@@ -1490,60 +1490,125 @@ pub fn get_usage_stats(conn: &Connection, org_id: &str) -> Result<crate::models:
 
 /// Returns distinct facet counts (type, scope, project) for an org's memories.
 /// Each facet bucket is ordered by count descending, limited to 50 values.
-pub fn get_memory_facets(conn: &Connection, org_id: &str) -> Result<crate::models::types::MemoryFacets> {
-    // Types
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(type, ''), COUNT(*) as cnt
-         FROM memories
-         WHERE org_id = ?1 AND type IS NOT NULL AND type != ''
-         GROUP BY type
-         ORDER BY cnt DESC
-         LIMIT 50",
-    )?;
-    let types: Vec<crate::models::types::FacetCount> = stmt
-        .query_map([org_id], |row| {
+pub fn get_memory_facets(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    is_super_user: bool,
+) -> Result<crate::models::types::MemoryFacets> {
+    let types: Vec<crate::models::types::FacetCount> = if is_super_user {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(type, ''), COUNT(*) as cnt
+             FROM memories
+             WHERE org_id = ?1 AND type IS NOT NULL AND type != ''
+             GROUP BY type
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
             Ok(crate::models::types::FacetCount {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
+        result
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(m.type, ''), COUNT(*) as cnt
+             FROM memories m
+             JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
+             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             WHERE m.org_id = ?1 AND m.type IS NOT NULL AND m.type != ''
+             GROUP BY m.type
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+        result
+    };
 
-    // Scopes
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(scope, 'project'), COUNT(*) as cnt
-         FROM memories
-         WHERE org_id = ?1
-         GROUP BY COALESCE(scope, 'project')
-         ORDER BY cnt DESC
-         LIMIT 50",
-    )?;
-    let scopes: Vec<crate::models::types::FacetCount> = stmt
-        .query_map([org_id], |row| {
+    let scopes: Vec<crate::models::types::FacetCount> = if is_super_user {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(scope, 'project'), COUNT(*) as cnt
+             FROM memories
+             WHERE org_id = ?1
+             GROUP BY COALESCE(scope, 'project')
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
             Ok(crate::models::types::FacetCount {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
+        result
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(m.scope, 'project'), COUNT(*) as cnt
+             FROM memories m
+             JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
+             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             WHERE m.org_id = ?1
+             GROUP BY COALESCE(m.scope, 'project')
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+        result
+    };
 
-    // Projects
-    let mut stmt = conn.prepare(
-        "SELECT project, COUNT(*) as cnt
-         FROM memories
-         WHERE org_id = ?1
-         GROUP BY project
-         ORDER BY cnt DESC
-         LIMIT 50",
-    )?;
-    let projects: Vec<crate::models::types::FacetCount> = stmt
-        .query_map([org_id], |row| {
+    let projects: Vec<crate::models::types::FacetCount> = if is_super_user {
+        let mut stmt = conn.prepare(
+            "SELECT project, COUNT(*) as cnt
+             FROM memories
+             WHERE org_id = ?1
+             GROUP BY project
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
             Ok(crate::models::types::FacetCount {
                 value: row.get(0)?,
                 count: row.get(1)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
+        result
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT m.project, COUNT(*) as cnt
+             FROM memories m
+             JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
+             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             WHERE m.org_id = ?1
+             GROUP BY m.project
+             ORDER BY cnt DESC
+             LIMIT 50",
+        )?;
+        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
+            Ok(crate::models::types::FacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+        result
+    };
 
     Ok(crate::models::types::MemoryFacets { types, scopes, projects })
 }
@@ -6887,7 +6952,7 @@ mod tests {
         let conn = setup();
         let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        let facets = get_memory_facets(&conn, &org.id).unwrap();
+        let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
         assert!(facets.types.is_empty(), "no memories => no type facets");
         assert!(facets.projects.is_empty(), "no memories => no project facets");
         // scope may be empty too (no rows)
@@ -6926,7 +6991,7 @@ mod tests {
             session_id: None,
         }).unwrap();
 
-        let facets = get_memory_facets(&conn, &org.id).unwrap();
+        let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
 
         let bugfix = facets.types.iter().find(|f| f.value == "bugfix");
         let decision = facets.types.iter().find(|f| f.value == "decision");
@@ -6963,7 +7028,7 @@ mod tests {
             topic_key: None, session_id: None,
         }).unwrap();
 
-        let facets = get_memory_facets(&conn, &org.id).unwrap();
+        let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
 
         // Projects
         assert_eq!(facets.projects.len(), 2);
@@ -7011,7 +7076,7 @@ mod tests {
         }).unwrap();
 
         // Facets for org_a must not see org_b's memories
-        let facets_a = get_memory_facets(&conn, &org_a.id).unwrap();
+        let facets_a = get_memory_facets(&conn, &org_a.id, "any-user", true).unwrap();
         assert_eq!(facets_a.projects.len(), 1);
         assert_eq!(facets_a.projects[0].value, "proj-a");
         assert!(facets_a.types.iter().all(|f| f.value != "decision"),

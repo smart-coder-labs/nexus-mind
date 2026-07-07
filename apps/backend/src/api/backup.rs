@@ -63,7 +63,7 @@ pub async fn list_backups_handler(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListBackupsParams>,
 ) -> Result<Json<Vec<BackupRow>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
@@ -91,7 +91,7 @@ pub async fn get_backup_handler(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BackupDetail>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let backup = get_backup(&pool, &auth.org_id, id)
@@ -119,7 +119,7 @@ pub async fn create_backup_handler(
     Extension(auth): Extension<AuthContext>,
     State(store): State<SqliteStore>,
 ) -> Result<Json<BackupResult>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let sqlite = store.conn();
@@ -154,7 +154,7 @@ pub async fn restore_backup_handler(
     Query(params): Query<RestoreParams>,
     headers: HeaderMap,
 ) -> Result<Json<RestoreResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -243,7 +243,7 @@ pub async fn download_backup_handler(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BackupDownload>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let backup = get_backup(&pool, &auth.org_id, id)

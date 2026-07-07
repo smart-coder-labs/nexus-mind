@@ -66,7 +66,7 @@ pub async fn list_conventions(
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     let conventions = queries::list_conventions_visible(
         &conn,
         &auth.org_id,
@@ -87,7 +87,7 @@ pub async fn get_convention(
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
-    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
     let convention = queries::get_convention_visible(&conn, &auth.org_id, id, viewer)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
@@ -99,7 +99,7 @@ pub async fn create_convention(
     Extension(auth): Extension<AuthContext>,
     AppJson(req): AppJson<CreateConventionRequest>,
 ) -> Result<(StatusCode, Json<Convention>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -114,7 +114,7 @@ pub async fn update_convention(
     Path(id): Path<i64>,
     AppJson(req): AppJson<UpdateConventionRequest>,
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -130,7 +130,7 @@ pub async fn delete_convention(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -148,7 +148,7 @@ pub async fn archive_convention(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -166,7 +166,7 @@ pub async fn restore_convention(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
