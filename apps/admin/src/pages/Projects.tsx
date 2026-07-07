@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
@@ -114,6 +114,8 @@ function MembersPanel({
   usersLoading,
   allAvailableRoles,
 }: MembersPanelProps) {
+  const { session } = useAuth()
+  const isAdmin = isPrivileged(session?.user.role)
   const qc = useQueryClient()
   const [addUserId, setAddUserId] = useState('')
   const [addRole, setAddRole] = useState('viewer')
@@ -130,6 +132,7 @@ function MembersPanel({
   const { data: overridesData } = useQuery({
     queryKey: ['project-settings', projectId],
     queryFn: () => client.getProjectSettings(projectId),
+    enabled: !!projectId && isAdmin,
   })
 
   const overridesMut = useMutation({
@@ -145,6 +148,7 @@ function MembersPanel({
   const { data: stats } = useQuery({
     queryKey: ['project-stats', projectId],
     queryFn: () => client.getProjectStats(projectId),
+    enabled: !!projectId && isAdmin,
   })
 
   const handleOverrideChange = (key: keyof ProjectEventOverrides, value: boolean | null) => {
@@ -160,6 +164,7 @@ function MembersPanel({
   const { data: members, isLoading: membersLoading } = useQuery({
     queryKey: ['project-members', projectId],
     queryFn: () => client.listProjectMembers(projectId),
+    enabled: !!projectId && isAdmin,
   })
 
   const addMut = useMutation({
@@ -494,6 +499,7 @@ function MembersPanel({
 
 export default function Projects() {
   const { session } = useAuth()
+  const isAdmin = isPrivileged(session?.user.role)
   const navigate = useNavigate()
   const qc = useQueryClient()
   const client = useMemo(() => createClient(), [session])
@@ -534,11 +540,13 @@ export default function Projects() {
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
+    enabled: isAdmin,
   })
 
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
+    enabled: isAdmin,
   })
 
   const { data: allConventions } = useQuery({

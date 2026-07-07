@@ -1,7 +1,7 @@
 import { useMemo, useState, useCallback, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff } from 'lucide-react'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject, CodeSearchResult } from '../types'
 
@@ -1252,12 +1252,14 @@ type Tab = 'repositories' | 'search' | 'graph'
 export default function Code() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
+  const isAdmin = isPrivileged(session?.user.role)
   const [activeTab, setActiveTab] = useState<Tab>('repositories')
   const [showArchived, setShowArchived] = useState(false)
 
   const { data: projects, isLoading, isError: projectsError } = useQuery({
     queryKey: ['code-projects', showArchived],
     queryFn: () => client.listCodeProjects({ include_archived: showArchived }),
+    enabled: isAdmin,
     refetchInterval: (query) =>
       (query.state.data as CodeProject[] | undefined)?.some(p => p.index_status === 'indexing') ? 5000 : false,
   })

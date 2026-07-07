@@ -42,6 +42,7 @@ export default function AuditLog() {
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
     staleTime: 60_000,
+    enabled: isPrivileged(session?.user.role),
   })
 
   const userMap = useMemo(() => {
