@@ -732,7 +732,6 @@ pub async fn list_projects(
 ) -> Result<Json<Vec<CodeProject>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "code:read")?;
     let projects = db_queries::list_code_projects_visible(
         &conn,
         &auth.org_id,
