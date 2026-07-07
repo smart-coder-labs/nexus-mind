@@ -1486,10 +1486,12 @@ mod tests {
         assert!(!body.contains("SECRETALPHA"), "export must NOT leak a non-member project's memory");
         assert!(body.contains("SHAREDALPHA"), "export must include the member's own project memory");
 
-        // ADMIN still sees everything (no restriction).
+        // ADMIN follows the same project-membership rules as other roles.
+        // Only super_user bypasses all project filters.
+        // Admin was not added to proj-secret, so it must NOT appear in their list.
         let admin_ids = list_ids(&store, &admin_key).await;
-        assert!(admin_ids.contains(&secret_id) && admin_ids.contains(&shared_id),
-            "admin must see all org memories regardless of project membership");
+        assert!(!admin_ids.contains(&secret_id),
+            "admin must NOT see a non-member project's memory (project membership enforced for all non-super_user roles)");
     }
 
     /// Stores a memory via admin key and returns its id.
