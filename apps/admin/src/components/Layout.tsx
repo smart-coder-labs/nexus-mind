@@ -125,6 +125,7 @@ interface NavItem {
   href: string
   icon: React.ComponentType<{ className?: string }>
   adminOnly?: boolean
+  requiredPermission?: string
 }
 
 interface NavGroup {
@@ -147,17 +148,17 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Memories',    href: '/memories',    icon: Brain },
       { label: 'Graph',       href: '/graph',       icon: Network },
-      { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true },
-      { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true },
-      { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true },
+      { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true, requiredPermission: 'collection:read' },
+      { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true, requiredPermission: 'tag:read' },
+      { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true, requiredPermission: 'convention:read' },
       { label: 'Sessions',    href: '/sessions',    icon: MessageSquare },
     ],
   },
   {
     label: 'Code',
     items: [
-      { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true },
-      { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true },
+      { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true, requiredPermission: 'project:read' },
+      { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
     ],
   },
   {
@@ -167,14 +168,14 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Roles',       href: '/roles',       icon: Shield,        adminOnly: true },
       { label: 'API Keys',    href: '/api-keys',    icon: Key,           adminOnly: true },
       { label: 'Agents',      href: '/agents',      icon: Bot,           adminOnly: true },
-      { label: 'Policies',    href: '/policies',    icon: ShieldAlert,   adminOnly: true },
+      { label: 'Policies',    href: '/policies',    icon: ShieldAlert,   adminOnly: true, requiredPermission: 'policy:read' },
     ],
   },
   {
     label: 'System',
     items: [
-      { label: 'Webhooks',    href: '/webhooks',    icon: Zap,           adminOnly: true },
-      { label: 'Audit Log',   href: '/audit',       icon: ScrollText,    adminOnly: true },
+      { label: 'Webhooks',    href: '/webhooks',    icon: Zap,           adminOnly: true, requiredPermission: 'settings:write' },
+      { label: 'Audit Log',   href: '/audit',       icon: ScrollText,    adminOnly: true, requiredPermission: 'audit:read' },
       { label: 'Backups',     href: '/backups',     icon: Database,      adminOnly: true },
       { label: 'Settings',    href: '/settings',    icon: Settings },
     ],
@@ -189,7 +190,14 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <nav className="flex flex-col gap-4 px-2">
       {NAV_GROUPS.map(group => {
-        const items = group.items.filter(item => (!item.adminOnly || isAdmin) && !DISABLED_NAV_HREFS.has(item.href))
+        const permissions = session?.user.permissions ?? []
+        const items = group.items.filter(item => {
+          if (DISABLED_NAV_HREFS.has(item.href)) return false
+          if (!item.adminOnly) return true
+          if (isAdmin) return true
+          if (item.requiredPermission && permissions.includes(item.requiredPermission)) return true
+          return false
+        })
         if (items.length === 0) return null
 
         return (

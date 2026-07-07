@@ -37,6 +37,8 @@ export interface User {
   admin_note?: string | null
   // v33 last login tracking
   last_login_at?: string | null
+  // permissions derived from the user's role (returned by /me)
+  permissions?: string[]
 }
 
 export interface CustomRole {

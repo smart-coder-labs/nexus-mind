@@ -144,9 +144,17 @@ pub async fn me(
         .map_err(|_| internal_err("db error"))?
         .ok_or_else(|| internal_err("user not found"))?;
 
+    let permissions = queries::get_role_permissions(&conn, &auth.org_id, auth.role.as_str())
+        .unwrap_or_default();
+
+    let mut user_json = serde_json::to_value(&user).unwrap_or_default();
+    if let Some(obj) = user_json.as_object_mut() {
+        obj.insert("permissions".to_string(), serde_json::to_value(&permissions).unwrap_or_default());
+    }
+
     Ok(Json(serde_json::json!({
         "org": org,
-        "user": user,
+        "user": user_json,
     })))
 }
 

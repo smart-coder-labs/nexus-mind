@@ -98,6 +98,14 @@ export default function Graph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjects])
 
+  // Clear stale persisted project selection if the user can't access it
+  useEffect(() => {
+    if (projectsLoading || !projects) return
+    if (selectedProjectId && !projects.some(p => p.id === selectedProjectId)) {
+      resetSelectedProject()
+    }
+  }, [projects, projectsLoading, selectedProjectId, resetSelectedProject])
+
   // Resolve the family. Uses the local BFS (same logic as the API) so the
   // legend can render before the network round-trip completes. The backend
   // is still the source of truth for the actual graph data and the
