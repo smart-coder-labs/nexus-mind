@@ -22,7 +22,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     config::Config,
     db::queries,
-    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats},
+    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats, UserRole},
     store::sqlite::SqliteStore,
 };
 
@@ -596,12 +596,14 @@ pub async fn list_projects_api(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListProjectsParams>,
 ) -> Result<Json<Vec<Project>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
-        return Err(forbidden());
-    }
+    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let projects = queries::list_projects_filtered(&conn, &auth.org_id, params.include_archived).map_err(db_err)?;
+    let projects = if is_privileged {
+        queries::list_projects_filtered(&conn, &auth.org_id, params.include_archived).map_err(db_err)?
+    } else {
+        queries::list_projects_visible(&conn, &auth.org_id, &auth.user_id).map_err(db_err)?
+    };
     Ok(Json(projects))
 }
 
@@ -610,11 +612,21 @@ pub async fn get_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Project>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
-        return Err(forbidden());
-    }
+    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    if !is_privileged {
+        let is_member = queries::user_is_project_member(&conn, &auth.org_id, &id, &auth.user_id).map_err(db_err)?;
+        if !is_member {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Project not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ));
+        }
+    }
     match queries::get_project_by_id(&conn, &auth.org_id, &id).map_err(db_err)? {
         Some(project) => Ok(Json(project)),
         None => Err((
@@ -1194,11 +1206,21 @@ pub async fn get_project_settings_api(
     Extension(ctx): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectEventOverrides>, (StatusCode, Json<ApiError>)> {
-    if !ctx.role.is_admin() {
-        return Err(forbidden());
-    }
+    let is_privileged = ctx.role.is_admin() || matches!(ctx.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    if !is_privileged {
+        let is_member = queries::user_is_project_member(&conn, &ctx.org_id, &project_id, &ctx.user_id).map_err(db_err)?;
+        if !is_member {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Project not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ));
+        }
+    }
     let overrides = queries::get_project_event_overrides(&conn, &ctx.org_id, &project_id)
         .map_err(db_err)?;
     Ok(Json(overrides))
@@ -1812,11 +1834,21 @@ pub async fn get_project_stats_api(
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectStats>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
-        return Err(forbidden());
-    }
+    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    if !is_privileged {
+        let is_member = queries::user_is_project_member(&conn, &auth.org_id, &project_id, &auth.user_id).map_err(db_err)?;
+        if !is_member {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Project not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ));
+        }
+    }
     match queries::get_project_stats(&conn, &auth.org_id, &project_id) {
         Ok(stats) => Ok(Json(stats)),
         Err(e) if e.to_string().contains("project_not_found") => Err((

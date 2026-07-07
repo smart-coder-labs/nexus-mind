@@ -2064,7 +2064,7 @@ pub fn get_user_password_hash(conn: &Connection, user_id: &str) -> Result<Option
 pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(User, Option<String>)>> {
     let result = conn.query_row(
         "SELECT id, org_id, email, name, role, status, created_at, password_hash
-         FROM users WHERE email = ?1 AND role IN ('admin', 'super_user') AND status = 'active'
+         FROM users WHERE email = ?1 AND status = 'active'
          ORDER BY created_at ASC LIMIT 1",
         [email],
         |row| {
@@ -2710,6 +2710,32 @@ pub fn list_projects_filtered(conn: &Connection, org_id: &str, include_archived:
         projects.push(row?);
     }
     Ok(projects)
+}
+
+pub fn list_projects_visible(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+) -> Result<Vec<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.org_id, p.name, p.description, p.created_at, p.parent_id, p.archived_at
+         FROM projects p
+         JOIN project_members pm ON pm.project_id = p.id
+         WHERE p.org_id = ?1 AND pm.user_id = ?2 AND p.archived_at IS NULL
+         ORDER BY p.name ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
+        Ok(Project {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at: row.get(4)?,
+            parent_id: row.get(5)?,
+            archived_at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 pub fn get_project_by_id(conn: &Connection, org_id: &str, id: &str) -> Result<Option<Project>> {
