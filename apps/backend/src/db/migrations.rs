@@ -3079,7 +3079,7 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            46,
+            47,
             "user_version must be 47 after v41-v47 are included in run_all"
         );
         assert!(
