@@ -98,7 +98,7 @@ export default function Users() {
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
-    enabled: session?.user.role === 'admin',
+    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
   })
 
   const [roleSavedFor, setRoleSavedFor] = useState<string | null>(null)
@@ -178,7 +178,7 @@ export default function Users() {
           <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Users</h1>
           <p className="text-[13px] text-text-secondary mt-1">Manage team members and API keys</p>
         </div>
-        {session?.user.role === 'admin' && (
+        {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => setInviteLinkOpen(true)}
@@ -202,7 +202,7 @@ export default function Users() {
         <table className="w-full text-[13px] min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
-              {session?.user.role === 'admin' && (
+              {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                 <th className="px-4 py-3 w-8">
                   <input
                     type="checkbox"
@@ -226,7 +226,7 @@ export default function Users() {
             {isLoading
               ? Array.from({ length: 4 }).map((_, i) => (
                 <tr key={i}>
-                  {session?.user.role === 'admin' && (
+                  {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                     <td className="px-4 py-3 w-8">
                       <div className="h-3.5 w-3.5 rounded bg-background-tertiary animate-pulse" />
                     </td>
@@ -244,7 +244,7 @@ export default function Users() {
                   className={`hover:bg-white/[0.02] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
                   onClick={() => setSelectedUser(user)}
                 >
-                  {session?.user.role === 'admin' && (
+                  {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                     <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -271,7 +271,7 @@ export default function Users() {
                     </div>
                   </td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                    {session?.user.role === 'admin' ? (
+                    {(session?.user.role === 'admin' || session?.user.role === 'super_user') ? (
                       <div className="space-y-1">
                         <Select
                           value={user.role}
@@ -308,7 +308,7 @@ export default function Users() {
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       {/* Disable / Enable toggle — admin only, cannot self-disable */}
-                      {session?.user.role === 'admin' && session.user.id !== user.id && (
+                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && session.user.id !== user.id && (
                         user.disabled_at ? (
                           <button
                             onClick={() => enableMut.mutate(user.id)}
@@ -328,7 +328,7 @@ export default function Users() {
                         )
                       )}
                       {/* Rotate own key: visible to all roles. Rotate other's key: admin only */}
-                      {(session?.user.role === 'admin' || user.id === session?.user.id) && (
+                      {((session?.user.role === 'admin' || session?.user.role === 'super_user') || user.id === session?.user.id) && (
                         <button
                           onClick={() => setRotateTarget(user)}
                           className={`text-[13px] px-2 py-1 rounded-[8px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
@@ -337,7 +337,7 @@ export default function Users() {
                         </button>
                       )}
                       {/* Reset key: admin-only endpoint — useful when a key is compromised */}
-                      {session?.user.role === 'admin' && (
+                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                         <button
                           onClick={() => setResetTarget(user)}
                           className={`text-[13px] px-2 py-1 rounded-[8px] text-status-error/80 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
@@ -345,7 +345,7 @@ export default function Users() {
                           Reset key
                         </button>
                       )}
-                      {session?.user.role === 'admin' && (
+                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                         <button
                           onClick={() => setRevokeTarget(user)}
                           className={`text-[13px] px-2 py-1 rounded-[8px] text-status-error/80 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
@@ -365,7 +365,7 @@ export default function Users() {
             <UserPlus className="w-6 h-6 text-text-quaternary/50" />
             <p className="text-[13px] font-semibold text-text-secondary">No team members yet</p>
             <p className="text-[13px] text-text-tertiary max-w-xs">Invite your first user to start collaborating on memories and projects.</p>
-            {session?.user.role === 'admin' && (
+            {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
               <button
                 onClick={() => setInviteOpen(true)}
                 className={`mt-2 flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}

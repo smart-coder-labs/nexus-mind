@@ -59,7 +59,7 @@ function buildProjectFamily(rootId: string, allProjects: Project[]): Project[] {
 export default function Graph() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
-  const isAdmin = session?.user.role === 'admin'
+  const isAdmin = (session?.user.role === 'admin' || session?.user.role === 'super_user')
 
   // Persist the selected project id and the legend's open/closed state across
   // reloads. Versioned so future schema changes to the persisted payload

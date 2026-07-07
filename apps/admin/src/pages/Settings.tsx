@@ -408,7 +408,7 @@ export default function Settings() {
   const { data: orgSettings } = useQuery({
     queryKey: ['org-settings'],
     queryFn: () => client.getOrgSettings(),
-    enabled: session?.user.role === 'admin',
+    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
   })
 
   const { data: retentionPreview } = useQuery({
@@ -505,7 +505,7 @@ export default function Settings() {
   const { data: webhooksData, isLoading: webhooksLoading, refetch: refetchWebhooks } = useQuery({
     queryKey: ['webhooks'],
     queryFn: () => client.listWebhooks(),
-    enabled: session?.user.role === 'admin',
+    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
   })
   const webhooks: Webhook[] = webhooksData?.webhooks ?? []
 
@@ -732,8 +732,8 @@ export default function Settings() {
               id="org-name"
               value={orgName}
               onChange={e => setOrgName(e.target.value)}
-              readOnly={session?.user.role !== 'admin'}
-              className={`${inputCls} ${session?.user.role !== 'admin' ? 'opacity-50 cursor-not-allowed' : ''}`}
+              readOnly={(session?.user.role !== 'admin' && session?.user.role !== 'super_user')}
+              className={`${inputCls} ${(session?.user.role !== 'admin' && session?.user.role !== 'super_user') ? 'opacity-50 cursor-not-allowed' : ''}`}
             />
           </div>
           <div className="space-y-1.5">
@@ -749,7 +749,7 @@ export default function Settings() {
               className={`${inputCls} opacity-50 cursor-not-allowed`}
             />
           </div>
-          {session?.user.role === 'admin' && (
+          {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
             <div className="flex items-center gap-3">
               <button
                 onClick={() => updateOrgMut.mutate(orgName)}
@@ -763,7 +763,7 @@ export default function Settings() {
               )}
             </div>
           )}
-          {session?.user.role === 'admin' && (
+          {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
             <div className="space-y-2 pt-2 border-t border-border-secondary/30">
               <p className="text-xs text-text-tertiary font-semibold">Branding</p>
               <div className="space-y-1.5">
@@ -798,7 +798,7 @@ export default function Settings() {
       </section>
 
       {/* Data Retention */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Data Retention</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
@@ -846,7 +846,7 @@ export default function Settings() {
       )}
 
       {/* Agent Instructions */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Agent Instructions</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
@@ -879,7 +879,7 @@ export default function Settings() {
       )}
 
       {/* Announcement Banner */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Announcement Banner</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
@@ -948,7 +948,7 @@ export default function Settings() {
       )}
 
       {/* Password Policy */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Password Policy</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
@@ -1097,7 +1097,7 @@ export default function Settings() {
       </section>
 
       {/* Agent Events */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">
             Agent Events
@@ -1136,7 +1136,7 @@ export default function Settings() {
       <MemoryTemplatesSection />
 
       {/* Webhooks */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Webhooks</p>
           <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
@@ -1330,7 +1330,7 @@ export default function Settings() {
       )}
 
       {/* Org Data Export */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Org Data Export</p>
           <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
@@ -1369,7 +1369,7 @@ export default function Settings() {
       )}
 
       {/* Danger zone */}
-      {session?.user.role === 'admin' && (
+      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
         <section className="space-y-4">
           <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Danger Zone</p>
           <div className="border border-status-error/30 bg-status-error/[0.04] rounded-[18px] p-5 space-y-3">

@@ -106,7 +106,7 @@ pub fn require_permission(
     project: Option<&str>,
     permission: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if auth.role.is_admin() {
+    if auth.role.is_privileged() {
         return Ok(());
     }
 

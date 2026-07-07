@@ -57,3 +57,7 @@ export function useAuth() {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }
+
+export function isPrivileged(role: string | undefined): boolean {
+  return role === 'admin' || role === 'super_user'
+}

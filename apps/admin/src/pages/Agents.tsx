@@ -481,7 +481,7 @@ export default function Agents() {
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
-    enabled: session?.user.role === 'admin',
+    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
   })
 
   const filteredKeys = useMemo(() => {
