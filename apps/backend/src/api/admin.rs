@@ -490,6 +490,49 @@ pub async fn delete_role_api(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Deserialize)]
+pub struct UpdateRoleInput {
+    pub permissions: Vec<String>,
+}
+
+pub async fn update_role_api(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(role_id): Path<String>,
+    AppJson(input): AppJson<UpdateRoleInput>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_admin() {
+        return Err(forbidden());
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    let updated = queries::update_role_permissions(&conn, &auth.org_id, &role_id, &input.permissions)
+        .map_err(db_err)?;
+
+    if !updated {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Role not found, is a system template, or access denied".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "update",
+        "role",
+        Some(&role_id),
+        serde_json::json!({ "permissions": input.permissions }),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 const PROJECT_NAME_MAX_LEN: usize = 100;
 
 fn validate_project_name(name: &str) -> Result<(), (StatusCode, Json<ApiError>)> {

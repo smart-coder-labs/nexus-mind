@@ -232,6 +232,13 @@ export class NexusMindClient {
     return this.request(`/v1/roles/${id}`, { method: 'DELETE' })
   }
 
+  updateRole(id: string, permissions: string[]): Promise<void> {
+    return this.request(`/v1/roles/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ permissions }),
+    })
+  }
+
   listProjects(params: { include_archived?: boolean } = {}): Promise<Project[]> {
     const qs = params.include_archived ? '?include_archived=true' : ''
     return this.request(`/v1/projects${qs}`)

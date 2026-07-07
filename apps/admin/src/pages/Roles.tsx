@@ -20,6 +20,17 @@ const AVAILABLE_PERMISSIONS = [
   { key: 'user:revoke', name: 'Revoke Users', description: 'Allows suspending or revoking users.' },
   { key: 'audit:read', name: 'Read Audit Logs', description: 'Allows viewing organizational audit logs.' },
   { key: 'settings:write', name: 'Write Settings', description: 'Allows updating organization settings.' },
+  { key: 'project:read', name: 'Read Projects', description: 'Allows listing and viewing projects.' },
+  { key: 'project:write', name: 'Write Projects', description: 'Allows creating and updating projects.' },
+  { key: 'session:read', name: 'Read Sessions', description: 'Allows viewing agent sessions.' },
+  { key: 'api_key:read', name: 'Read API Keys', description: 'Allows viewing API keys.' },
+  { key: 'convention:read', name: 'Read Conventions', description: 'Allows viewing team conventions.' },
+  { key: 'convention:write', name: 'Write Conventions', description: 'Allows creating and updating conventions.' },
+  { key: 'policy:read', name: 'Read Policies', description: 'Allows viewing access policies.' },
+  { key: 'policy:write', name: 'Write Policies', description: 'Allows creating and updating policies.' },
+  { key: 'webhook:read', name: 'Read Webhooks', description: 'Allows viewing webhooks.' },
+  { key: 'code:read', name: 'Read Code Index', description: 'Allows searching the code knowledge base.' },
+  { key: 'audit:write', name: 'Write Audit Logs', description: 'Allows writing external audit events.' },
 ]
 
 export default function Roles() {
@@ -68,6 +79,23 @@ export default function Roles() {
 
   const [roleSaved, setRoleSaved] = useState(false)
   const [deleteErrorMsg, setDeleteErrorMsg] = useState('')
+
+  const [editingRole, setEditingRole] = useState<CustomRole | null>(null)
+  const [editPermissions, setEditPermissions] = useState<string[]>([])
+  const [editSaved, setEditSaved] = useState(false)
+
+  const updatePermsMut = useMutation({
+    mutationFn: ({ id, permissions }: { id: string; permissions: string[] }) =>
+      client.updateRole(id, permissions),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['roles'] })
+      setEditSaved(true)
+      setTimeout(() => {
+        setEditSaved(false)
+        setEditingRole(null)
+      }, 1500)
+    },
+  })
 
   const createMut = useMutation({
     mutationFn: (data: { name: string; display_name: string; permissions: string[]; description?: string }) =>
@@ -208,6 +236,19 @@ export default function Roles() {
                         <Users className="w-3.5 h-3.5" />
                         Manage members
                       </button>
+                      {!role.is_template && (
+                        <button
+                          onClick={() => {
+                            setEditingRole(role)
+                            setEditPermissions(role.permissions)
+                            setEditSaved(false)
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border-primary text-[10px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+                        >
+                          <Shield className="w-3.5 h-3.5" />
+                          Edit permissions
+                        </button>
+                      )}
                       {!role.is_template && (
                         <button
                           onClick={() => {
@@ -465,6 +506,53 @@ export default function Roles() {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingRole && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between p-5 border-b border-border-primary">
+              <h2 className="text-xs font-semibold text-text-primary">
+                Edit permissions — {editingRole.display_name}
+              </h2>
+              <button
+                onClick={() => setEditingRole(null)}
+                className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-1.5">
+              {AVAILABLE_PERMISSIONS.map(perm => (
+                <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-[8px] hover:bg-white/[0.04] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editPermissions.includes(perm.key)}
+                    onChange={() =>
+                      setEditPermissions(prev =>
+                        prev.includes(perm.key) ? prev.filter(p => p !== perm.key) : [...prev, perm.key]
+                      )
+                    }
+                    className="mt-0.5 rounded border-border-primary text-accent-blue focus:outline-none"
+                  />
+                  <div>
+                    <div className="font-semibold text-text-secondary text-[10px]">{perm.name}</div>
+                    <div className="text-[10px] text-text-tertiary leading-tight">{perm.description}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="p-5 border-t border-border-primary">
+              <button
+                onClick={() => updatePermsMut.mutate({ id: editingRole.id, permissions: editPermissions })}
+                disabled={updatePermsMut.isPending}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                {updatePermsMut.isPending ? 'Saving…' : editSaved ? 'Saved!' : 'Save permissions'}
+              </button>
             </div>
           </div>
         </div>

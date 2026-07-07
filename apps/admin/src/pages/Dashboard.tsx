@@ -166,6 +166,8 @@ export default function Dashboard() {
   )
 
   const isAdmin = session?.user.role === 'admin'
+  const isSuperUser = session?.user.role === 'super_user'
+  const hasAdminAccess = isAdmin || isSuperUser
 
   const [period, setPeriod] = useState<7 | 30 | 90>(30)
 
@@ -210,7 +212,7 @@ export default function Dashboard() {
     queryKey: ['stats'],
     queryFn: () => client.getStats(),
     refetchInterval: 30_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const [activityLimit, setActivityLimit] = useState(20)
@@ -218,7 +220,7 @@ export default function Dashboard() {
     queryKey: ['audit', 'recent', activityLimit],
     queryFn: () => client.getAuditLog({ limit: activityLimit }),
     refetchInterval: 30_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
     placeholderData: (prev) => prev,
   })
 
@@ -226,70 +228,70 @@ export default function Dashboard() {
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: trends, isLoading: trendsLoading } = useQuery({
     queryKey: ['memory-trends', period],
     queryFn: () => client.getMemoryTrends(period),
     refetchInterval: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: onboarding } = useQuery({
     queryKey: ['onboarding'],
     queryFn: () => client.getOnboarding(),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: usageStats, isLoading: usageLoading } = useQuery({
     queryKey: ['usage-stats'],
     queryFn: () => client.getUsageStats(),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: agentActivity, isLoading: agentActivityLoading } = useQuery({
     queryKey: ['agent-activity', period],
     queryFn: () => client.getAgentActivity(period),
     refetchInterval: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: heatmapData } = useQuery({
     queryKey: ['memory-heatmap', period],
     queryFn: () => client.getMemoryHeatmap(period),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: contributors, isLoading: contributorsLoading } = useQuery({
     queryKey: ['top-contributors', period],
     queryFn: () => client.getTopContributors(period),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: recentActivity } = useQuery({
     queryKey: ['recent-activity'],
     queryFn: () => client.getAuditLog({ limit: 10 }),
     refetchInterval: 30_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: conventions } = useQuery({
     queryKey: ['conventions'],
     queryFn: () => client.listConventions(),
     staleTime: 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: projects } = useQuery({
     queryKey: ['projects-check'],
     queryFn: () => client.listProjects(),
     staleTime: 5 * 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
   })
 
   const { data: apiKeys } = useQuery({
@@ -297,14 +299,14 @@ export default function Dashboard() {
     queryFn: () => client.listOrgKeys(),
     staleTime: 5 * 60_000,
     // Only feeds the "Create an API key" checklist item — skip while that section is disabled.
-    enabled: isAdmin && !DISABLED_NAV_HREFS.has('/api-keys'),
+    enabled: hasAdminAccess && !DISABLED_NAV_HREFS.has('/api-keys'),
   })
 
   const { data: healthData } = useQuery({
     queryKey: ['memory-health'],
     queryFn: () => client.getMemoryHealth(),
     staleTime: 5 * 60_000,
-    enabled: isAdmin,
+    enabled: hasAdminAccess,
     retry: false,
   })
 
@@ -335,7 +337,7 @@ export default function Dashboard() {
     }
   }, [allDone, dismissed])
 
-  const showOnboarding = isAdmin && onboarding && !dismissed && (hasIncomplete || allDoneVisible)
+  const showOnboarding = hasAdminAccess && onboarding && !dismissed && (hasIncomplete || allDoneVisible)
 
   function handleDismiss() {
     localStorage.setItem(ONBOARDING_DISMISSED_KEY, 'true')
@@ -402,7 +404,7 @@ export default function Dashboard() {
             {session?.org.name} — organization overview
           </p>
         </div>
-        {isAdmin && (
+        {hasAdminAccess && (
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 bg-white/[0.04] rounded-full p-0.5">
               {([7, 30, 90] as const).map(d => (
@@ -527,7 +529,7 @@ export default function Dashboard() {
       <>
 
       {/* Stat cards */}
-      {isAdmin && (
+      {hasAdminAccess && (
         <section aria-label="Organization statistics">
           {statsError ? (
             <div className="rounded-[18px] border border-status-error/30 bg-status-error/10 p-4 text-[13px] text-status-error">
@@ -560,7 +562,7 @@ export default function Dashboard() {
       )}
 
       {/* Activity timeline */}
-      {isAdmin && (
+      {hasAdminAccess && (
         <section aria-label="Recent activity">
           <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary mb-4">
             Recent Activity
@@ -813,7 +815,7 @@ export default function Dashboard() {
       )}
 
       {/* Usage stats + Agent Activity */}
-      {isAdmin && (isVisible('usage') || isVisible('agent-activity')) && (
+      {hasAdminAccess && (isVisible('usage') || isVisible('agent-activity')) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Usage */}
           {isVisible('usage') && <div className="border border-border-primary rounded-[18px] p-5 space-y-3">
@@ -889,7 +891,7 @@ export default function Dashboard() {
       )}
 
       {/* Memory analytics */}
-      {isAdmin && isVisible('trends') && (
+      {hasAdminAccess && isVisible('trends') && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
           {/* Last 30 days sparkline */}
@@ -1008,7 +1010,7 @@ export default function Dashboard() {
       )}
 
       {/* Memory Activity Heatmap */}
-      {isAdmin && isVisible('heatmap') && (
+      {hasAdminAccess && isVisible('heatmap') && (
         <div className="bg-background-tertiary rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Activity</h3>
@@ -1030,7 +1032,7 @@ export default function Dashboard() {
       )}
 
       {/* Top Contributors */}
-      {isAdmin && isVisible('contributors') && (
+      {hasAdminAccess && isVisible('contributors') && (
         <div className="bg-background-tertiary rounded-[18px] p-5 border border-border-primary">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Contributors</h3>
@@ -1069,7 +1071,7 @@ export default function Dashboard() {
       )}
 
       {/* Conventions */}
-      {isAdmin && isVisible('conventions') && (
+      {hasAdminAccess && isVisible('conventions') && (
         <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Conventions</h3>
@@ -1090,7 +1092,7 @@ export default function Dashboard() {
       )}
 
       {/* Getting Started */}
-      {isAdmin && isVisible('getting-started') && (() => {
+      {hasAdminAccess && isVisible('getting-started') && (() => {
         const allChecklistItems = [
           {
             label: 'Create your first memory',
@@ -1153,7 +1155,7 @@ export default function Dashboard() {
       })()}
 
       {/* Recent Activity feed */}
-      {isAdmin && isVisible('recent-activity') && (
+      {hasAdminAccess && isVisible('recent-activity') && (
         <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Recent Activity</h3>
@@ -1185,7 +1187,7 @@ export default function Dashboard() {
       )}
 
       {/* Memory Trends sparkline */}
-      {isAdmin && isVisible('memory-trends') && (
+      {hasAdminAccess && isVisible('memory-trends') && (
         <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Trends</h3>
@@ -1223,7 +1225,7 @@ export default function Dashboard() {
       )}
 
       {/* Memory Health */}
-      {isAdmin && isVisible('memory-health') && (
+      {hasAdminAccess && isVisible('memory-health') && (
         <div className="rounded-[18px] border border-border-primary bg-background-tertiary p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Health</h3>
@@ -1251,7 +1253,7 @@ export default function Dashboard() {
       )}
 
       {/* Quick Actions */}
-      {isAdmin && isVisible('quick-actions') && (() => {
+      {hasAdminAccess && isVisible('quick-actions') && (() => {
         const QUICK_ACTIONS = [
           { label: 'Invite user', href: '/users', icon: UserPlus },
           { label: 'New collection', href: '/memories?tab=collections', icon: FolderPlus },
@@ -1291,14 +1293,33 @@ export default function Dashboard() {
 
       </>
 
-      {!isAdmin && (
-        <div className="border border-white/[0.08] bg-background-tertiary rounded-[18px] p-6 max-w-xl">
-          <p className="text-[13px] text-text-secondary leading-relaxed">
-            Welcome to <strong>{session?.org.name}</strong> on NexusMind.
-          </p>
-          <p className="text-[13px] text-text-tertiary mt-2">
-            Use the navigation sidebar to browse, search, and manage your team's shared AI memories.
-          </p>
+      {!hasAdminAccess && (
+        <div className="space-y-4 max-w-2xl">
+          <div className="border border-white/[0.08] bg-background-tertiary rounded-[18px] p-6">
+            <p className="text-[15px] font-semibold text-text-primary mb-1">
+              Welcome, {session?.user.name}
+            </p>
+            <p className="text-[13px] text-text-tertiary">
+              {session?.org.name} · <span className="capitalize">{session?.user.role}</span>
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: 'Memories', href: '/memories', description: 'Browse and search your team memories' },
+              { label: 'Search', href: '/search', description: 'Semantic search across all memories' },
+              { label: 'Projects', href: '/projects', description: 'View your assigned projects' },
+              { label: 'Sessions', href: '/sessions', description: 'Browse agent sessions' },
+            ].map(item => (
+              <a
+                key={item.label}
+                href={item.href}
+                className="border border-border-primary rounded-[18px] p-4 hover:bg-white/[0.04] transition-colors group"
+              >
+                <p className="text-[13px] font-semibold text-text-primary group-hover:text-accent-blue transition-colors">{item.label}</p>
+                <p className="text-[11px] text-text-quaternary mt-0.5">{item.description}</p>
+              </a>
+            ))}
+          </div>
         </div>
       )}
     </div>

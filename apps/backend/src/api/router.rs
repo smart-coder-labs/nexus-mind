@@ -90,7 +90,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/users/:id/rotate-key", post(users::rotate_key))
         .route("/v1/users/:id/role", patch(users::update_role))
         .route("/v1/roles", get(admin::list_roles_api).post(admin::create_role_api))
-        .route("/v1/roles/:id", delete(admin::delete_role_api))
+        .route("/v1/roles/:id", delete(admin::delete_role_api).patch(admin::update_role_api))
         .route("/v1/projects", get(admin::list_projects_api).post(admin::create_project_api))
         .route("/v1/projects/:id", get(admin::get_project_api).delete(admin::delete_project_api).patch(admin::update_project_api))
         .route("/v1/projects/:id/archive", post(admin::archive_project_api))

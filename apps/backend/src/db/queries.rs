@@ -2530,9 +2530,21 @@ pub fn delete_role(conn: &Connection, org_id: &str, role_id: &str) -> Result<boo
     Ok(count > 0)
 }
 
+/// Updates the permissions of an existing custom role within an organization.
+/// Returns true if updated, false if not found or is a template.
+pub fn update_role_permissions(conn: &Connection, org_id: &str, role_id: &str, permissions: &[String]) -> Result<bool> {
+    let permissions_json = serde_json::to_string(permissions)?;
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let count = conn.execute(
+        "UPDATE roles SET permissions = ?1, version = version + 1, updated_at = ?2 WHERE id = ?3 AND org_id = ?4 AND is_template = 0",
+        rusqlite::params![permissions_json, now, role_id, org_id],
+    )?;
+    Ok(count > 0)
+}
+
 /// Updates the role of a user in an organization.
 pub fn update_user_role(conn: &Connection, org_id: &str, user_id: &str, new_role: &str) -> Result<bool> {
-    if new_role != "admin" && new_role != "member" && new_role != "viewer" {
+    if new_role != "admin" && new_role != "member" && new_role != "viewer" && new_role != "super_user" {
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
             [new_role, org_id],
@@ -2565,6 +2577,28 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             "settings:write".to_string(),
             "policy:read".to_string(),
             "policy:write".to_string(),
+        ]);
+    } else if role_name == "super_user" {
+        return Ok(vec![
+            "memory:read".to_string(),
+            "memory:write".to_string(),
+            "memory:delete".to_string(),
+            "memory:search".to_string(),
+            "user:invite".to_string(),
+            "user:revoke".to_string(),
+            "audit:read".to_string(),
+            "audit:write".to_string(),
+            "settings:write".to_string(),
+            "policy:read".to_string(),
+            "policy:write".to_string(),
+            "project:read".to_string(),
+            "project:write".to_string(),
+            "session:read".to_string(),
+            "api_key:read".to_string(),
+            "convention:read".to_string(),
+            "convention:write".to_string(),
+            "webhook:read".to_string(),
+            "code:read".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
