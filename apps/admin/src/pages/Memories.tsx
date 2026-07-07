@@ -1074,11 +1074,6 @@ export default function Memories() {
     }
   }, [searchParams, setSearchParams])
 
-  // Reset to page 0 whenever any filter changes
-  useEffect(() => {
-    setPage(0)
-  }, [filterType, filterScope, filterProject, fromDate, toDate, filterCollection, pinnedOnly, query, sessionIdFilter, showArchived])
-
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -1151,6 +1146,11 @@ export default function Memories() {
   const [newCollectionDesc, setNewCollectionDesc] = useState('')
   const [collectionError, setCollectionError] = useState<string | null>(null)
   const [assigningMemory, setAssigningMemory] = useState<string | null>(null)
+
+  // Reset to page 0 whenever any filter changes
+  useEffect(() => {
+    setPage(0)
+  }, [filterType, filterScope, filterProject, fromDate, toDate, filterCollection, pinnedOnly, query, sessionIdFilter, showArchived])
 
   const hasFilters = filterType !== '' || filterScope !== '' || filterProject !== '' || fromDate !== '' || toDate !== '' || filterCollection !== '' || pinnedOnly
 
