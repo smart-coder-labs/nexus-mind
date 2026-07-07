@@ -2064,7 +2064,7 @@ pub fn get_user_password_hash(conn: &Connection, user_id: &str) -> Result<Option
 pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(User, Option<String>)>> {
     let result = conn.query_row(
         "SELECT id, org_id, email, name, role, status, created_at, password_hash
-         FROM users WHERE email = ?1 AND role = 'admin' AND status = 'active'
+         FROM users WHERE email = ?1 AND role IN ('admin', 'super_user') AND status = 'active'
          ORDER BY created_at ASC LIMIT 1",
         [email],
         |row| {
