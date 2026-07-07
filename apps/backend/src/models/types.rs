@@ -60,6 +60,10 @@ impl UserRole {
         matches!(self, UserRole::Standard(Role::Admin))
     }
 
+    pub fn is_privileged(&self) -> bool {
+        self.is_admin() || matches!(self, UserRole::Custom(s) if s == "super_user")
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             UserRole::Standard(r) => match r {

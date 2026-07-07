@@ -72,7 +72,7 @@ pub async fn list(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<User>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -174,7 +174,7 @@ pub async fn rotate_key(
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     // Any role can rotate their own key; admin can rotate any key.
-    if !auth.role.is_admin() && auth.user_id != user_id {
+    if !auth.role.is_privileged() && auth.user_id != user_id {
         return Err(forbidden());
     }
 
@@ -201,7 +201,7 @@ pub async fn update_role(
     Path(user_id): Path<String>,
     AppJson(input): AppJson<UpdateUserRoleInput>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 

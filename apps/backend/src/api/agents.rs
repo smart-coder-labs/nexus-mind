@@ -68,7 +68,7 @@ pub async fn create_agent(
     Extension(auth): Extension<AuthContext>,
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<(StatusCode, Json<Agent>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -83,7 +83,7 @@ pub async fn update_agent(
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<Agent>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();

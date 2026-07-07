@@ -190,7 +190,7 @@ pub async fn stats(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<OrgStats>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -203,7 +203,7 @@ pub async fn usage_stats(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<UsageStats>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -216,7 +216,7 @@ pub async fn memory_facets(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<MemoryFacets>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -235,7 +235,7 @@ pub async fn get_memory_trends_handler(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<MemoryTrends>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let days = params.days.unwrap_or(30).clamp(1, 365);
@@ -249,7 +249,7 @@ pub async fn get_tag_stats_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<NameCount>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -262,7 +262,7 @@ pub async fn get_onboarding(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<OnboardingStatus>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -296,7 +296,7 @@ pub async fn update_org(
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<UpdateOrgInput>,
 ) -> Result<Json<Org>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -328,7 +328,7 @@ pub async fn get_org_settings_api(
     // Least privilege: non-admins may read only the member-facing banner fields
     // (announcement + logo). Org configuration — custom_instructions, retention_days,
     // min_password_length, agent event toggles — is stripped for non-admins.
-    if auth.role.is_admin() {
+    if auth.role.is_privileged() {
         Ok(Json(settings))
     } else {
         Ok(Json(OrgSettings {
@@ -348,7 +348,7 @@ pub async fn update_org_settings_api(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -398,7 +398,7 @@ pub async fn list_roles_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<CustomRole>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -413,7 +413,7 @@ pub async fn create_role_api(
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<CreateRoleInput>,
 ) -> Result<(StatusCode, Json<CustomRole>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -459,7 +459,7 @@ pub async fn delete_role_api(
     Extension(auth): Extension<AuthContext>,
     Path(role_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -501,7 +501,7 @@ pub async fn update_role_api(
     Path(role_id): Path<String>,
     AppJson(input): AppJson<UpdateRoleInput>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -644,7 +644,7 @@ pub async fn create_project_api(
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<CreateProjectInput>,
 ) -> Result<(StatusCode, Json<Project>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     validate_project_name(&input.name)?;
@@ -672,7 +672,7 @@ pub async fn delete_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -696,7 +696,7 @@ pub async fn archive_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -720,7 +720,7 @@ pub async fn restore_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -745,7 +745,7 @@ pub async fn update_project_api(
     Path(project_id): Path<String>,
     AppJson(input): AppJson<UpdateProjectInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -793,7 +793,7 @@ pub async fn list_project_members_api(
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<Vec<ProjectMember>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -826,7 +826,7 @@ pub async fn upsert_project_member_api(
     Path(project_id): Path<String>,
     AppJson(input): AppJson<UpsertProjectMemberInput>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -896,7 +896,7 @@ pub async fn delete_project_member_api(
     Extension(auth): Extension<AuthContext>,
     Path((project_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -938,7 +938,7 @@ pub async fn list_org_keys(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<ApiKeyWithUser>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -953,7 +953,7 @@ pub async fn revoke_org_key(
     Extension(auth): Extension<AuthContext>,
     Path(key_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -978,7 +978,7 @@ pub async fn get_org_key(
     Extension(auth): Extension<AuthContext>,
     Path(key_id): Path<String>,
 ) -> Result<Json<ApiKeyWithUser>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1002,7 +1002,7 @@ pub async fn update_org_key(
     Path(key_id): Path<String>,
     Json(body): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyWithUser>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1069,7 +1069,7 @@ pub async fn rotate_org_key(
     Extension(auth): Extension<AuthContext>,
     Path(key_id): Path<String>,
 ) -> Result<Json<ApiKeyCreatedResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1103,7 +1103,7 @@ pub async fn revoke_org_key_post(
     Extension(auth): Extension<AuthContext>,
     Path(key_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1138,7 +1138,7 @@ pub async fn create_org_key(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<CreateApiKeyRequest>,
 ) -> Result<(StatusCode, Json<ApiKeyCreatedResponse>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1234,7 +1234,7 @@ pub async fn update_project_settings_api(
     Path(project_id): Path<String>,
     AppJson(body): AppJson<UpdateProjectEventOverridesRequest>,
 ) -> Result<Json<ProjectEventOverrides>, (StatusCode, Json<ApiError>)> {
-    if !ctx.role.is_admin() {
+    if !ctx.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1265,7 +1265,7 @@ pub async fn reset_user_key(
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<Json<ResetKeyResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1315,7 +1315,7 @@ pub async fn get_duplicates(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<Vec<Memory>>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1334,7 +1334,7 @@ pub async fn get_notifications(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<NotificationsParams>,
 ) -> Result<Json<Vec<NotificationItem>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1424,7 +1424,7 @@ pub async fn mark_all_notifications_read(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1468,7 +1468,7 @@ pub async fn create_invite_link(
     Extension(config): Extension<Arc<Config>>,
     AppJson(input): AppJson<CreateInviteLinkRequest>,
 ) -> Result<(StatusCode, Json<InviteLinkResponse>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1618,7 +1618,7 @@ pub async fn get_memory_heatmap(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<Vec<HeatmapDay>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let days = params.days.unwrap_or(90).clamp(1, 365);
@@ -1635,7 +1635,7 @@ pub async fn get_top_contributors(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<Vec<ContributorStat>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let days = params.days.unwrap_or(30).clamp(1, 365);
@@ -1652,7 +1652,7 @@ pub async fn get_agent_activity(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<Vec<AgentActivity>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let days = params.days.unwrap_or(30).clamp(1, 365);
@@ -1670,7 +1670,7 @@ pub async fn merge_memories(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<MergeMemoriesRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1723,7 +1723,7 @@ pub async fn import_memories(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<ImportMemoriesRequest>,
 ) -> Result<(StatusCode, Json<ImportMemoriesResponse>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1791,7 +1791,7 @@ pub async fn bulk_tag_memories(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<BulkTagRequest>,
 ) -> Result<Json<BulkTagResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1871,7 +1871,7 @@ pub async fn over_enrolled_projects_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1890,7 +1890,7 @@ pub async fn rename_tag(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<RenameTagRequest>,
 ) -> Result<Json<RenameTagResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -1932,7 +1932,7 @@ pub async fn export_org_config(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<impl axum::response::IntoResponse, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -1991,7 +1991,7 @@ pub async fn import_org_config(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<serde_json::Value>,
 ) -> Result<Json<ImportConfigResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -3432,7 +3432,7 @@ pub async fn list_collections_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<Collection>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let conn = store.conn();
@@ -3447,7 +3447,7 @@ pub async fn create_collection_api(
     Extension(auth): Extension<AuthContext>,
     AppJson(req): AppJson<CreateCollectionRequest>,
 ) -> Result<(StatusCode, Json<Collection>), (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let conn = store.conn();
@@ -3463,7 +3463,7 @@ pub async fn delete_collection_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let conn = store.conn();
@@ -3489,7 +3489,7 @@ pub async fn assign_memory_collection_api(
     Path(memory_id): Path<String>,
     AppJson(req): AppJson<AssignCollectionRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let conn = store.conn();
@@ -3524,7 +3524,7 @@ pub async fn get_memory_health_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<crate::models::types::MemoryHealth>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -3537,7 +3537,7 @@ pub async fn get_retention_preview(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<RetentionPreview>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let conn = store.conn();
@@ -3586,7 +3586,7 @@ pub async fn disable_user(
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     if auth.user_id == user_id {
@@ -3633,7 +3633,7 @@ pub async fn enable_user(
     Extension(auth): Extension<AuthContext>,
     Path(user_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -3673,7 +3673,7 @@ pub async fn update_memory_note(
     Path(id): Path<String>,
     AppJson(body): AppJson<UpdateNoteRequest>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 
@@ -3702,7 +3702,7 @@ pub async fn update_org_announcement(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<UpdateAnnouncementRequest>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let ann_type = body.announcement_type.as_deref().unwrap_or("info");
@@ -3721,7 +3721,7 @@ pub async fn update_org_logo(
     Extension(auth): Extension<AuthContext>,
     AppJson(body): AppJson<UpdateOrgLogoRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -3739,7 +3739,7 @@ pub async fn schedule_memory_delete(
     Path(id): Path<String>,
     AppJson(body): AppJson<ScheduleDeleteRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -3763,7 +3763,7 @@ pub async fn list_users_admin(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<User>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -3780,7 +3780,7 @@ pub async fn update_user_note(
     Path(user_id): Path<String>,
     AppJson(body): AppJson<UpdateUserNoteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();

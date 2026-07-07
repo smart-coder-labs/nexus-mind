@@ -292,7 +292,7 @@ pub async fn post_index(
 
     let project_name = input.project.trim().to_string();
 
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         ensure_code_project_name_access(&conn, &auth, &project_name)?;
@@ -665,7 +665,7 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
 }
 
 fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_admin() {
+    if auth.role.is_privileged() {
         None
     } else {
         Some(auth.user_id.as_str())
@@ -697,7 +697,7 @@ fn ensure_code_project_name_access(
     auth: &AuthContext,
     project: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if auth.role.is_admin() {
+    if auth.role.is_privileged() {
         return Ok(());
     }
     let allowed = db_queries::user_can_access_canonical_project_by_name(
@@ -750,7 +750,7 @@ pub async fn archive_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -777,7 +777,7 @@ pub async fn restore_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -804,7 +804,7 @@ pub async fn delete_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -833,7 +833,7 @@ pub async fn update_schedule(
     Path(id): Path<i64>,
     AppJson(body): AppJson<UpdateReindexScheduleRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ApiError {
@@ -875,7 +875,7 @@ pub async fn update_code_project(
             code: "validation_error".to_string(),
         }),
     ))?;
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -942,7 +942,7 @@ pub async fn post_reindex(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<Json<ReindexProjectResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         return Err(forbidden());
     }
 

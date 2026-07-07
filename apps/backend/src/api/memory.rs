@@ -20,7 +20,7 @@ const MAX_CONTENT_BYTES: usize = 65_536; // 64 KiB
 /// (`None`), non-admins are restricted to memories they may see (`Some(user_id)`).
 /// See `db::queries::visibility_predicate`.
 fn viewer_scope(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_admin() {
+    if auth.role.is_privileged() {
         None
     } else {
         Some(&auth.user_id)
@@ -388,7 +388,7 @@ pub async fn search(
         .search(&auth.org_id, &auth.user_id, &input.query, limit, mode, viewer_scope(&auth))
         .map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         for m in &mut memories {
             m.admin_note = None;
         }
@@ -505,7 +505,7 @@ pub async fn list(
     };
     let mut page = store.list(&auth.org_id, &filters).map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
-    if !auth.role.is_admin() {
+    if !auth.role.is_privileged() {
         for m in &mut page.memories {
             m.admin_note = None;
         }
@@ -548,7 +548,7 @@ pub async fn get_by_id(
             // Permission check: requires memory:read for the memory's project.
             require_permission(&conn, &auth, Some(&m.project.clone()), "memory:read")?;
             // Strip admin_note — never exposed to agents or non-admin callers.
-            if !auth.role.is_admin() {
+            if !auth.role.is_privileged() {
                 m.admin_note = None;
             }
             Ok(Json(m))
@@ -578,7 +578,7 @@ pub async fn delete(
             Some((ref owner_id, ref project_name)) => {
                 require_permission(&conn, &auth, Some(project_name), "memory:delete")?;
 
-                if *owner_id != auth.user_id && !auth.role.is_admin() {
+                if *owner_id != auth.user_id && !auth.role.is_privileged() {
                     let is_project_admin = match db_queries::get_project_member_role(&conn, &auth.org_id, project_name, &auth.user_id) {
                         Ok(Some(role_str)) => role_str == "admin",
                         _ => false,
@@ -653,7 +653,7 @@ pub async fn bulk_delete(
     // Per-item ownership is enforced inside bulk_delete_memories.
     require_permission(&conn, &auth, None, "memory:delete")?;
 
-    let is_admin = auth.role.is_admin();
+    let is_admin = auth.role.is_privileged();
     let deleted = db_queries::bulk_delete_memories(&conn, &auth.org_id, &input.ids, is_admin, &auth.user_id)
         .map_err(|e| store_err(anyhow::anyhow!(e)))?;
 
