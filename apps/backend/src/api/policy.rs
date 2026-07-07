@@ -199,7 +199,9 @@ pub async fn list_policies(
     require_permission(&conn, &ctx, None, "policy:read")?;
 
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let policies = queries::list_policies(&conn, &ctx.org_id, limit, offset).map_err(internal_error)?;
+    let viewer = if ctx.role.is_admin() { None } else { Some(ctx.user_id.as_str()) };
+    let policies = queries::list_policies_visible(&conn, &ctx.org_id, limit, offset, viewer)
+        .map_err(internal_error)?;
     Ok(Json(PoliciesResponse { policies }))
 }
 
@@ -350,7 +352,24 @@ pub async fn check_policy(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let policies = queries::list_enabled_policies(&conn, &ctx.org_id, req.project.as_deref())
+    let viewer = if ctx.role.is_admin() { None } else { Some(ctx.user_id.as_str()) };
+    if let (Some(project_id), Some(user_id)) = (req.project.as_deref(), viewer) {
+        let is_member = queries::user_is_project_member(&conn, &ctx.org_id, project_id, user_id)
+            .map_err(internal_error)?;
+        if !is_member {
+            return Ok(Json(PolicyCheckResponse {
+                allowed: false,
+                violations: vec![crate::models::types::PolicyViolation {
+                    policy_id: "project_access".to_string(),
+                    policy_name: "Project access".to_string(),
+                    rule_type: "authorization".to_string(),
+                    reason: "Access denied to this project".to_string(),
+                }],
+            }));
+        }
+    }
+
+    let policies = queries::list_enabled_policies_visible(&conn, &ctx.org_id, req.project.as_deref(), viewer)
         .map_err(internal_error)?;
     let stats = queries::fetch_daily_stats(&conn, &ctx.org_id).map_err(internal_error)?;
 
@@ -579,6 +598,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_as_member_excludes_non_member_project_policies() {
+        let store = make_store();
+        let (org_id, member_key) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            drop(conn);
+            let key = create_user_with_role(&store, &org.id, "member");
+            (org.id, key)
+        };
+
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let member_id: String = conn.query_row("SELECT id FROM users WHERE email = 'member@test.com'", [], |r| r.get(0)).unwrap();
+            let shared = crate::db::queries::create_project(&conn, &org_id, "shared", None, None).unwrap();
+            let secret = crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            conn.execute(
+                "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES ('pm_shared', ?1, ?2, 'member', datetime('now'))",
+                rusqlite::params![shared.id, member_id],
+            ).unwrap();
+            crate::db::queries::insert_policy(&conn, "pol_global", &org_id, "Global Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, None).unwrap();
+            crate::db::queries::insert_policy(&conn, "pol_shared", &org_id, "Shared Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, Some(&shared.id)).unwrap();
+            crate::db::queries::insert_policy(&conn, "pol_secret", &org_id, "Secret Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, Some(&secret.id)).unwrap();
+        }
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/policies")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let names: Vec<&str> = body["policies"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"Global Policy"));
+        assert!(names.contains(&"Shared Policy"));
+        assert!(!names.contains(&"Secret Policy"));
     }
 
     // ── update ────────────────────────────────────────────────────────────────
@@ -1002,6 +1067,54 @@ mod tests {
             .unwrap();
         let body_b = body_json(resp_b).await;
         assert_eq!(body_b["allowed"], true, "project_a scoped policy must NOT apply when checking project_b");
+    }
+
+    #[tokio::test]
+    async fn check_as_member_denies_non_member_project_before_policy_evaluation() {
+        let store = make_store();
+        let (org_id, member_key) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            drop(conn);
+            let key = create_user_with_role(&store, &org.id, "member");
+            (org.id, key)
+        };
+        let secret_project = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let secret = crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            crate::db::queries::insert_policy(
+                &conn,
+                "pol_secret",
+                &org_id,
+                "Secret Allows GPT",
+                "model_whitelist",
+                r#"{"allowed_models":["gpt-4"]}"#,
+                true,
+                Some(&secret.id),
+            ).unwrap();
+            secret.id
+        };
+
+        let payload = serde_json::json!({ "model": "gpt-4", "project": secret_project });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/policy/check")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["allowed"], false);
+        assert_eq!(body["violations"][0]["rule_type"], "authorization");
     }
 
     #[tokio::test]

@@ -101,7 +101,8 @@ pub async fn invite(
 
     // Resolve which project IDs to grant access to
     let project_ids: Vec<String> = match &input.project_access {
-        None | Some(ProjectAccess::All) => {
+        None => Vec::new(),
+        Some(ProjectAccess::All) => {
             queries::list_project_ids_for_org(&conn, &auth.org_id).map_err(db_err)?
         }
         Some(ProjectAccess::Specific { project_ids }) => project_ids.clone(),
@@ -367,6 +368,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn invite_user_omitted_project_access_grants_no_project_memberships() {
+        let (store, admin_key) = setup_with_admin_key();
+        let org_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            q::create_project(&conn, &org, "p1", None, None).unwrap();
+            q::create_project(&conn, &org, "p2", None, None).unwrap();
+            org
+        };
+        let body = serde_json::json!({ "email": "limited@acme.com", "name": "Limited User" });
+
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/users/invite")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let membership_count: i64 = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let invited_user_id: String = conn
+                .query_row("SELECT id FROM users WHERE org_id = ?1 AND email = 'limited@acme.com'", [&org_id], |r| r.get(0))
+                .unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_members WHERE user_id = ?1",
+                [invited_user_id],
+                |r| r.get(0),
+            ).unwrap()
+        };
+        assert_eq!(membership_count, 0, "omitted project_access must not imply all projects");
     }
 
     #[tokio::test]

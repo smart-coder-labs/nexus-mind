@@ -66,7 +66,8 @@ pub async fn list_conventions(
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let conventions = queries::list_conventions(
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let conventions = queries::list_conventions_visible(
         &conn,
         &auth.org_id,
         params.category.as_deref(),
@@ -74,6 +75,7 @@ pub async fn list_conventions(
         params.project.as_deref(),
         limit,
         offset,
+        viewer,
     ).map_err(db_err)?;
     Ok(Json(conventions))
 }
@@ -85,7 +87,8 @@ pub async fn get_convention(
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
-    let convention = queries::get_convention(&conn, &auth.org_id, id)
+    let viewer = if auth.role.is_admin() { None } else { Some(auth.user_id.as_str()) };
+    let convention = queries::get_convention_visible(&conn, &auth.org_id, id, viewer)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
     Ok(Json(convention))
@@ -203,6 +206,7 @@ mod tests {
     fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/conventions", get(super::list_conventions).post(super::create_convention))
+            .route("/v1/conventions/:id", get(super::get_convention))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -215,9 +219,91 @@ mod tests {
         (org.id, key)
     }
 
+    fn member_key(conn: &rusqlite::Connection, org_id: &str, email: &str) -> (String, String) {
+        let (_, key) = queries::invite_user(conn, org_id, email, "Member", "member").unwrap();
+        let user_id: String = conn
+            .query_row("SELECT id FROM users WHERE email = ?1", [email], |r| r.get(0))
+            .unwrap();
+        (user_id, key)
+    }
+
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn non_admin_list_excludes_non_member_project_conventions() {
+        let store = make_store();
+        let (org_id, _) = admin_key(&store);
+        let member_api_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (user_id, key) = member_key(&conn, &org_id, "member@acme.com");
+            let shared = queries::create_project(&conn, &org_id, "shared", None, None).unwrap();
+            let secret = queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            conn.execute(
+                "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES ('pm_shared', ?1, ?2, 'member', datetime('now'))",
+                rusqlite::params![shared.id, user_id],
+            ).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Global convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: None,
+            }).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Shared convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(shared.id),
+            }).unwrap();
+            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Secret convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(secret.id),
+            }).unwrap();
+            key
+        };
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/conventions")
+                    .header("Authorization", format!("Bearer {member_api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let titles: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+        assert!(titles.contains(&"Global convention"));
+        assert!(titles.contains(&"Shared convention"));
+        assert!(!titles.contains(&"Secret convention"));
+    }
+
+    #[tokio::test]
+    async fn non_admin_get_hides_non_member_project_convention() {
+        let store = make_store();
+        let (org_id, _) = admin_key(&store);
+        let (member_api_key, secret_convention_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_, key) = member_key(&conn, &org_id, "member@acme.com");
+            let secret = queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            let convention = queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
+                title: "Secret convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(secret.id),
+            }).unwrap();
+            (key, convention.id)
+        };
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/conventions/{secret_convention_id}"))
+                    .header("Authorization", format!("Bearer {member_api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

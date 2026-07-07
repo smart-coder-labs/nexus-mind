@@ -2722,6 +2722,23 @@ pub fn list_project_ids_for_org(conn: &Connection, org_id: &str) -> Result<Vec<S
     Ok(ids)
 }
 
+pub fn user_is_project_member(
+    conn: &Connection,
+    org_id: &str,
+    project_id: &str,
+    user_id: &str,
+) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+         FROM project_members pm
+         JOIN projects p ON p.id = pm.project_id
+         WHERE p.org_id = ?1 AND pm.project_id = ?2 AND pm.user_id = ?3",
+        rusqlite::params![org_id, project_id, user_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 /// Stable 8-color palette used to color memory-graph nodes and legend swatches
 /// per project. The frontend never has to know the palette — the backend
 /// picks a color via `color_for_project_id` and ships it in the response.
@@ -3483,6 +3500,30 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Policy> {
 
 /// Returns policies for an org, ordered by creation date DESC, page by `limit`/`offset`.
 pub fn list_policies(conn: &Connection, org_id: &str, limit: i64, offset: i64) -> Result<Vec<Policy>> {
+    list_policies_visible(conn, org_id, limit, offset, None)
+}
+
+pub fn list_policies_visible(
+    conn: &Connection,
+    org_id: &str,
+    limit: i64,
+    offset: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Policy>> {
+    if let Some(viewer) = viewer_user_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
+             FROM policies
+             WHERE org_id = ?1
+               AND (project_id IS NULL OR project_id IN (
+                   SELECT project_id FROM project_members WHERE user_id = ?2
+               ))
+             ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![org_id, viewer, limit, offset], row_to_policy)?;
+        return rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into);
+    }
+
     let mut stmt = conn.prepare(
         "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
          FROM policies WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
@@ -3499,19 +3540,45 @@ pub fn list_policies(conn: &Connection, org_id: &str, limit: i64, offset: i64) -
 /// never replaces it. When `None`, returns every enabled policy for the org
 /// regardless of `project_id` (admin listing / no-project-context behavior).
 pub fn list_enabled_policies(conn: &Connection, org_id: &str, project: Option<&str>) -> Result<Vec<Policy>> {
+    list_enabled_policies_visible(conn, org_id, project, None)
+}
+
+pub fn list_enabled_policies_visible(
+    conn: &Connection,
+    org_id: &str,
+    project: Option<&str>,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Policy>> {
     if let Some(p) = project {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
-             FROM policies WHERE org_id = ?1 AND enabled = 1 AND (project_id IS NULL OR project_id = ?2) ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![org_id, p], row_to_policy)?;
+             FROM policies WHERE org_id = ?1 AND enabled = 1 AND (project_id IS NULL OR project_id = ?2)",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(org_id.to_string()), Box::new(p.to_string())];
+        if let Some(viewer) = viewer_user_id {
+            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+            params.push(Box::new(viewer.to_string()));
+        }
+        sql.push_str(" ORDER BY created_at ASC");
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     } else {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
-             FROM policies WHERE org_id = ?1 AND enabled = 1 ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map([org_id], row_to_policy)?;
+             FROM policies WHERE org_id = ?1 AND enabled = 1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+        if let Some(viewer) = viewer_user_id {
+            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?2))");
+            params.push(Box::new(viewer.to_string()));
+        }
+        sql.push_str(" ORDER BY created_at ASC");
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 }
@@ -3996,6 +4063,43 @@ pub fn get_code_project(
     }
 }
 
+/// Returns true when `user_id` is a member of an existing canonical project with
+/// the given name. Unlike legacy memory/session visibility, unknown project names
+/// are not treated as shared here because code indexes can exist without a
+/// canonical project row and must remain admin-only in that state.
+pub fn user_can_access_canonical_project_by_name(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+    user_id: &str,
+) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+         FROM projects p
+         JOIN project_members pm ON pm.project_id = p.id
+         WHERE p.org_id = ?1 AND p.name = ?2 AND pm.user_id = ?3",
+        rusqlite::params![org_id, project_name, user_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Retrieves a code project only if the caller is allowed to see it.
+/// `viewer_user_id = None` is the admin/internal path and applies only org scope.
+pub fn get_code_project_visible(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<CodeProject>> {
+    if let Some(user_id) = viewer_user_id {
+        if !user_can_access_canonical_project_by_name(conn, org_id, name, user_id)? {
+            return Ok(None);
+        }
+    }
+    get_code_project(org_id, name, conn)
+}
+
 /// Get a code project by numeric id and org_id (used for reindex endpoint).
 pub fn get_code_project_by_id(
     conn: &Connection,
@@ -4037,6 +4141,25 @@ pub fn get_code_project_by_id(
     }
 }
 
+/// Retrieves a code project by id only if the caller is allowed to see it.
+/// `viewer_user_id = None` is the admin/internal path and applies only org scope.
+pub fn get_code_project_by_id_visible(
+    conn: &Connection,
+    org_id: &str,
+    project_id: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<CodeProject>> {
+    let Some(project) = get_code_project_by_id(conn, org_id, project_id)? else {
+        return Ok(None);
+    };
+    if let Some(user_id) = viewer_user_id {
+        if !user_can_access_canonical_project_by_name(conn, org_id, &project.name, user_id)? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(project))
+}
+
 /// List all code projects for an org, ordered by creation date (newest first).
 pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodeProject>> {
     list_code_projects_filtered(conn, org_id, false)
@@ -4055,6 +4178,55 @@ pub fn list_code_projects_filtered(conn: &Connection, org_id: &str, include_arch
     };
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([org_id], |row| {
+        let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
+        Ok(CodeProject {
+            id: row.get::<_, i64>(0)?.to_string(),
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            root_path: row.get(3)?,
+            repo_url: row.get(4)?,
+            file_count: row.get(5)?,
+            chunk_count: row.get(6)?,
+            last_indexed: row.get(7)?,
+            created_at: row.get(8)?,
+            reindex_interval_hours: row.get(9)?,
+            last_indexed_at: row.get(10)?,
+            last_index_error: row.get(11)?,
+            indexed_files_count: row.get(12)?,
+            index_status: row.get(13)?,
+            archived_at: row.get(14)?,
+            exclude_patterns: serde_json::from_str(&patterns_json).unwrap_or_default(),
+        })
+    })?;
+    rows.map(|r| r.map_err(Into::into)).collect()
+}
+
+/// Like [`list_code_projects_filtered`], but non-admin callers only see code
+/// projects whose name matches a canonical project where they are a member.
+pub fn list_code_projects_visible(
+    conn: &Connection,
+    org_id: &str,
+    include_archived: bool,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<CodeProject>> {
+    let Some(user_id) = viewer_user_id else {
+        return list_code_projects_filtered(conn, org_id, include_archived);
+    };
+
+    let base = "SELECT cp.id, cp.org_id, cp.name, cp.root_path, cp.repo_url, cp.file_count, cp.chunk_count, cp.last_indexed, cp.created_at,
+                cp.reindex_interval_hours, cp.last_indexed_at, cp.last_index_error, cp.indexed_files_count, cp.index_status, cp.archived_at,
+                cp.exclude_patterns
+         FROM code_projects cp
+         JOIN projects p ON p.org_id = cp.org_id AND p.name = cp.name
+         JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+         WHERE cp.org_id = ?1";
+    let sql = if include_archived {
+        format!("{base} ORDER BY cp.created_at DESC")
+    } else {
+        format!("{base} AND cp.archived_at IS NULL ORDER BY cp.created_at DESC")
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
         let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
         Ok(CodeProject {
             id: row.get::<_, i64>(0)?.to_string(),
@@ -4458,16 +4630,36 @@ pub fn search_projects_by_query(
     q: &str,
     limit: i64,
 ) -> Result<Vec<crate::models::types::Project>> {
+    search_projects_by_query_visible(conn, org_id, q, limit, None)
+}
+
+pub fn search_projects_by_query_visible(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<crate::models::types::Project>> {
     let pattern = format!("%{}%", q.to_lowercase());
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT id, org_id, name, description, created_at, parent_id
          FROM projects
          WHERE org_id = ?1
-           AND LOWER(name) LIKE ?2
-         ORDER BY name ASC
-         LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+           AND LOWER(name) LIKE ?2",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(org_id.to_string()), Box::new(pattern)];
+    let mut limit_idx = 3usize;
+    if let Some(viewer) = viewer_user_id {
+        sql.push_str(" AND id IN (SELECT project_id FROM project_members WHERE user_id = ?3)");
+        params.push(Box::new(viewer.to_string()));
+        limit_idx = 4;
+    }
+    sql.push_str(&format!(" ORDER BY name ASC LIMIT ?{limit_idx}"));
+    params.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
         Ok(crate::models::types::Project {
             id: row.get(0)?,
             org_id: row.get(1)?,
@@ -4492,16 +4684,36 @@ pub fn search_policies_by_query(
     q: &str,
     limit: i64,
 ) -> Result<Vec<crate::models::types::Policy>> {
+    search_policies_by_query_visible(conn, org_id, q, limit, None)
+}
+
+pub fn search_policies_by_query_visible(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<crate::models::types::Policy>> {
     let pattern = format!("%{}%", q.to_lowercase());
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
          FROM policies
          WHERE org_id = ?1
-           AND LOWER(name) LIKE ?2
-         ORDER BY name ASC
-         LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], row_to_policy)?;
+           AND LOWER(name) LIKE ?2",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(org_id.to_string()), Box::new(pattern)];
+    let mut limit_idx = 3usize;
+    if let Some(viewer) = viewer_user_id {
+        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+        params.push(Box::new(viewer.to_string()));
+        limit_idx = 4;
+    }
+    sql.push_str(&format!(" ORDER BY name ASC LIMIT ?{limit_idx}"));
+    params.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
@@ -4512,17 +4724,37 @@ pub fn search_conventions_by_query(
     q: &str,
     limit: i64,
 ) -> Result<Vec<crate::models::types::Convention>> {
+    search_conventions_by_query_visible(conn, org_id, q, limit, None)
+}
+
+pub fn search_conventions_by_query_visible(
+    conn: &Connection,
+    org_id: &str,
+    q: &str,
+    limit: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<crate::models::types::Convention>> {
     let pattern = format!("%{}%", q.to_lowercase());
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
          FROM conventions
          WHERE org_id = ?1
            AND archived_at IS NULL
-           AND (LOWER(title) LIKE ?2 OR LOWER(content) LIKE ?2)
-         ORDER BY weight DESC, title ASC
-         LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], convention_from_row)?;
+           AND (LOWER(title) LIKE ?2 OR LOWER(content) LIKE ?2)",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(org_id.to_string()), Box::new(pattern)];
+    let mut limit_idx = 3usize;
+    if let Some(viewer) = viewer_user_id {
+        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+        params.push(Box::new(viewer.to_string()));
+        limit_idx = 4;
+    }
+    sql.push_str(&format!(" ORDER BY weight DESC, title ASC LIMIT ?{limit_idx}"));
+    params.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), convention_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
@@ -8251,6 +8483,20 @@ pub fn list_conventions(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Convention>> {
+    list_conventions_visible(conn, org_id, category, include_archived, project, limit, offset, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn list_conventions_visible(
+    conn: &Connection,
+    org_id: &str,
+    category: Option<&str>,
+    include_archived: Option<bool>,
+    project: Option<&str>,
+    limit: i64,
+    offset: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Convention>> {
     let include_archived = include_archived.unwrap_or(false);
     let mut sql = String::from(
         "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
@@ -8271,6 +8517,13 @@ pub fn list_conventions(
     if let Some(p) = project {
         sql.push_str(&format!(" AND (project_id IS NULL OR project_id = ?{param_idx})"));
         extra_params.push(p.to_string());
+        param_idx += 1;
+    }
+    if let Some(viewer) = viewer_user_id {
+        sql.push_str(&format!(
+            " AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{param_idx}))"
+        ));
+        extra_params.push(viewer.to_string());
         param_idx += 1;
     }
     sql.push_str(&format!(
@@ -8294,6 +8547,27 @@ pub fn list_conventions(
 }
 
 pub fn get_convention(conn: &Connection, org_id: &str, id: i64) -> Result<Option<Convention>> {
+    get_convention_visible(conn, org_id, id, None)
+}
+
+pub fn get_convention_visible(
+    conn: &Connection,
+    org_id: &str,
+    id: i64,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<Convention>> {
+    if let Some(viewer) = viewer_user_id {
+        let result = conn.query_row(
+            "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
+             FROM conventions
+             WHERE org_id = ?1 AND id = ?2
+               AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))",
+            rusqlite::params![org_id, id, viewer],
+            convention_from_row,
+        ).optional()?;
+        return Ok(result);
+    }
+
     let result = conn.query_row(
         "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
          FROM conventions WHERE org_id = ?1 AND id = ?2",

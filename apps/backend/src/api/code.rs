@@ -292,6 +292,12 @@ pub async fn post_index(
 
     let project_name = input.project.trim().to_string();
 
+    if !auth.role.is_admin() {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &project_name)?;
+    }
+
     // The effective root path is the clone dir for repos (cloned in the background)
     // or the provided local path. We do NOT clone synchronously — large repos would
     // block the request and time out (502).
@@ -453,20 +459,13 @@ pub async fn post_search(
     let code_project = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &input.project)?;
         db_queries::get_code_project(&auth.org_id, &input.project, &conn)
             .map_err(db_err)?
     };
 
     let code_project = match code_project {
-        None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Project '{}' has not been indexed", input.project),
-                    code: "project_not_indexed".to_string(),
-                }),
-            ));
-        }
+        None => return Err(project_not_indexed(&input.project)),
         Some(p) => p,
     };
 
@@ -559,6 +558,7 @@ pub async fn get_status(
     let code_project = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &project)?;
         db_queries::get_code_project(&auth.org_id, &project, &conn).map_err(db_err)?
     };
 
@@ -608,19 +608,12 @@ pub async fn get_context(
     let code_project = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &params.project)?;
         db_queries::get_code_project(&auth.org_id, &params.project, &conn).map_err(db_err)?
     };
 
     let project = match code_project {
-        None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: format!("Project '{}' has not been indexed", params.project),
-                    code: "project_not_indexed".to_string(),
-                }),
-            ));
-        }
+        None => return Err(project_not_indexed(&params.project)),
         Some(p) => p,
     };
 
@@ -671,6 +664,56 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
+    if auth.role.is_admin() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    }
+}
+
+fn code_project_not_found() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Code project not found".to_string(),
+            code: "not_found".to_string(),
+        }),
+    )
+}
+
+fn project_not_indexed(project: &str) -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: format!("Project '{}' has not been indexed", project),
+            code: "project_not_indexed".to_string(),
+        }),
+    )
+}
+
+fn ensure_code_project_name_access(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    project: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if auth.role.is_admin() {
+        return Ok(());
+    }
+    let allowed = db_queries::user_can_access_canonical_project_by_name(
+        conn,
+        &auth.org_id,
+        project,
+        &auth.user_id,
+    )
+    .map_err(db_err)?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(code_project_not_found())
+    }
+}
+
 /// Query params for `GET /v1/code/projects`.
 #[derive(Deserialize)]
 pub struct ListCodeProjectsParams {
@@ -689,7 +732,13 @@ pub async fn list_projects(
 ) -> Result<Json<Vec<CodeProject>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let projects = db_queries::list_code_projects_filtered(&conn, &auth.org_id, params.include_archived).map_err(db_err)?;
+    let projects = db_queries::list_code_projects_visible(
+        &conn,
+        &auth.org_id,
+        params.include_archived,
+        viewer_user_id(&auth),
+    )
+    .map_err(db_err)?;
     Ok(Json(projects))
 }
 
@@ -868,15 +917,15 @@ pub async fn get_project_files(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     // Verify the project belongs to this org
-    let project = db_queries::get_code_project_by_id(&conn, &auth.org_id, id).map_err(db_err)?;
+    let project = db_queries::get_code_project_by_id_visible(
+        &conn,
+        &auth.org_id,
+        id,
+        viewer_user_id(&auth),
+    )
+    .map_err(db_err)?;
     if project.is_none() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Code project not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
+        return Err(code_project_not_found());
     }
     let file_map = db_queries::list_indexed_files_with_hashes(&conn, id).map_err(db_err)?;
     let mut files: Vec<String> = file_map.into_keys().collect();
@@ -1038,6 +1087,7 @@ pub async fn get_graph(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     // Org-isolation: project must belong to this org
+    ensure_code_project_name_access(&conn, &auth, &params.project)?;
     let project = db_queries::get_code_project(&auth.org_id, &params.project, &conn)
         .map_err(db_err)?
         .ok_or_else(|| {
@@ -1132,6 +1182,7 @@ pub async fn get_snippet(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     // Org-isolation: project must belong to this org
+    ensure_code_project_name_access(&conn, &auth, &params.project)?;
     let project = db_queries::get_code_project(&auth.org_id, &params.project, &conn)
         .map_err(db_err)?
         .ok_or_else(|| {
@@ -1301,6 +1352,10 @@ mod tests {
             .route("/v1/code/search", post(post_search))
             .route("/v1/code/status/:project", get(get_status))
             .route("/v1/code/context", get(get_context))
+            .route("/v1/code/projects", get(list_projects))
+            .route("/v1/code/projects/:id/files", get(get_project_files))
+            .route("/v1/code/graph", get(get_graph))
+            .route("/v1/code/snippet", get(get_snippet))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -1315,6 +1370,33 @@ mod tests {
             key
         };
         (store, raw_key)
+    }
+
+    fn setup_code_access_fixture() -> (SqliteStore, String, String, i64) {
+        let store = make_store();
+        let (admin_key, member_key, project_b_code_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (org, _, admin_key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (member, member_key) = q::invite_user(&conn, &org.id, "member@acme.com", "Member", "member").unwrap();
+            let project_a = q::create_project(&conn, &org.id, "project-a", None, None).unwrap();
+            let _project_b = q::create_project(&conn, &org.id, "project-b", None, None).unwrap();
+            q::upsert_project_member(&conn, &project_a.id, &member.id, "member").unwrap();
+
+            let project_a_code_id = q::upsert_code_project(&conn, &org.id, "project-a", "/ws/a").unwrap();
+            q::update_code_project_stats(&conn, project_a_code_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
+            q::insert_code_chunk(&conn, project_a_code_id, "src/lib.rs", "h1", None, Some("allowed"), 1, 1, "fn allowed() {}", None).unwrap();
+
+            let project_b_code_id = q::upsert_code_project(&conn, &org.id, "project-b", "/ws/b").unwrap();
+            q::update_code_project_stats(&conn, project_b_code_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
+            q::insert_code_chunk(&conn, project_b_code_id, "src/lib.rs", "h2", None, Some("denied"), 1, 1, "fn denied() {}", None).unwrap();
+
+            let code_only_id = q::upsert_code_project(&conn, &org.id, "code-only", "/ws/code-only").unwrap();
+            q::update_code_project_stats(&conn, code_only_id, 2, 3, "2026-06-19T12:00:00Z").unwrap();
+
+            (admin_key, member_key, project_b_code_id)
+        };
+        (store, admin_key, member_key, project_b_code_id)
     }
 
     // ── GET /v1/code/status/:project ──────────────────────────────────────────
@@ -1394,6 +1476,107 @@ mod tests {
         assert_eq!(body["file_count"], 5);
         assert_eq!(body["chunk_count"], 42);
         assert!(body["last_indexed"].as_str().is_some(), "last_indexed must be present for indexed projects");
+    }
+
+    #[tokio::test]
+    async fn admin_status_code_only_project_without_canonical_row_returns_indexed() {
+        let (store, admin_key, _, _) = setup_code_access_fixture();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/status/code-only")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "indexed");
+        assert_eq!(body["project"], "code-only");
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_infer_not_indexed_for_unknown_canonical_project() {
+        let (store, _, member_key, _) = setup_code_access_fixture();
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/status/no-canonical-row")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn member_of_project_a_cannot_access_project_b_code_surfaces() {
+        let (store, _, member_key, project_b_code_id) = setup_code_access_fixture();
+
+        let status_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/status/project-b")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status_resp.status(), StatusCode::NOT_FOUND);
+
+        let list_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/projects")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(list_resp.into_body(), usize::MAX).await.unwrap();
+        let projects: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        assert!(projects.iter().any(|p| p["name"] == "project-a"));
+        assert!(projects.iter().all(|p| p["name"] != "project-b"));
+        assert!(projects.iter().all(|p| p["name"] != "code-only"));
+
+        let files_resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/code/projects/{project_b_code_id}/files"))
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(files_resp.status(), StatusCode::NOT_FOUND);
+
+        let graph_resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/code/graph?project=project-b")
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(graph_resp.status(), StatusCode::NOT_FOUND);
     }
 
     // ── POST /v1/code/search ──────────────────────────────────────────────────

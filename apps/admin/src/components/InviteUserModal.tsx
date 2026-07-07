@@ -16,7 +16,7 @@ const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 
 export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Props) {
   const [form, setForm] = useState({ email: '', name: '', role: 'member' })
-  const [projectAccess, setProjectAccess] = useState<'all' | 'specific'>('all')
+  const [projectAccess, setProjectAccess] = useState<'all' | 'specific'>('specific')
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -109,7 +109,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
 
   const handleClose = () => {
     setForm({ email: '', name: '', role: 'member' })
-    setProjectAccess('all')
+    setProjectAccess('specific')
     setSelectedProjectIds([])
     setNewKey(null)
     setInviteSuccess(null)
