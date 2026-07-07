@@ -596,7 +596,7 @@ pub async fn list_projects_api(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListProjectsParams>,
 ) -> Result<Json<Vec<Project>>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let projects = if is_privileged {
@@ -612,7 +612,7 @@ pub async fn get_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Project>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     if !is_privileged {
@@ -1206,7 +1206,7 @@ pub async fn get_project_settings_api(
     Extension(ctx): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectEventOverrides>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = ctx.role.is_admin() || matches!(ctx.role, UserRole::Custom(ref s) if s == "super_user");
+    let is_privileged = matches!(ctx.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     if !is_privileged {
@@ -1834,7 +1834,7 @@ pub async fn get_project_stats_api(
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectStats>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = auth.role.is_admin() || matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     if !is_privileged {
