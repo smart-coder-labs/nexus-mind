@@ -31,6 +31,15 @@ const AVAILABLE_PERMISSIONS = [
   { key: 'webhook:read', name: 'Read Webhooks', description: 'Allows viewing webhooks.' },
   { key: 'code:read', name: 'Read Code Index', description: 'Allows searching the code knowledge base.' },
   { key: 'audit:write', name: 'Write Audit Logs', description: 'Allows writing external audit events.' },
+  { key: 'code:write', name: 'Code Write', description: 'Allows writing and updating code index entries.' },
+  { key: 'code:index', name: 'Code Index', description: 'Allows triggering code indexing operations.' },
+  { key: 'collection:read', name: 'Collection Read', description: 'Allows viewing memory collections.' },
+  { key: 'collection:write', name: 'Collection Write', description: 'Allows creating and updating memory collections.' },
+  { key: 'backup:read', name: 'Backup Read', description: 'Allows viewing and downloading backups.' },
+  { key: 'backup:write', name: 'Backup Write', description: 'Allows creating and managing backups.' },
+  { key: 'graph:read', name: 'Graph Read', description: 'Allows viewing the memory graph.' },
+  { key: 'tag:read', name: 'Tag Read', description: 'Allows viewing memory tags.' },
+  { key: 'tag:write', name: 'Tag Write', description: 'Allows creating, renaming, and deleting tags.' },
 ]
 
 export default function Roles() {

@@ -1074,6 +1074,11 @@ export default function Memories() {
     }
   }, [searchParams, setSearchParams])
 
+  // Reset to page 0 whenever any filter changes
+  useEffect(() => {
+    setPage(0)
+  }, [filterType, filterScope, filterProject, fromDate, toDate, filterCollection, pinnedOnly, query, sessionIdFilter, showArchived])
+
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -1108,6 +1113,9 @@ export default function Memories() {
     setSelectMode(false)
   }, [])
   const isAdmin = session?.user.role === 'admin'
+
+  const PAGE_SIZE = 50
+  const [page, setPage] = useState(0)
 
   const { data: users } = useQuery({
     queryKey: ['users'],
@@ -1162,9 +1170,10 @@ export default function Memories() {
   const VIEW_ALL_LIMIT = 10_000
 
   const { data: listData, isLoading: listLoading } = useQuery({
-    queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter],
+    queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter, page],
     queryFn: () => client.listMemories({
-      limit: 50,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
       type: filterType || undefined,
       scope: filterScope || undefined,
       project: filterProject || undefined,
@@ -2765,6 +2774,27 @@ export default function Memories() {
           </div>
         )}
       </div>
+
+      {/* Pagination controls — only shown in list mode (not searching, not viewAll) */}
+      {!isSearching && !viewAll && (
+        <div className="flex items-center justify-center gap-3 pt-1">
+          <button
+            onClick={() => setPage(p => Math.max(0, p - 1))}
+            disabled={page === 0 || isLoading}
+            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Previous
+          </button>
+          <span className="text-xs text-text-quaternary">Page {page + 1}</span>
+          <button
+            onClick={() => setPage(p => p + 1)}
+            disabled={(listData?.length ?? 0) < PAGE_SIZE || isLoading}
+            className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Next
+          </button>
+        </div>
+      )}
 
       {selected && (
         <MemoryDetailModal

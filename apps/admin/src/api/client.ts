@@ -74,6 +74,9 @@ export class NexusMindClient {
       },
     })
     if (!res.ok) {
+      if (res.status === 403) {
+        window.location.replace('/401')
+      }
       const body = await res.json().catch(() => ({ error: res.statusText, code: 'unknown' }))
       throw Object.assign(new Error(body.error ?? res.statusText), {
         code: body.code,

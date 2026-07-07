@@ -25,6 +25,7 @@ const Search      = lazy(() => import('./pages/Search'))
 const Sessions    = lazy(() => import('./pages/Sessions'))
 const Backups     = lazy(() => import('./pages/Backups'))
 const Graph       = lazy(() => import('./pages/Graph'))
+const Unauthorized = lazy(() => import('./pages/Unauthorized'))
 
 /** Redirects to / when the given href is in DISABLED_NAV_HREFS; otherwise renders children. */
 function MaybeDisabled({ href, children }: { href: string; children: React.ReactNode }) {
@@ -39,12 +40,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
-/** Redirects non-admin users to `/` without re-wrapping in Layout. */
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
   if (loading) return null
   if (!session) return <Navigate to="/login" replace />
-  if (session.user.role !== 'admin' && session.user.role !== 'super_user') return <Navigate to="/" replace />
   return <>{children}</>
 }
 
@@ -88,7 +87,8 @@ function AppRoutes() {
                 <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/backups" element={<AdminRoute><Backups /></AdminRoute>} />
-                <Route path="/graph"   element={<AdminRoute><Graph /></AdminRoute>} />
+                <Route path="/graph"   element={<Graph />} />
+                <Route path="/401"    element={<Unauthorized />} />
               </Routes>
             </ProtectedRoute>
           }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, MemoryPreview, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest},
+    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, MemoryPreview, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest, UserRole},
     store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
 };
@@ -16,11 +16,12 @@ use crate::{
 const EXPORT_HARD_CAP: i64 = 10_000;
 const MAX_CONTENT_BYTES: usize = 65_536; // 64 KiB
 
-/// Project-membership visibility scope for read paths: admins see all org memories
-/// (`None`), non-admins are restricted to memories they may see (`Some(user_id)`).
+/// Project-membership visibility scope for read paths: only `super_user` bypasses project
+/// filters and sees all org memories (`None`). All other roles — including admin — are
+/// restricted to memories from projects they are a member of plus org-shared memories.
 /// See `db::queries::visibility_predicate`.
 fn viewer_scope(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_privileged() {
+    if matches!(auth.role, UserRole::Custom(ref s) if s == "super_user") {
         None
     } else {
         Some(&auth.user_id)
@@ -463,6 +464,37 @@ pub async fn list(
             }),
         ))?;
         require_permission(&conn, &auth, params.project.as_deref(), "memory:read")?;
+
+        // Admins bypass require_permission's project-membership check (is_privileged()),
+        // but non-super_user admins must still be members of a specifically requested project.
+        // Non-admin, non-super_user users are already checked inside require_permission above.
+        let is_super_user = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+        if !is_super_user && auth.role.is_admin() {
+            if let Some(ref project_name) = params.project {
+                let project_id = db_queries::get_project_id_by_name(&conn, &auth.org_id, project_name)
+                    .map_err(store_err)?;
+                match project_id {
+                    None => {
+                        return Err(store_err(anyhow::anyhow!("project_not_found:{project_name}")));
+                    }
+                    Some(pid) => {
+                        let is_member = db_queries::user_is_project_member(
+                            &conn, &auth.org_id, &pid, &auth.user_id,
+                        )
+                        .map_err(store_err)?;
+                        if !is_member {
+                            return Err((
+                                StatusCode::FORBIDDEN,
+                                Json(ApiError {
+                                    error: "Access denied to this project".to_string(),
+                                    code: "forbidden".to_string(),
+                                }),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if let Some(offset) = params.offset {

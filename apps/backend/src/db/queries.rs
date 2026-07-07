@@ -2599,6 +2599,15 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             "convention:write".to_string(),
             "webhook:read".to_string(),
             "code:read".to_string(),
+            "code:write".to_string(),
+            "code:index".to_string(),
+            "collection:read".to_string(),
+            "collection:write".to_string(),
+            "backup:read".to_string(),
+            "backup:write".to_string(),
+            "graph:read".to_string(),
+            "tag:read".to_string(),
+            "tag:write".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -2797,6 +2806,16 @@ pub fn user_is_project_member(
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+/// Returns the UUID of a project looked up by its name within an org, or `None` if not found.
+pub fn get_project_id_by_name(conn: &Connection, org_id: &str, name: &str) -> Result<Option<String>> {
+    let result = conn.query_row(
+        "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, name],
+        |row| row.get::<_, String>(0),
+    ).optional()?;
+    Ok(result)
 }
 
 /// Stable 8-color palette used to color memory-graph nodes and legend swatches

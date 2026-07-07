@@ -146,7 +146,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Knowledge',
     items: [
       { label: 'Memories',    href: '/memories',    icon: Brain },
-      { label: 'Graph',       href: '/graph',       icon: Network,       adminOnly: true },
+      { label: 'Graph',       href: '/graph',       icon: Network },
       { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true },
       { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true },
       { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true },
@@ -311,23 +311,23 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
       {/* Logo */}
       <div className="px-5 pt-6 pb-5">
         <div className="flex items-center gap-2">
-          <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-          <p className="text-[13px] font-semibold text-text-primary">NexusMind</p>
-        </div>
-        {session?.org.name && (
-          <div className="mt-2 flex items-center gap-1.5">
-            {orgSettings?.logo_url && (
-              <img
-                src={orgSettings.logo_url}
-                className="w-6 h-6 rounded-full object-cover flex-shrink-0"
-                alt="org logo"
-              />
-            )}
-            <span className="text-[13px] font-semibold text-text-primary truncate max-w-full">
-              {session.org.name}
-            </span>
+          {orgSettings?.logo_url && (
+            <img
+              src={orgSettings.logo_url}
+              className="w-6 h-6 rounded-full object-cover flex-shrink-0"
+              alt="org logo"
+            />
+          )}
+          <div className="flex flex-col min-w-0">
+            <p className="text-[14px] font-semibold text-text-primary truncate leading-tight">
+              {session?.org.name ?? 'NexusMind'}
+            </p>
+            <p className="text-[11px] text-text-tertiary leading-tight flex items-center gap-1">
+              <Brain className="w-3 h-3 text-accent-blue flex-shrink-0" />
+              nexusmind
+            </p>
           </div>
-        )}
+        </div>
       </div>
 
       <div className="border-b border-border-secondary mx-3" />
@@ -537,13 +537,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <Menu className="w-4 h-4" />
           </button>
-          <div className="flex items-center gap-2">
-            <Brain className="w-4 h-4 text-accent-blue flex-shrink-0" />
-            <p className="text-[13px] font-semibold text-text-primary">NexusMind</p>
+          <div className="flex flex-col min-w-0">
+            <p className="text-[13px] font-semibold text-text-primary truncate leading-tight">
+              {session?.org.name ?? 'NexusMind'}
+            </p>
+            <p className="text-[10px] text-text-tertiary leading-tight flex items-center gap-1">
+              <Brain className="w-3 h-3 text-accent-blue flex-shrink-0" />
+              nexusmind
+            </p>
           </div>
-          {session?.org.name && (
-            <span className="ml-1 text-[11px] text-text-tertiary truncate">{session.org.name}</span>
-          )}
         </header>
 
         <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto focus:outline-none">
