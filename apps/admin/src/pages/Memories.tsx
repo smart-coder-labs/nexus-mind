@@ -1252,6 +1252,7 @@ export default function Memories() {
     queryKey: ['collections'],
     queryFn: () => client.listCollections(),
     staleTime: 30_000,
+    enabled: isAdmin,
   })
 
   const createCollectionMut = useMutation({
