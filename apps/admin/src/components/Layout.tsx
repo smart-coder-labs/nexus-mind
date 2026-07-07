@@ -184,7 +184,7 @@ const NAV_GROUPS: NavGroup[] = [
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation()
   const { session } = useAuth()
-  const isAdmin = session?.user.role === 'admin'
+  const isAdmin = session?.user.role === 'admin' || session?.user.role === 'super_user'
 
   return (
     <nav className="flex flex-col gap-4 px-2">
