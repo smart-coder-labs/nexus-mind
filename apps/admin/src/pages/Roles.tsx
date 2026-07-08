@@ -40,6 +40,11 @@ const AVAILABLE_PERMISSIONS = [
   { key: 'graph:read', name: 'Graph Read', description: 'Allows viewing the memory graph.' },
   { key: 'tag:read', name: 'Tag Read', description: 'Allows viewing memory tags.' },
   { key: 'tag:write', name: 'Tag Write', description: 'Allows creating, renaming, and deleting tags.' },
+  { key: 'harness:read', name: 'Read Harnesses', description: 'Allows viewing harness catalog metadata and recommendations.' },
+  { key: 'harness:write', name: 'Write Harnesses', description: 'Allows creating harnesses and publishing immutable versions.' },
+  { key: 'harness:download', name: 'Download Harnesses', description: 'Allows downloading approved harness manifests.' },
+  { key: 'harness:install', name: 'Approve Harness Installs', description: 'Allows approving a harness version and manifest hash for local installation tools.' },
+  { key: 'harness:review_config', name: 'Review Harness Config', description: 'Allows sharing and inspecting redacted Claude configuration reviews.' },
 ]
 
 export default function Roles() {

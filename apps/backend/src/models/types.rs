@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use std::str::FromStr;
 use std::fmt;
+use std::str::FromStr;
 
 // ── Role enum ─────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ pub enum Role {
 impl Role {
     pub fn as_u8(self) -> u8 {
         match self {
-            Role::Admin  => 2,
+            Role::Admin => 2,
             Role::Member => 1,
             Role::Viewer => 0,
         }
@@ -27,10 +27,10 @@ impl FromStr for Role {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "admin"  => Ok(Role::Admin),
+            "admin" => Ok(Role::Admin),
             "member" => Ok(Role::Member),
             "viewer" => Ok(Role::Viewer),
-            other    => Err(format!("unknown role: {other}")),
+            other => Err(format!("unknown role: {other}")),
         }
     }
 }
@@ -38,7 +38,7 @@ impl FromStr for Role {
 impl fmt::Display for Role {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Role::Admin  => "admin",
+            Role::Admin => "admin",
             Role::Member => "member",
             Role::Viewer => "viewer",
         };
@@ -503,8 +503,8 @@ pub struct FacetCount {
 /// Returned by `GET /v1/admin/stats/memory-facets`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct MemoryFacets {
-    pub types:    Vec<FacetCount>,
-    pub scopes:   Vec<FacetCount>,
+    pub types: Vec<FacetCount>,
+    pub scopes: Vec<FacetCount>,
     pub projects: Vec<FacetCount>,
 }
 
@@ -839,26 +839,26 @@ pub struct CodeStatusResponse {
 /// A single node in the code knowledge graph returned by `GET /v1/code/graph`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphNodeDto {
-    pub id:             i64,
+    pub id: i64,
     #[serde(rename = "type")]
-    pub node_type:      String,
-    pub name:           String,
+    pub node_type: String,
+    pub name: String,
     pub qualified_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_path:  Option<String>,
+    pub file_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub end_line:   Option<i64>,
-    pub language:       String,
+    pub end_line: Option<i64>,
+    pub language: String,
 }
 
 /// A directed edge in the code knowledge graph.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphEdgeDto {
-    pub id:      i64,
+    pub id: i64,
     pub from_id: i64,
-    pub to_id:   i64,
+    pub to_id: i64,
     #[serde(rename = "type")]
     pub edge_type: String,
 }
@@ -866,11 +866,11 @@ pub struct GraphEdgeDto {
 /// Response envelope for `GET /v1/code/graph`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphResponse {
-    pub project:    String,
+    pub project: String,
     pub node_count: usize,
     pub edge_count: usize,
-    pub nodes:      Vec<GraphNodeDto>,
-    pub edges:      Vec<GraphEdgeDto>,
+    pub nodes: Vec<GraphNodeDto>,
+    pub edges: Vec<GraphEdgeDto>,
 }
 
 // ── Memory graph API types ─────────────────────────────────────────────────
@@ -880,18 +880,18 @@ pub struct GraphResponse {
 /// because memory entities span multiple tables with heterogeneous TEXT/UUID keys.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MemGraphNode {
-    pub id:        String,
+    pub id: String,
     #[serde(rename = "type")]
     pub node_type: String,
-    pub label:     String,
+    pub label: String,
 }
 
 /// A directed edge in the memory knowledge graph.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MemGraphEdge {
-    pub id:        String,
-    pub from_id:   String,
-    pub to_id:     String,
+    pub id: String,
+    pub from_id: String,
+    pub to_id: String,
     #[serde(rename = "type")]
     pub edge_type: String,
 }
@@ -903,9 +903,9 @@ pub struct MemGraphEdge {
 /// to know the palette itself).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProjectGraphInfo {
-    pub id:        String,
-    pub name:      String,
-    pub color:     String,
+    pub id: String,
+    pub name: String,
+    pub color: String,
     pub parent_id: Option<String>,
 }
 
@@ -919,23 +919,23 @@ pub struct ProjectGraphInfo {
 /// lookup (`?project=name`), it contains a single entry for that project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MemoryGraphResponse {
-    pub project:    String,
+    pub project: String,
     pub node_count: usize,
     pub edge_count: usize,
-    pub nodes:      Vec<MemGraphNode>,
-    pub edges:      Vec<MemGraphEdge>,
-    pub projects:   Vec<ProjectGraphInfo>,
+    pub nodes: Vec<MemGraphNode>,
+    pub edges: Vec<MemGraphEdge>,
+    pub projects: Vec<ProjectGraphInfo>,
 }
 
 /// Response body for `GET /v1/code/snippet` — the source of the chunk covering a symbol.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SnippetResponse {
-    pub file_path:  String,
-    pub symbol:     Option<String>,
-    pub language:   Option<String>,
+    pub file_path: String,
+    pub symbol: Option<String>,
+    pub language: Option<String>,
     pub start_line: i64,
-    pub end_line:   i64,
-    pub content:    String,
+    pub end_line: i64,
+    pub content: String,
 }
 
 // ── Project event override types ──────────────────────────────────────────────
@@ -1039,7 +1039,7 @@ pub struct InternalSearchResult {
 /// Daily memory count — one entry per calendar day.
 #[derive(Debug, Serialize, Clone)]
 pub struct DailyCount {
-    pub date: String,  // "YYYY-MM-DD"
+    pub date: String, // "YYYY-MM-DD"
     pub count: i64,
 }
 
@@ -1053,12 +1053,12 @@ pub struct NameCount {
 /// Memory trend data for the last 30 days — returned by `GET /v1/admin/stats/trends`.
 #[derive(Debug, Serialize, Clone)]
 pub struct MemoryTrends {
-    pub daily_counts: Vec<DailyCount>,  // last 30 days
-    pub by_type: Vec<NameCount>,        // top 5 types
-    pub by_project: Vec<NameCount>,     // top 5 projects
+    pub daily_counts: Vec<DailyCount>, // last 30 days
+    pub by_type: Vec<NameCount>,       // top 5 types
+    pub by_project: Vec<NameCount>,    // top 5 projects
     pub total: i64,
-    pub this_week: i64,                 // last 7 days
-    pub this_month: i64,                // last 30 days
+    pub this_week: i64,  // last 7 days
+    pub this_month: i64, // last 30 days
 }
 
 // ── Onboarding types ──────────────────────────────────────────────────────────
@@ -1274,7 +1274,10 @@ where
             Ok(vec![v])
         }
 
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Vec<String>, A::Error> {
             let mut out = Vec::new();
             while let Some(s) = seq.next_element::<String>()? {
                 out.push(s);
@@ -1335,7 +1338,7 @@ pub struct ContributorStat {
 /// Returned by `GET /v1/admin/stats/memory-heatmap`.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct HeatmapDay {
-    pub day: String,   // "YYYY-MM-DD"
+    pub day: String, // "YYYY-MM-DD"
     pub count: i64,
 }
 
@@ -1457,6 +1460,149 @@ pub struct AgentAssignment {
     pub created_at: String,
 }
 
+// ── Harness sharing types ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Harness {
+    pub id: String,
+    pub org_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub slug: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub visibility: String,
+    pub status: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<HarnessVersionSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessVersionSummary {
+    pub id: String,
+    pub version: String,
+    pub manifest_hash: String,
+    pub targets: Vec<String>,
+    pub status: String,
+    pub published_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessVersion {
+    pub id: String,
+    pub harness_id: String,
+    pub version: String,
+    pub manifest: serde_json::Value,
+    pub manifest_hash: String,
+    pub targets: Vec<String>,
+    pub provenance: serde_json::Value,
+    pub status: String,
+    pub published_by: String,
+    pub published_at: String,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateHarnessRequest {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PublishHarnessVersionRequest {
+    pub version: String,
+    pub manifest: serde_json::Value,
+    pub manifest_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessDownloadResponse {
+    pub harness_id: String,
+    pub version: String,
+    pub manifest: serde_json::Value,
+    pub manifest_hash: String,
+    pub approval_required: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HarnessApprovalRequest {
+    pub target_tool: String,
+    pub target_scope: String,
+    pub manifest_hash: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HarnessInstallResultRequest {
+    pub approval_id: String,
+    pub manifest_hash: String,
+    pub status: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessApproval {
+    pub id: String,
+    pub org_id: String,
+    pub user_id: String,
+    pub harness_version_id: String,
+    pub target_tool: String,
+    pub target_scope: String,
+    pub manifest_hash: String,
+    pub status: String,
+    pub metadata: serde_json::Value,
+    pub approved_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessRecommendation {
+    pub harness_id: String,
+    pub version: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub targets: Vec<String>,
+    pub manifest_hash: String,
+    pub approval_required: bool,
+    pub download_url: String,
+    pub required_permissions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateHarnessConfigReviewRequest {
+    pub source_tool: String,
+    pub redacted_config: serde_json::Value,
+    pub redaction_report: serde_json::Value,
+    pub content_hash: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessConfigReview {
+    pub id: String,
+    pub org_id: String,
+    pub user_id: String,
+    pub source_tool: String,
+    pub redacted_config: serde_json::Value,
+    pub redaction_report: serde_json::Value,
+    pub content_hash: String,
+    pub status: String,
+    pub created_at: String,
+    pub shared_at: Option<String>,
+}
+
 /// Stored GitHub OAuth connection for an org (DB row).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubConnection {
@@ -1512,7 +1658,10 @@ mod tests {
     fn role_from_str_unknown_returns_err() {
         assert!("superuser".parse::<Role>().is_err());
         assert!("".parse::<Role>().is_err());
-        assert!("Admin".parse::<Role>().is_err(), "case-sensitive: uppercase must fail");
+        assert!(
+            "Admin".parse::<Role>().is_err(),
+            "case-sensitive: uppercase must fail"
+        );
     }
 
     #[test]
@@ -1597,8 +1746,14 @@ mod tests {
             "metadata": {}
         }"#;
         let entry: AuditEntry = serde_json::from_str(json_str).unwrap();
-        assert!(entry.previous_hash.is_none(), "previous_hash must default to None");
-        assert!(entry.current_hash.is_none(), "current_hash must default to None");
+        assert!(
+            entry.previous_hash.is_none(),
+            "previous_hash must default to None"
+        );
+        assert!(
+            entry.current_hash.is_none(),
+            "current_hash must default to None"
+        );
 
         // And the serialized form must include both fields as null (not omit them).
         let out: serde_json::Value = serde_json::to_value(&entry).unwrap();
@@ -1828,7 +1983,10 @@ mod tests {
         let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
         assert!(req.enabled, "default_enabled should be true");
         match &req.config {
-            PolicyConfig::BudgetLimit { max_tokens_per_day, max_requests_per_day } => {
+            PolicyConfig::BudgetLimit {
+                max_tokens_per_day,
+                max_requests_per_day,
+            } => {
                 assert_eq!(*max_tokens_per_day, Some(100000));
                 assert_eq!(*max_requests_per_day, Some(500));
             }
@@ -1859,8 +2017,7 @@ mod tests {
         assert!(empty.config.is_none());
         assert!(empty.enabled.is_none());
 
-        let partial: UpdatePolicyRequest =
-            serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+        let partial: UpdatePolicyRequest = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
         assert!(partial.name.is_none());
         assert_eq!(partial.enabled, Some(false));
     }
@@ -1957,8 +2114,14 @@ mod tests {
         assert_eq!(v["project"], "ghost");
         assert_eq!(v["status"], "not_indexed");
         // None fields must be absent (skip_serializing_if)
-        assert!(v.get("last_indexed").is_none(), "last_indexed must be omitted when None");
-        assert!(v.get("file_count").is_none(), "file_count must be omitted when None");
+        assert!(
+            v.get("last_indexed").is_none(),
+            "last_indexed must be omitted when None"
+        );
+        assert!(
+            v.get("file_count").is_none(),
+            "file_count must be omitted when None"
+        );
     }
 
     #[test]

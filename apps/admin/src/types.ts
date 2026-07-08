@@ -629,3 +629,125 @@ export interface BackupRestoreSummary {
   tables_restored: number
   rows_restored: number
 }
+
+// ── Harness Library (admin) ───────────────────────────────────────────────────
+
+export interface HarnessVersionSummary {
+  id: string
+  version: string
+  manifest_hash: string
+  targets: string[]
+  status: string
+  published_at: string
+}
+
+export interface Harness {
+  id: string
+  org_id: string
+  project_id?: string | null
+  slug: string
+  name: string
+  description?: string | null
+  visibility: string
+  status: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  latest_version?: HarnessVersionSummary | null
+}
+
+export interface CreateHarnessRequest {
+  slug: string
+  name: string
+  description?: string
+  project_id?: string
+  visibility?: string
+}
+
+export interface PublishHarnessVersionRequest {
+  version: string
+  manifest: Record<string, unknown>
+  manifest_hash?: string
+}
+
+export interface HarnessVersion {
+  id: string
+  harness_id: string
+  version: string
+  manifest: Record<string, unknown>
+  manifest_hash: string
+  targets: string[]
+  provenance: Record<string, unknown>
+  status: string
+  published_by: string
+  published_at: string
+  revoked_at?: string | null
+}
+
+export interface HarnessApprovalRequest {
+  target_tool: string
+  target_scope: string
+  manifest_hash: string
+  metadata?: Record<string, unknown>
+}
+
+export interface HarnessInstallResultRequest {
+  approval_id: string
+  manifest_hash: string
+  status: string
+  metadata?: Record<string, unknown>
+}
+
+export interface HarnessApproval {
+  id: string
+  org_id: string
+  user_id: string
+  harness_version_id: string
+  target_tool: string
+  target_scope: string
+  manifest_hash: string
+  status: string
+  metadata: Record<string, unknown>
+  approved_at: string
+}
+
+export interface HarnessDownloadResponse {
+  harness_id: string
+  version: string
+  manifest: Record<string, unknown>
+  manifest_hash: string
+  approval_required: boolean
+}
+
+export interface HarnessRecommendation {
+  harness_id: string
+  version: string
+  name: string
+  description?: string | null
+  targets: string[]
+  manifest_hash: string
+  approval_required: boolean
+  download_url: string
+  required_permissions: string[]
+}
+
+export interface CreateHarnessConfigReviewRequest {
+  source_tool: string
+  redacted_config: Record<string, unknown>
+  redaction_report: Record<string, unknown>
+  content_hash: string
+  status?: string
+}
+
+export interface HarnessConfigReview {
+  id: string
+  org_id: string
+  user_id: string
+  source_tool: string
+  redacted_config: Record<string, unknown>
+  redaction_report: Record<string, unknown>
+  content_hash: string
+  status: string
+  created_at: string
+  shared_at?: string | null
+}

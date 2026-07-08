@@ -26,6 +26,7 @@ import {
   MessageSquare,
   Database,
   Network,
+  Boxes,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -159,6 +160,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true, requiredPermission: 'project:read' },
       { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
+      { label: 'Harnesses',   href: '/harnesses',   icon: Boxes,         adminOnly: true, requiredPermission: 'harness:read' },
     ],
   },
   {

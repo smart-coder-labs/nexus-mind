@@ -59,6 +59,17 @@ import type {
   Backup,
   BackupDetail,
   BackupRestoreSummary,
+  Harness,
+  CreateHarnessRequest,
+  PublishHarnessVersionRequest,
+  HarnessVersion,
+  HarnessApprovalRequest,
+  HarnessApproval,
+  HarnessInstallResultRequest,
+  HarnessDownloadResponse,
+  HarnessRecommendation,
+  CreateHarnessConfigReviewRequest,
+  HarnessConfigReview,
 } from '../types'
 
 export class NexusMindClient {
@@ -845,6 +856,62 @@ export class NexusMindClient {
       })
     }
     return res.blob()
+  }
+
+  // ── Harness library (admin) ────────────────────────────────────────────────
+
+  listHarnesses(params: { target?: string } = {}): Promise<Harness[]> {
+    const qs = new URLSearchParams()
+    if (params.target) qs.set('target', params.target)
+    return this.request<Harness[]>(`/v1/harnesses${qs.toString() ? `?${qs}` : ''}`)
+  }
+
+  createHarness(data: CreateHarnessRequest): Promise<Harness> {
+    return this.request<Harness>('/v1/harnesses', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  publishHarnessVersion(harnessId: string, data: PublishHarnessVersionRequest): Promise<HarnessVersion> {
+    return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  approveHarnessInstall(harnessId: string, version: string, data: HarnessApprovalRequest): Promise<HarnessApproval> {
+    return this.request<HarnessApproval>(
+      `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}/approval`,
+      { method: 'POST', body: JSON.stringify(data) },
+    )
+  }
+
+  recordHarnessInstallResult(harnessId: string, version: string, data: HarnessInstallResultRequest): Promise<HarnessApproval> {
+    return this.request<HarnessApproval>(
+      `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}/install-result`,
+      { method: 'POST', body: JSON.stringify(data) },
+    )
+  }
+
+  downloadHarnessVersion(harnessId: string, version: string): Promise<HarnessDownloadResponse> {
+    return this.request<HarnessDownloadResponse>(
+      `/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}/download`,
+    )
+  }
+
+  listHarnessRecommendations(params: { target?: string } = {}): Promise<HarnessRecommendation[]> {
+    const qs = new URLSearchParams()
+    if (params.target) qs.set('target', params.target)
+    return this.request<HarnessRecommendation[]>(`/v1/harness-recommendations${qs.toString() ? `?${qs}` : ''}`)
+  }
+
+  createHarnessConfigReview(data: CreateHarnessConfigReviewRequest): Promise<HarnessConfigReview> {
+    return this.request<HarnessConfigReview>('/v1/harness-config-reviews', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  getHarnessConfigReview(id: string): Promise<HarnessConfigReview> {
+    return this.request<HarnessConfigReview>(`/v1/harness-config-reviews/${encodeURIComponent(id)}`)
   }
 }
 

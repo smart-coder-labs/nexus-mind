@@ -51,6 +51,17 @@ Then restart your shell and open Claude Code — NexusMind connects automaticall
 
 Always pass `tool="claude-code"` and `project="<your-project>"` when storing.
 
+## Harness Library approval flow
+
+NexusMind may recommend reusable Claude Code harnesses, but recommendations are metadata only until a user approves an exact version and manifest hash.
+
+1. Review the recommended harness name, targets, provenance, compatibility, and `manifest_hash`.
+2. Approve the exact version before downloading the manifest.
+3. Let the local Claude Code setup tool show a file diff.
+4. Apply changes only after confirming that local diff.
+
+The backend never writes to `~/.claude/settings.json`, shell profiles, hooks, MCP configs, or project files. It only records approval state and serves immutable manifests for local tools to preview and apply.
+
 ## What Claude does automatically
 
 - **Session start** — searches NexusMind for context related to the first message

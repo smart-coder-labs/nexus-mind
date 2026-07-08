@@ -51,7 +51,7 @@ describe('Graph page', () => {
   it('shows the empty state when no project is selected', async () => {
     // Persisted selection starts empty → empty state is shown.
     renderWithProviders(<Graph />)
-    expect(await screen.findByText(/Select a project/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Choose a project from the dropdown/i)).toBeInTheDocument()
   })
 
   it('auto-selects the first non-archived project on first load', async () => {

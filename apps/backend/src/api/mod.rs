@@ -19,3 +19,4 @@ pub mod search;
 pub mod conventions;
 pub mod github_auth;
 pub mod agents;
+pub mod harnesses;
