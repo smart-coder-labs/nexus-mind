@@ -83,6 +83,19 @@ Once connected, Cursor's AI has access to these tools:
 | `list_memories` | Browse recent memories, filtered by project or type |
 | `get_context` | **Cursor-specific** — fetch team context as a formatted block for rules or notepads |
 
+## Harness Library approval flow
+
+Cursor agents may receive NexusMind harness recommendations for MCP or editor setup, but recommendations contain metadata only by default. Installable manifest content requires explicit user approval for an exact version and `manifest_hash`.
+
+Safe flow:
+
+1. Inspect the recommendation metadata, compatibility targets, and provenance.
+2. Approve the exact harness version before requesting the manifest download.
+3. Use a local tool to preview the Cursor MCP/config diff.
+4. Apply the diff only after user confirmation.
+
+NexusMind does not silently edit `.cursor/mcp.json`, global Cursor settings, shell profiles, or project files from the backend.
+
 ---
 
 ## Cursor Rules injection (`get_context`)

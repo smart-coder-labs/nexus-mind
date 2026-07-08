@@ -1,21 +1,24 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 use crate::auth::api_keys;
-use crate::models::types::{
-    AuthContext, AuditEntry, CodeChunk, CodeProject, CreateSessionRequest, CustomRole,
-    GlobalMetrics, GraphEdgeDto, GraphNodeDto, MemGraphEdge, MemGraphNode, Memory, Org,
-    OrgSettings, OrgStats, OrgWithStats,
-    PatchSessionRequest, Policy, Session, SessionWithCount, StoreMemoryRequest, ToolUsage, User,
-    UserRole, Project, ProjectMember, ProjectEventOverrides, Webhook, CreateWebhookRequest,
-    UpdateWebhookRequest, WebhookDelivery, ApiKeyWithUser, OnboardingItem, OnboardingStatus,
-    InviteLink, Convention, CreateConventionRequest, UpdateConventionRequest, GitHubConnection,
-    Agent, CreateAgentRequest, UpdateAgentRequest, AgentAssignment,
-};
 use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
+use crate::models::types::{
+    Agent, AgentAssignment, ApiKeyWithUser, AuditEntry, AuthContext, CodeChunk, CodeProject,
+    Convention, CreateAgentRequest, CreateConventionRequest, CreateHarnessConfigReviewRequest,
+    CreateHarnessRequest, CreateSessionRequest, CreateWebhookRequest, CustomRole, GitHubConnection,
+    GlobalMetrics, GraphEdgeDto, GraphNodeDto, Harness, HarnessApproval, HarnessApprovalRequest,
+    HarnessConfigReview, HarnessDownloadResponse, HarnessInstallResultRequest,
+    HarnessRecommendation, HarnessVersion, HarnessVersionSummary, InviteLink, MemGraphEdge,
+    MemGraphNode, Memory, OnboardingItem, OnboardingStatus, Org, OrgSettings, OrgStats,
+    OrgWithStats, PatchSessionRequest, Policy, Project, ProjectEventOverrides, ProjectMember,
+    PublishHarnessVersionRequest, Session, SessionWithCount, StoreMemoryRequest, ToolUsage,
+    UpdateAgentRequest, UpdateConventionRequest, UpdateWebhookRequest, User, UserRole, Webhook,
+    WebhookDelivery,
+};
 
 /// Looks up an API key by its SHA-256 hash.
 /// Returns AuthContext if the key exists, is not revoked, the user is active,
@@ -73,15 +76,17 @@ pub fn validate_api_key(conn: &Connection, key_hash: &str) -> Result<Option<Auth
 /// Returns true if the key exists, is not revoked, has not expired, but the user's
 /// disabled_at IS NOT NULL. Used by auth middleware to return a specific error code.
 pub fn is_key_account_disabled(conn: &Connection, key_hash: &str) -> Result<bool> {
-    let result: Option<Option<String>> = conn.query_row(
-        "SELECT u.disabled_at
+    let result: Option<Option<String>> = conn
+        .query_row(
+            "SELECT u.disabled_at
          FROM api_keys ak
          JOIN users u ON u.id = ak.user_id
          WHERE ak.key_hash = ?1 AND ak.revoked = 0
            AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))",
-        [key_hash],
-        |row| row.get(0),
-    ).optional()?;
+            [key_hash],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(result.map(|d| d.is_some()).unwrap_or(false))
 }
 
@@ -194,9 +199,8 @@ pub fn create_org(
 
 /// Lists all organizations ordered by creation date.
 pub fn list_orgs(conn: &Connection) -> Result<Vec<Org>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, slug, created_at FROM organizations ORDER BY created_at ASC",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, slug, created_at FROM organizations ORDER BY created_at ASC")?;
     let orgs = stmt
         .query_map([], |row| {
             Ok(Org {
@@ -218,11 +222,7 @@ pub fn bootstrap(
     admin_email: &str,
     admin_name: &str,
 ) -> Result<(Org, User, String)> {
-    let existing: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM organizations",
-        [],
-        |r| r.get(0),
-    )?;
+    let existing: i32 = conn.query_row("SELECT COUNT(*) FROM organizations", [], |r| r.get(0))?;
     if existing > 0 {
         anyhow::bail!("already_bootstrapped");
     }
@@ -261,7 +261,11 @@ pub fn sanitize_fts_query(query: &str) -> Option<String> {
         })
         .collect();
 
-    if terms.is_empty() { None } else { Some(terms.join(" OR ")) }
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" OR "))
+    }
 }
 
 /// Full-text search over memories, scoped to the org.
@@ -337,7 +341,8 @@ pub fn search_memories_visible(
             row.get::<_, String>(7)?,
             row.get::<_, Option<String>>(8)?,
             row.get::<_, Option<String>>(9)?,
-            row.get::<_, Option<String>>(10).unwrap_or(Some("project".to_string())),
+            row.get::<_, Option<String>>(10)
+                .unwrap_or(Some("project".to_string())),
             row.get::<_, Option<String>>(11)?,
             row.get::<_, Option<String>>(12)?,
             row.get::<_, Option<i64>>(13)?,
@@ -353,11 +358,35 @@ pub fn search_memories_visible(
 
     let mut memories = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
+        let (
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags_str,
+            created_at,
+            title,
+            memory_type,
+            scope,
+            topic_key,
+            session_id,
+            revision_count,
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned_i64,
+            collection_id,
+            admin_note,
+            delete_after,
+        ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
+        let status = if archived_at.is_some() {
+            "archived".to_string()
+        } else {
+            "active".to_string()
+        };
         memories.push(Memory {
             id,
             org_id,
@@ -408,8 +437,21 @@ pub fn list_memories(
     collection_id_filter: Option<&str>,
 ) -> Result<Vec<Memory>> {
     list_memories_visible(
-        conn, org_id, user_id, tool, project, type_filter, scope_filter, session_id_filter,
-        limit, offset, include_archived, from_date, to_date, collection_id_filter, None,
+        conn,
+        org_id,
+        user_id,
+        tool,
+        project,
+        type_filter,
+        scope_filter,
+        session_id_filter,
+        limit,
+        offset,
+        include_archived,
+        from_date,
+        to_date,
+        collection_id_filter,
+        None,
     )
 }
 
@@ -494,7 +536,10 @@ pub fn list_memories_visible(
         param_idx += 1;
     }
     if let Some(vid) = viewer_user_id {
-        sql.push_str(&visibility_predicate("project_id", &format!("?{param_idx}")));
+        sql.push_str(&visibility_predicate(
+            "project_id",
+            &format!("?{param_idx}"),
+        ));
         extra_params.push(vid.to_string());
         param_idx += 1;
     }
@@ -545,11 +590,35 @@ pub fn list_memories_visible(
 
     let mut memories = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
+        let (
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags_str,
+            created_at,
+            title,
+            memory_type,
+            scope,
+            topic_key,
+            session_id,
+            revision_count,
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned_i64,
+            collection_id,
+            admin_note,
+            delete_after,
+        ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
+        let status = if archived_at.is_some() {
+            "archived".to_string()
+        } else {
+            "active".to_string()
+        };
         memories.push(Memory {
             id,
             org_id,
@@ -595,8 +664,19 @@ pub fn count_memories(
     collection_id_filter: Option<&str>,
 ) -> Result<i64> {
     count_memories_visible(
-        conn, org_id, user_id, tool, project, type_filter, scope_filter, session_id_filter,
-        include_archived, from_date, to_date, collection_id_filter, None,
+        conn,
+        org_id,
+        user_id,
+        tool,
+        project,
+        type_filter,
+        scope_filter,
+        session_id_filter,
+        include_archived,
+        from_date,
+        to_date,
+        collection_id_filter,
+        None,
     )
 }
 
@@ -672,7 +752,10 @@ pub fn count_memories_visible(
         param_idx += 1;
     }
     if let Some(vid) = viewer_user_id {
-        sql.push_str(&visibility_predicate("project_id", &format!("?{param_idx}")));
+        sql.push_str(&visibility_predicate(
+            "project_id",
+            &format!("?{param_idx}"),
+        ));
         extra_params.push(vid.to_string());
         param_idx += 1;
     }
@@ -680,7 +763,10 @@ pub fn count_memories_visible(
 
     let mut all_params: Vec<String> = vec![org_id.to_string()];
     all_params.extend(extra_params);
-    let refs: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> = all_params
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
 
     let count: i64 = conn.query_row(&sql, refs.as_slice(), |row| row.get(0))?;
     Ok(count)
@@ -725,7 +811,11 @@ pub fn unpin_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
 }
 
 /// Returns the user_id of the memory owner, scoped to org. Returns None if not found.
-pub fn get_memory_owner(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<String>> {
+pub fn get_memory_owner(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+) -> Result<Option<String>> {
     let result = conn.query_row(
         "SELECT user_id FROM memories WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![memory_id, org_id],
@@ -766,15 +856,11 @@ pub fn bulk_delete_memories(
 
     // Build a parameterised placeholder list: (?2, ?3, … ?N)
     // ?1 = org_id, ?2..?N+1 = ids, ?N+2 = caller_user_id (non-admin path only)
-    let placeholders: Vec<String> = (2..=ids.len() + 1)
-        .map(|i| format!("?{i}"))
-        .collect();
+    let placeholders: Vec<String> = (2..=ids.len() + 1).map(|i| format!("?{i}")).collect();
     let in_clause = placeholders.join(", ");
 
     let sql = if is_admin {
-        format!(
-            "DELETE FROM memories WHERE org_id = ?1 AND id IN ({in_clause})"
-        )
+        format!("DELETE FROM memories WHERE org_id = ?1 AND id IN ({in_clause})")
     } else {
         let user_param = ids.len() + 2;
         format!(
@@ -1012,7 +1098,11 @@ pub fn rotate_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<Stri
 /// Error values:
 ///   "not_found"    → user does not exist in the org
 ///   "demo_key"     → user's active key has the demo label and must not be reset
-pub fn reset_user_key(conn: &Connection, org_id: &str, user_id: &str) -> Result<std::result::Result<String, &'static str>> {
+pub fn reset_user_key(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+) -> Result<std::result::Result<String, &'static str>> {
     // Check whether the user exists in this org.
     let user_exists: bool = conn.query_row(
         "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
@@ -1072,7 +1162,19 @@ pub fn list_audit(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<crate::models::types::AuditEntry>> {
-    list_audit_with_resource(conn, org_id, user_id, action, resource_type, None, from, to, search, limit, offset)
+    list_audit_with_resource(
+        conn,
+        org_id,
+        user_id,
+        action,
+        resource_type,
+        None,
+        from,
+        to,
+        search,
+        limit,
+        offset,
+    )
 }
 
 /// Extended audit query that also supports filtering by resource_id.
@@ -1176,8 +1278,20 @@ pub fn list_audit_with_resource(
 
     let mut entries = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, timestamp, action, resource_type, resource_id, meta_str, previous_hash, current_hash) = row?;
-        let metadata: serde_json::Value = serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Null);
+        let (
+            id,
+            org_id,
+            user_id,
+            timestamp,
+            action,
+            resource_type,
+            resource_id,
+            meta_str,
+            previous_hash,
+            current_hash,
+        ) = row?;
+        let metadata: serde_json::Value =
+            serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Null);
         entries.push(crate::models::types::AuditEntry {
             id,
             org_id,
@@ -1221,13 +1335,15 @@ pub fn insert_audit_log_chained(
     // 1. Read the latest current_hash for this org (per-tenant chain).
     // Use rowid DESC as the tiebreaker: rowid is SQLite's implicit autoincrement
     // and reflects true insertion order regardless of timestamp precision.
-    let previous_hash: Option<String> = tx.query_row(
-        "SELECT current_hash FROM audit_logs
+    let previous_hash: Option<String> = tx
+        .query_row(
+            "SELECT current_hash FROM audit_logs
          WHERE org_id = ?1 AND current_hash IS NOT NULL
          ORDER BY rowid DESC LIMIT 1",
-        [org_id],
-        |r| r.get(0),
-    ).optional()?;
+            [org_id],
+            |r| r.get(0),
+        )
+        .optional()?;
 
     // 2. Build canonical record and compute SHA-256.
     let id = Uuid::new_v4().to_string();
@@ -1259,8 +1375,16 @@ pub fn insert_audit_log_chained(
           previous_hash, current_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
-            id, org_id, user_id, now, action, resource_type,
-            resource_id, meta_str, previous_hash, current_hash
+            id,
+            org_id,
+            user_id,
+            now,
+            action,
+            resource_type,
+            resource_id,
+            meta_str,
+            previous_hash,
+            current_hash
         ],
     )?;
     tx.commit()?;
@@ -1293,8 +1417,479 @@ pub fn log_audit(
     resource_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<()> {
-    insert_audit_log_chained(conn, org_id, user_id, action, resource_type, resource_id, metadata, None)?;
+    insert_audit_log_chained(
+        conn,
+        org_id,
+        user_id,
+        action,
+        resource_type,
+        resource_id,
+        metadata,
+        None,
+    )?;
     Ok(())
+}
+
+// ── Harness sharing ───────────────────────────────────────────────────────────
+
+fn harness_hash(manifest: &serde_json::Value) -> Result<String> {
+    let bytes = serde_json::to_vec(manifest)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn json_vec(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn map_harness(row: &rusqlite::Row<'_>) -> rusqlite::Result<Harness> {
+    Ok(Harness {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project_id: row.get(2)?,
+        slug: row.get(3)?,
+        name: row.get(4)?,
+        description: row.get(5)?,
+        visibility: row.get(6)?,
+        status: row.get(7)?,
+        created_by: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        latest_version: None,
+    })
+}
+
+fn map_harness_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessVersion> {
+    let manifest_json: String = row.get(3)?;
+    let targets_json: String = row.get(5)?;
+    let provenance_json: String = row.get(6)?;
+    Ok(HarnessVersion {
+        id: row.get(0)?,
+        harness_id: row.get(1)?,
+        version: row.get(2)?,
+        manifest: serde_json::from_str(&manifest_json).unwrap_or(serde_json::Value::Null),
+        manifest_hash: row.get(4)?,
+        targets: json_vec(&targets_json),
+        provenance: serde_json::from_str(&provenance_json).unwrap_or(serde_json::json!({})),
+        status: row.get(7)?,
+        published_by: row.get(8)?,
+        published_at: row.get(9)?,
+        revoked_at: row.get(10)?,
+    })
+}
+
+fn validate_manifest(
+    manifest: &serde_json::Value,
+) -> Result<(Vec<String>, serde_json::Value), &'static str> {
+    let targets = manifest
+        .get("targets")
+        .and_then(|v| v.as_array())
+        .ok_or("missing_targets")?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err("missing_targets");
+    }
+    let provenance = manifest
+        .get("provenance")
+        .cloned()
+        .ok_or("missing_provenance")?;
+    if !provenance.is_object() || provenance.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+        return Err("missing_provenance");
+    }
+    Ok((targets, provenance))
+}
+
+pub fn create_harness(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    input: &CreateHarnessRequest,
+) -> Result<Harness> {
+    if input.slug.trim().is_empty() || input.name.trim().is_empty() {
+        anyhow::bail!("validation_error");
+    }
+    let id = Uuid::new_v4().to_string();
+    let visibility = input.visibility.as_deref().unwrap_or("org");
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO harnesses (id, org_id, project_id, slug, name, description, visibility, status, created_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'draft', ?8, ?9, ?9)",
+        rusqlite::params![id, org_id, input.project_id, input.slug.trim(), input.name.trim(), input.description, visibility, user_id, now],
+    )?;
+    get_harness(conn, org_id, &id, None)?.ok_or_else(|| anyhow::anyhow!("harness_not_found"))
+}
+
+pub fn list_visible_harnesses(
+    conn: &Connection,
+    org_id: &str,
+    viewer_user_id: Option<&str>,
+    target: Option<&str>,
+) -> Result<Vec<Harness>> {
+    let mut sql = String::from("SELECT h.id, h.org_id, h.project_id, h.slug, h.name, h.description, h.visibility, h.status, h.created_by, h.created_at, h.updated_at FROM harnesses h WHERE h.org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    let mut idx = 2usize;
+    if let Some(user_id) = viewer_user_id {
+        sql.push_str(&format!(" AND (h.project_id IS NULL OR h.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{idx}))"));
+        params.push(Box::new(user_id.to_string()));
+        idx += 1;
+    }
+    if let Some(target) = target.filter(|t| !t.is_empty()) {
+        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM harness_versions hv WHERE hv.harness_id = h.id AND hv.status = 'published' AND hv.revoked_at IS NULL AND hv.targets_json LIKE ?{idx})"));
+        params.push(Box::new(format!("%\"{}\"%", target)));
+    }
+    sql.push_str(" ORDER BY h.updated_at DESC");
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_harness)?;
+    let mut harnesses = Vec::new();
+    for row in rows {
+        let mut h = row?;
+        h.latest_version = latest_harness_version_summary(conn, &h.id)?;
+        harnesses.push(h);
+    }
+    Ok(harnesses)
+}
+
+pub fn get_harness(
+    conn: &Connection,
+    org_id: &str,
+    harness_id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<Harness>> {
+    let result = conn.query_row(
+        "SELECT id, org_id, project_id, slug, name, description, visibility, status, created_by, created_at, updated_at FROM harnesses WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, harness_id], map_harness,
+    ).optional()?;
+    let Some(mut harness) = result else {
+        return Ok(None);
+    };
+    if let (Some(project_id), Some(user_id)) = (harness.project_id.as_deref(), viewer_user_id) {
+        let allowed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+            rusqlite::params![project_id, user_id],
+            |r| r.get(0),
+        )?;
+        if allowed == 0 {
+            return Ok(None);
+        }
+    }
+    harness.latest_version = latest_harness_version_summary(conn, &harness.id)?;
+    Ok(Some(harness))
+}
+
+pub fn latest_harness_version_summary(
+    conn: &Connection,
+    harness_id: &str,
+) -> Result<Option<HarnessVersionSummary>> {
+    conn.query_row(
+        "SELECT id, version, manifest_hash, targets_json, status, published_at FROM harness_versions WHERE harness_id = ?1 AND revoked_at IS NULL ORDER BY published_at DESC LIMIT 1",
+        [harness_id],
+        |row| {
+            let targets_json: String = row.get(3)?;
+            Ok(HarnessVersionSummary { id: row.get(0)?, version: row.get(1)?, manifest_hash: row.get(2)?, targets: json_vec(&targets_json), status: row.get(4)?, published_at: row.get(5)? })
+        },
+    ).optional().map_err(Into::into)
+}
+
+pub fn publish_harness_version(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    harness_id: &str,
+    input: &PublishHarnessVersionRequest,
+) -> Result<HarnessVersion> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM harnesses WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![harness_id, org_id],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        anyhow::bail!("harness_not_found");
+    }
+    if input.version.trim().is_empty() {
+        anyhow::bail!("validation_error");
+    }
+    let (targets, provenance) =
+        validate_manifest(&input.manifest).map_err(|e| anyhow::anyhow!(e))?;
+    let computed_hash = harness_hash(&input.manifest)?;
+    if input
+        .manifest_hash
+        .as_deref()
+        .is_some_and(|h| h != computed_hash)
+    {
+        anyhow::bail!("manifest_hash_mismatch");
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO harness_versions (id, harness_id, version, manifest_json, manifest_hash, targets_json, provenance_json, status, published_by, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'published', ?8, datetime('now'))",
+        rusqlite::params![id, harness_id, input.version.trim(), serde_json::to_string(&input.manifest)?, computed_hash, serde_json::to_string(&targets)?, serde_json::to_string(&provenance)?, user_id],
+    )?;
+    conn.execute(
+        "UPDATE harnesses SET status = 'published', updated_at = datetime('now') WHERE id = ?1",
+        [harness_id],
+    )?;
+    get_harness_version(conn, org_id, harness_id, input.version.trim())?
+        .ok_or_else(|| anyhow::anyhow!("version_not_found"))
+}
+
+pub fn get_harness_version(
+    conn: &Connection,
+    org_id: &str,
+    harness_id: &str,
+    version: &str,
+) -> Result<Option<HarnessVersion>> {
+    conn.query_row(
+        "SELECT hv.id, hv.harness_id, hv.version, hv.manifest_json, hv.manifest_hash, hv.targets_json, hv.provenance_json, hv.status, hv.published_by, hv.published_at, hv.revoked_at FROM harness_versions hv JOIN harnesses h ON h.id = hv.harness_id WHERE h.org_id = ?1 AND h.id = ?2 AND hv.version = ?3 AND hv.revoked_at IS NULL",
+        rusqlite::params![org_id, harness_id, version], map_harness_version,
+    ).optional().map_err(Into::into)
+}
+
+pub fn create_harness_approval(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    viewer_user_id: Option<&str>,
+    harness_id: &str,
+    version: &str,
+    input: &HarnessApprovalRequest,
+) -> Result<HarnessApproval> {
+    let hv = get_visible_harness_version(conn, org_id, harness_id, version, viewer_user_id)?
+        .ok_or_else(|| anyhow::anyhow!("version_not_found"))?;
+    if hv.manifest_hash != input.manifest_hash {
+        anyhow::bail!("manifest_hash_mismatch");
+    }
+    let id = Uuid::new_v4().to_string();
+    let metadata = input
+        .metadata
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    conn.execute(
+        "INSERT INTO harness_install_approvals (id, org_id, user_id, harness_version_id, target_tool, target_scope, manifest_hash, status, metadata_json, approved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, datetime('now'))",
+        rusqlite::params![id, org_id, user_id, hv.id, input.target_tool, input.target_scope, input.manifest_hash, serde_json::to_string(&metadata)?],
+    )?;
+    conn.query_row(
+        "SELECT id, org_id, user_id, harness_version_id, target_tool, target_scope, manifest_hash, status, metadata_json, approved_at FROM harness_install_approvals WHERE id = ?1",
+        [id],
+        |row| { let metadata_json: String = row.get(8)?; Ok(HarnessApproval { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, harness_version_id: row.get(3)?, target_tool: row.get(4)?, target_scope: row.get(5)?, manifest_hash: row.get(6)?, status: row.get(7)?, metadata: serde_json::from_str(&metadata_json).unwrap_or_else(|_| serde_json::json!({})), approved_at: row.get(9)? }) },
+    ).map_err(Into::into)
+}
+
+pub fn download_harness_version(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    viewer_user_id: Option<&str>,
+    harness_id: &str,
+    version: &str,
+) -> Result<Option<HarnessDownloadResponse>> {
+    let Some(hv) = get_visible_harness_version(conn, org_id, harness_id, version, viewer_user_id)?
+    else {
+        return Ok(None);
+    };
+    let approval_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM harness_install_approvals WHERE org_id = ?1 AND user_id = ?2 AND harness_version_id = ?3 AND manifest_hash = ?4 AND status = 'approved'",
+        rusqlite::params![org_id, user_id, hv.id, hv.manifest_hash],
+        |row| row.get(0),
+    )?;
+    if approval_count == 0 {
+        anyhow::bail!("approval_required");
+    }
+    Ok(Some(HarnessDownloadResponse {
+        harness_id: hv.harness_id,
+        version: hv.version,
+        manifest: hv.manifest,
+        manifest_hash: hv.manifest_hash,
+        approval_required: true,
+    }))
+}
+
+pub fn record_harness_install_result(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    harness_id: &str,
+    version: &str,
+    input: &HarnessInstallResultRequest,
+) -> Result<HarnessApproval> {
+    if input.status.trim().is_empty() {
+        anyhow::bail!("validation_error");
+    }
+    let hv = get_harness_version(conn, org_id, harness_id, version)?
+        .ok_or_else(|| anyhow::anyhow!("version_not_found"))?;
+    if hv.manifest_hash != input.manifest_hash {
+        anyhow::bail!("manifest_hash_mismatch");
+    }
+    let mut metadata = input
+        .metadata
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if has_secret_indicator(&metadata) || has_suspicious_content_key(&metadata) {
+        anyhow::bail!("raw_local_content_rejected");
+    }
+    if !metadata.is_object() {
+        metadata = serde_json::json!({ "details": metadata });
+    }
+    let mut install_result = metadata.as_object().cloned().unwrap_or_default();
+    install_result.insert(
+        "status".to_string(),
+        serde_json::Value::String(input.status.trim().to_string()),
+    );
+
+    let existing_metadata: String = conn.query_row(
+        "SELECT metadata_json FROM harness_install_approvals WHERE id = ?1 AND org_id = ?2 AND user_id = ?3 AND harness_version_id = ?4 AND manifest_hash = ?5 AND status = 'approved'",
+        rusqlite::params![input.approval_id, org_id, user_id, hv.id, input.manifest_hash],
+        |row| row.get(0),
+    ).optional()?.ok_or_else(|| anyhow::anyhow!("approval_required"))?;
+    let mut merged = serde_json::from_str::<serde_json::Value>(&existing_metadata)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if !merged.is_object() {
+        merged = serde_json::json!({});
+    }
+    merged.as_object_mut().unwrap().insert(
+        "install_result".to_string(),
+        serde_json::Value::Object(install_result),
+    );
+    conn.execute(
+        "UPDATE harness_install_approvals SET metadata_json = ?1 WHERE id = ?2",
+        rusqlite::params![serde_json::to_string(&merged)?, input.approval_id],
+    )?;
+    conn.query_row(
+        "SELECT id, org_id, user_id, harness_version_id, target_tool, target_scope, manifest_hash, status, metadata_json, approved_at FROM harness_install_approvals WHERE id = ?1",
+        [&input.approval_id],
+        |row| { let metadata_json: String = row.get(8)?; Ok(HarnessApproval { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, harness_version_id: row.get(3)?, target_tool: row.get(4)?, target_scope: row.get(5)?, manifest_hash: row.get(6)?, status: row.get(7)?, metadata: serde_json::from_str(&metadata_json).unwrap_or_else(|_| serde_json::json!({})), approved_at: row.get(9)? }) },
+    ).map_err(Into::into)
+}
+
+pub fn list_harness_recommendations(
+    conn: &Connection,
+    org_id: &str,
+    viewer_user_id: Option<&str>,
+    target: Option<&str>,
+) -> Result<Vec<HarnessRecommendation>> {
+    let harnesses = list_visible_harnesses(conn, org_id, viewer_user_id, target)?;
+    Ok(harnesses
+        .into_iter()
+        .filter_map(|h| {
+            let version = h.latest_version?;
+            Some(HarnessRecommendation {
+                download_url: format!(
+                    "/v1/harnesses/{}/versions/{}/download",
+                    h.id, version.version
+                ),
+                harness_id: h.id,
+                version: version.version,
+                name: h.name,
+                description: h.description,
+                targets: version.targets,
+                manifest_hash: version.manifest_hash,
+                approval_required: true,
+                required_permissions: vec![
+                    "harness:download".to_string(),
+                    "harness:install".to_string(),
+                ],
+            })
+        })
+        .collect())
+}
+
+fn has_secret_indicator(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(s) => {
+            let lower = s.to_lowercase();
+            lower != "[redacted]"
+                && (lower.contains("raw-secret")
+                    || lower.starts_with("sk-")
+                    || lower.starts_with("ghp_")
+                    || lower.starts_with("nm_")
+                    || lower.starts_with("xoxb-")
+                    || lower.contains("bearer "))
+        }
+        serde_json::Value::Array(items) => items.iter().any(has_secret_indicator),
+        serde_json::Value::Object(map) => map.values().any(has_secret_indicator),
+        _ => false,
+    }
+}
+
+fn has_suspicious_content_key(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(items) => items.iter().any(has_suspicious_content_key),
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            let normalized = key.to_lowercase();
+            matches!(
+                normalized.as_str(),
+                "raw_file_contents"
+                    | "raw_shell_content"
+                    | "raw_hook_content"
+                    | "shell_profile"
+                    | "hook_args"
+            ) || has_suspicious_content_key(value)
+        }),
+        _ => false,
+    }
+}
+
+fn get_visible_harness_version(
+    conn: &Connection,
+    org_id: &str,
+    harness_id: &str,
+    version: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<HarnessVersion>> {
+    if get_harness(conn, org_id, harness_id, viewer_user_id)?.is_none() {
+        return Ok(None);
+    }
+    get_harness_version(conn, org_id, harness_id, version)
+}
+
+pub fn create_harness_config_review(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    input: &CreateHarnessConfigReviewRequest,
+) -> Result<HarnessConfigReview> {
+    if input.content_hash.trim().is_empty()
+        || input
+            .redaction_report
+            .as_object()
+            .map(|m| m.is_empty())
+            .unwrap_or(true)
+    {
+        anyhow::bail!("missing_redaction_report");
+    }
+    if input
+        .redaction_report
+        .get("secret_scan_status")
+        .and_then(|v| v.as_str())
+        == Some("failed")
+        || has_secret_indicator(&input.redacted_config)
+        || has_secret_indicator(&input.redaction_report)
+        || has_suspicious_content_key(&input.redaction_report)
+    {
+        anyhow::bail!("secret_scan_failed");
+    }
+    let id = Uuid::new_v4().to_string();
+    let status = input.status.as_deref().unwrap_or("uploaded");
+    conn.execute(
+        "INSERT INTO harness_config_reviews (id, org_id, user_id, source_tool, redacted_config_json, redaction_report_json, content_hash, status, created_at, shared_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), CASE WHEN ?8 = 'shared' THEN datetime('now') ELSE NULL END)",
+        rusqlite::params![id, org_id, user_id, input.source_tool, serde_json::to_string(&input.redacted_config)?, serde_json::to_string(&input.redaction_report)?, input.content_hash, status],
+    )?;
+    get_harness_config_review(conn, org_id, &id)?
+        .ok_or_else(|| anyhow::anyhow!("config_review_not_found"))
+}
+
+pub fn get_harness_config_review(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<HarnessConfigReview>> {
+    conn.query_row(
+        "SELECT id, org_id, user_id, source_tool, redacted_config_json, redaction_report_json, content_hash, status, created_at, shared_at FROM harness_config_reviews WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, id],
+        |row| { let config_json: String = row.get(4)?; let report_json: String = row.get(5)?; Ok(HarnessConfigReview { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, source_tool: row.get(3)?, redacted_config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Null), redaction_report: serde_json::from_str(&report_json).unwrap_or(serde_json::json!({})), content_hash: row.get(6)?, status: row.get(7)?, created_at: row.get(8)?, shared_at: row.get(9)? }) },
+    ).optional().map_err(Into::into)
 }
 
 // ── Admin / Org ───────────────────────────────────────────────────────────────
@@ -1328,8 +1923,7 @@ pub fn update_org_name(conn: &Connection, org_id: &str, name: &str) -> Result<Or
         [name, org_id],
     )?;
 
-    let org = get_org(conn, org_id)?
-        .ok_or_else(|| anyhow::anyhow!("org_not_found"))?;
+    let org = get_org(conn, org_id)?.ok_or_else(|| anyhow::anyhow!("org_not_found"))?;
     Ok(org)
 }
 
@@ -1351,9 +1945,20 @@ pub fn get_org_settings(conn: &Connection, org_id: &str) -> Result<OrgSettings> 
     Ok(settings)
 }
 
-pub fn update_org_settings(conn: &Connection, org_id: &str, settings: &OrgSettings) -> Result<OrgSettings> {
+pub fn update_org_settings(
+    conn: &Connection,
+    org_id: &str,
+    settings: &OrgSettings,
+) -> Result<OrgSettings> {
     // Strip direct-column fields from the JSON blob — they live in their own columns.
-    let blob_settings = OrgSettings { retention_days: None, custom_instructions: None, min_password_length: None, announcement: None, announcement_type: None, ..settings.clone() };
+    let blob_settings = OrgSettings {
+        retention_days: None,
+        custom_instructions: None,
+        min_password_length: None,
+        announcement: None,
+        announcement_type: None,
+        ..settings.clone()
+    };
     let raw = serde_json::to_string(&blob_settings)?;
     let ann: Option<&str> = settings.announcement.as_deref().filter(|s| !s.is_empty());
     let ann_type = settings.announcement_type.as_deref().unwrap_or("info");
@@ -1366,8 +1971,17 @@ pub fn update_org_settings(conn: &Connection, org_id: &str, settings: &OrgSettin
 
 /// Set (or clear) the announcement banner for an org.
 /// Empty `announcement` string → NULL (clears the banner).
-pub fn update_announcement(conn: &Connection, org_id: &str, announcement: &str, announcement_type: &str) -> Result<OrgSettings> {
-    let ann: Option<&str> = if announcement.is_empty() { None } else { Some(announcement) };
+pub fn update_announcement(
+    conn: &Connection,
+    org_id: &str,
+    announcement: &str,
+    announcement_type: &str,
+) -> Result<OrgSettings> {
+    let ann: Option<&str> = if announcement.is_empty() {
+        None
+    } else {
+        Some(announcement)
+    };
     conn.execute(
         "UPDATE organizations SET announcement = ?1, announcement_type = ?2 WHERE id = ?3",
         rusqlite::params![ann, announcement_type, org_id],
@@ -1377,7 +1991,11 @@ pub fn update_announcement(conn: &Connection, org_id: &str, announcement: &str, 
 
 /// Set (or clear) the logo URL for an org.
 /// None = clear the logo (sets logo_url = NULL).
-pub fn update_org_logo(conn: &Connection, org_id: &str, logo_url: Option<&str>) -> Result<OrgSettings> {
+pub fn update_org_logo(
+    conn: &Connection,
+    org_id: &str,
+    logo_url: Option<&str>,
+) -> Result<OrgSettings> {
     conn.execute(
         "UPDATE organizations SET logo_url = ?1 WHERE id = ?2",
         rusqlite::params![logo_url, org_id],
@@ -1387,7 +2005,12 @@ pub fn update_org_logo(conn: &Connection, org_id: &str, logo_url: Option<&str>) 
 
 /// Set (or clear) the scheduled-deletion date for a single memory.
 /// `delete_after` = None → clears the schedule.
-pub fn schedule_memory_delete(conn: &Connection, org_id: &str, memory_id: &str, delete_after: Option<&str>) -> Result<()> {
+pub fn schedule_memory_delete(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    delete_after: Option<&str>,
+) -> Result<()> {
     let affected = conn.execute(
         "UPDATE memories SET delete_after = ?1 WHERE id = ?2 AND org_id = ?3",
         rusqlite::params![delete_after, memory_id, org_id],
@@ -1457,7 +2080,10 @@ pub fn get_stats(conn: &Connection, org_id: &str) -> Result<OrgStats> {
 // ── Org usage stats ───────────────────────────────────────────────────────────
 
 /// Returns org-level entity counts (memories, sessions, users, projects, code_repos).
-pub fn get_usage_stats(conn: &Connection, org_id: &str) -> Result<crate::models::types::UsageStats> {
+pub fn get_usage_stats(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<crate::models::types::UsageStats> {
     let memories: i64 = conn.query_row(
         "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
         [org_id],
@@ -1483,7 +2109,13 @@ pub fn get_usage_stats(conn: &Connection, org_id: &str) -> Result<crate::models:
         [org_id],
         |r| r.get(0),
     )?;
-    Ok(crate::models::types::UsageStats { memories, sessions, users, projects, code_repos })
+    Ok(crate::models::types::UsageStats {
+        memories,
+        sessions,
+        users,
+        projects,
+        code_repos,
+    })
 }
 
 // ── Memory facets ─────────────────────────────────────────────────────────────
@@ -1505,13 +2137,14 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map([org_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     } else {
         let mut stmt = conn.prepare(
@@ -1524,13 +2157,14 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map(rusqlite::params![org_id, user_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     };
 
@@ -1543,13 +2177,14 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map([org_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     } else {
         let mut stmt = conn.prepare(
@@ -1562,13 +2197,14 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map(rusqlite::params![org_id, user_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     };
 
@@ -1581,13 +2217,14 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map([org_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map([org_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     } else {
         let mut stmt = conn.prepare(
@@ -1600,17 +2237,22 @@ pub fn get_memory_facets(
              ORDER BY cnt DESC
              LIMIT 50",
         )?;
-        let result: Vec<crate::models::types::FacetCount> = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
-            Ok(crate::models::types::FacetCount {
-                value: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+        let result: Vec<crate::models::types::FacetCount> = stmt
+            .query_map(rusqlite::params![org_id, user_id], |row| {
+                Ok(crate::models::types::FacetCount {
+                    value: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         result
     };
 
-    Ok(crate::models::types::MemoryFacets { types, scopes, projects })
+    Ok(crate::models::types::MemoryFacets {
+        types,
+        scopes,
+        projects,
+    })
 }
 
 // ── Tag stats ─────────────────────────────────────────────────────────────────
@@ -1618,7 +2260,10 @@ pub fn get_memory_facets(
 /// Returns tag usage counts across all memories for the org.
 /// `memories.tags` is stored as a JSON array string like '["tag1","tag2"]'.
 /// SQLite's `json_each` expands the array so we can GROUP BY individual tag values.
-pub fn get_tag_stats(conn: &Connection, org_id: &str) -> Result<Vec<crate::models::types::NameCount>> {
+pub fn get_tag_stats(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<crate::models::types::NameCount>> {
     use crate::models::types::NameCount;
 
     let mut stmt = conn.prepare(
@@ -1692,8 +2337,12 @@ pub fn rename_tag(conn: &Connection, org_id: &str, from: &str, to: &str) -> Resu
 // ── Memory trends ─────────────────────────────────────────────────────────────
 
 /// Returns memory trend data for the last 30 days scoped to the org.
-pub fn get_memory_trends(conn: &Connection, org_id: &str, days: i64) -> Result<crate::models::types::MemoryTrends> {
-    use crate::models::types::{DailyCount, NameCount, MemoryTrends};
+pub fn get_memory_trends(
+    conn: &Connection,
+    org_id: &str,
+    days: i64,
+) -> Result<crate::models::types::MemoryTrends> {
+    use crate::models::types::{DailyCount, MemoryTrends, NameCount};
 
     // Daily counts for the requested period
     let mut stmt = conn.prepare(
@@ -1801,7 +2450,12 @@ pub fn upsert_memory(
     user_id: &str,
     req: &StoreMemoryRequest,
 ) -> Result<Memory> {
-    let project = req.project.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("default");
+    let project = req
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
     // Block implicit project creation: an explicit project name that does not already
     // exist is rejected — an admin must create it first via the project API (which does
     // not auto-enroll members). Absent/empty/"default" is the org-shared bucket
@@ -1833,8 +2487,15 @@ pub fn upsert_memory(
                      normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
                      WHERE id = ?9",
                     rusqlite::params![
-                        req.content, req.title, req.memory_type, scope,
-                        normalized_hash, new_revision, tags_json, &project_id, existing_id
+                        req.content,
+                        req.title,
+                        req.memory_type,
+                        scope,
+                        normalized_hash,
+                        new_revision,
+                        tags_json,
+                        &project_id,
+                        existing_id
                     ],
                 )?;
                 let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
@@ -1924,7 +2585,15 @@ pub fn create_session(
     conn.execute(
         "INSERT INTO sessions (id, org_id, name, project, directory, started_at, summary)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![id, org_id, req.name, req.project, directory, now, req.summary],
+        rusqlite::params![
+            id,
+            org_id,
+            req.name,
+            req.project,
+            directory,
+            now,
+            req.summary
+        ],
     )?;
 
     Ok(Session {
@@ -1982,7 +2651,8 @@ pub fn patch_session(
         param_idx + 1
     );
 
-    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     let affected = conn.execute(&sql, refs.as_slice())?;
 
     if affected == 0 {
@@ -2035,7 +2705,9 @@ pub fn user_can_view_project_name(
     project: &str,
     viewer_user_id: Option<&str>,
 ) -> Result<bool> {
-    let Some(vid) = viewer_user_id else { return Ok(true) };
+    let Some(vid) = viewer_user_id else {
+        return Ok(true);
+    };
     let visible: i64 = conn.query_row(
         "SELECT CASE
                   WHEN NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = ?1 AND p.name = ?2) THEN 1
@@ -2055,7 +2727,11 @@ pub fn user_can_view_project_name(
 /// Like [`list_sessions`], but when `viewer_user_id` is `Some(uid)` restricts results to
 /// sessions `uid` may see: sessions of projects they belong to, plus project-less
 /// (org-shared / unregistered-project) sessions. `None` = no restriction (admin).
-pub fn list_sessions_visible(conn: &Connection, org_id: &str, viewer_user_id: Option<&str>) -> Result<Vec<SessionWithCount>> {
+pub fn list_sessions_visible(
+    conn: &Connection,
+    org_id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<SessionWithCount>> {
     let mut sql = String::from(
         "SELECT s.id, s.org_id, s.name, s.project, s.directory, s.started_at, s.ended_at, s.summary,
                 COUNT(m.id) as memory_count
@@ -2095,11 +2771,16 @@ pub fn list_sessions_visible(conn: &Connection, org_id: &str, viewer_user_id: Op
         })
     })?;
 
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Validates that a session_id belongs to the given org.
-pub fn validate_session_ownership(conn: &Connection, org_id: &str, session_id: &str) -> Result<bool> {
+pub fn validate_session_ownership(
+    conn: &Connection,
+    org_id: &str,
+    session_id: &str,
+) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sessions WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![session_id, org_id],
@@ -2126,7 +2807,10 @@ pub fn get_user_password_hash(conn: &Connection, user_id: &str) -> Result<Option
 
 /// Finds the first admin user with the given email (across all orgs) and returns
 /// their record + password_hash. Used for email/password login.
-pub fn find_admin_by_email(conn: &Connection, email: &str) -> Result<Option<(User, Option<String>)>> {
+pub fn find_admin_by_email(
+    conn: &Connection,
+    email: &str,
+) -> Result<Option<(User, Option<String>)>> {
     let result = conn.query_row(
         "SELECT id, org_id, email, name, role, status, created_at, password_hash
          FROM users WHERE email = ?1 AND status = 'active'
@@ -2225,7 +2909,10 @@ pub fn create_password_reset_token(conn: &Connection, user_id: &str) -> Result<(
 
 /// Validates a reset token and returns the user_id if valid (not used, not expired).
 /// Marks the token as used on success.
-pub fn validate_and_consume_reset_token(conn: &Connection, raw_token: &str) -> Result<Option<String>> {
+pub fn validate_and_consume_reset_token(
+    conn: &Connection,
+    raw_token: &str,
+) -> Result<Option<String>> {
     let token_hash = hex::encode(sha2::Sha256::digest(raw_token.as_bytes()));
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -2300,7 +2987,9 @@ pub fn get_memories_by_ids_visible(
     }
 
     // Build "?,?,?" placeholder
-    let placeholders: String = ids.iter().enumerate()
+    let placeholders: String = ids
+        .iter()
+        .enumerate()
         .map(|(i, _)| format!("?{}", i + 2))
         .collect::<Vec<_>>()
         .join(", ");
@@ -2360,35 +3049,62 @@ pub fn get_memories_by_ids_visible(
     // Build id→memory map, then restore order
     let mut map = std::collections::HashMap::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-             archived_at, pinned_i64, collection_id, admin_note, delete_after) = row?;
-        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
-        map.insert(id.clone(), Memory {
+        let (
             id,
             org_id,
             user_id,
             project,
             tool,
             content,
-            tags,
+            tags_str,
             created_at,
             title,
             memory_type,
-            scope: scope.unwrap_or_else(|| "project".to_string()),
+            scope,
             topic_key,
             session_id,
-            revision_count: revision_count.unwrap_or(1),
+            revision_count,
             normalized_hash,
             project_id,
             archived_at,
-            pinned: pinned_i64 != 0,
+            pinned_i64,
             collection_id,
             admin_note,
             delete_after,
-            status,
-        });
+        ) = row?;
+        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+        let status = if archived_at.is_some() {
+            "archived".to_string()
+        } else {
+            "active".to_string()
+        };
+        map.insert(
+            id.clone(),
+            Memory {
+                id,
+                org_id,
+                user_id,
+                project,
+                tool,
+                content,
+                tags,
+                created_at,
+                title,
+                memory_type,
+                scope: scope.unwrap_or_else(|| "project".to_string()),
+                topic_key,
+                session_id,
+                revision_count: revision_count.unwrap_or(1),
+                normalized_hash,
+                project_id,
+                archived_at,
+                pinned: pinned_i64 != 0,
+                collection_id,
+                admin_note,
+                delete_after,
+                status,
+            },
+        );
     }
 
     // Return in caller-specified order
@@ -2407,7 +3123,10 @@ pub fn revoke_key_by_hash(conn: &Connection, key_hash: &str) -> Result<()> {
 // ── Collections ───────────────────────────────────────────────────────────────
 
 /// Lists all collections for an org with memory count.
-pub fn list_collections(conn: &Connection, org_id: &str) -> Result<Vec<crate::models::types::Collection>> {
+pub fn list_collections(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<crate::models::types::Collection>> {
     use crate::models::types::Collection;
     let mut stmt = conn.prepare(
         "SELECT c.id, c.org_id, c.name, c.description, c.created_at,
@@ -2428,7 +3147,8 @@ pub fn list_collections(conn: &Connection, org_id: &str) -> Result<Vec<crate::mo
             memory_count: row.get(5)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Creates a collection for an org.
@@ -2597,7 +3317,12 @@ pub fn delete_role(conn: &Connection, org_id: &str, role_id: &str) -> Result<boo
 
 /// Updates the permissions of an existing custom role within an organization.
 /// Returns true if updated, false if not found or is a template.
-pub fn update_role_permissions(conn: &Connection, org_id: &str, role_id: &str, permissions: &[String]) -> Result<bool> {
+pub fn update_role_permissions(
+    conn: &Connection,
+    org_id: &str,
+    role_id: &str,
+    permissions: &[String],
+) -> Result<bool> {
     let permissions_json = serde_json::to_string(permissions)?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let count = conn.execute(
@@ -2608,8 +3333,17 @@ pub fn update_role_permissions(conn: &Connection, org_id: &str, role_id: &str, p
 }
 
 /// Updates the role of a user in an organization.
-pub fn update_user_role(conn: &Connection, org_id: &str, user_id: &str, new_role: &str) -> Result<bool> {
-    if new_role != "admin" && new_role != "member" && new_role != "viewer" && new_role != "super_user" {
+pub fn update_user_role(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    new_role: &str,
+) -> Result<bool> {
+    if new_role != "admin"
+        && new_role != "member"
+        && new_role != "viewer"
+        && new_role != "super_user"
+    {
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
             [new_role, org_id],
@@ -2628,7 +3362,11 @@ pub fn update_user_role(conn: &Connection, org_id: &str, user_id: &str, new_role
 }
 
 /// Resolves the permissions associated with a standard or custom role.
-pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) -> Result<Vec<String>> {
+pub fn get_role_permissions(
+    conn: &Connection,
+    org_id: &str,
+    role_name: &str,
+) -> Result<Vec<String>> {
     if role_name == "admin" {
         return Ok(vec![
             "memory:read".to_string(),
@@ -2642,6 +3380,11 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             "settings:write".to_string(),
             "policy:read".to_string(),
             "policy:write".to_string(),
+            "harness:read".to_string(),
+            "harness:write".to_string(),
+            "harness:download".to_string(),
+            "harness:install".to_string(),
+            "harness:review_config".to_string(),
         ]);
     } else if role_name == "super_user" {
         return Ok(vec![
@@ -2673,6 +3416,11 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             "graph:read".to_string(),
             "tag:read".to_string(),
             "tag:write".to_string(),
+            "harness:read".to_string(),
+            "harness:write".to_string(),
+            "harness:download".to_string(),
+            "harness:install".to_string(),
+            "harness:review_config".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -2683,10 +3431,7 @@ pub fn get_role_permissions(conn: &Connection, org_id: &str, role_name: &str) ->
             "policy:read".to_string(),
         ]);
     } else if role_name == "viewer" {
-        return Ok(vec![
-            "memory:read".to_string(),
-            "memory:search".to_string(),
-        ]);
+        return Ok(vec!["memory:read".to_string(), "memory:search".to_string()]);
     }
 
     let result = conn.query_row(
@@ -2721,7 +3466,11 @@ pub fn find_project_id(conn: &Connection, org_id: &str, name: &str) -> Result<Op
     }
 }
 
-pub fn get_or_create_project(conn: &Connection, org_id: &str, project_name: &str) -> Result<String> {
+pub fn get_or_create_project(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+) -> Result<String> {
     let result = conn.query_row(
         "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
         rusqlite::params![org_id, project_name],
@@ -2761,7 +3510,11 @@ pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
     list_projects_filtered(conn, org_id, false)
 }
 
-pub fn list_projects_filtered(conn: &Connection, org_id: &str, include_archived: bool) -> Result<Vec<Project>> {
+pub fn list_projects_filtered(
+    conn: &Connection,
+    org_id: &str,
+    include_archived: bool,
+) -> Result<Vec<Project>> {
     let sql = if include_archived {
         "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE org_id = ?1 ORDER BY name ASC"
     } else {
@@ -2874,12 +3627,18 @@ pub fn user_is_project_member(
 }
 
 /// Returns the UUID of a project looked up by its name within an org, or `None` if not found.
-pub fn get_project_id_by_name(conn: &Connection, org_id: &str, name: &str) -> Result<Option<String>> {
-    let result = conn.query_row(
-        "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
-        rusqlite::params![org_id, name],
-        |row| row.get::<_, String>(0),
-    ).optional()?;
+pub fn get_project_id_by_name(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let result = conn
+        .query_row(
+            "SELECT id FROM projects WHERE org_id = ?1 AND name = ?2",
+            rusqlite::params![org_id, name],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
     Ok(result)
 }
 
@@ -2919,11 +3678,7 @@ pub fn color_for_project_id(project_id: &str) -> String {
 /// data terminates without infinite looping.
 ///
 /// Returns an empty Vec if the root project doesn't exist in the org.
-pub fn resolve_project_family(
-    conn: &Connection,
-    org_id: &str,
-    root: &str,
-) -> Result<Vec<Project>> {
+pub fn resolve_project_family(conn: &Connection, org_id: &str, root: &str) -> Result<Vec<Project>> {
     let root_project = if root.contains('-') && root.len() >= 32 {
         // Heuristic: UUID-shaped id (contains dashes and is long enough). Tries
         // id first, falls back to name on miss. Cheap because both are
@@ -2936,12 +3691,12 @@ pub fn resolve_project_family(
                 rusqlite::params![org_id, root],
                 |row| {
                     Ok(Project {
-                        id:         row.get(0)?,
-                        org_id:     row.get(1)?,
-                        name:       row.get(2)?,
+                        id: row.get(0)?,
+                        org_id: row.get(1)?,
+                        name: row.get(2)?,
                         description: row.get(3)?,
                         created_at: row.get(4)?,
-                        parent_id:  row.get(5)?,
+                        parent_id: row.get(5)?,
                         archived_at: row.get(6)?,
                     })
                 },
@@ -2958,12 +3713,12 @@ pub fn resolve_project_family(
             rusqlite::params![org_id, root],
             |row| {
                 Ok(Project {
-                    id:         row.get(0)?,
-                    org_id:     row.get(1)?,
-                    name:       row.get(2)?,
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    name: row.get(2)?,
                     description: row.get(3)?,
                     created_at: row.get(4)?,
-                    parent_id:  row.get(5)?,
+                    parent_id: row.get(5)?,
                     archived_at: row.get(6)?,
                 })
             },
@@ -3001,9 +3756,8 @@ pub fn resolve_project_family(
         family.push(p.clone());
 
         // Enqueue every child (parent_id == current_id) not yet visited.
-        let mut child_stmt = conn.prepare(
-            "SELECT id FROM projects WHERE org_id = ?1 AND parent_id = ?2",
-        )?;
+        let mut child_stmt =
+            conn.prepare("SELECT id FROM projects WHERE org_id = ?1 AND parent_id = ?2")?;
         let child_ids: Vec<String> = child_stmt
             .query_map(rusqlite::params![org_id, &current_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3017,7 +3771,13 @@ pub fn resolve_project_family(
     Ok(family)
 }
 
-pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: Option<&str>, parent_id: Option<&str>) -> Result<Project> {
+pub fn create_project(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    description: Option<&str>,
+    parent_id: Option<&str>,
+) -> Result<Project> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     conn.execute(
@@ -3035,7 +3795,12 @@ pub fn create_project(conn: &Connection, org_id: &str, name: &str, description: 
     })
 }
 
-pub fn update_project(conn: &Connection, org_id: &str, project_id: &str, parent_id: Option<&str>) -> Result<bool> {
+pub fn update_project(
+    conn: &Connection,
+    org_id: &str,
+    project_id: &str,
+    parent_id: Option<&str>,
+) -> Result<bool> {
     if let Some(new_parent) = parent_id {
         // Self-parenting is a cycle
         if new_parent == project_id {
@@ -3062,8 +3827,8 @@ pub fn update_project(conn: &Connection, org_id: &str, project_id: &str, parent_
                 )
                 .optional()?;
             match row {
-                None => break,          // not found in this org — safe to stop
-                Some(None) => break,    // root project reached — no cycle
+                None => break,       // not found in this org — safe to stop
+                Some(None) => break, // root project reached — no cycle
                 Some(Some(next)) => {
                     if next == project_id {
                         anyhow::bail!("cycle_detected: assigning this parent would create a circular hierarchy");
@@ -3093,7 +3858,11 @@ pub fn delete_project(conn: &Connection, org_id: &str, id: &str) -> Result<bool>
     Ok(affected > 0)
 }
 
-pub fn list_project_members(conn: &Connection, _org_id: &str, project_id: &str) -> Result<Vec<ProjectMember>> {
+pub fn list_project_members(
+    conn: &Connection,
+    _org_id: &str,
+    project_id: &str,
+) -> Result<Vec<ProjectMember>> {
     let mut stmt = conn.prepare(
         "SELECT pm.id, pm.project_id, pm.user_id, u.email, u.name, pm.role, pm.created_at
          FROM project_members pm
@@ -3118,7 +3887,12 @@ pub fn list_project_members(conn: &Connection, _org_id: &str, project_id: &str) 
     Ok(members)
 }
 
-pub fn upsert_project_member(conn: &Connection, project_id: &str, user_id: &str, role: &str) -> Result<()> {
+pub fn upsert_project_member(
+    conn: &Connection,
+    project_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     conn.execute(
@@ -3160,7 +3934,11 @@ pub fn get_project_member_role(
     }
 }
 
-pub fn get_memory_owner_and_project(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<(String, String)>> {
+pub fn get_memory_owner_and_project(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+) -> Result<Option<(String, String)>> {
     let result = conn.query_row(
         "SELECT user_id, project FROM memories WHERE id = ?1 AND org_id = ?2",
         rusqlite::params![memory_id, org_id],
@@ -3174,7 +3952,11 @@ pub fn get_memory_owner_and_project(conn: &Connection, org_id: &str, memory_id: 
 }
 
 /// Returns a single `Memory` scoped to `org_id`, or `None` if not found / belongs to another tenant.
-pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str) -> Result<Option<Memory>> {
+pub fn get_memory_by_id_for_org(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+) -> Result<Option<Memory>> {
     let result = conn.query_row(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
@@ -3210,11 +3992,35 @@ pub fn get_memory_by_id_for_org(conn: &Connection, org_id: &str, memory_id: &str
     );
 
     match result {
-        Ok((id, org_id, user_id, project, tool, content, tags_str, created_at,
-            title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-            archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
+        Ok((
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags_str,
+            created_at,
+            title,
+            memory_type,
+            scope,
+            topic_key,
+            session_id,
+            revision_count,
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned_i64,
+            collection_id,
+            admin_note,
+            delete_after,
+        )) => {
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
+            let status = if archived_at.is_some() {
+                "archived".to_string()
+            } else {
+                "active".to_string()
+            };
             Ok(Some(Memory {
                 id,
                 org_id,
@@ -3373,11 +4179,32 @@ pub fn get_project_context(
 
     let mut recent_memories = Vec::new();
     for row in rows {
-        let (id, org_id_col, user_id, proj, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-             archived_at, pinned_i64) = row?;
+        let (
+            id,
+            org_id_col,
+            user_id,
+            proj,
+            tool,
+            content,
+            tags_str,
+            created_at,
+            title,
+            memory_type,
+            scope,
+            topic_key,
+            session_id,
+            revision_count,
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned_i64,
+        ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
+        let status = if archived_at.is_some() {
+            "archived".to_string()
+        } else {
+            "active".to_string()
+        };
         recent_memories.push(Memory {
             id,
             org_id: org_id_col,
@@ -3405,20 +4232,22 @@ pub fn get_project_context(
     }
 
     // Query 2: distinct tool values.
-    let mut tool_stmt = conn.prepare(
-        "SELECT DISTINCT tool FROM memories WHERE org_id = ?1 AND project = ?2",
-    )?;
+    let mut tool_stmt =
+        conn.prepare("SELECT DISTINCT tool FROM memories WHERE org_id = ?1 AND project = ?2")?;
     let tool_rows = tool_stmt.query_map(rusqlite::params![org_id, project], |r| {
         r.get::<_, String>(0)
     })?;
     let tools: Vec<String> = tool_rows.collect::<rusqlite::Result<Vec<_>>>()?;
 
     // Query 3: last activity.
-    let last_activity: Option<String> = conn.query_row(
-        "SELECT MAX(created_at) FROM memories WHERE org_id = ?1 AND project = ?2",
-        rusqlite::params![org_id, project],
-        |r| r.get(0),
-    ).optional()?.flatten();
+    let last_activity: Option<String> = conn
+        .query_row(
+            "SELECT MAX(created_at) FROM memories WHERE org_id = ?1 AND project = ?2",
+            rusqlite::params![org_id, project],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
 
     Ok(crate::models::types::ProjectContext {
         project: project.to_string(),
@@ -3429,27 +4258,20 @@ pub fn get_project_context(
 }
 
 pub fn get_global_metrics(conn: &Connection) -> Result<GlobalMetrics> {
-    let total_orgs: i64 = conn.query_row(
-        "SELECT count(*) FROM organizations",
-        [],
-        |r| r.get(0),
-    )?;
-    let total_users: i64 = conn.query_row(
-        "SELECT count(*) FROM users",
-        [],
-        |r| r.get(0),
-    )?;
-    let total_memories: i64 = conn.query_row(
-        "SELECT count(*) FROM memories",
-        [],
-        |r| r.get(0),
-    )?;
+    let total_orgs: i64 = conn.query_row("SELECT count(*) FROM organizations", [], |r| r.get(0))?;
+    let total_users: i64 = conn.query_row("SELECT count(*) FROM users", [], |r| r.get(0))?;
+    let total_memories: i64 = conn.query_row("SELECT count(*) FROM memories", [], |r| r.get(0))?;
     let active_users_24h: i64 = conn.query_row(
         "SELECT count(DISTINCT user_id) FROM audit_logs WHERE timestamp >= datetime('now', '-24 hours')",
         [],
         |r| r.get(0),
     )?;
-    Ok(GlobalMetrics { total_orgs, total_users, total_memories, active_users_24h })
+    Ok(GlobalMetrics {
+        total_orgs,
+        total_users,
+        total_memories,
+        active_users_24h,
+    })
 }
 
 pub fn list_orgs_with_stats(conn: &Connection) -> Result<Vec<OrgWithStats>> {
@@ -3470,7 +4292,8 @@ pub fn list_orgs_with_stats(conn: &Connection) -> Result<Vec<OrgWithStats>> {
             memory_count: r.get(5)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn list_all_users(conn: &Connection) -> Result<Vec<User>> {
@@ -3493,7 +4316,8 @@ pub fn list_all_users(conn: &Connection) -> Result<Vec<User>> {
             last_login_at: None,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn list_all_audit(
@@ -3505,9 +4329,11 @@ pub fn list_all_audit(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AuditEntry>> {
-    let mut sql = "SELECT id, org_id, user_id, timestamp, action, resource_type, resource_id, metadata, \
+    let mut sql =
+        "SELECT id, org_id, user_id, timestamp, action, resource_type, resource_id, metadata, \
                           previous_hash, current_hash \
-                   FROM audit_logs WHERE 1=1".to_string();
+                   FROM audit_logs WHERE 1=1"
+            .to_string();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let Some(a) = action {
         sql.push_str(&format!(" AND action = ?{}", params.len() + 1));
@@ -3525,7 +4351,11 @@ pub fn list_all_audit(
         sql.push_str(&format!(" AND timestamp <= ?{}", params.len() + 1));
         params.push(Box::new(t.to_string()));
     }
-    sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT ?{} OFFSET ?{}", params.len() + 1, params.len() + 2));
+    sql.push_str(&format!(
+        " ORDER BY timestamp DESC LIMIT ?{} OFFSET ?{}",
+        params.len() + 1,
+        params.len() + 2
+    ));
     params.push(Box::new(limit));
     params.push(Box::new(offset));
 
@@ -3540,7 +4370,8 @@ pub fn list_all_audit(
             action: r.get(4)?,
             resource_type: r.get(5)?,
             resource_id: r.get(6)?,
-            metadata: r.get::<_, String>(7)
+            metadata: r
+                .get::<_, String>(7)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(serde_json::Value::Null),
@@ -3548,19 +4379,35 @@ pub fn list_all_audit(
             current_hash: r.get(9)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn delete_org(conn: &Connection, org_id: &str) -> Result<bool> {
-    conn.execute("DELETE FROM audit_logs WHERE org_id = ?1", rusqlite::params![org_id])?;
-    conn.execute("DELETE FROM api_keys WHERE org_id = ?1", rusqlite::params![org_id])?;
+    conn.execute(
+        "DELETE FROM audit_logs WHERE org_id = ?1",
+        rusqlite::params![org_id],
+    )?;
+    conn.execute(
+        "DELETE FROM api_keys WHERE org_id = ?1",
+        rusqlite::params![org_id],
+    )?;
     conn.execute(
         "DELETE FROM memory_embeddings WHERE memory_id IN (SELECT id FROM memories WHERE org_id = ?1)",
         rusqlite::params![org_id],
     )?;
-    conn.execute("DELETE FROM memories WHERE org_id = ?1", rusqlite::params![org_id])?;
-    conn.execute("DELETE FROM users WHERE org_id = ?1", rusqlite::params![org_id])?;
-    let deleted = conn.execute("DELETE FROM organizations WHERE id = ?1", rusqlite::params![org_id])?;
+    conn.execute(
+        "DELETE FROM memories WHERE org_id = ?1",
+        rusqlite::params![org_id],
+    )?;
+    conn.execute(
+        "DELETE FROM users WHERE org_id = ?1",
+        rusqlite::params![org_id],
+    )?;
+    let deleted = conn.execute(
+        "DELETE FROM organizations WHERE id = ?1",
+        rusqlite::params![org_id],
+    )?;
     Ok(deleted > 0)
 }
 
@@ -3603,14 +4450,16 @@ pub fn get_org_with_stats(conn: &Connection, org_id: &str) -> Result<Option<OrgW
                 (SELECT count(*) FROM memories m WHERE m.org_id = o.id) AS memory_count
          FROM organizations o WHERE o.id = ?1",
         rusqlite::params![org_id],
-        |r| Ok(OrgWithStats {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            slug: r.get(2)?,
-            created_at: r.get(3)?,
-            user_count: r.get(4)?,
-            memory_count: r.get(5)?,
-        }),
+        |r| {
+            Ok(OrgWithStats {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                slug: r.get(2)?,
+                created_at: r.get(3)?,
+                user_count: r.get(4)?,
+                memory_count: r.get(5)?,
+            })
+        },
     )
     .optional()
     .map_err(Into::into)
@@ -3627,7 +4476,8 @@ pub struct DailyStats {
 
 fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Policy> {
     let config_str: String = row.get(4)?;
-    let config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::Value::Object(Default::default()));
+    let config: serde_json::Value =
+        serde_json::from_str(&config_str).unwrap_or(serde_json::Value::Object(Default::default()));
     let enabled_int: i64 = row.get(5)?;
     Ok(Policy {
         id: row.get(0)?,
@@ -3643,7 +4493,12 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<Policy> {
 }
 
 /// Returns policies for an org, ordered by creation date DESC, page by `limit`/`offset`.
-pub fn list_policies(conn: &Connection, org_id: &str, limit: i64, offset: i64) -> Result<Vec<Policy>> {
+pub fn list_policies(
+    conn: &Connection,
+    org_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Policy>> {
     list_policies_visible(conn, org_id, limit, offset, None)
 }
 
@@ -3664,8 +4519,13 @@ pub fn list_policies_visible(
                ))
              ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
         )?;
-        let rows = stmt.query_map(rusqlite::params![org_id, viewer, limit, offset], row_to_policy)?;
-        return rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into);
+        let rows = stmt.query_map(
+            rusqlite::params![org_id, viewer, limit, offset],
+            row_to_policy,
+        )?;
+        return rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into);
     }
 
     let mut stmt = conn.prepare(
@@ -3673,7 +4533,8 @@ pub fn list_policies_visible(
          FROM policies WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, limit, offset], row_to_policy)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Returns only enabled policies for an org, ordered by creation date ASC.
@@ -3683,7 +4544,11 @@ pub fn list_policies_visible(
 /// UNION policies scoped to project `p` — project scoping ADDS to org-wide, it
 /// never replaces it. When `None`, returns every enabled policy for the org
 /// regardless of `project_id` (admin listing / no-project-context behavior).
-pub fn list_enabled_policies(conn: &Connection, org_id: &str, project: Option<&str>) -> Result<Vec<Policy>> {
+pub fn list_enabled_policies(
+    conn: &Connection,
+    org_id: &str,
+    project: Option<&str>,
+) -> Result<Vec<Policy>> {
     list_enabled_policies_visible(conn, org_id, project, None)
 }
 
@@ -3708,7 +4573,8 @@ pub fn list_enabled_policies_visible(
         let mut stmt = conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     } else {
         let mut sql = String::from(
             "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
@@ -3723,7 +4589,8 @@ pub fn list_enabled_policies_visible(
         let mut stmt = conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }
 
@@ -3817,7 +4684,10 @@ pub fn fetch_daily_stats(conn: &Connection, org_id: &str) -> Result<DailyStats> 
         rusqlite::params![org_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    Ok(DailyStats { requests_today, tokens_today })
+    Ok(DailyStats {
+        requests_today,
+        tokens_today,
+    })
 }
 
 // ── Code index queries ─────────────────────────────────────────────────────────
@@ -3895,7 +4765,11 @@ pub fn set_code_project_error(
     last_indexed_at: &str,
 ) -> Result<()> {
     // Truncate error to 500 chars to avoid unbounded storage
-    let truncated = if error_msg.len() > 500 { &error_msg[..500] } else { error_msg };
+    let truncated = if error_msg.len() > 500 {
+        &error_msg[..500]
+    } else {
+        error_msg
+    };
     conn.execute(
         "UPDATE code_projects
          SET index_status = 'error',
@@ -4002,7 +4876,8 @@ pub fn get_file_chunks(
             created_at: row.get(9)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Store (or replace) the raw source of a file, so exact symbol/file source can be
@@ -4029,10 +4904,10 @@ pub fn list_files_with_source(
     conn: &Connection,
     code_project_id: i64,
 ) -> Result<std::collections::HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT file_path FROM code_files WHERE code_project_id = ?1",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| r.get::<_, String>(0))?;
+    let mut stmt = conn.prepare("SELECT file_path FROM code_files WHERE code_project_id = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        r.get::<_, String>(0)
+    })?;
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
@@ -4047,7 +4922,9 @@ pub fn list_files_with_symbols(
            AND symbol_type NOT IN ('File','Folder','Project','External') \
            AND file_path IS NOT NULL",
     )?;
-    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| r.get::<_, String>(0))?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        r.get::<_, String>(0)
+    })?;
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
@@ -4093,10 +4970,7 @@ pub fn insert_code_chunk(
 }
 
 /// Return all (chunk_id, embedding_blob) pairs for a project. Used for cosine ranking.
-pub fn get_code_embeddings(
-    conn: &Connection,
-    code_project_id: i64,
-) -> Result<Vec<(i64, Vec<u8>)>> {
+pub fn get_code_embeddings(conn: &Connection, code_project_id: i64) -> Result<Vec<(i64, Vec<u8>)>> {
     let mut stmt = conn.prepare(
         "SELECT id, embedding FROM code_chunks WHERE code_project_id = ?1 AND embedding IS NOT NULL",
     )?;
@@ -4111,10 +4985,7 @@ pub fn get_code_embeddings(
 }
 
 /// Fetch multiple code chunks by their row IDs (ORDER preserved).
-pub fn get_chunks_by_ids(
-    conn: &Connection,
-    ids: &[i64],
-) -> Result<Vec<CodeChunk>> {
+pub fn get_chunks_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<CodeChunk>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -4310,7 +5181,11 @@ pub fn list_code_projects(conn: &Connection, org_id: &str) -> Result<Vec<CodePro
 }
 
 /// When `include_archived` is false (default), archived code projects (archived_at IS NOT NULL) are excluded.
-pub fn list_code_projects_filtered(conn: &Connection, org_id: &str, include_archived: bool) -> Result<Vec<CodeProject>> {
+pub fn list_code_projects_filtered(
+    conn: &Connection,
+    org_id: &str,
+    include_archived: bool,
+) -> Result<Vec<CodeProject>> {
     let base = "SELECT id, org_id, name, root_path, repo_url, file_count, chunk_count, last_indexed, created_at,
                 reindex_interval_hours, last_indexed_at, last_index_error, indexed_files_count, index_status, archived_at,
                 exclude_patterns
@@ -4322,7 +5197,9 @@ pub fn list_code_projects_filtered(conn: &Connection, org_id: &str, include_arch
     };
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([org_id], |row| {
-        let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
+        let patterns_json: String = row
+            .get::<_, Option<String>>(15)?
+            .unwrap_or_else(|| "[]".to_string());
         Ok(CodeProject {
             id: row.get::<_, i64>(0)?.to_string(),
             org_id: row.get(1)?,
@@ -4371,7 +5248,9 @@ pub fn list_code_projects_visible(
     };
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
-        let patterns_json: String = row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string());
+        let patterns_json: String = row
+            .get::<_, Option<String>>(15)?
+            .unwrap_or_else(|| "[]".to_string());
         Ok(CodeProject {
             id: row.get::<_, i64>(0)?.to_string(),
             org_id: row.get(1)?,
@@ -4429,7 +5308,12 @@ pub fn restore_code_project(conn: &Connection, org_id: &str, id: i64) -> Result<
 }
 
 /// Update the auto re-index interval for a code project. hours = None disables auto re-index.
-pub fn update_reindex_interval(conn: &Connection, org_id: &str, project_id: i64, hours: Option<i64>) -> Result<bool> {
+pub fn update_reindex_interval(
+    conn: &Connection,
+    org_id: &str,
+    project_id: i64,
+    hours: Option<i64>,
+) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE code_projects SET reindex_interval_hours = ?1 WHERE id = ?2 AND org_id = ?3",
         rusqlite::params![hours, project_id, org_id],
@@ -4438,7 +5322,12 @@ pub fn update_reindex_interval(conn: &Connection, org_id: &str, project_id: i64,
 }
 
 /// Set the repo_url for an existing code project.
-pub fn set_code_project_repo_url(conn: &Connection, org_id: &str, name: &str, repo_url: &str) -> Result<()> {
+pub fn set_code_project_repo_url(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    repo_url: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE code_projects SET repo_url = ?1 WHERE org_id = ?2 AND name = ?3",
         rusqlite::params![repo_url, org_id, name],
@@ -4559,7 +5448,8 @@ pub fn get_chunk_context(
 
 fn row_to_webhook(row: &rusqlite::Row<'_>) -> rusqlite::Result<Webhook> {
     let events_json: String = row.get(5)?;
-    let events: Vec<String> = serde_json::from_str(&events_json).unwrap_or_else(|_| vec!["*".to_string()]);
+    let events: Vec<String> =
+        serde_json::from_str(&events_json).unwrap_or_else(|_| vec!["*".to_string()]);
     let active_int: i64 = row.get(6)?;
     Ok(Webhook {
         id: row.get(0)?,
@@ -4580,7 +5470,8 @@ pub fn list_webhooks(conn: &Connection, org_id: &str) -> Result<Vec<Webhook>> {
          FROM webhooks WHERE org_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([org_id], row_to_webhook)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Returns a single webhook by id + org_id, or None (hides cross-org existence).
@@ -4599,7 +5490,11 @@ pub fn get_webhook(conn: &Connection, id: &str, org_id: &str) -> Result<Option<W
 }
 
 /// Inserts a new webhook and returns the created row.
-pub fn create_webhook(conn: &Connection, org_id: &str, req: &CreateWebhookRequest) -> Result<Webhook> {
+pub fn create_webhook(
+    conn: &Connection,
+    org_id: &str,
+    req: &CreateWebhookRequest,
+) -> Result<Webhook> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let events = req.events.clone().unwrap_or_else(|| vec!["*".to_string()]);
@@ -4607,7 +5502,15 @@ pub fn create_webhook(conn: &Connection, org_id: &str, req: &CreateWebhookReques
     conn.execute(
         "INSERT INTO webhooks (id, org_id, name, target_url, secret, events, active, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
-        rusqlite::params![id, org_id, req.name, req.target_url, req.secret, events_json, now],
+        rusqlite::params![
+            id,
+            org_id,
+            req.name,
+            req.target_url,
+            req.secret,
+            events_json,
+            now
+        ],
     )?;
     get_webhook(conn, &id, org_id)?
         .ok_or_else(|| anyhow::anyhow!("create_webhook: row not found after insert"))
@@ -4670,7 +5573,16 @@ pub fn log_webhook_delivery(
         "INSERT INTO webhook_deliveries
              (id, webhook_id, org_id, event_type, payload, status_code, success, error)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![id, webhook_id, org_id, event_type, payload, status_code, success_int, error],
+        rusqlite::params![
+            id,
+            webhook_id,
+            org_id,
+            event_type,
+            payload,
+            status_code,
+            success_int,
+            error
+        ],
     )?;
     Ok(())
 }
@@ -4703,7 +5615,8 @@ pub fn list_webhook_deliveries(
             delivered_at: row.get(8)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Fetches a single webhook delivery by ID, scoped to the org.
@@ -4858,7 +5771,8 @@ pub fn search_policies_by_query_visible(
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(refs.as_slice(), row_to_policy)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// LIKE search across active (non-archived) conventions for an org, matching on `title` or `content`.
@@ -4894,12 +5808,15 @@ pub fn search_conventions_by_query_visible(
         params.push(Box::new(viewer.to_string()));
         limit_idx = 4;
     }
-    sql.push_str(&format!(" ORDER BY weight DESC, title ASC LIMIT ?{limit_idx}"));
+    sql.push_str(&format!(
+        " ORDER BY weight DESC, title ASC LIMIT ?{limit_idx}"
+    ));
     params.push(Box::new(limit));
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(refs.as_slice(), convention_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Global (cross-org) LIKE search across organizations for the backoffice.
@@ -4928,7 +5845,8 @@ pub fn search_orgs_by_query(
             memory_count: r.get(5)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Global (cross-org) LIKE search across users for the backoffice, matching on `name` or `email`.
@@ -4960,7 +5878,8 @@ pub fn search_users_global_by_query(
             last_login_at: None,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Lists all non-revoked API keys for an org, joined with user info. Admin-only.
@@ -4988,7 +5907,8 @@ pub fn list_all_org_keys(conn: &Connection, org_id: &str) -> Result<Vec<ApiKeyWi
             last_used_at: row.get(10)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Revokes a specific API key in the org. Returns true if a row was updated.
@@ -5002,7 +5922,11 @@ pub fn revoke_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result
 
 /// Returns a single API key (with joined user info) by key ID, scoped to the org.
 /// Returns `None` if the key does not exist in the org (revoked or otherwise).
-pub fn get_key_admin(conn: &Connection, org_id: &str, key_id: &str) -> Result<Option<ApiKeyWithUser>> {
+pub fn get_key_admin(
+    conn: &Connection,
+    org_id: &str,
+    key_id: &str,
+) -> Result<Option<ApiKeyWithUser>> {
     conn.query_row(
         "SELECT ak.id, ak.user_id, u.name, u.email, ak.label, ak.last_used, ak.created_at, ak.revoked, ak.expires_at,
                 COALESCE(ak.times_used, 0), ak.last_used_at
@@ -5046,7 +5970,10 @@ pub fn update_key_admin(
         parts.push("label = ?3".to_string());
     }
     if expires_at_value.is_some() {
-        parts.push(format!("expires_at = ?{}", if label.is_some() { 4 } else { 3 }));
+        parts.push(format!(
+            "expires_at = ?{}",
+            if label.is_some() { 4 } else { 3 }
+        ));
     }
     if parts.is_empty() {
         // Nothing to update — check existence and return true if found.
@@ -5065,18 +5992,11 @@ pub fn update_key_admin(
 
     // We need to bind params in order. Use rusqlite params! with the right arity.
     let affected = match (label, expires_at_value) {
-        (Some(lbl), Some(exp)) => conn.execute(
-            &sql,
-            rusqlite::params![key_id, org_id, lbl, exp],
-        )?,
-        (Some(lbl), None) => conn.execute(
-            &sql,
-            rusqlite::params![key_id, org_id, lbl],
-        )?,
-        (None, Some(exp)) => conn.execute(
-            &sql,
-            rusqlite::params![key_id, org_id, exp],
-        )?,
+        (Some(lbl), Some(exp)) => {
+            conn.execute(&sql, rusqlite::params![key_id, org_id, lbl, exp])?
+        }
+        (Some(lbl), None) => conn.execute(&sql, rusqlite::params![key_id, org_id, lbl])?,
+        (None, Some(exp)) => conn.execute(&sql, rusqlite::params![key_id, org_id, exp])?,
         (None, None) => unreachable!(),
     };
     Ok(affected > 0)
@@ -5091,11 +6011,13 @@ pub fn rotate_key_by_id(
     key_id: &str,
 ) -> Result<Option<(ApiKeyWithUser, String)>> {
     // Fetch user_id for the key, verify it belongs to the org and is not revoked.
-    let user_id: Option<String> = conn.query_row(
-        "SELECT user_id FROM api_keys WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
-        rusqlite::params![key_id, org_id],
-        |r| r.get(0),
-    ).optional()?;
+    let user_id: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM api_keys WHERE id = ?1 AND org_id = ?2 AND revoked = 0",
+            rusqlite::params![key_id, org_id],
+            |r| r.get(0),
+        )
+        .optional()?;
 
     let user_id = match user_id {
         Some(id) => id,
@@ -5120,8 +6042,7 @@ pub fn rotate_key_by_id(
     )?;
 
     // Fetch the new key with user info.
-    let key = get_key_admin(conn, org_id, &new_id)?
-        .expect("newly inserted key must be found");
+    let key = get_key_admin(conn, org_id, &new_id)?.expect("newly inserted key must be found");
 
     Ok(Some((key, raw_key)))
 }
@@ -5145,8 +6066,7 @@ pub fn create_key_admin(
         rusqlite::params![key_id, user_id, org_id, key_hash, label, now, expires_at],
     )?;
 
-    let key = get_key_admin(conn, org_id, &key_id)?
-        .expect("newly inserted key must be found");
+    let key = get_key_admin(conn, org_id, &key_id)?.expect("newly inserted key must be found");
 
     Ok((key, raw_key))
 }
@@ -5173,8 +6093,8 @@ pub fn get_project_event_overrides(
     match result {
         None => Ok(ProjectEventOverrides::default()),
         Some(json_str) => {
-            let overrides: ProjectEventOverrides = serde_json::from_str(&json_str)
-                .unwrap_or_default();
+            let overrides: ProjectEventOverrides =
+                serde_json::from_str(&json_str).unwrap_or_default();
             Ok(overrides)
         }
     }
@@ -5204,8 +6124,8 @@ pub fn update_project_event_overrides(
 mod tests {
     use super::*;
     use crate::db::connection::connect;
-    use crate::models::types::Role;
     use crate::db::migrations;
+    use crate::models::types::Role;
 
     fn setup() -> Connection {
         let conn = connect(":memory:").unwrap();
@@ -5224,11 +6144,18 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES ('u-null', ?1, NULL, 'No Email', 'member', 'active', datetime('now'))",
             rusqlite::params![org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let users = list_all_users(&conn).expect("list_all_users must not error on NULL email");
-        let null_user = users.iter().find(|u| u.id == "u-null").expect("user with NULL email must be returned");
-        assert_eq!(null_user.email, "", "NULL email must deserialize to empty string");
+        let null_user = users
+            .iter()
+            .find(|u| u.id == "u-null")
+            .expect("user with NULL email must be returned");
+        assert_eq!(
+            null_user.email, "",
+            "NULL email must deserialize to empty string"
+        );
     }
 
     #[test]
@@ -5272,7 +6199,8 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, 'bad@acme.com', 'Bad', 'superuser', 'active', datetime('now'))",
             rusqlite::params![user_id, org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let key_id = uuid::Uuid::new_v4().to_string();
         let (raw_key, key_hash) = crate::auth::api_keys::generate();
@@ -5280,12 +6208,19 @@ mod tests {
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org.id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Key is structurally valid and role is custom — must return context with Custom(superuser)
         let result = validate_api_key(&conn, &api_keys::hash_key(&raw_key)).unwrap();
-        assert!(result.is_some(), "custom role string must cause validate_api_key to return Some");
-        assert_eq!(result.unwrap().role, UserRole::Custom("superuser".to_string()));
+        assert!(
+            result.is_some(),
+            "custom role string must cause validate_api_key to return Some"
+        );
+        assert_eq!(
+            result.unwrap().role,
+            UserRole::Custom("superuser".to_string())
+        );
     }
 
     #[test]
@@ -5304,7 +6239,11 @@ mod tests {
             .unwrap()
             .expect("bootstrap must create the default project");
         let members = list_project_members(&conn, &org.id, &pid).unwrap();
-        assert_eq!(members.len(), 1, "only the initial admin is enrolled at bootstrap");
+        assert_eq!(
+            members.len(),
+            1,
+            "only the initial admin is enrolled at bootstrap"
+        );
         assert_eq!(members[0].user_id, admin.id);
 
         // A later user is NOT auto-enrolled in the default project (needs explicit invite).
@@ -5322,33 +6261,51 @@ mod tests {
         let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         // Simulate a legacy org created before default-project onboarding existed.
-        let pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME).unwrap().unwrap();
-        conn.execute("DELETE FROM project_members WHERE project_id = ?1", [&pid]).unwrap();
-        conn.execute("DELETE FROM projects WHERE id = ?1", [&pid]).unwrap();
-        assert!(find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME).unwrap().is_none());
+        let pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME)
+            .unwrap()
+            .unwrap();
+        conn.execute("DELETE FROM project_members WHERE project_id = ?1", [&pid])
+            .unwrap();
+        conn.execute("DELETE FROM projects WHERE id = ?1", [&pid])
+            .unwrap();
+        assert!(find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME)
+            .unwrap()
+            .is_none());
 
         let created = ensure_default_projects(&conn).unwrap();
-        assert_eq!(created, 1, "backfill must create the missing default project");
+        assert_eq!(
+            created, 1,
+            "backfill must create the missing default project"
+        );
         let new_pid = find_project_id(&conn, &org.id, DEFAULT_PROJECT_NAME)
             .unwrap()
             .expect("backfill must create the default project");
         let members = list_project_members(&conn, &org.id, &new_pid).unwrap();
-        assert!(members.iter().any(|m| m.user_id == admin.id), "backfill must enrol the org admin");
+        assert!(
+            members.iter().any(|m| m.user_id == admin.id),
+            "backfill must enrol the org admin"
+        );
 
         // Idempotent: a second run is a no-op.
-        assert_eq!(ensure_default_projects(&conn).unwrap(), 0, "backfill must be idempotent");
+        assert_eq!(
+            ensure_default_projects(&conn).unwrap(),
+            0,
+            "backfill must be idempotent"
+        );
     }
 
     #[test]
     fn validate_api_key_returns_none_for_revoked_key() {
         let conn = setup();
-        let (org, _user, raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, _user, raw_key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         let hash = api_keys::hash_key(&raw_key);
 
         conn.execute(
             "UPDATE api_keys SET revoked = 1 WHERE org_id = ?1",
             [&org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = validate_api_key(&conn, &hash).unwrap();
         assert!(result.is_none());
@@ -5357,10 +6314,13 @@ mod tests {
     #[test]
     fn validate_api_key_returns_context_for_valid_key() {
         let conn = setup();
-        let (org, user, raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, raw_key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         let hash = api_keys::hash_key(&raw_key);
 
-        let ctx = validate_api_key(&conn, &hash).unwrap().expect("should return context");
+        let ctx = validate_api_key(&conn, &hash)
+            .unwrap()
+            .expect("should return context");
         assert_eq!(ctx.org_id, org.id);
         assert_eq!(ctx.user_id, user.id);
         assert_eq!(ctx.role, UserRole::Standard(Role::Admin));
@@ -5369,13 +6329,15 @@ mod tests {
     #[test]
     fn validate_api_key_returns_none_for_suspended_user() {
         let conn = setup();
-        let (_org, user, raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (_org, user, raw_key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         let hash = api_keys::hash_key(&raw_key);
 
         conn.execute(
             "UPDATE users SET status = 'suspended' WHERE id = ?1",
             [&user.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = validate_api_key(&conn, &hash).unwrap();
         assert!(result.is_none());
@@ -5384,7 +6346,8 @@ mod tests {
     #[test]
     fn bootstrap_creates_org_and_admin() {
         let conn = setup();
-        let (org, user, raw_key) = bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin User").unwrap();
+        let (org, user, raw_key) =
+            bootstrap(&conn, "Acme Corp", "acme", "admin@acme.com", "Admin User").unwrap();
 
         assert_eq!(org.name, "Acme Corp");
         assert_eq!(org.slug, "acme");
@@ -5411,7 +6374,15 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let tags = vec!["rust".to_string(), "axum".to_string()];
-        let mem = legacy_store(&conn, &org.id, &user.id, "nexusmind", "claude", "use anyhow for errors", &tags);
+        let mem = legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "nexusmind",
+            "claude",
+            "use anyhow for errors",
+            &tags,
+        );
 
         assert_eq!(mem.org_id, org.id);
         assert_eq!(mem.user_id, user.id);
@@ -5425,8 +6396,24 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "use snake_case for identifiers", &[]);
-        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "database migrations run at startup", &[]);
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "use snake_case for identifiers",
+            &[],
+        );
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "database migrations run at startup",
+            &[],
+        );
 
         let results = search_memories(&conn, &org.id, "snake_case", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -5437,15 +6424,25 @@ mod tests {
     fn search_memories_scoped_to_org() {
         let conn = setup();
         // org1
-        let (org1, user1, _) = bootstrap(&conn, "Org1", "org1", "admin@org1.com", "Admin1").unwrap();
-        legacy_store(&conn, &org1.id, &user1.id, "proj", "claude", "secret content org1", &[]);
+        let (org1, user1, _) =
+            bootstrap(&conn, "Org1", "org1", "admin@org1.com", "Admin1").unwrap();
+        legacy_store(
+            &conn,
+            &org1.id,
+            &user1.id,
+            "proj",
+            "claude",
+            "secret content org1",
+            &[],
+        );
 
         // org2 — manually insert since bootstrap only allows one org
         let org2_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org2', 'org2')",
             [&org2_id],
-        ).unwrap();
+        )
+        .unwrap();
         let user2_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, ?2, 'u2@org2.com', 'U2', 'member')",
@@ -5513,7 +6510,11 @@ mod tests {
         );
 
         let results = search_memories(&conn, &org.id, "grape kiwi mango lemon", 10).unwrap();
-        assert_eq!(results.len(), 2, "both memories share at least one query term");
+        assert_eq!(
+            results.len(),
+            2,
+            "both memories share at least one query term"
+        );
         assert!(
             results[0].content.contains("kiwi mango"),
             "the memory matching more query terms must rank first, got: {:?}",
@@ -5536,11 +6537,22 @@ mod tests {
 
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "bar foo baz", &[]);
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "bar foo baz",
+            &[],
+        );
 
         // Must not error even though the raw query contains FTS5 special chars.
         let result = search_memories(&conn, &org.id, raw, 10);
-        assert!(result.is_ok(), "special characters must not cause a query error: {result:?}");
+        assert!(
+            result.is_ok(),
+            "special characters must not cause a query error: {result:?}"
+        );
     }
 
     #[test]
@@ -5553,15 +6565,63 @@ mod tests {
         legacy_store(&conn, &org.id, &user.id, "proj-a", "cursor", "mem 3", &[]);
 
         // filter by tool
-        let cursor_mems = list_memories(&conn, &org.id, None, Some("cursor"), None, None, None, None, 10, 0, false, None, None, None).unwrap();
+        let cursor_mems = list_memories(
+            &conn,
+            &org.id,
+            None,
+            Some("cursor"),
+            None,
+            None,
+            None,
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(cursor_mems.len(), 2);
 
         // filter by project
-        let proj_a = list_memories(&conn, &org.id, None, None, Some("proj-a"), None, None, None, 10, 0, false, None, None, None).unwrap();
+        let proj_a = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            Some("proj-a"),
+            None,
+            None,
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(proj_a.len(), 2);
 
         // filter by both
-        let filtered = list_memories(&conn, &org.id, None, Some("cursor"), Some("proj-a"), None, None, None, 10, 0, false, None, None, None).unwrap();
+        let filtered = list_memories(
+            &conn,
+            &org.id,
+            None,
+            Some("cursor"),
+            Some("proj-a"),
+            None,
+            None,
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(filtered.len(), 1);
     }
 
@@ -5575,7 +6635,10 @@ mod tests {
         assert!(!deleted, "delete with wrong org must return false");
 
         // original should still exist
-        let still_there = list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap();
+        let still_there = list_memories(
+            &conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None,
+        )
+        .unwrap();
         assert_eq!(still_there.len(), 1);
     }
 
@@ -5586,7 +6649,8 @@ mod tests {
         let conn = setup();
         let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        let (user, raw_key) = invite_user(&conn, &org.id, "dev@acme.com", "Dev User", "member").unwrap();
+        let (user, raw_key) =
+            invite_user(&conn, &org.id, "dev@acme.com", "Dev User", "member").unwrap();
         assert_eq!(user.role, "member");
         assert!(raw_key.starts_with("nm_"));
 
@@ -5614,7 +6678,8 @@ mod tests {
     #[test]
     fn rotate_key_invalidates_old_key() {
         let conn = setup();
-        let (org, user, old_raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, old_raw_key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         let new_raw_key = rotate_key(&conn, &org.id, &user.id).unwrap();
 
@@ -5635,37 +6700,86 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
+        let entries =
+            list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
     }
 
     #[test]
     fn list_audit_scoped_to_org() {
         let conn = setup();
-        let (org1, user1, _) = bootstrap(&conn, "Org1", "org1", "admin@org1.com", "Admin1").unwrap();
-        log_audit(&conn, &org1.id, &user1.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        let (org1, user1, _) =
+            bootstrap(&conn, "Org1", "org1", "admin@org1.com", "Admin1").unwrap();
+        log_audit(
+            &conn,
+            &org1.id,
+            &user1.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
         // manually create org2
         let org2_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org2', 'org2')",
             [&org2_id],
-        ).unwrap();
+        )
+        .unwrap();
         let user2_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, ?2, 'u2@org2.com', 'U2', 'member')",
             [&user2_id, &org2_id],
         ).unwrap();
-        log_audit(&conn, &org2_id, &user2_id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org2_id,
+            &user2_id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let org1_entries = list_audit(&conn, &org1.id, None, None, None, None, None, None, 50, 0).unwrap();
-        assert_eq!(org1_entries.len(), 1, "org1 must not see org2 audit entries");
+        let org1_entries =
+            list_audit(&conn, &org1.id, None, None, None, None, None, None, 50, 0).unwrap();
+        assert_eq!(
+            org1_entries.len(),
+            1,
+            "org1 must not see org2 audit entries"
+        );
 
-        let org2_entries = list_audit(&conn, &org2_id, None, None, None, None, None, None, 50, 0).unwrap();
-        assert_eq!(org2_entries.len(), 1, "org2 must not see org1 audit entries");
+        let org2_entries =
+            list_audit(&conn, &org2_id, None, None, None, None, None, None, 50, 0).unwrap();
+        assert_eq!(
+            org2_entries.len(),
+            1,
+            "org2 must not see org1 audit entries"
+        );
     }
 
     #[test]
@@ -5673,15 +6787,66 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let store_entries = list_audit(&conn, &org.id, None, Some("store"), None, None, None, None, 50, 0).unwrap();
+        let store_entries = list_audit(
+            &conn,
+            &org.id,
+            None,
+            Some("store"),
+            None,
+            None,
+            None,
+            None,
+            50,
+            0,
+        )
+        .unwrap();
         assert_eq!(store_entries.len(), 2);
         assert!(store_entries.iter().all(|e| e.action == "store"));
 
-        let search_entries = list_audit(&conn, &org.id, None, Some("search"), None, None, None, None, 50, 0).unwrap();
+        let search_entries = list_audit(
+            &conn,
+            &org.id,
+            None,
+            Some("search"),
+            None,
+            None,
+            None,
+            None,
+            50,
+            0,
+        )
+        .unwrap();
         assert_eq!(search_entries.len(), 1);
     }
 
@@ -5690,12 +6855,55 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "memory.created", "memory", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "user.updated", "user", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "project.archived", "project", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "memory.created",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "user.updated",
+            "user",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "project.archived",
+            "project",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let results = list_audit(&conn, &org.id, None, None, None, None, None, Some("memory"), 50, 0).unwrap();
-        assert_eq!(results.len(), 1, "search for 'memory' must return exactly 1 result");
+        let results = list_audit(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("memory"),
+            50,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "search for 'memory' must return exactly 1 result"
+        );
         assert_eq!(results[0].action, "memory.created");
     }
 
@@ -5710,9 +6918,19 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
+        let entries =
+            list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
         assert_eq!(entries.len(), 1);
 
         // The SELECT now includes previous_hash and current_hash columns.
@@ -5730,13 +6948,24 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({"query": "rust"})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({"query": "rust"}),
+        )
+        .unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1 AND action = 'search'",
-            [&org.id],
-            |r| r.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1 AND action = 'search'",
+                [&org.id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -5751,7 +6980,16 @@ mod tests {
         legacy_store(&conn, &org.id, &user.id, "proj", "claude", "mem 2", &[]);
         legacy_store(&conn, &org.id, &user.id, "proj", "cursor", "mem 3", &[]);
 
-        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
         let stats = get_stats(&conn, &org.id).unwrap();
         assert_eq!(stats.total_memories, 3);
@@ -5817,13 +7055,20 @@ mod tests {
             session_id: None,
         };
         let mem2 = upsert_memory(&conn, &org.id, &user.id, &req2).unwrap();
-        assert_eq!(mem2.revision_count, 2, "second store must increment revision_count");
+        assert_eq!(
+            mem2.revision_count, 2,
+            "second store must increment revision_count"
+        );
         assert_eq!(mem2.id, mem1.id, "upsert must reuse existing row id");
         assert_eq!(mem2.content, "updated content");
 
         // Verify only one row exists
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE org_id = ?1", [&org.id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+                [&org.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "upsert must not create duplicate rows");
     }
@@ -5838,7 +7083,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org2', 'org2')",
             [&org2_id],
-        ).unwrap();
+        )
+        .unwrap();
         let user2_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, ?2, 'u2@org2.com', 'U2', 'member')",
@@ -5872,7 +7118,10 @@ mod tests {
         let mem1 = upsert_memory(&conn, &org1.id, &user1.id, &req).unwrap();
         let mem2 = upsert_memory(&conn, &org2_id, &user2_id, &req2).unwrap();
 
-        assert_ne!(mem1.id, mem2.id, "different orgs must get different rows for same topic_key");
+        assert_ne!(
+            mem1.id, mem2.id,
+            "different orgs must get different rows for same topic_key"
+        );
         assert_eq!(mem1.revision_count, 1);
         assert_eq!(mem2.revision_count, 1);
     }
@@ -5898,7 +7147,11 @@ mod tests {
         upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE org_id = ?1", [&org.id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE org_id = ?1",
+                [&org.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 2, "no topic_key must always insert new rows");
     }
@@ -5979,7 +7232,10 @@ mod tests {
             summary: Some("Session complete".into()),
         };
         let updated = patch_session(&conn, &org.id, &session.id, &patch_req).unwrap();
-        assert!(updated.is_some(), "patch_session must return the updated session");
+        assert!(
+            updated.is_some(),
+            "patch_session must return the updated session"
+        );
         let updated = updated.unwrap();
         assert_eq!(updated.ended_at.as_deref(), Some("2026-01-01T01:00:00Z"));
         assert_eq!(updated.summary.as_deref(), Some("Session complete"));
@@ -6040,7 +7296,23 @@ mod tests {
         upsert_memory(&conn, &org.id, &user.id, &req_bugfix).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_decision).unwrap();
 
-        let bugfix_mems = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), None, None, 10, 0, false, None, None, None).unwrap();
+        let bugfix_mems = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            Some("bugfix"),
+            None,
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(bugfix_mems.len(), 1);
         assert_eq!(bugfix_mems[0].memory_type.as_deref(), Some("bugfix"));
     }
@@ -6076,11 +7348,43 @@ mod tests {
         upsert_memory(&conn, &org.id, &user.id, &req_personal).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_project).unwrap();
 
-        let personal_mems = list_memories(&conn, &org.id, None, None, None, None, Some("personal"), None, 10, 0, false, None, None, None).unwrap();
+        let personal_mems = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            None,
+            Some("personal"),
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(personal_mems.len(), 1);
         assert_eq!(personal_mems[0].scope, "personal");
 
-        let combined = list_memories(&conn, &org.id, None, None, None, None, Some("project"), None, 10, 0, false, None, None, None).unwrap();
+        let combined = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            None,
+            Some("project"),
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(combined.len(), 1);
     }
 
@@ -6095,23 +7399,56 @@ mod tests {
             "INSERT INTO sessions (id, org_id, project, directory, started_at)
              VALUES (?1, ?2, 'proj', '/tmp', datetime('now'))",
             rusqlite::params![session_id, org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let req_with_session = crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "session memory".into(),
-            tags: None, title: None, memory_type: None, scope: None, topic_key: None,
+            project: None,
+            tool: "claude".into(),
+            content: "session memory".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
             session_id: Some(session_id.into()),
         };
         let req_without_session = crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "other memory".into(),
-            tags: None, title: None, memory_type: None, scope: None, topic_key: None,
+            project: None,
+            tool: "claude".into(),
+            content: "other memory".into(),
+            tags: None,
+            title: None,
+            memory_type: None,
+            scope: None,
+            topic_key: None,
             session_id: None,
         };
         upsert_memory(&conn, &org.id, &user.id, &req_with_session).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_without_session).unwrap();
 
-        let session_mems = list_memories(&conn, &org.id, None, None, None, None, None, Some(session_id), 50, 0, false, None, None, None).unwrap();
-        assert_eq!(session_mems.len(), 1, "only memories matching session_id should be returned");
+        let session_mems = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(session_id),
+            50,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            session_mems.len(),
+            1,
+            "only memories matching session_id should be returned"
+        );
         assert_eq!(session_mems[0].content, "session memory");
     }
 
@@ -6121,26 +7458,82 @@ mod tests {
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         // bugfix+project
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "c1".into(),
-            tags: None, title: None, memory_type: Some("bugfix".into()),
-            scope: Some("project".into()), topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "c1".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("bugfix".into()),
+                scope: Some("project".into()),
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
         // bugfix+personal
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "c2".into(),
-            tags: None, title: None, memory_type: Some("bugfix".into()),
-            scope: Some("personal".into()), topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "c2".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("bugfix".into()),
+                scope: Some("personal".into()),
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
         // decision+project
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "c3".into(),
-            tags: None, title: None, memory_type: Some("decision".into()),
-            scope: Some("project".into()), topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "c3".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("decision".into()),
+                scope: Some("project".into()),
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
-        let results = list_memories(&conn, &org.id, None, None, None, Some("bugfix"), Some("project"), None, 10, 0, false, None, None, None).unwrap();
-        assert_eq!(results.len(), 1, "combined filter must return only bugfix+project memories");
+        let results = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            Some("bugfix"),
+            Some("project"),
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "combined filter must return only bugfix+project memories"
+        );
     }
 
     #[test]
@@ -6148,14 +7541,45 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(), content: "content".into(),
-            tags: None, title: None, memory_type: Some("bugfix".into()),
-            scope: None, topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "content".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("bugfix".into()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
-        let results = list_memories(&conn, &org.id, None, None, None, Some("config"), None, None, 10, 0, false, None, None, None).unwrap();
-        assert!(results.is_empty(), "unknown type filter must return empty list");
+        let results = list_memories(
+            &conn,
+            &org.id,
+            None,
+            None,
+            None,
+            Some("config"),
+            None,
+            None,
+            10,
+            0,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            results.is_empty(),
+            "unknown type filter must return empty list"
+        );
     }
 
     // ── v2 FTS search tests ───────────────────────────────────────────────────
@@ -6165,12 +7589,23 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(),
-            content: "unrelated content".into(),
-            tags: None, title: Some("JWT auth middleware".into()),
-            memory_type: None, scope: None, topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "unrelated content".into(),
+                tags: None,
+                title: Some("JWT auth middleware".into()),
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         let results = search_memories(&conn, &org.id, "JWT", 10).unwrap();
         assert_eq!(results.len(), 1, "FTS must match on title");
@@ -6182,12 +7617,23 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        upsert_memory(&conn, &org.id, &user.id, &crate::models::types::StoreMemoryRequest {
-            project: None, tool: "claude".into(),
-            content: "unrelated".into(),
-            tags: None, title: Some("Unrelated title".into()),
-            memory_type: Some("bugfix".into()), scope: None, topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &crate::models::types::StoreMemoryRequest {
+                project: None,
+                tool: "claude".into(),
+                content: "unrelated".into(),
+                tags: None,
+                title: Some("Unrelated title".into()),
+                memory_type: Some("bugfix".into()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         let results = search_memories(&conn, &org.id, "bugfix", 10).unwrap();
         assert_eq!(results.len(), 1, "FTS must match on type column");
@@ -6247,8 +7693,19 @@ mod tests {
         // `pub fn store_memory` in `src/db/queries.rs`.
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        let mem = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "absence test", &[]);
-        assert_eq!(mem.content, "absence test", "legacy_store must work as upsert_memory wrapper");
+        let mem = legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "absence test",
+            &[],
+        );
+        assert_eq!(
+            mem.content, "absence test",
+            "legacy_store must work as upsert_memory wrapper"
+        );
     }
 
     // ── T-07 tests: insert_audit_log_chained ─────────────────────────────────
@@ -6268,13 +7725,23 @@ mod tests {
             None,
             serde_json::json!({}),
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert!(entry.previous_hash.is_none(), "genesis record must have previous_hash = NULL");
-        assert!(entry.current_hash.is_some(), "genesis record must have a non-empty current_hash");
+        assert!(
+            entry.previous_hash.is_none(),
+            "genesis record must have previous_hash = NULL"
+        );
+        assert!(
+            entry.current_hash.is_some(),
+            "genesis record must have a non-empty current_hash"
+        );
         let hash = entry.current_hash.unwrap();
         assert_eq!(hash.len(), 64, "SHA-256 hex string is 64 chars");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "current_hash must be hex");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "current_hash must be hex"
+        );
     }
 
     #[test]
@@ -6297,14 +7764,24 @@ mod tests {
                 Some(&format!("res-{i}")),
                 serde_json::json!({}),
                 None,
-            ).unwrap();
+            )
+            .unwrap();
             entries.push(e);
         }
 
         // Chain linkage: each entry's previous_hash must equal the prior entry's current_hash.
-        assert!(entries[0].previous_hash.is_none(), "first entry genesis must have no previous_hash");
-        assert_eq!(entries[1].previous_hash, entries[0].current_hash, "entry[1].previous_hash must equal entry[0].current_hash");
-        assert_eq!(entries[2].previous_hash, entries[1].current_hash, "entry[2].previous_hash must equal entry[1].current_hash");
+        assert!(
+            entries[0].previous_hash.is_none(),
+            "first entry genesis must have no previous_hash"
+        );
+        assert_eq!(
+            entries[1].previous_hash, entries[0].current_hash,
+            "entry[1].previous_hash must equal entry[0].current_hash"
+        );
+        assert_eq!(
+            entries[2].previous_hash, entries[1].current_hash,
+            "entry[2].previous_hash must equal entry[1].current_hash"
+        );
 
         // Replay hashes to verify correctness.
         for entry in &entries {
@@ -6340,14 +7817,16 @@ mod tests {
         // Org A inserts 2 rows; Org B inserts 1 row.
         // Org B's genesis must have previous_hash = NULL (its own chain start).
         let conn = setup();
-        let (org_a, user_a, _) = bootstrap(&conn, "OrgA", "orga", "admin@orga.com", "AdminA").unwrap();
+        let (org_a, user_a, _) =
+            bootstrap(&conn, "OrgA", "orga", "admin@orga.com", "AdminA").unwrap();
 
         // Create org B manually.
         let org_b_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'OrgB', 'orgb')",
             [&org_b_id],
-        ).unwrap();
+        )
+        .unwrap();
         let user_b_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES (?1, ?2, 'b@orgb.com', 'B', 'admin', 'active')",
@@ -6355,16 +7834,55 @@ mod tests {
         ).unwrap();
 
         // Org A: 2 inserts.
-        insert_audit_log_chained(&conn, &org_a.id, &user_a.id, "store", "memory", None, serde_json::json!({}), None).unwrap();
-        let a2 = insert_audit_log_chained(&conn, &org_a.id, &user_a.id, "search", "memory", None, serde_json::json!({}), None).unwrap();
+        insert_audit_log_chained(
+            &conn,
+            &org_a.id,
+            &user_a.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+            None,
+        )
+        .unwrap();
+        let a2 = insert_audit_log_chained(
+            &conn,
+            &org_a.id,
+            &user_a.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({}),
+            None,
+        )
+        .unwrap();
 
         // Org B: 1 insert — should bootstrap its own chain, not continue org A's.
-        let b1 = insert_audit_log_chained(&conn, &org_b_id, &user_b_id, "store", "memory", None, serde_json::json!({}), None).unwrap();
+        let b1 = insert_audit_log_chained(
+            &conn,
+            &org_b_id,
+            &user_b_id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+            None,
+        )
+        .unwrap();
 
-        assert!(b1.previous_hash.is_none(), "org B genesis must have previous_hash = NULL");
-        assert!(b1.current_hash.is_some(), "org B genesis must have a current_hash");
+        assert!(
+            b1.previous_hash.is_none(),
+            "org B genesis must have previous_hash = NULL"
+        );
+        assert!(
+            b1.current_hash.is_some(),
+            "org B genesis must have a current_hash"
+        );
         // Org B's hash must NOT equal org A's last hash.
-        assert_ne!(b1.current_hash, a2.current_hash, "org B chain must be independent of org A");
+        assert_ne!(
+            b1.current_hash, a2.current_hash,
+            "org B chain must be independent of org A"
+        );
     }
 
     #[test]
@@ -6375,7 +7893,8 @@ mod tests {
 
         let raw_conn = connect(":memory:").unwrap();
         migrations::run(&raw_conn).unwrap();
-        let (org, user, _) = bootstrap(&raw_conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, _) =
+            bootstrap(&raw_conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         let org_id = org.id.clone();
         let user_id = user.id.clone();
 
@@ -6392,32 +7911,67 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let c = conn1.lock().unwrap();
-                insert_audit_log_chained(&c, &org_id1, &user_id1, "store", "memory", None, serde_json::json!({}), None).unwrap();
+                insert_audit_log_chained(
+                    &c,
+                    &org_id1,
+                    &user_id1,
+                    "store",
+                    "memory",
+                    None,
+                    serde_json::json!({}),
+                    None,
+                )
+                .unwrap();
             });
             s.spawn(move || {
                 let c = conn2.lock().unwrap();
-                insert_audit_log_chained(&c, &org_id2, &user_id2, "search", "memory", None, serde_json::json!({}), None).unwrap();
+                insert_audit_log_chained(
+                    &c,
+                    &org_id2,
+                    &user_id2,
+                    "search",
+                    "memory",
+                    None,
+                    serde_json::json!({}),
+                    None,
+                )
+                .unwrap();
             });
         });
 
         // Verify exactly 2 rows for this org.
         let guard = conn.lock().unwrap();
-        let count: i64 = guard.query_row(
-            "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1",
-            [&org_id],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(count, 2, "must have exactly 2 audit rows after concurrent writes");
+        let count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1",
+                [&org_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 2,
+            "must have exactly 2 audit rows after concurrent writes"
+        );
 
         // Verify chain integrity: at least one row has a non-null current_hash,
         // and the chain links correctly (the second row's previous_hash = first row's current_hash).
-        let entries = list_audit(&guard, &org_id, None, None, None, None, None, None, 50, 0).unwrap();
+        let entries =
+            list_audit(&guard, &org_id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().all(|e| e.current_hash.is_some()), "both rows must have current_hash");
+        assert!(
+            entries.iter().all(|e| e.current_hash.is_some()),
+            "both rows must have current_hash"
+        );
 
         // Verify linkage: one row has previous_hash=NULL, the other has the first's current_hash.
-        let genesis = entries.iter().find(|e| e.previous_hash.is_none()).expect("must have a genesis row");
-        let chained = entries.iter().find(|e| e.previous_hash.is_some()).expect("must have a chained row");
+        let genesis = entries
+            .iter()
+            .find(|e| e.previous_hash.is_none())
+            .expect("must have a genesis row");
+        let chained = entries
+            .iter()
+            .find(|e| e.previous_hash.is_some())
+            .expect("must have a chained row");
         assert_eq!(
             chained.previous_hash.as_ref(),
             genesis.current_hash.as_ref(),
@@ -6431,9 +7985,19 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let entries = list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
+        let entries =
+            list_audit(&conn, &org.id, None, None, None, None, None, None, 10, 0).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0].current_hash.is_some(),
@@ -6458,7 +8022,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        let policy = insert_policy(&conn, &id, &org.id, "Whitelist", "model_whitelist", config_json, true, None).unwrap();
+        let policy = insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "Whitelist",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(policy.id, id);
         assert_eq!(policy.org_id, org.id);
@@ -6476,7 +8050,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Beta', 'beta')",
             rusqlite::params![org2_id],
-        ).unwrap();
+        )
+        .unwrap();
         org2_id
     }
 
@@ -6488,7 +8063,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org1.id, "Whitelist", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org1.id,
+            "Whitelist",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         // Querying with org2 must return None
         let result = get_policy(&conn, &id, &org2_id).unwrap();
@@ -6505,8 +8090,28 @@ mod tests {
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
 
-        insert_policy(&conn, &id1, &org1.id, "Org1 Policy", "model_whitelist", config_json, true, None).unwrap();
-        insert_policy(&conn, &id2, &org2_id, "Org2 Policy", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id1,
+            &org1.id,
+            "Org1 Policy",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id2,
+            &org2_id,
+            "Org2 Policy",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         let org1_policies = list_policies(&conn, &org1.id, 1000, 0).unwrap();
         let org2_policies = list_policies(&conn, &org2_id, 1000, 0).unwrap();
@@ -6524,10 +8129,31 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "Old Name", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "Old Name",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-        let updated = update_policy(&conn, &id, &org.id, Some("New Name"), None, Some(false), &now).unwrap();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let updated = update_policy(
+            &conn,
+            &id,
+            &org.id,
+            Some("New Name"),
+            None,
+            Some(false),
+            &now,
+        )
+        .unwrap();
         assert!(updated.is_some());
         let p = updated.unwrap();
         assert_eq!(p.name, "New Name");
@@ -6539,9 +8165,23 @@ mod tests {
         let conn = setup();
         let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-        let result = update_policy(&conn, "nonexistent-id", &org.id, Some("X"), None, None, &now).unwrap();
-        assert!(result.is_none(), "update must return None for nonexistent id");
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let result = update_policy(
+            &conn,
+            "nonexistent-id",
+            &org.id,
+            Some("X"),
+            None,
+            None,
+            &now,
+        )
+        .unwrap();
+        assert!(
+            result.is_none(),
+            "update must return None for nonexistent id"
+        );
     }
 
     #[test]
@@ -6551,7 +8191,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "Temp", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "Temp",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         let deleted = delete_policy(&conn, &id, &org.id).unwrap();
         assert!(deleted);
@@ -6568,7 +8218,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org1.id, "Org1 Policy", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org1.id,
+            "Org1 Policy",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         let deleted = delete_policy(&conn, &id, &org2_id).unwrap();
         assert!(!deleted, "delete from wrong org must return false");
@@ -6586,8 +8246,28 @@ mod tests {
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
 
-        insert_policy(&conn, &id1, &org.id, "Enabled", "model_whitelist", config_json, true, None).unwrap();
-        insert_policy(&conn, &id2, &org.id, "Disabled", "model_whitelist", config_json, false, None).unwrap();
+        insert_policy(
+            &conn,
+            &id1,
+            &org.id,
+            "Enabled",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id2,
+            &org.id,
+            "Disabled",
+            "model_whitelist",
+            config_json,
+            false,
+            None,
+        )
+        .unwrap();
 
         let enabled = list_enabled_policies(&conn, &org.id, None).unwrap();
         assert_eq!(enabled.len(), 1);
@@ -6604,7 +8284,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        let policy = insert_policy(&conn, &id, &org.id, "Scoped", "model_whitelist", config_json, true, Some(&project.id)).unwrap();
+        let policy = insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "Scoped",
+            "model_whitelist",
+            config_json,
+            true,
+            Some(&project.id),
+        )
+        .unwrap();
 
         assert_eq!(policy.project_id.as_deref(), Some(project.id.as_str()));
 
@@ -6619,7 +8309,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        let policy = insert_policy(&conn, &id, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+        let policy = insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "OrgWide",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         assert!(policy.project_id.is_none());
         let fetched = get_policy(&conn, &id, &org.id).unwrap().unwrap();
@@ -6635,7 +8335,17 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "OrgWide",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
 
         let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
         let for_b = list_enabled_policies(&conn, &org.id, Some(&project_b.id)).unwrap();
@@ -6652,12 +8362,30 @@ mod tests {
 
         let id = format!("p_{}", Uuid::new_v4().simple());
         let config_json = r#"{"allowed_models":["claude-3-5-sonnet"]}"#;
-        insert_policy(&conn, &id, &org.id, "ProjA Only", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
+        insert_policy(
+            &conn,
+            &id,
+            &org.id,
+            "ProjA Only",
+            "model_whitelist",
+            config_json,
+            true,
+            Some(&project_a.id),
+        )
+        .unwrap();
 
         let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
         let for_b = list_enabled_policies(&conn, &org.id, Some(&project_b.id)).unwrap();
-        assert_eq!(for_a.len(), 1, "project-scoped policy must apply to its own project");
-        assert_eq!(for_b.len(), 0, "project-scoped policy must NOT apply to a different project");
+        assert_eq!(
+            for_a.len(),
+            1,
+            "project-scoped policy must apply to its own project"
+        );
+        assert_eq!(
+            for_b.len(),
+            0,
+            "project-scoped policy must NOT apply to a different project"
+        );
     }
 
     #[test]
@@ -6670,16 +8398,53 @@ mod tests {
         let id1 = format!("p_{}", Uuid::new_v4().simple());
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let id3 = format!("p_{}", Uuid::new_v4().simple());
-        insert_policy(&conn, &id1, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
-        insert_policy(&conn, &id2, &org.id, "ProjA", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
-        insert_policy(&conn, &id3, &org.id, "DisabledOrgWide", "model_whitelist", config_json, false, None).unwrap();
+        insert_policy(
+            &conn,
+            &id1,
+            &org.id,
+            "OrgWide",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id2,
+            &org.id,
+            "ProjA",
+            "model_whitelist",
+            config_json,
+            true,
+            Some(&project_a.id),
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id3,
+            &org.id,
+            "DisabledOrgWide",
+            "model_whitelist",
+            config_json,
+            false,
+            None,
+        )
+        .unwrap();
 
         let admin_view = list_enabled_policies(&conn, &org.id, None).unwrap();
-        assert_eq!(admin_view.len(), 2, "None must return all ENABLED policies for the org regardless of project_id");
+        assert_eq!(
+            admin_view.len(),
+            2,
+            "None must return all ENABLED policies for the org regardless of project_id"
+        );
         let names: Vec<&str> = admin_view.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"OrgWide"));
         assert!(names.contains(&"ProjA"));
-        assert!(!names.contains(&"DisabledOrgWide"), "disabled policies must still be excluded");
+        assert!(
+            !names.contains(&"DisabledOrgWide"),
+            "disabled policies must still be excluded"
+        );
     }
 
     #[test]
@@ -6693,16 +8458,53 @@ mod tests {
         let id1 = format!("p_{}", Uuid::new_v4().simple());
         let id2 = format!("p_{}", Uuid::new_v4().simple());
         let id3 = format!("p_{}", Uuid::new_v4().simple());
-        insert_policy(&conn, &id1, &org.id, "OrgWide", "model_whitelist", config_json, true, None).unwrap();
-        insert_policy(&conn, &id2, &org.id, "ProjA", "model_whitelist", config_json, true, Some(&project_a.id)).unwrap();
-        insert_policy(&conn, &id3, &org.id, "ProjQ", "model_whitelist", config_json, true, Some(&project_q.id)).unwrap();
+        insert_policy(
+            &conn,
+            &id1,
+            &org.id,
+            "OrgWide",
+            "model_whitelist",
+            config_json,
+            true,
+            None,
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id2,
+            &org.id,
+            "ProjA",
+            "model_whitelist",
+            config_json,
+            true,
+            Some(&project_a.id),
+        )
+        .unwrap();
+        insert_policy(
+            &conn,
+            &id3,
+            &org.id,
+            "ProjQ",
+            "model_whitelist",
+            config_json,
+            true,
+            Some(&project_q.id),
+        )
+        .unwrap();
 
         let for_a = list_enabled_policies(&conn, &org.id, Some(&project_a.id)).unwrap();
         let names: Vec<&str> = for_a.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(for_a.len(), 2, "resolving for project A must be org-wide UNION project A");
+        assert_eq!(
+            for_a.len(),
+            2,
+            "resolving for project A must be org-wide UNION project A"
+        );
         assert!(names.contains(&"OrgWide"));
         assert!(names.contains(&"ProjA"));
-        assert!(!names.contains(&"ProjQ"), "project Q's policy must not leak into project A's resolution");
+        assert!(
+            !names.contains(&"ProjQ"),
+            "project Q's policy must not leak into project A's resolution"
+        );
     }
 
     #[test]
@@ -6719,24 +8521,463 @@ mod tests {
     fn get_role_permissions_admin_includes_policy_write() {
         let conn = setup();
         let perms = get_role_permissions(&conn, "irrelevant", "admin").unwrap();
-        assert!(perms.contains(&"policy:read".to_string()), "admin must have policy:read");
-        assert!(perms.contains(&"policy:write".to_string()), "admin must have policy:write");
+        assert!(
+            perms.contains(&"policy:read".to_string()),
+            "admin must have policy:read"
+        );
+        assert!(
+            perms.contains(&"policy:write".to_string()),
+            "admin must have policy:write"
+        );
     }
 
     #[test]
     fn get_role_permissions_member_includes_policy_read_only() {
         let conn = setup();
         let perms = get_role_permissions(&conn, "irrelevant", "member").unwrap();
-        assert!(perms.contains(&"policy:read".to_string()), "member must have policy:read");
-        assert!(!perms.contains(&"policy:write".to_string()), "member must NOT have policy:write");
+        assert!(
+            perms.contains(&"policy:read".to_string()),
+            "member must have policy:read"
+        );
+        assert!(
+            !perms.contains(&"policy:write".to_string()),
+            "member must NOT have policy:write"
+        );
     }
 
     #[test]
     fn get_role_permissions_viewer_has_no_policy_perms() {
         let conn = setup();
         let perms = get_role_permissions(&conn, "irrelevant", "viewer").unwrap();
-        assert!(!perms.contains(&"policy:read".to_string()), "viewer must not have policy:read");
-        assert!(!perms.contains(&"policy:write".to_string()), "viewer must not have policy:write");
+        assert!(
+            !perms.contains(&"policy:read".to_string()),
+            "viewer must not have policy:read"
+        );
+        assert!(
+            !perms.contains(&"policy:write".to_string()),
+            "viewer must not have policy:write"
+        );
+    }
+
+    fn valid_harness_manifest(target: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": "1.0",
+            "targets": [target],
+            "components": [{ "name": "agent", "type": "skill" }],
+            "compatibility": { target: ">=1.0.0" },
+            "provenance": { "source": "nexus-mind", "author": "admin" },
+            "security": { "requires_approval": true }
+        })
+    }
+
+    #[test]
+    fn harness_catalog_visibility_hides_inaccessible_project_harnesses() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project_a = create_project(&conn, &org.id, "visible", None, None).unwrap();
+        let project_b = create_project(&conn, &org.id, "hidden", None, None).unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, ?2, 'dev@acme.com', 'Dev', 'member', 'active', datetime('now'))",
+            rusqlite::params![user_id, org.id],
+        ).unwrap();
+        upsert_project_member(&conn, &project_a.id, &user_id, "member").unwrap();
+
+        create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "org-wide".into(),
+                name: "Org Wide".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+            },
+        )
+        .unwrap();
+        create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "visible".into(),
+                name: "Visible".into(),
+                description: None,
+                project_id: Some(project_a.id),
+                visibility: None,
+            },
+        )
+        .unwrap();
+        create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "hidden".into(),
+                name: "Hidden".into(),
+                description: None,
+                project_id: Some(project_b.id),
+                visibility: None,
+            },
+        )
+        .unwrap();
+
+        let visible = list_visible_harnesses(&conn, &org.id, Some(&user_id), None).unwrap();
+        let names: Vec<&str> = visible.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(visible.len(), 2);
+        assert!(names.contains(&"Org Wide"));
+        assert!(names.contains(&"Visible"));
+        assert!(!names.contains(&"Hidden"));
+    }
+
+    #[test]
+    fn publish_download_and_approval_preserve_manifest_hash() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "claude-base".into(),
+                name: "Claude Base".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+            },
+        )
+        .unwrap();
+        let manifest = valid_harness_manifest("claude");
+        let version = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest: manifest.clone(),
+                manifest_hash: None,
+            },
+        )
+        .unwrap();
+
+        let before_approval =
+            download_harness_version(&conn, &org.id, &admin.id, None, &harness.id, "1.0.0")
+                .unwrap_err();
+        assert!(before_approval.to_string().contains("approval_required"));
+
+        let approval = create_harness_approval(
+            &conn,
+            &org.id,
+            &admin.id,
+            None,
+            &harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: version.manifest_hash.clone(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(approval.manifest_hash, version.manifest_hash);
+
+        let downloaded =
+            download_harness_version(&conn, &org.id, &admin.id, None, &harness.id, "1.0.0")
+                .unwrap()
+                .unwrap();
+        assert_eq!(downloaded.manifest, manifest);
+        assert_eq!(downloaded.manifest_hash, version.manifest_hash);
+
+        let mismatch = create_harness_approval(
+            &conn,
+            &org.id,
+            &admin.id,
+            None,
+            &harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: "wrong".into(),
+                metadata: None,
+            },
+        )
+        .unwrap_err();
+        assert!(mismatch.to_string().contains("manifest_hash_mismatch"));
+    }
+
+    #[test]
+    fn harness_approval_and_download_require_project_visibility() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let hidden_project = create_project(&conn, &org.id, "hidden", None, None).unwrap();
+        let allowed_project = create_project(&conn, &org.id, "allowed", None, None).unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, ?2, 'dev@acme.com', 'Dev', 'member', 'active', datetime('now'))",
+            rusqlite::params![user_id, org.id],
+        ).unwrap();
+        upsert_project_member(&conn, &allowed_project.id, &user_id, "member").unwrap();
+
+        let hidden_harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "hidden-project".into(),
+                name: "Hidden Project".into(),
+                description: None,
+                project_id: Some(hidden_project.id),
+                visibility: None,
+            },
+        )
+        .unwrap();
+        let hidden_version = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &hidden_harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest: valid_harness_manifest("claude"),
+                manifest_hash: None,
+            },
+        )
+        .unwrap();
+
+        let hidden_approval = create_harness_approval(
+            &conn,
+            &org.id,
+            &user_id,
+            Some(&user_id),
+            &hidden_harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: hidden_version.manifest_hash.clone(),
+                metadata: None,
+            },
+        )
+        .unwrap_err();
+        assert!(hidden_approval.to_string().contains("version_not_found"));
+
+        let hidden_download = download_harness_version(
+            &conn,
+            &org.id,
+            &user_id,
+            Some(&user_id),
+            &hidden_harness.id,
+            "1.0.0",
+        )
+        .unwrap();
+        assert!(hidden_download.is_none());
+
+        let allowed_harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "allowed-project".into(),
+                name: "Allowed Project".into(),
+                description: None,
+                project_id: Some(allowed_project.id),
+                visibility: None,
+            },
+        )
+        .unwrap();
+        let allowed_version = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &allowed_harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest: valid_harness_manifest("claude"),
+                manifest_hash: None,
+            },
+        )
+        .unwrap();
+        create_harness_approval(
+            &conn,
+            &org.id,
+            &user_id,
+            Some(&user_id),
+            &allowed_harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: allowed_version.manifest_hash,
+                metadata: None,
+            },
+        )
+        .unwrap();
+        let allowed_download = download_harness_version(
+            &conn,
+            &org.id,
+            &user_id,
+            Some(&user_id),
+            &allowed_harness.id,
+            "1.0.0",
+        )
+        .unwrap();
+        assert!(allowed_download.is_some());
+    }
+
+    #[test]
+    fn record_harness_install_result_preserves_local_file_boundary() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "claude-base".into(),
+                name: "Claude Base".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+            },
+        )
+        .unwrap();
+        let version = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest: valid_harness_manifest("claude"),
+                manifest_hash: None,
+            },
+        )
+        .unwrap();
+        let approval = create_harness_approval(
+            &conn,
+            &org.id,
+            &admin.id,
+            None,
+            &harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: version.manifest_hash.clone(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+
+        let updated = record_harness_install_result(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            "1.0.0",
+            &HarnessInstallResultRequest {
+                approval_id: approval.id,
+                manifest_hash: version.manifest_hash.clone(),
+                status: "installed".into(),
+                metadata: Some(
+                    serde_json::json!({ "tool_version": "1.2.3", "changed_files_count": 2 }),
+                ),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.status, "approved");
+        assert_eq!(updated.metadata["install_result"]["status"], "installed");
+        assert_eq!(updated.metadata["install_result"]["changed_files_count"], 2);
+        assert!(updated.metadata["install_result"]
+            .get("raw_file_contents")
+            .is_none());
+
+        let nested_raw = record_harness_install_result(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            "1.0.0",
+            &HarnessInstallResultRequest {
+                approval_id: updated.id,
+                manifest_hash: version.manifest_hash,
+                status: "installed".into(),
+                metadata: Some(
+                    serde_json::json!({ "details": { "raw_file_contents": "cat ~/.claude.json" } }),
+                ),
+            },
+        )
+        .unwrap_err();
+        assert!(nested_raw
+            .to_string()
+            .contains("raw_local_content_rejected"));
+    }
+
+    #[test]
+    fn harness_config_review_rejects_secret_bearing_snapshots() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let accepted = create_harness_config_review(&conn, &org.id, &admin.id, &CreateHarnessConfigReviewRequest {
+            source_tool: "claude".into(),
+            redacted_config: serde_json::json!({ "mcpServers": { "nexusmind": { "command": "npx", "env": { "NEXUSMIND_API_KEY": "[REDACTED]" } } } }),
+            redaction_report: serde_json::json!({ "secret_scan_status": "passed", "categories": { "env": 1 } }),
+            content_hash: "sha256:abc".into(),
+            status: Some("shared".into()),
+        }).unwrap();
+        assert_eq!(accepted.status, "shared");
+        assert_eq!(accepted.redaction_report["categories"]["env"], 1);
+
+        let rejected = create_harness_config_review(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessConfigReviewRequest {
+                source_tool: "claude".into(),
+                redacted_config: serde_json::json!({ "token": "raw-secret" }),
+                redaction_report: serde_json::json!({ "secret_scan_status": "failed" }),
+                content_hash: "sha256:def".into(),
+                status: None,
+            },
+        )
+        .unwrap_err();
+        assert!(rejected.to_string().contains("secret_scan_failed"));
+
+        let report_secret = create_harness_config_review(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessConfigReviewRequest {
+                source_tool: "claude".into(),
+                redacted_config: serde_json::json!({ "env": { "NEXUSMIND_API_KEY": "[REDACTED]" } }),
+                redaction_report: serde_json::json!({ "secret_scan_status": "passed", "leaked_value": "nm_live_secret_key" }),
+                content_hash: "sha256:ghi".into(),
+                status: None,
+            },
+        )
+        .unwrap_err();
+        assert!(report_secret.to_string().contains("secret_scan_failed"));
+
+        let report_hook_content = create_harness_config_review(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessConfigReviewRequest {
+                source_tool: "claude".into(),
+                redacted_config: serde_json::json!({ "hooks": "[REDACTED]" }),
+                redaction_report: serde_json::json!({ "secret_scan_status": "passed", "hook": { "raw_shell_content": "export TOKEN=abc" } }),
+                content_hash: "sha256:jkl".into(),
+                status: None,
+            },
+        )
+        .unwrap_err();
+        assert!(report_hook_content
+            .to_string()
+            .contains("secret_scan_failed"));
     }
 
     // ── Code index query tests ─────────────────────────────────────────────────
@@ -6745,7 +8986,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         "org1".to_string()
     }
 
@@ -6763,10 +9005,16 @@ mod tests {
         let org_id = setup_org_for_code(&conn);
         let id1 = upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
         let id2 = upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp2").unwrap();
-        assert_eq!(id1, id2, "upsert must return same id for same (org_id, name)");
+        assert_eq!(
+            id1, id2,
+            "upsert must return same id for same (org_id, name)"
+        );
         // root_path should have been updated
         let project = get_code_project(&org_id, "myapp", &conn).unwrap().unwrap();
-        assert_eq!(project.root_path, "/ws/myapp2", "root_path must be updated on conflict");
+        assert_eq!(
+            project.root_path, "/ws/myapp2",
+            "root_path must be updated on conflict"
+        );
     }
 
     #[test]
@@ -6776,10 +9024,18 @@ mod tests {
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
         let chunk_id = insert_code_chunk(
-            &conn, project_id, "src/lib.rs", "abc123",
-            Some("rust"), Some("authenticate_user"),
-            1, 10, "fn authenticate_user() {}", None,
-        ).unwrap();
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "abc123",
+            Some("rust"),
+            Some("authenticate_user"),
+            1,
+            10,
+            "fn authenticate_user() {}",
+            None,
+        )
+        .unwrap();
         assert!(chunk_id > 0);
 
         let chunks = get_chunks_by_ids(&conn, &[chunk_id]).unwrap();
@@ -6796,8 +9052,32 @@ mod tests {
         let org_id = setup_org_for_code(&conn);
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
-        insert_code_chunk(&conn, project_id, "src/lib.rs", "h1", Some("rust"), None, 1, 10, "code", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/main.rs", "h2", Some("rust"), None, 1, 5, "main", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "h1",
+            Some("rust"),
+            None,
+            1,
+            10,
+            "code",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/main.rs",
+            "h2",
+            Some("rust"),
+            None,
+            1,
+            5,
+            "main",
+            None,
+        )
+        .unwrap();
 
         delete_chunks_for_file(&conn, project_id, "src/lib.rs").unwrap();
 
@@ -6814,8 +9094,32 @@ mod tests {
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
         // A broad window and a tight symbol chunk both cover line 12.
-        insert_code_chunk(&conn, project_id, "src/lib.rs", "h", Some("rust"), None, 1, 60, "whole window", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/lib.rs", "h", Some("rust"), Some("foo"), 10, 20, "fn foo() {}", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "h",
+            Some("rust"),
+            None,
+            1,
+            60,
+            "whole window",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "h",
+            Some("rust"),
+            Some("foo"),
+            10,
+            20,
+            "fn foo() {}",
+            None,
+        )
+        .unwrap();
 
         let chunk = get_chunk_covering_line(&conn, project_id, "src/lib.rs", 12)
             .unwrap()
@@ -6825,7 +9129,9 @@ mod tests {
 
         // No chunk covers a line past EOF.
         assert!(
-            get_chunk_covering_line(&conn, project_id, "src/lib.rs", 999).unwrap().is_none(),
+            get_chunk_covering_line(&conn, project_id, "src/lib.rs", 999)
+                .unwrap()
+                .is_none(),
             "out-of-range line returns None"
         );
     }
@@ -6837,17 +9143,60 @@ mod tests {
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
         // Two methods of a class, plus a chunk in another file.
-        insert_code_chunk(&conn, project_id, "src/svc.ts", "h", Some("typescript"), Some("two"), 20, 25, "two() {}", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/svc.ts", "h", Some("typescript"), Some("one"), 10, 15, "one() {}", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/other.ts", "h", Some("typescript"), None, 1, 5, "other", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/svc.ts",
+            "h",
+            Some("typescript"),
+            Some("two"),
+            20,
+            25,
+            "two() {}",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/svc.ts",
+            "h",
+            Some("typescript"),
+            Some("one"),
+            10,
+            15,
+            "one() {}",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/other.ts",
+            "h",
+            Some("typescript"),
+            None,
+            1,
+            5,
+            "other",
+            None,
+        )
+        .unwrap();
 
         let chunks = get_file_chunks(&conn, project_id, "src/svc.ts").unwrap();
         assert_eq!(chunks.len(), 2, "only the target file's chunks");
         assert_eq!(chunks[0].start_line, 10, "ordered by start_line");
         assert_eq!(chunks[1].start_line, 20);
         // Range overlap [12, 22] (a class spanning its methods) catches both.
-        let overlapping: Vec<_> = chunks.iter().filter(|c| c.start_line <= 22 && c.end_line >= 12).collect();
-        assert_eq!(overlapping.len(), 2, "class range overlaps both method chunks");
+        let overlapping: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.start_line <= 22 && c.end_line >= 12)
+            .collect();
+        assert_eq!(
+            overlapping.len(),
+            2,
+            "class range overlaps both method chunks"
+        );
     }
 
     #[test]
@@ -6857,8 +9206,23 @@ mod tests {
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
         let embedding: Vec<u8> = vec![0u8; 32]; // dummy blob
-        insert_code_chunk(&conn, project_id, "a.rs", "h1", None, None, 1, 5, "code", Some(&embedding)).unwrap();
-        insert_code_chunk(&conn, project_id, "b.rs", "h2", None, None, 1, 5, "code", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "a.rs",
+            "h1",
+            None,
+            None,
+            1,
+            5,
+            "code",
+            Some(&embedding),
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn, project_id, "b.rs", "h2", None, None, 1, 5, "code", None,
+        )
+        .unwrap();
 
         let pairs = get_code_embeddings(&conn, project_id).unwrap();
         assert_eq!(pairs.len(), 1, "only chunk with embedding must be returned");
@@ -6870,14 +9234,56 @@ mod tests {
         let org_id = setup_org_for_code(&conn);
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
-        insert_code_chunk(&conn, project_id, "src/lib.rs", "deadbeef", None, None, 1, 5, "code", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/lib.rs", "deadbeef", None, None, 6, 10, "more", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/main.rs", "cafebabe", None, None, 1, 3, "main", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "deadbeef",
+            None,
+            None,
+            1,
+            5,
+            "code",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/lib.rs",
+            "deadbeef",
+            None,
+            None,
+            6,
+            10,
+            "more",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/main.rs",
+            "cafebabe",
+            None,
+            None,
+            1,
+            3,
+            "main",
+            None,
+        )
+        .unwrap();
 
         let hashes = list_indexed_files_with_hashes(&conn, project_id).unwrap();
         assert_eq!(hashes.len(), 2, "must deduplicate by file_path");
-        assert_eq!(hashes.get("src/lib.rs").map(|h| h.as_str()), Some("deadbeef"));
-        assert_eq!(hashes.get("src/main.rs").map(|h| h.as_str()), Some("cafebabe"));
+        assert_eq!(
+            hashes.get("src/lib.rs").map(|h| h.as_str()),
+            Some("deadbeef")
+        );
+        assert_eq!(
+            hashes.get("src/main.rs").map(|h| h.as_str()),
+            Some("cafebabe")
+        );
     }
 
     #[test]
@@ -6891,7 +9297,10 @@ mod tests {
         let project = get_code_project(&org_id, "myapp", &conn).unwrap().unwrap();
         assert_eq!(project.file_count, 5);
         assert_eq!(project.chunk_count, 42);
-        assert_eq!(project.last_indexed.as_deref(), Some("2026-06-19T12:00:00Z"));
+        assert_eq!(
+            project.last_indexed.as_deref(),
+            Some("2026-06-19T12:00:00Z")
+        );
     }
 
     #[test]
@@ -6909,11 +9318,15 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Beta', 'beta')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
         // org2 must not see org1's project
         let result = get_code_project("org2", "myapp", &conn).unwrap();
-        assert!(result.is_none(), "org isolation must hold for code projects");
+        assert!(
+            result.is_none(),
+            "org isolation must hold for code projects"
+        );
     }
 
     #[test]
@@ -6923,14 +9336,53 @@ mod tests {
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
         // Insert 3 chunks: before, target, after — all in the same file
-        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("validate_token"), 1, 20, "fn validate_token() {}", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("authenticate_user"), 21, 60, "fn authenticate_user() {}", None).unwrap();
-        insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("refresh_token"), 61, 80, "fn refresh_token() {}", None).unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/auth.rs",
+            "h1",
+            None,
+            Some("validate_token"),
+            1,
+            20,
+            "fn validate_token() {}",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/auth.rs",
+            "h1",
+            None,
+            Some("authenticate_user"),
+            21,
+            60,
+            "fn authenticate_user() {}",
+            None,
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn,
+            project_id,
+            "src/auth.rs",
+            "h1",
+            None,
+            Some("refresh_token"),
+            61,
+            80,
+            "fn refresh_token() {}",
+            None,
+        )
+        .unwrap();
 
-        let context = get_chunk_context(&conn, project_id, "src/auth.rs", "authenticate_user", 1).unwrap();
+        let context =
+            get_chunk_context(&conn, project_id, "src/auth.rs", "authenticate_user", 1).unwrap();
         assert!(!context.is_empty(), "must return at least the target chunk");
         assert!(
-            context.iter().any(|c| c.symbol.as_deref() == Some("authenticate_user")),
+            context
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("authenticate_user")),
             "target chunk must be present"
         );
     }
@@ -6941,8 +9393,12 @@ mod tests {
         let org_id = setup_org_for_code(&conn);
         let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
 
-        let context = get_chunk_context(&conn, project_id, "src/auth.rs", "nonexistent_fn", 1).unwrap();
-        assert!(context.is_empty(), "must return empty vec for unknown symbol");
+        let context =
+            get_chunk_context(&conn, project_id, "src/auth.rs", "nonexistent_fn", 1).unwrap();
+        assert!(
+            context.is_empty(),
+            "must return empty vec for unknown symbol"
+        );
     }
 
     // ── get_memory_facets tests ───────────────────────────────────────────────
@@ -6954,7 +9410,10 @@ mod tests {
 
         let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
         assert!(facets.types.is_empty(), "no memories => no type facets");
-        assert!(facets.projects.is_empty(), "no memories => no project facets");
+        assert!(
+            facets.projects.is_empty(),
+            "no memories => no project facets"
+        );
         // scope may be empty too (no rows)
         assert!(facets.scopes.is_empty(), "no memories => no scope facets");
     }
@@ -6967,29 +9426,41 @@ mod tests {
         // Insert 2 bugfix + 1 decision
         get_or_create_project(&conn, &org.id, "p").unwrap();
         for i in 0..2 {
-            upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
+            upsert_memory(
+                &conn,
+                &org.id,
+                &user.id,
+                &StoreMemoryRequest {
+                    project: Some("p".into()),
+                    tool: "claude".into(),
+                    content: format!("bugfix content {i}"),
+                    tags: None,
+                    title: None,
+                    memory_type: Some("bugfix".into()),
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
+        }
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
                 project: Some("p".into()),
                 tool: "claude".into(),
-                content: format!("bugfix content {i}"),
+                content: "decision content".into(),
                 tags: None,
                 title: None,
-                memory_type: Some("bugfix".into()),
+                memory_type: Some("decision".into()),
                 scope: None,
                 topic_key: None,
                 session_id: None,
-            }).unwrap();
-        }
-        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: Some("p".into()),
-            tool: "claude".into(),
-            content: "decision content".into(),
-            tags: None,
-            title: None,
-            memory_type: Some("decision".into()),
-            scope: None,
-            topic_key: None,
-            session_id: None,
-        }).unwrap();
+            },
+        )
+        .unwrap();
 
         let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
 
@@ -7009,24 +9480,40 @@ mod tests {
 
         get_or_create_project(&conn, &org.id, "proj-a").unwrap();
         get_or_create_project(&conn, &org.id, "proj-b").unwrap();
-        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: Some("proj-a".into()),
-            tool: "claude".into(),
-            content: "content a".into(),
-            tags: None, title: None,
-            memory_type: None,
-            scope: Some("personal".into()),
-            topic_key: None, session_id: None,
-        }).unwrap();
-        upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: Some("proj-b".into()),
-            tool: "claude".into(),
-            content: "content b".into(),
-            tags: None, title: None,
-            memory_type: None,
-            scope: Some("project".into()),
-            topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: Some("proj-a".into()),
+                tool: "claude".into(),
+                content: "content a".into(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: Some("personal".into()),
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
+        upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: Some("proj-b".into()),
+                tool: "claude".into(),
+                content: "content b".into(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: Some("project".into()),
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         let facets = get_memory_facets(&conn, &org.id, "any-user", true).unwrap();
 
@@ -7038,7 +9525,7 @@ mod tests {
 
         // Scopes
         let personal = facets.scopes.iter().find(|f| f.value == "personal");
-        let project  = facets.scopes.iter().find(|f| f.value == "project");
+        let project = facets.scopes.iter().find(|f| f.value == "project");
         assert!(personal.is_some(), "personal scope must appear");
         assert!(project.is_some(), "project scope must appear");
     }
@@ -7046,14 +9533,16 @@ mod tests {
     #[test]
     fn get_memory_facets_scoped_to_org() {
         let conn = setup();
-        let (org_a, user_a, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org_a, user_a, _) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
         // Second org inserted directly
         let org_b_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'OrgB', 'orgb')",
             [&org_b_id],
-        ).unwrap();
+        )
+        .unwrap();
         let user_b_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES (?1, ?2, 'b@b.com', 'B', 'admin', 'active')",
@@ -7062,25 +9551,49 @@ mod tests {
 
         get_or_create_project(&conn, &org_a.id, "proj-a").unwrap();
         get_or_create_project(&conn, &org_b_id, "proj-b").unwrap();
-        upsert_memory(&conn, &org_a.id, &user_a.id, &StoreMemoryRequest {
-            project: Some("proj-a".into()),
-            tool: "claude".into(), content: "a content".into(),
-            tags: None, title: None, memory_type: Some("bugfix".into()),
-            scope: None, topic_key: None, session_id: None,
-        }).unwrap();
-        upsert_memory(&conn, &org_b_id, &user_b_id, &StoreMemoryRequest {
-            project: Some("proj-b".into()),
-            tool: "claude".into(), content: "b content".into(),
-            tags: None, title: None, memory_type: Some("decision".into()),
-            scope: None, topic_key: None, session_id: None,
-        }).unwrap();
+        upsert_memory(
+            &conn,
+            &org_a.id,
+            &user_a.id,
+            &StoreMemoryRequest {
+                project: Some("proj-a".into()),
+                tool: "claude".into(),
+                content: "a content".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("bugfix".into()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
+        upsert_memory(
+            &conn,
+            &org_b_id,
+            &user_b_id,
+            &StoreMemoryRequest {
+                project: Some("proj-b".into()),
+                tool: "claude".into(),
+                content: "b content".into(),
+                tags: None,
+                title: None,
+                memory_type: Some("decision".into()),
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         // Facets for org_a must not see org_b's memories
         let facets_a = get_memory_facets(&conn, &org_a.id, "any-user", true).unwrap();
         assert_eq!(facets_a.projects.len(), 1);
         assert_eq!(facets_a.projects[0].value, "proj-a");
-        assert!(facets_a.types.iter().all(|f| f.value != "decision"),
-            "org_a must not see org_b type 'decision'");
+        assert!(
+            facets_a.types.iter().all(|f| f.value != "decision"),
+            "org_a must not see org_b type 'decision'"
+        );
     }
 
     // ── bulk_delete_memories tests ────────────────────────────────────────────
@@ -7118,10 +9631,27 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, 'member@acme.com', 'Member', 'member', 'active', datetime('now'))",
             rusqlite::params![member_id, org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let admin_mem = legacy_store(&conn, &org.id, &admin.id, "proj", "claude", "admin content", &[]);
-        let member_mem = legacy_store(&conn, &org.id, &member_id, "proj", "claude", "member content", &[]);
+        let admin_mem = legacy_store(
+            &conn,
+            &org.id,
+            &admin.id,
+            "proj",
+            "claude",
+            "admin content",
+            &[],
+        );
+        let member_mem = legacy_store(
+            &conn,
+            &org.id,
+            &member_id,
+            "proj",
+            "claude",
+            "member content",
+            &[],
+        );
 
         // Member tries to bulk-delete both (is_admin = false)
         let ids = vec![admin_mem.id.clone(), member_mem.id.clone()];
@@ -7129,10 +9659,18 @@ mod tests {
 
         // Only the member's own memory should be deleted
         assert_eq!(deleted, 1, "non-admin should only delete own memory");
-        assert!(get_memory_owner(&conn, &org.id, &admin_mem.id).unwrap().is_some(),
-            "admin memory must survive");
-        assert!(get_memory_owner(&conn, &org.id, &member_mem.id).unwrap().is_none(),
-            "member's own memory must be deleted");
+        assert!(
+            get_memory_owner(&conn, &org.id, &admin_mem.id)
+                .unwrap()
+                .is_some(),
+            "admin memory must survive"
+        );
+        assert!(
+            get_memory_owner(&conn, &org.id, &member_mem.id)
+                .unwrap()
+                .is_none(),
+            "member's own memory must be deleted"
+        );
     }
 
     #[test]
@@ -7148,22 +9686,43 @@ mod tests {
         // Use two separate in-memory databases to avoid bootstrap's single-org
         // constraint on the same connection.
         let conn_a = setup();
-        let (org_a, user_a, _) = bootstrap(&conn_a, "OrgA", "orga", "admin@a.com", "AdminA").unwrap();
+        let (org_a, user_a, _) =
+            bootstrap(&conn_a, "OrgA", "orga", "admin@a.com", "AdminA").unwrap();
 
         let conn_b = setup();
-        let (org_b, user_b, _) = bootstrap(&conn_b, "OrgB", "orgb", "admin@b.com", "AdminB").unwrap();
+        let (org_b, user_b, _) =
+            bootstrap(&conn_b, "OrgB", "orgb", "admin@b.com", "AdminB").unwrap();
 
         // Store a memory in org A's DB
-        let mem_a = legacy_store(&conn_a, &org_a.id, &user_a.id, "proj", "claude", "a content", &[]);
+        let mem_a = legacy_store(
+            &conn_a,
+            &org_a.id,
+            &user_a.id,
+            "proj",
+            "claude",
+            "a content",
+            &[],
+        );
 
         // Org B (admin) tries to delete org A's memory ID via org B's connection.
         // The WHERE clause filters by org_b.id so nothing in org_a is touched.
-        let deleted = bulk_delete_memories(&conn_b, &org_b.id, std::slice::from_ref(&mem_a.id), true, &user_b.id).unwrap();
+        let deleted = bulk_delete_memories(
+            &conn_b,
+            &org_b.id,
+            std::slice::from_ref(&mem_a.id),
+            true,
+            &user_b.id,
+        )
+        .unwrap();
         assert_eq!(deleted, 0, "cross-org deletion must not succeed");
 
         // Org A's memory must still exist in org A's DB
-        assert!(get_memory_owner(&conn_a, &org_a.id, &mem_a.id).unwrap().is_some(),
-            "org A memory must be untouched");
+        assert!(
+            get_memory_owner(&conn_a, &org_a.id, &mem_a.id)
+                .unwrap()
+                .is_some(),
+            "org A memory must be untouched"
+        );
     }
 
     #[test]
@@ -7173,10 +9732,13 @@ mod tests {
         let _ = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "real", &[]);
 
         let deleted = bulk_delete_memories(
-            &conn, &org.id,
+            &conn,
+            &org.id,
             &["ghost-1".to_string(), "ghost-2".to_string()],
-            true, &user.id,
-        ).unwrap();
+            true,
+            &user.id,
+        )
+        .unwrap();
         assert_eq!(deleted, 0, "deleting nonexistent IDs should return 0");
     }
 
@@ -7195,8 +9757,11 @@ mod tests {
         assert_eq!(updated, 2, "should update both memories");
 
         let mems = get_memories_by_ids(&conn, &org.id, &ids).unwrap();
-        assert!(mems.iter().all(|m| m.tags.contains(&"important".to_string())),
-            "both memories must have the 'important' tag");
+        assert!(
+            mems.iter()
+                .all(|m| m.tags.contains(&"important".to_string())),
+            "both memories must have the 'important' tag"
+        );
     }
 
     #[test]
@@ -7204,16 +9769,36 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        let m = legacy_store(&conn, &org.id, &user.id, "proj", "claude", "content",
-            &["keep".to_string(), "drop".to_string()]);
+        let m = legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "content",
+            &["keep".to_string(), "drop".to_string()],
+        );
 
-        let updated = bulk_tag_memories(&conn, &org.id, std::slice::from_ref(&m.id), "remove", "drop").unwrap();
+        let updated = bulk_tag_memories(
+            &conn,
+            &org.id,
+            std::slice::from_ref(&m.id),
+            "remove",
+            "drop",
+        )
+        .unwrap();
         assert_eq!(updated, 1);
 
         let remaining = get_memories_by_ids(&conn, &org.id, &[m.id]).unwrap();
         let tags = &remaining[0].tags;
-        assert!(tags.contains(&"keep".to_string()), "'keep' tag must survive");
-        assert!(!tags.contains(&"drop".to_string()), "'drop' tag must be removed");
+        assert!(
+            tags.contains(&"keep".to_string()),
+            "'keep' tag must survive"
+        );
+        assert!(
+            !tags.contains(&"drop".to_string()),
+            "'drop' tag must be removed"
+        );
     }
 
     #[test]
@@ -7224,15 +9809,33 @@ mod tests {
         let conn_b = setup();
         let (org_b, _, _) = bootstrap(&conn_b, "OrgB", "orgb", "b@b.com", "AdminB").unwrap();
 
-        let mem_a = legacy_store(&conn_a, &org_a.id, &user_a.id, "proj", "claude", "content", &[]);
+        let mem_a = legacy_store(
+            &conn_a,
+            &org_a.id,
+            &user_a.id,
+            "proj",
+            "claude",
+            "content",
+            &[],
+        );
 
         // Attempt to tag org_a's memory using org_b's org_id on conn_b
-        let updated = bulk_tag_memories(&conn_b, &org_b.id, std::slice::from_ref(&mem_a.id), "add", "hacked").unwrap();
+        let updated = bulk_tag_memories(
+            &conn_b,
+            &org_b.id,
+            std::slice::from_ref(&mem_a.id),
+            "add",
+            "hacked",
+        )
+        .unwrap();
         assert_eq!(updated, 0, "cross-org tag must not succeed");
 
         // Original memory in org_a must be untouched
         let orig = get_memories_by_ids(&conn_a, &org_a.id, &[mem_a.id]).unwrap();
-        assert!(orig[0].tags.is_empty(), "org_a memory tags must be unchanged");
+        assert!(
+            orig[0].tags.is_empty(),
+            "org_a memory tags must be unchanged"
+        );
     }
 
     // ── webhook query tests ───────────────────────────────────────────────────
@@ -7295,8 +9898,13 @@ mod tests {
         let req = make_create_webhook_req("hook", "https://example.com");
         let created = create_webhook(&conn, &org.id, &req).unwrap();
 
-        let update = UpdateWebhookRequest { active: Some(false), ..Default::default() };
-        let updated = update_webhook(&conn, &org.id, &created.id, &update).unwrap().unwrap();
+        let update = UpdateWebhookRequest {
+            active: Some(false),
+            ..Default::default()
+        };
+        let updated = update_webhook(&conn, &org.id, &created.id, &update)
+            .unwrap()
+            .unwrap();
         assert!(!updated.active, "webhook must be inactive after update");
     }
 
@@ -7304,7 +9912,10 @@ mod tests {
     fn update_webhook_returns_none_for_missing_id() {
         let conn = setup();
         let (org, _, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        let update = UpdateWebhookRequest { active: Some(false), ..Default::default() };
+        let update = UpdateWebhookRequest {
+            active: Some(false),
+            ..Default::default()
+        };
         let result = update_webhook(&conn, &org.id, "nonexistent", &update).unwrap();
         assert!(result.is_none(), "must return None for nonexistent webhook");
     }
@@ -7336,7 +9947,10 @@ mod tests {
 
         // Original must still exist
         let hook = get_webhook(&conn, &created.id, &org.id).unwrap();
-        assert!(hook.is_some(), "webhook must survive cross-org delete attempt");
+        assert!(
+            hook.is_some(),
+            "webhook must survive cross-org delete attempt"
+        );
     }
 
     #[test]
@@ -7349,7 +9963,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Beta', 'beta')",
             [&org_b_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let req = make_create_webhook_req("hook", "https://example.com");
         create_webhook(&conn, &org_a.id, &req).unwrap();
@@ -7361,7 +9976,8 @@ mod tests {
     #[test]
     fn list_all_org_keys_returns_active_keys() {
         let conn = setup();
-        let (org, _, _raw_key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, _, _raw_key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         // The bootstrap creates one active key
         let keys = list_all_org_keys(&conn, &org.id).unwrap();
         assert_eq!(keys.len(), 1, "bootstrap creates exactly one active key");
@@ -7461,15 +10077,31 @@ mod tests {
         assert_eq!(trends.this_month, 3);
 
         // by_type: decision=2, bugfix=1
-        let decision_count = trends.by_type.iter().find(|x| x.name == "decision").map(|x| x.count);
+        let decision_count = trends
+            .by_type
+            .iter()
+            .find(|x| x.name == "decision")
+            .map(|x| x.count);
         assert_eq!(decision_count, Some(2));
-        let bugfix_count = trends.by_type.iter().find(|x| x.name == "bugfix").map(|x| x.count);
+        let bugfix_count = trends
+            .by_type
+            .iter()
+            .find(|x| x.name == "bugfix")
+            .map(|x| x.count);
         assert_eq!(bugfix_count, Some(1));
 
         // by_project: proj-a=2, proj-b=1
-        let proj_a_count = trends.by_project.iter().find(|x| x.name == "proj-a").map(|x| x.count);
+        let proj_a_count = trends
+            .by_project
+            .iter()
+            .find(|x| x.name == "proj-a")
+            .map(|x| x.count);
         assert_eq!(proj_a_count, Some(2));
-        let proj_b_count = trends.by_project.iter().find(|x| x.name == "proj-b").map(|x| x.count);
+        let proj_b_count = trends
+            .by_project
+            .iter()
+            .find(|x| x.name == "proj-b")
+            .map(|x| x.count);
         assert_eq!(proj_b_count, Some(1));
     }
 
@@ -7502,17 +10134,26 @@ mod tests {
 
         // With days=30, the old memory (45 days ago) must be excluded
         let trends_30 = get_memory_trends(&conn, &org.id, 30).unwrap();
-        assert_eq!(trends_30.total, 1, "days=30 must exclude the 45-day-old memory");
-        assert!(!trends_30.by_project.iter().any(|x| x.name == "old-project"),
-            "old-project must not appear in by_project when days=30");
-        assert!(!trends_30.by_type.iter().any(|x| x.name == "discovery"),
-            "discovery type must not appear in by_type when days=30");
+        assert_eq!(
+            trends_30.total, 1,
+            "days=30 must exclude the 45-day-old memory"
+        );
+        assert!(
+            !trends_30.by_project.iter().any(|x| x.name == "old-project"),
+            "old-project must not appear in by_project when days=30"
+        );
+        assert!(
+            !trends_30.by_type.iter().any(|x| x.name == "discovery"),
+            "discovery type must not appear in by_type when days=30"
+        );
 
         // With days=90, both memories must appear
         let trends_90 = get_memory_trends(&conn, &org.id, 90).unwrap();
         assert_eq!(trends_90.total, 2, "days=90 must include both memories");
-        assert!(trends_90.by_project.iter().any(|x| x.name == "old-project"),
-            "old-project must appear when days=90");
+        assert!(
+            trends_90.by_project.iter().any(|x| x.name == "old-project"),
+            "old-project must appear when days=90"
+        );
     }
 
     // ── project event override tests ──────────────────────────────────────────
@@ -7548,7 +10189,8 @@ mod tests {
             auto_index: Some(false),
             scanner: None,
         };
-        let saved = update_project_event_overrides(&conn, &org_id, &project_id, new_overrides).unwrap();
+        let saved =
+            update_project_event_overrides(&conn, &org_id, &project_id, new_overrides).unwrap();
         assert_eq!(saved.resolve_issues, Some(false));
         assert_eq!(saved.review_prs, Some(true));
         assert!(saved.respond_comments.is_none());
@@ -7582,13 +10224,25 @@ mod tests {
         let (org_id, project_id) = setup_project(&conn);
 
         // Set some overrides
-        update_project_event_overrides(&conn, &org_id, &project_id, ProjectEventOverrides {
-            resolve_issues: Some(true),
-            ..Default::default()
-        }).unwrap();
+        update_project_event_overrides(
+            &conn,
+            &org_id,
+            &project_id,
+            ProjectEventOverrides {
+                resolve_issues: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Clear by saving empty overrides (all None = inherit)
-        let cleared = update_project_event_overrides(&conn, &org_id, &project_id, ProjectEventOverrides::default()).unwrap();
+        let cleared = update_project_event_overrides(
+            &conn,
+            &org_id,
+            &project_id,
+            ProjectEventOverrides::default(),
+        )
+        .unwrap();
         // With all-None, the JSON stored is "{}", which deserializes back as all-None
         assert!(cleared.resolve_issues.is_none());
     }
@@ -7600,11 +10254,30 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         // Store two distinct memories
-        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "unique content one", &[]);
-        legacy_store(&conn, &org.id, &user.id, "proj", "claude", "unique content two", &[]);
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "unique content one",
+            &[],
+        );
+        legacy_store(
+            &conn,
+            &org.id,
+            &user.id,
+            "proj",
+            "claude",
+            "unique content two",
+            &[],
+        );
 
         let groups = get_duplicate_groups(&conn, &org.id).unwrap();
-        assert!(groups.is_empty(), "expected no duplicate groups when all memories are distinct");
+        assert!(
+            groups.is_empty(),
+            "expected no duplicate groups when all memories are distinct"
+        );
     }
 
     #[test]
@@ -7622,7 +10295,10 @@ mod tests {
         assert_eq!(groups[0].len(), 2, "group must contain both memories");
 
         // All memories in the group share the same normalized_hash
-        let hashes: Vec<_> = groups[0].iter().map(|m| m.normalized_hash.as_deref().unwrap_or("")).collect();
+        let hashes: Vec<_> = groups[0]
+            .iter()
+            .map(|m| m.normalized_hash.as_deref().unwrap_or(""))
+            .collect();
         assert_eq!(hashes[0], hashes[1], "both entries must have the same hash");
     }
 
@@ -7632,58 +10308,83 @@ mod tests {
     fn archive_memory_sets_archived_at() {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        let mem = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: None,
-            tool: "claude".to_string(),
-            content: "archive me".to_string(),
-            tags: None,
-            title: None,
-            memory_type: None,
-            scope: None,
-            topic_key: None,
-            session_id: None,
-        }).unwrap();
+        let mem = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: None,
+                tool: "claude".to_string(),
+                content: "archive me".to_string(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         assert!(mem.archived_at.is_none(), "new memory must not be archived");
 
         let updated = archive_memory(&conn, &org.id, &mem.id).unwrap();
         assert!(updated, "archive_memory must return true on first archive");
 
-        let val: Option<String> = conn.query_row(
-            "SELECT archived_at FROM memories WHERE id = ?1",
-            [&mem.id],
-            |r| r.get(0),
-        ).unwrap();
-        assert!(val.is_some(), "archived_at must be set after archive_memory");
+        let val: Option<String> = conn
+            .query_row(
+                "SELECT archived_at FROM memories WHERE id = ?1",
+                [&mem.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            val.is_some(),
+            "archived_at must be set after archive_memory"
+        );
     }
 
     #[test]
     fn restore_memory_clears_archived_at() {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-        let mem = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: None,
-            tool: "claude".to_string(),
-            content: "archive then restore".to_string(),
-            tags: None,
-            title: None,
-            memory_type: None,
-            scope: None,
-            topic_key: None,
-            session_id: None,
-        }).unwrap();
+        let mem = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: None,
+                tool: "claude".to_string(),
+                content: "archive then restore".to_string(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         archive_memory(&conn, &org.id, &mem.id).unwrap();
 
         let restored = restore_memory(&conn, &org.id, &mem.id).unwrap();
-        assert!(restored, "restore_memory must return true when memory was archived");
+        assert!(
+            restored,
+            "restore_memory must return true when memory was archived"
+        );
 
-        let val: Option<String> = conn.query_row(
-            "SELECT archived_at FROM memories WHERE id = ?1",
-            [&mem.id],
-            |r| r.get(0),
-        ).unwrap();
-        assert!(val.is_none(), "archived_at must be NULL after restore_memory");
+        let val: Option<String> = conn
+            .query_row(
+                "SELECT archived_at FROM memories WHERE id = ?1",
+                [&mem.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            val.is_none(),
+            "archived_at must be NULL after restore_memory"
+        );
     }
 
     #[test]
@@ -7691,32 +10392,69 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        let mem1 = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: None,
-            tool: "claude".to_string(),
-            content: "active memory".to_string(),
-            tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
-        }).unwrap();
-        let mem2 = upsert_memory(&conn, &org.id, &user.id, &StoreMemoryRequest {
-            project: None,
-            tool: "claude".to_string(),
-            content: "archived memory".to_string(),
-            tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
-        }).unwrap();
+        let mem1 = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: None,
+                tool: "claude".to_string(),
+                content: "active memory".to_string(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
+        let mem2 = upsert_memory(
+            &conn,
+            &org.id,
+            &user.id,
+            &StoreMemoryRequest {
+                project: None,
+                tool: "claude".to_string(),
+                content: "archived memory".to_string(),
+                tags: None,
+                title: None,
+                memory_type: None,
+                scope: None,
+                topic_key: None,
+                session_id: None,
+            },
+        )
+        .unwrap();
 
         archive_memory(&conn, &org.id, &mem2.id).unwrap();
 
         // Default (include_archived=false) must exclude archived
-        let active = list_memories(&conn, &org.id, None, None, None, None, None, None, 50, 0, false, None, None, None).unwrap();
+        let active = list_memories(
+            &conn, &org.id, None, None, None, None, None, None, 50, 0, false, None, None, None,
+        )
+        .unwrap();
         let ids: Vec<_> = active.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&mem1.id.as_str()), "active memory must appear");
-        assert!(!ids.contains(&mem2.id.as_str()), "archived memory must be excluded by default");
+        assert!(
+            !ids.contains(&mem2.id.as_str()),
+            "archived memory must be excluded by default"
+        );
 
         // include_archived=true must include both
-        let all = list_memories(&conn, &org.id, None, None, None, None, None, None, 50, 0, true, None, None, None).unwrap();
+        let all = list_memories(
+            &conn, &org.id, None, None, None, None, None, None, 50, 0, true, None, None, None,
+        )
+        .unwrap();
         let all_ids: Vec<_> = all.iter().map(|m| m.id.as_str()).collect();
-        assert!(all_ids.contains(&mem1.id.as_str()), "active memory must appear when include_archived=true");
-        assert!(all_ids.contains(&mem2.id.as_str()), "archived memory must appear when include_archived=true");
+        assert!(
+            all_ids.contains(&mem1.id.as_str()),
+            "active memory must appear when include_archived=true"
+        );
+        assert!(
+            all_ids.contains(&mem2.id.as_str()),
+            "archived memory must appear when include_archived=true"
+        );
     }
 }
 
@@ -7759,11 +10497,32 @@ fn list_memories_by_hash(conn: &Connection, org_id: &str, hash: &str) -> Result<
 
     let mut memories = Vec::new();
     for row in rows {
-        let (id, org_id, user_id, project, tool, content, tags_str, created_at,
-             title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-             archived_at, pinned_i64) = row?;
+        let (
+            id,
+            org_id,
+            user_id,
+            project,
+            tool,
+            content,
+            tags_str,
+            created_at,
+            title,
+            memory_type,
+            scope,
+            topic_key,
+            session_id,
+            revision_count,
+            normalized_hash,
+            project_id,
+            archived_at,
+            pinned_i64,
+        ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
+        let status = if archived_at.is_some() {
+            "archived".to_string()
+        } else {
+            "active".to_string()
+        };
         memories.push(Memory {
             id,
             org_id,
@@ -7802,7 +10561,8 @@ pub fn get_duplicate_groups(conn: &Connection, org_id: &str) -> Result<Vec<Vec<M
              WHERE org_id = ?1 AND normalized_hash IS NOT NULL
              GROUP BY normalized_hash HAVING COUNT(*) > 1",
         )?;
-        let result = stmt.query_map([org_id], |r| r.get(0))?
+        let result = stmt
+            .query_map([org_id], |r| r.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         result
     };
@@ -7819,7 +10579,10 @@ pub fn get_duplicate_groups(conn: &Connection, org_id: &str) -> Result<Vec<Vec<M
 
 /// Returns a health summary for the org's memory corpus.
 /// Used by `GET /v1/admin/memories/health`.
-pub fn get_memory_health(conn: &Connection, org_id: &str) -> Result<crate::models::types::MemoryHealth> {
+pub fn get_memory_health(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<crate::models::types::MemoryHealth> {
     let total_memories: i64 = conn.query_row(
         "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND archived_at IS NULL",
         [org_id],
@@ -7862,7 +10625,12 @@ pub fn get_memory_health(conn: &Connection, org_id: &str) -> Result<crate::model
 /// Merges two memories: appends `merge_id`'s content to `keep_id`'s content (separated by
 /// `\n\n---\n\n`), then deletes `merge_id`. Both must belong to the given org.
 /// Returns the updated `keep_id` memory on success, or an error if either memory is not found.
-pub fn merge_memories(conn: &Connection, org_id: &str, keep_id: &str, merge_id: &str) -> Result<Memory> {
+pub fn merge_memories(
+    conn: &Connection,
+    org_id: &str,
+    keep_id: &str,
+    merge_id: &str,
+) -> Result<Memory> {
     // Validate both memories exist in the org
     let keep_exists: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM memories WHERE id = ?1 AND org_id = ?2",
@@ -7903,7 +10671,11 @@ pub fn merge_memories(conn: &Connection, org_id: &str, keep_id: &str, merge_id: 
 }
 
 /// Returns agent/tool activity for the last 30 days — ordered by `memories_last_7d DESC`.
-pub fn get_agent_activity(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::AgentActivity>> {
+pub fn get_agent_activity(
+    conn: &Connection,
+    org_id: &str,
+    days: i64,
+) -> Result<Vec<crate::models::types::AgentActivity>> {
     use crate::models::types::AgentActivity;
 
     let mut stmt = conn.prepare(
@@ -7968,11 +10740,13 @@ pub fn get_onboarding_status(conn: &Connection, org_id: &str) -> Result<Onboardi
         |r| r.get::<_, bool>(0),
     )?;
 
-    let events_configured: bool = conn.query_row(
-        "SELECT COALESCE(settings, '{}') != '{}' FROM organizations WHERE id = ?1",
-        [org_id],
-        |r| r.get::<_, bool>(0),
-    ).unwrap_or(false);
+    let events_configured: bool = conn
+        .query_row(
+            "SELECT COALESCE(settings, '{}') != '{}' FROM organizations WHERE id = ?1",
+            [org_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
 
     let items = vec![
         OnboardingItem {
@@ -8028,11 +10802,7 @@ pub fn create_invite_link(
     created_by: &str,
 ) -> Result<InviteLink> {
     // 32-char hex token (strip dashes from two UUIDs, take first 32 chars)
-    let raw = format!(
-        "{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    );
+    let raw = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let token = &raw[..32];
 
     conn.execute(
@@ -8047,11 +10817,11 @@ pub fn create_invite_link(
         [token],
         |row| {
             Ok(InviteLink {
-                token:      row.get(0)?,
-                org_id:     row.get(1)?,
-                role:       row.get(2)?,
+                token: row.get(0)?,
+                org_id: row.get(1)?,
+                role: row.get(2)?,
                 created_by: row.get(3)?,
-                used_at:    row.get(4)?,
+                used_at: row.get(4)?,
                 expires_at: row.get(5)?,
                 created_at: row.get(6)?,
             })
@@ -8082,11 +10852,11 @@ pub fn use_invite_link(conn: &Connection, token: &str) -> Result<InviteLink> {
         [token],
         |row| {
             Ok(InviteLink {
-                token:      row.get(0)?,
-                org_id:     row.get(1)?,
-                role:       row.get(2)?,
+                token: row.get(0)?,
+                org_id: row.get(1)?,
+                role: row.get(2)?,
                 created_by: row.get(3)?,
-                used_at:    row.get(4)?,
+                used_at: row.get(4)?,
                 expires_at: row.get(5)?,
                 created_at: row.get(6)?,
             })
@@ -8106,11 +10876,11 @@ pub fn get_invite_link(conn: &Connection, token: &str) -> Result<InviteLink> {
             [token],
             |row| {
                 Ok(InviteLink {
-                    token:      row.get(0)?,
-                    org_id:     row.get(1)?,
-                    role:       row.get(2)?,
+                    token: row.get(0)?,
+                    org_id: row.get(1)?,
+                    role: row.get(2)?,
                     created_by: row.get(3)?,
-                    used_at:    row.get(4)?,
+                    used_at: row.get(4)?,
                     expires_at: row.get(5)?,
                     created_at: row.get(6)?,
                 })
@@ -8159,7 +10929,14 @@ pub fn redeem_invite(
     conn.execute(
         "INSERT INTO users (id, org_id, email, name, role, status, password_hash, created_at)
          VALUES (?1, ?2, NULL, ?3, ?4, 'active', ?5, ?6)",
-        rusqlite::params![user_id, invite.org_id, name, invite.role, password_hash, now],
+        rusqlite::params![
+            user_id,
+            invite.org_id,
+            name,
+            invite.role,
+            password_hash,
+            now
+        ],
     )?;
 
     // Create a Personal API key
@@ -8196,13 +10973,19 @@ pub fn redeem_invite(
 
 /// Returns memory statistics for a project by project ID.
 /// Looks up the project name first, then queries memories by org_id + project name.
-pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> Result<crate::models::types::ProjectStats> {
+pub fn get_project_stats(
+    conn: &Connection,
+    org_id: &str,
+    project_id: &str,
+) -> Result<crate::models::types::ProjectStats> {
     // Look up the project name from ID
-    let project_name: Option<String> = conn.query_row(
-        "SELECT name FROM projects WHERE id = ?1 AND org_id = ?2",
-        rusqlite::params![project_id, org_id],
-        |row| row.get(0),
-    ).optional()?;
+    let project_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM projects WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![project_id, org_id],
+            |row| row.get(0),
+        )
+        .optional()?;
 
     let project_name = project_name.ok_or_else(|| anyhow::anyhow!("project_not_found"))?;
 
@@ -8230,9 +11013,11 @@ pub fn get_project_stats(conn: &Connection, org_id: &str, project_id: &str) -> R
            AND tags IS NOT NULL AND tags != '[]' AND tags != 'null'
          GROUP BY value ORDER BY cnt DESC LIMIT 5",
     )?;
-    let tags = stmt.query_map(rusqlite::params![org_id, &project_name], |row| {
-        row.get::<_, String>(0)
-    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let tags = stmt
+        .query_map(rusqlite::params![org_id, &project_name], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(crate::models::types::ProjectStats {
         total_memories,
@@ -8288,7 +11073,11 @@ pub fn list_over_enrolled_projects(
 /// Returns the top contributing agents (by memory count) in the last 30 days.
 /// Groups by user_id (the agent/user that stored the memory).
 /// Returned by `GET /v1/admin/stats/top-contributors`.
-pub fn get_top_contributors(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::ContributorStat>> {
+pub fn get_top_contributors(
+    conn: &Connection,
+    org_id: &str,
+    days: i64,
+) -> Result<Vec<crate::models::types::ContributorStat>> {
     let mut stmt = conn.prepare(
         "SELECT
            COALESCE(m.user_id, 'unknown') as user_id,
@@ -8307,17 +11096,21 @@ pub fn get_top_contributors(conn: &Connection, org_id: &str, days: i64) -> Resul
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
         Ok(crate::models::types::ContributorStat {
-            user_id:       row.get(0)?,
-            memory_count:  row.get(1)?,
+            user_id: row.get(0)?,
+            memory_count: row.get(1)?,
             last_activity: row.get(2)?,
-            user_name:     row.get(3)?,
-            user_email:    row.get(4)?,
+            user_name: row.get(3)?,
+            user_email: row.get(4)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub fn get_memory_heatmap(conn: &Connection, org_id: &str, days: i64) -> Result<Vec<crate::models::types::HeatmapDay>> {
+pub fn get_memory_heatmap(
+    conn: &Connection,
+    org_id: &str,
+    days: i64,
+) -> Result<Vec<crate::models::types::HeatmapDay>> {
     let mut stmt = conn.prepare(
         "SELECT date(created_at) as day, COUNT(*) as count
          FROM memories
@@ -8329,7 +11122,7 @@ pub fn get_memory_heatmap(conn: &Connection, org_id: &str, days: i64) -> Result<
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, days], |row| {
         Ok(crate::models::types::HeatmapDay {
-            day:   row.get(0)?,
+            day: row.get(0)?,
             count: row.get(1)?,
         })
     })?;
@@ -8397,7 +11190,10 @@ mod invite_link_tests {
 
         let result = get_invite_link(&conn, &invite.token);
         assert!(result.is_err(), "used token must be rejected");
-        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invite_already_used"));
     }
 
     #[test]
@@ -8415,8 +11211,14 @@ mod invite_link_tests {
 
         // The invite must now be marked as used
         let result = get_invite_link(&conn, &invite.token);
-        assert!(result.is_err(), "redeemed invite must be rejected on re-use");
-        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+        assert!(
+            result.is_err(),
+            "redeemed invite must be rejected on re-use"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invite_already_used"));
     }
 
     #[test]
@@ -8430,7 +11232,10 @@ mod invite_link_tests {
         // Second redeem must fail
         let result = redeem_invite(&conn, &invite.token, "Carol", "pw2");
         assert!(result.is_err(), "second redeem must fail");
-        assert!(result.unwrap_err().to_string().contains("invite_already_used"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invite_already_used"));
     }
 }
 
@@ -8445,7 +11250,8 @@ mod memory_heatmap_tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
             [],
@@ -8484,8 +11290,14 @@ mod memory_heatmap_tests {
             .format("%Y-%m-%d")
             .to_string();
 
-        let today = days.iter().find(|d| d.day == today_str).expect("today must be present");
-        let yesterday = days.iter().find(|d| d.day == yesterday_str).expect("yesterday must be present");
+        let today = days
+            .iter()
+            .find(|d| d.day == today_str)
+            .expect("today must be present");
+        let yesterday = days
+            .iter()
+            .find(|d| d.day == yesterday_str)
+            .expect("yesterday must be present");
 
         assert_eq!(today.count, 5, "today must have 5 memories");
         assert_eq!(yesterday.count, 3, "yesterday must have 3 memories");
@@ -8503,7 +11315,8 @@ mod top_contributors_tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Two distinct users (agents)
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('alice', 'org1', 'alice@acme.com', 'Alice', 'member', 'active')",
@@ -8546,9 +11359,14 @@ mod top_contributors_tests {
         assert_eq!(contributors[0].user_id, "alice", "alice must rank first");
         assert_eq!(contributors[0].memory_count, 5, "alice must have count=5");
         assert_eq!(contributors[0].user_name.as_deref(), Some("Alice"));
-        assert_eq!(contributors[0].user_email.as_deref(), Some("alice@acme.com"));
+        assert_eq!(
+            contributors[0].user_email.as_deref(),
+            Some("alice@acme.com")
+        );
 
-        let bob = contributors.iter().find(|c| c.user_id == "bob")
+        let bob = contributors
+            .iter()
+            .find(|c| c.user_id == "bob")
             .expect("bob must be present");
         assert_eq!(bob.memory_count, 2, "bob must have 2 memories");
     }
@@ -8565,7 +11383,8 @@ mod project_stats_tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
             [],
@@ -8593,8 +11412,14 @@ mod project_stats_tests {
 
         let stats = get_project_stats(&conn, "org1", &project.id).unwrap();
         assert_eq!(stats.total_memories, 3, "total_memories should be 3");
-        assert_eq!(stats.memories_this_week, 3, "memories_this_week should be 3 (just inserted)");
-        assert!(stats.last_memory_at.is_some(), "last_memory_at should be set");
+        assert_eq!(
+            stats.memories_this_week, 3,
+            "memories_this_week should be 3 (just inserted)"
+        );
+        assert!(
+            stats.last_memory_at.is_some(),
+            "last_memory_at should be set"
+        );
     }
 
     #[test]
@@ -8603,8 +11428,14 @@ mod project_stats_tests {
         let project = create_project(&conn, "org1", "empty-project", None, None).unwrap();
         let stats = get_project_stats(&conn, "org1", &project.id).unwrap();
         assert_eq!(stats.total_memories, 0, "total_memories should be 0");
-        assert_eq!(stats.memories_this_week, 0, "memories_this_week should be 0, not NULL");
-        assert!(stats.last_memory_at.is_none(), "last_memory_at should be None");
+        assert_eq!(
+            stats.memories_this_week, 0,
+            "memories_this_week should be 0, not NULL"
+        );
+        assert!(
+            stats.last_memory_at.is_none(),
+            "last_memory_at should be None"
+        );
         assert!(stats.top_tags.is_empty(), "top_tags should be empty");
     }
 }
@@ -8627,7 +11458,16 @@ pub fn list_conventions(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Convention>> {
-    list_conventions_visible(conn, org_id, category, include_archived, project, limit, offset, None)
+    list_conventions_visible(
+        conn,
+        org_id,
+        category,
+        include_archived,
+        project,
+        limit,
+        offset,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8659,7 +11499,9 @@ pub fn list_conventions_visible(
         param_idx += 1;
     }
     if let Some(p) = project {
-        sql.push_str(&format!(" AND (project_id IS NULL OR project_id = ?{param_idx})"));
+        sql.push_str(&format!(
+            " AND (project_id IS NULL OR project_id = ?{param_idx})"
+        ));
         extra_params.push(p.to_string());
         param_idx += 1;
     }
@@ -8732,10 +11574,19 @@ pub fn create_convention(
     conn.execute(
         "INSERT INTO conventions (org_id, project_id, title, content, category, weight, tags)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![org_id, req.project_id, req.title, req.content, category, weight, tags_json],
+        rusqlite::params![
+            org_id,
+            req.project_id,
+            req.title,
+            req.content,
+            category,
+            weight,
+            tags_json
+        ],
     )?;
     let id = conn.last_insert_rowid();
-    get_convention(conn, org_id, id)?.ok_or_else(|| anyhow::anyhow!("convention not found after insert"))
+    get_convention(conn, org_id, id)?
+        .ok_or_else(|| anyhow::anyhow!("convention not found after insert"))
 }
 
 pub fn update_convention(
@@ -8820,7 +11671,8 @@ mod convention_scope_tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1', 'org1', 'admin@acme.com', 'Admin', 'admin', 'active')",
             [],
@@ -8848,11 +11700,21 @@ mod convention_scope_tests {
 
         create_convention(&conn, &org_id, &make_req("Org-wide rule", None)).unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
-        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
+        let for_a =
+            list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
+        let for_b =
+            list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
 
-        assert_eq!(for_a.len(), 1, "org-wide convention must apply to project A");
-        assert_eq!(for_b.len(), 1, "org-wide convention must apply to project B");
+        assert_eq!(
+            for_a.len(),
+            1,
+            "org-wide convention must apply to project A"
+        );
+        assert_eq!(
+            for_b.len(),
+            1,
+            "org-wide convention must apply to project B"
+        );
     }
 
     #[test]
@@ -8862,13 +11724,28 @@ mod convention_scope_tests {
         let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
         let project_b = create_project(&conn, &org_id, "proj-b", None, None).unwrap();
 
-        create_convention(&conn, &org_id, &make_req("Proj A rule", Some(&project_a.id))).unwrap();
+        create_convention(
+            &conn,
+            &org_id,
+            &make_req("Proj A rule", Some(&project_a.id)),
+        )
+        .unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
-        let for_b = list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
+        let for_a =
+            list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
+        let for_b =
+            list_conventions(&conn, &org_id, None, None, Some(&project_b.id), 1000, 0).unwrap();
 
-        assert_eq!(for_a.len(), 1, "project-scoped convention must apply to its own project");
-        assert_eq!(for_b.len(), 0, "project-scoped convention must NOT apply to a different project");
+        assert_eq!(
+            for_a.len(),
+            1,
+            "project-scoped convention must apply to its own project"
+        );
+        assert_eq!(
+            for_b.len(),
+            0,
+            "project-scoped convention must NOT apply to a different project"
+        );
     }
 
     #[test]
@@ -8881,7 +11758,11 @@ mod convention_scope_tests {
         create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
 
         let all = list_conventions(&conn, &org_id, None, None, None, 1000, 0).unwrap();
-        assert_eq!(all.len(), 2, "None must return everything for the org regardless of project_id (admin listing)");
+        assert_eq!(
+            all.len(),
+            2,
+            "None must return everything for the org regardless of project_id (admin listing)"
+        );
     }
 
     #[test]
@@ -8895,12 +11776,20 @@ mod convention_scope_tests {
         create_convention(&conn, &org_id, &make_req("Proj A", Some(&project_a.id))).unwrap();
         create_convention(&conn, &org_id, &make_req("Proj Q", Some(&project_q.id))).unwrap();
 
-        let for_a = list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
+        let for_a =
+            list_conventions(&conn, &org_id, None, None, Some(&project_a.id), 1000, 0).unwrap();
         let titles: Vec<&str> = for_a.iter().map(|c| c.title.as_str()).collect();
-        assert_eq!(for_a.len(), 2, "resolving for project A must be org-wide UNION project A");
+        assert_eq!(
+            for_a.len(),
+            2,
+            "resolving for project A must be org-wide UNION project A"
+        );
         assert!(titles.contains(&"Org-wide"));
         assert!(titles.contains(&"Proj A"));
-        assert!(!titles.contains(&"Proj Q"), "project Q's convention must not leak into project A's resolution");
+        assert!(
+            !titles.contains(&"Proj Q"),
+            "project Q's convention must not leak into project A's resolution"
+        );
     }
 
     #[test]
@@ -8917,7 +11806,16 @@ mod convention_scope_tests {
         proj_a_naming.category = Some("naming".to_string());
         create_convention(&conn, &org_id, &proj_a_naming).unwrap();
 
-        let style_for_a = list_conventions(&conn, &org_id, Some("style"), None, Some(&project_a.id), 1000, 0).unwrap();
+        let style_for_a = list_conventions(
+            &conn,
+            &org_id,
+            Some("style"),
+            None,
+            Some(&project_a.id),
+            1000,
+            0,
+        )
+        .unwrap();
         assert_eq!(style_for_a.len(), 1);
         assert_eq!(style_for_a[0].title, "Org-wide style");
     }
@@ -8970,10 +11868,7 @@ pub fn get_github_connection(conn: &Connection, org_id: &str) -> Result<Option<G
 /// Deletes the GitHub OAuth connection for the given org.
 /// Returns true if a row was deleted, false if no connection existed.
 pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool> {
-    let n = conn.execute(
-        "DELETE FROM github_connections WHERE org_id = ?1",
-        [org_id],
-    )?;
+    let n = conn.execute("DELETE FROM github_connections WHERE org_id = ?1", [org_id])?;
     Ok(n > 0)
 }
 
@@ -8981,7 +11876,11 @@ pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool>
 
 /// Store an AES-256-GCM–encrypted PAT for a code project.
 /// Pass the already-encrypted blob (hex-encoded). Clears it when `None`.
-pub fn set_code_project_token(conn: &Connection, project_id: i64, encrypted: Option<&str>) -> Result<()> {
+pub fn set_code_project_token(
+    conn: &Connection,
+    project_id: i64,
+    encrypted: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "UPDATE code_projects SET github_token_encrypted = ?1 WHERE id = ?2",
         rusqlite::params![encrypted, project_id],
@@ -8995,7 +11894,9 @@ pub fn get_code_project_token(conn: &Connection, project_id: i64) -> Result<Opti
         "SELECT github_token_encrypted FROM code_projects WHERE id = ?1",
         [project_id],
         |row| row.get(0),
-    ).optional().map_err(Into::into)
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 // ── Agent queries ─────────────────────────────────────────────────────────────
@@ -9019,7 +11920,8 @@ pub fn list_agents(conn: &Connection, org_id: &str) -> Result<Vec<Agent>> {
          FROM agents WHERE org_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([org_id], agent_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn get_agent(conn: &Connection, org_id: &str, id: &str) -> Result<Option<Agent>> {
@@ -9084,7 +11986,8 @@ pub fn list_agent_assignments(
             created_at: row.get(4)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 // ── Code knowledge graph persistence ─────────────────────────────────────────
@@ -9119,11 +12022,11 @@ pub fn persist_structure(
 
         // Insert folders from root down
         let mut prev_qname = project_qname.clone();
-        let mut prev_type  = "project";
+        let mut prev_type = "project";
         for depth in 0..parts.len().saturating_sub(1) {
             let folder_path: String = parts[..=depth].join("/");
             let folder_qname = format!("folder::{}", folder_path);
-            let folder_name  = parts[depth];
+            let folder_name = parts[depth];
             tx.execute(
                 "INSERT OR IGNORE INTO code_symbols \
                  (code_project_id, symbol_type, name, qualified_name, language) \
@@ -9144,7 +12047,7 @@ pub fn persist_structure(
                 rusqlite::params![code_project_id, prev_qname, folder_qname, edge_type],
             )?;
             prev_qname = folder_qname;
-            prev_type  = "folder";
+            prev_type = "folder";
         }
 
         // File node
@@ -9365,10 +12268,8 @@ pub fn get_graph(
         3 + node_types.len(),
     );
 
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(code_project_id),
-        Box::new(limit),
-    ];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(code_project_id), Box::new(limit)];
     for t in node_types {
         params.push(Box::new(t.clone()));
     }
@@ -9380,14 +12281,14 @@ pub fn get_graph(
     let nodes: Vec<GraphNodeDto> = stmt
         .query_map(params_refs.as_slice(), |row| {
             Ok(GraphNodeDto {
-                id:             row.get(0)?,
-                node_type:      row.get(1)?,
-                name:           row.get(2)?,
+                id: row.get(0)?,
+                node_type: row.get(1)?,
+                name: row.get(2)?,
                 qualified_name: row.get(3)?,
-                file_path:      row.get(4)?,
-                start_line:     row.get(5)?,
-                end_line:       row.get(6)?,
-                language:       row.get(7)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+                language: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -9435,9 +12336,9 @@ pub fn get_graph(
     let edges: Vec<GraphEdgeDto> = estmt
         .query_map(edge_refs.as_slice(), |row| {
             Ok(GraphEdgeDto {
-                id:        row.get(0)?,
-                from_id:   row.get(1)?,
-                to_id:     row.get(2)?,
+                id: row.get(0)?,
+                from_id: row.get(1)?,
+                to_id: row.get(2)?,
                 edge_type: row.get(3)?,
             })
         })?
@@ -9464,7 +12365,8 @@ fn lookup_labels(
         "SELECT id, {label_expr} FROM {table} WHERE id IN ({})",
         placeholders.join(", ")
     );
-    let params: Vec<&dyn rusqlite::ToSql> = id_vec.iter().map(|s| *s as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        id_vec.iter().map(|s| *s as &dyn rusqlite::ToSql).collect();
     let mut stmt = conn.prepare(&sql)?;
     let pairs: Vec<(String, String)> = stmt
         .query_map(params.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -9510,24 +12412,27 @@ pub fn get_memory_graph(
     )?;
 
     let rows: Vec<MemRow> = stmt
-        .query_map(rusqlite::params![org_id, project, since, limit, offset], |row| {
-            let tags_str: String = row.get(6)?;
-            let title: Option<String> = row.get(7)?;
-            let content: String = row.get(8)?;
-            let label = title
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| content.chars().take(60).collect());
-            Ok(MemRow {
-                id:            row.get(0)?,
-                project:       row.get(1)?,
-                project_id:    row.get(2)?,
-                user_id:       row.get(3)?,
-                session_id:    row.get(4)?,
-                collection_id: row.get(5)?,
-                tags: serde_json::from_str(&tags_str).unwrap_or_default(),
-                label,
-            })
-        })?
+        .query_map(
+            rusqlite::params![org_id, project, since, limit, offset],
+            |row| {
+                let tags_str: String = row.get(6)?;
+                let title: Option<String> = row.get(7)?;
+                let content: String = row.get(8)?;
+                let label = title
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| content.chars().take(60).collect());
+                Ok(MemRow {
+                    id: row.get(0)?,
+                    project: row.get(1)?,
+                    project_id: row.get(2)?,
+                    user_id: row.get(3)?,
+                    session_id: row.get(4)?,
+                    collection_id: row.get(5)?,
+                    tags: serde_json::from_str(&tags_str).unwrap_or_default(),
+                    label,
+                })
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut nodes: HashMap<String, MemGraphNode> = HashMap::new();
@@ -9543,7 +12448,11 @@ pub fn get_memory_graph(
             let node_id = format!("memory:{}", r.id);
             nodes.insert(
                 node_id.clone(),
-                MemGraphNode { id: node_id, node_type: "Memory".to_string(), label: r.label.clone() },
+                MemGraphNode {
+                    id: node_id,
+                    node_type: "Memory".to_string(),
+                    label: r.label.clone(),
+                },
             );
         }
 
@@ -9561,7 +12470,8 @@ pub fn get_memory_graph(
             HashMap::new()
         } else {
             let names: Vec<&String> = legacy_names.iter().collect();
-            let placeholders: Vec<String> = (2..=1 + names.len()).map(|n| format!("?{n}")).collect();
+            let placeholders: Vec<String> =
+                (2..=1 + names.len()).map(|n| format!("?{n}")).collect();
             let sql = format!(
                 "SELECT name, id FROM projects WHERE org_id = ?1 AND name IN ({})",
                 placeholders.join(", ")
@@ -9572,7 +12482,9 @@ pub fn get_memory_graph(
             }
             let mut stmt = conn.prepare(&sql)?;
             let pairs: Vec<(String, String)> = stmt
-                .query_map(params.as_slice(), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .query_map(params.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             pairs.into_iter().collect()
         };
@@ -9592,15 +12504,17 @@ pub fn get_memory_graph(
                     None => format!("project:name:{}", r.project),
                 },
             };
-            nodes.entry(canonical_id.clone()).or_insert_with(|| MemGraphNode {
-                id:        canonical_id.clone(),
-                node_type: "Project".to_string(),
-                label:     r.project.clone(),
-            });
+            nodes
+                .entry(canonical_id.clone())
+                .or_insert_with(|| MemGraphNode {
+                    id: canonical_id.clone(),
+                    node_type: "Project".to_string(),
+                    label: r.project.clone(),
+                });
             edges.push(MemGraphEdge {
-                id:        format!("belongs_to:memory:{}:{}", r.id, canonical_id),
-                from_id:   format!("memory:{}", r.id),
-                to_id:     canonical_id,
+                id: format!("belongs_to:memory:{}:{}", r.id, canonical_id),
+                from_id: format!("memory:{}", r.id),
+                to_id: canonical_id,
                 edge_type: "belongs_to".to_string(),
             });
         }
@@ -9613,19 +12527,32 @@ pub fn get_memory_graph(
         }
 
         // Session nodes + `in_session` edges (omitted when session_id is NULL)
-        let session_ids: HashSet<String> = rows.iter().filter_map(|r| r.session_id.clone()).collect();
-        let session_labels = lookup_labels(conn, "sessions", "COALESCE(name, summary, id)", &session_ids)?;
+        let session_ids: HashSet<String> =
+            rows.iter().filter_map(|r| r.session_id.clone()).collect();
+        let session_labels = lookup_labels(
+            conn,
+            "sessions",
+            "COALESCE(name, summary, id)",
+            &session_ids,
+        )?;
         for r in &rows {
             if let Some(sid) = &r.session_id {
                 let node_id = format!("session:{sid}");
-                let label = session_labels.get(sid).cloned().unwrap_or_else(|| sid.clone());
-                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                    id: node_id.clone(), node_type: "Session".to_string(), label,
-                });
+                let label = session_labels
+                    .get(sid)
+                    .cloned()
+                    .unwrap_or_else(|| sid.clone());
+                nodes
+                    .entry(node_id.clone())
+                    .or_insert_with(|| MemGraphNode {
+                        id: node_id.clone(),
+                        node_type: "Session".to_string(),
+                        label,
+                    });
                 edges.push(MemGraphEdge {
-                    id:        format!("in_session:memory:{}:{}", r.id, node_id),
-                    from_id:   format!("memory:{}", r.id),
-                    to_id:     node_id,
+                    id: format!("in_session:memory:{}:{}", r.id, node_id),
+                    from_id: format!("memory:{}", r.id),
+                    to_id: node_id,
                     edge_type: "in_session".to_string(),
                 });
             }
@@ -9636,32 +12563,49 @@ pub fn get_memory_graph(
         let user_labels = lookup_labels(conn, "users", "name", &user_ids)?;
         for r in &rows {
             let node_id = format!("user:{}", r.user_id);
-            let label = user_labels.get(&r.user_id).cloned().unwrap_or_else(|| r.user_id.clone());
-            nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                id: node_id.clone(), node_type: "User".to_string(), label,
-            });
+            let label = user_labels
+                .get(&r.user_id)
+                .cloned()
+                .unwrap_or_else(|| r.user_id.clone());
+            nodes
+                .entry(node_id.clone())
+                .or_insert_with(|| MemGraphNode {
+                    id: node_id.clone(),
+                    node_type: "User".to_string(),
+                    label,
+                });
             edges.push(MemGraphEdge {
-                id:        format!("created_by:memory:{}:{}", r.id, node_id),
-                from_id:   format!("memory:{}", r.id),
-                to_id:     node_id,
+                id: format!("created_by:memory:{}:{}", r.id, node_id),
+                from_id: format!("memory:{}", r.id),
+                to_id: node_id,
                 edge_type: "created_by".to_string(),
             });
         }
 
         // Collection nodes + `in_collection` edges (omitted when collection_id is NULL)
-        let collection_ids: HashSet<String> = rows.iter().filter_map(|r| r.collection_id.clone()).collect();
+        let collection_ids: HashSet<String> = rows
+            .iter()
+            .filter_map(|r| r.collection_id.clone())
+            .collect();
         let collection_labels = lookup_labels(conn, "collections", "name", &collection_ids)?;
         for r in &rows {
             if let Some(cid) = &r.collection_id {
                 let node_id = format!("collection:{cid}");
-                let label = collection_labels.get(cid).cloned().unwrap_or_else(|| cid.clone());
-                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                    id: node_id.clone(), node_type: "Collection".to_string(), label,
-                });
+                let label = collection_labels
+                    .get(cid)
+                    .cloned()
+                    .unwrap_or_else(|| cid.clone());
+                nodes
+                    .entry(node_id.clone())
+                    .or_insert_with(|| MemGraphNode {
+                        id: node_id.clone(),
+                        node_type: "Collection".to_string(),
+                        label,
+                    });
                 edges.push(MemGraphEdge {
-                    id:        format!("in_collection:memory:{}:{}", r.id, node_id),
-                    from_id:   format!("memory:{}", r.id),
-                    to_id:     node_id,
+                    id: format!("in_collection:memory:{}:{}", r.id, node_id),
+                    from_id: format!("memory:{}", r.id),
+                    to_id: node_id,
                     edge_type: "in_collection".to_string(),
                 });
             }
@@ -9671,13 +12615,17 @@ pub fn get_memory_graph(
         for r in &rows {
             for tag in &r.tags {
                 let node_id = format!("tag:{tag}");
-                nodes.entry(node_id.clone()).or_insert_with(|| MemGraphNode {
-                    id: node_id.clone(), node_type: "Tag".to_string(), label: tag.clone(),
-                });
+                nodes
+                    .entry(node_id.clone())
+                    .or_insert_with(|| MemGraphNode {
+                        id: node_id.clone(),
+                        node_type: "Tag".to_string(),
+                        label: tag.clone(),
+                    });
                 edges.push(MemGraphEdge {
-                    id:        format!("tagged:memory:{}:{}", r.id, node_id),
-                    from_id:   format!("memory:{}", r.id),
-                    to_id:     node_id,
+                    id: format!("tagged:memory:{}:{}", r.id, node_id),
+                    from_id: format!("memory:{}", r.id),
+                    to_id: node_id,
                     edge_type: "tagged".to_string(),
                 });
             }
@@ -9721,46 +12669,58 @@ pub fn get_memory_graph(
     let audit_rows: Vec<AuditRow> = audit_stmt
         .query_map(rusqlite::params![org_id, since, limit], |row| {
             Ok(AuditRow {
-                id:            row.get(0)?,
-                user_id:       row.get(1)?,
-                action:        row.get(2)?,
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                action: row.get(2)?,
                 resource_type: row.get(3)?,
-                resource_id:   row.get(4)?,
+                resource_id: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     if !audit_rows.is_empty() {
-        let audit_user_ids: HashSet<String> = audit_rows.iter().map(|r| r.user_id.clone()).collect();
+        let audit_user_ids: HashSet<String> =
+            audit_rows.iter().map(|r| r.user_id.clone()).collect();
         let audit_user_labels = lookup_labels(conn, "users", "name", &audit_user_ids)?;
 
         for r in &audit_rows {
             let audit_node_id = format!("audit:{}", r.id);
-            nodes.entry(audit_node_id.clone()).or_insert_with(|| MemGraphNode {
-                id:        audit_node_id.clone(),
-                node_type: "AuditEvent".to_string(),
-                label:     format!("{} {}", r.action, r.resource_type),
-            });
+            nodes
+                .entry(audit_node_id.clone())
+                .or_insert_with(|| MemGraphNode {
+                    id: audit_node_id.clone(),
+                    node_type: "AuditEvent".to_string(),
+                    label: format!("{} {}", r.action, r.resource_type),
+                });
 
             // performed_by: always present — audit_logs.user_id is NOT NULL.
             let user_node_id = format!("user:{}", r.user_id);
-            let user_label = audit_user_labels.get(&r.user_id).cloned().unwrap_or_else(|| r.user_id.clone());
-            nodes.entry(user_node_id.clone()).or_insert_with(|| MemGraphNode {
-                id: user_node_id.clone(), node_type: "User".to_string(), label: user_label,
-            });
+            let user_label = audit_user_labels
+                .get(&r.user_id)
+                .cloned()
+                .unwrap_or_else(|| r.user_id.clone());
+            nodes
+                .entry(user_node_id.clone())
+                .or_insert_with(|| MemGraphNode {
+                    id: user_node_id.clone(),
+                    node_type: "User".to_string(),
+                    label: user_label,
+                });
             edges.push(MemGraphEdge {
-                id:        format!("performed_by:{}:{}", audit_node_id, user_node_id),
-                from_id:   audit_node_id.clone(),
-                to_id:     user_node_id,
+                id: format!("performed_by:{}:{}", audit_node_id, user_node_id),
+                from_id: audit_node_id.clone(),
+                to_id: user_node_id,
                 edge_type: "performed_by".to_string(),
             });
 
             // targets: only when the resource already resolves to a node in this graph.
-            if let Some(target_id) = resource_node_id(&r.resource_type, r.resource_id.as_deref(), &nodes) {
+            if let Some(target_id) =
+                resource_node_id(&r.resource_type, r.resource_id.as_deref(), &nodes)
+            {
                 edges.push(MemGraphEdge {
-                    id:        format!("targets:{}:{}", audit_node_id, target_id),
-                    from_id:   audit_node_id,
-                    to_id:     target_id,
+                    id: format!("targets:{}:{}", audit_node_id, target_id),
+                    from_id: audit_node_id,
+                    to_id: target_id,
                     edge_type: "targets".to_string(),
                 });
             }
@@ -9838,14 +12798,8 @@ pub fn get_memory_graph_for_family(
     // family of 5,000 memories each returns all of them rather than starving
     // the last projects. The overall envelope is still bounded by `cap`.
     for project in family {
-        let (proj_nodes, proj_edges) = get_memory_graph(
-            conn,
-            org_id,
-            &project.name,
-            since,
-            cap,
-            0,
-        )?;
+        let (proj_nodes, proj_edges) =
+            get_memory_graph(conn, org_id, &project.name, since, cap, 0)?;
         for n in proj_nodes {
             // Last-write-wins for nodes — labels can vary slightly across
             // per-project calls but the id is the source of truth.
@@ -9874,15 +12828,17 @@ pub fn get_memory_graph_for_family(
     // in the rendered graph. These are in addition to the per-project
     // primitive's "belongs_to" edges from memories to their project.
     for p in family {
-        let Some(parent_id) = p.parent_id.as_deref() else { continue };
+        let Some(parent_id) = p.parent_id.as_deref() else {
+            continue;
+        };
         let child_id = format!("project:{}", p.id);
         let parent_node = format!("project:{parent_id}");
         let key = format!("{child_id}|child_of|{parent_node}");
         if seen_edge_keys.insert(key) {
             edges.push(MemGraphEdge {
-                id:        format!("child_of:{child_id}:{parent_node}"),
-                from_id:   child_id,
-                to_id:     parent_node,
+                id: format!("child_of:{child_id}:{parent_node}"),
+                from_id: child_id,
+                to_id: parent_node,
                 edge_type: "child_of".to_string(),
             });
         }
@@ -9905,21 +12861,28 @@ mod graph_tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let pid = upsert_code_project(&conn, "org1", "myapp", "/ws").unwrap();
         (conn, pid)
     }
 
-    fn make_symbol(name: &str, qname: &str, sym_type: SymbolType, fp: &str, persist: Persist) -> RawSymbol {
+    fn make_symbol(
+        name: &str,
+        qname: &str,
+        sym_type: SymbolType,
+        fp: &str,
+        persist: Persist,
+    ) -> RawSymbol {
         RawSymbol {
-            symbol_type:    sym_type,
-            name:           name.to_string(),
+            symbol_type: sym_type,
+            name: name.to_string(),
             qualified_name: qname.to_string(),
-            file_path:      Some(fp.to_string()),
-            file_hash:      Some("hash1".to_string()),
-            start_line:     Some(1),
-            end_line:       Some(10),
-            language:       "rust".to_string(),
+            file_path: Some(fp.to_string()),
+            file_hash: Some("hash1".to_string()),
+            start_line: Some(1),
+            end_line: Some(10),
+            language: "rust".to_string(),
             persist,
         }
     }
@@ -9927,10 +12890,10 @@ mod graph_tests {
     fn make_edge(from: &str, to: &str, et: EdgeType, fp: &str) -> RawEdge {
         RawEdge {
             from_qname: from.to_string(),
-            to_qname:   to.to_string(),
-            edge_type:  et,
-            file_path:  Some(fp.to_string()),
-            persist:    Persist::FileOwned,
+            to_qname: to.to_string(),
+            edge_type: et,
+            file_path: Some(fp.to_string()),
+            persist: Persist::FileOwned,
         }
     }
 
@@ -9956,11 +12919,13 @@ mod graph_tests {
         assert_eq!(folders, 2, "exactly two Folder nodes (src, src/a)");
 
         // File node
-        let files: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='File'",
-            rusqlite::params![pid],
-            |r| r.get(0),
-        ).unwrap();
+        let files: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='File'",
+                rusqlite::params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(files, 1, "exactly one File node");
     }
 
@@ -9971,11 +12936,13 @@ mod graph_tests {
         persist_structure(&conn, pid, "myapp", &paths).unwrap();
         persist_structure(&conn, pid, "myapp", &paths).unwrap();
 
-        let total: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1",
-            rusqlite::params![pid],
-            |r| r.get(0),
-        ).unwrap();
+        let total: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1",
+                rusqlite::params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         // Project(1) + Folder src(1) + Folder src/a(1) + File(1) = 4
         assert_eq!(total, 4, "second call must not create extra rows");
     }
@@ -9988,8 +12955,19 @@ mod graph_tests {
         // First index: function 'foo'
         let fg1 = FileGraph {
             file_rel_path: "src/lib.rs".to_string(),
-            symbols: vec![make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
-            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs")],
+            symbols: vec![make_symbol(
+                "foo",
+                "src/lib.rs::foo#1",
+                SymbolType::Function,
+                "src/lib.rs",
+                Persist::FileOwned,
+            )],
+            edges: vec![make_edge(
+                "file::src/lib.rs",
+                "src/lib.rs::foo#1",
+                EdgeType::Defines,
+                "src/lib.rs",
+            )],
         };
         persist_file_graph(&conn, pid, &fg1).unwrap();
         let count1: i32 = conn.query_row(
@@ -10001,8 +12979,19 @@ mod graph_tests {
         // Second index: function 'bar' (replaces 'foo')
         let fg2 = FileGraph {
             file_rel_path: "src/lib.rs".to_string(),
-            symbols: vec![make_symbol("bar", "src/lib.rs::bar#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
-            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::bar#1", EdgeType::Defines, "src/lib.rs")],
+            symbols: vec![make_symbol(
+                "bar",
+                "src/lib.rs::bar#1",
+                SymbolType::Function,
+                "src/lib.rs",
+                Persist::FileOwned,
+            )],
+            edges: vec![make_edge(
+                "file::src/lib.rs",
+                "src/lib.rs::bar#1",
+                EdgeType::Defines,
+                "src/lib.rs",
+            )],
         };
         persist_file_graph(&conn, pid, &fg2).unwrap();
 
@@ -10010,18 +12999,27 @@ mod graph_tests {
             "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND symbol_type='Function'",
             rusqlite::params![pid], |r| r.get(0),
         ).unwrap();
-        assert_eq!(count2, 1, "still one Function after second index (foo replaced by bar)");
+        assert_eq!(
+            count2, 1,
+            "still one Function after second index (foo replaced by bar)"
+        );
 
-        let bar_exists: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='bar'",
-            rusqlite::params![pid], |r| r.get(0),
-        ).unwrap();
+        let bar_exists: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='bar'",
+                rusqlite::params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(bar_exists, 1, "bar must exist");
 
-        let foo_gone: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='foo'",
-            rusqlite::params![pid], |r| r.get(0),
-        ).unwrap();
+        let foo_gone: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM code_symbols WHERE code_project_id=?1 AND name='foo'",
+                rusqlite::params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(foo_gone, 0, "foo must be gone");
     }
 
@@ -10038,8 +13036,19 @@ mod graph_tests {
         // After a real code symbol is persisted, no backfill is needed.
         let fg = FileGraph {
             file_rel_path: "src/lib.rs".to_string(),
-            symbols: vec![make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned)],
-            edges:   vec![make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs")],
+            symbols: vec![make_symbol(
+                "foo",
+                "src/lib.rs::foo#1",
+                SymbolType::Function,
+                "src/lib.rs",
+                Persist::FileOwned,
+            )],
+            edges: vec![make_edge(
+                "file::src/lib.rs",
+                "src/lib.rs::foo#1",
+                EdgeType::Defines,
+                "src/lib.rs",
+            )],
         };
         persist_file_graph(&conn, pid, &fg).unwrap();
         assert!(
@@ -10051,16 +13060,25 @@ mod graph_tests {
     #[test]
     fn persist_file_graph_sibling_folder_node_survives_reindex() {
         let (conn, pid) = setup();
-        persist_structure(&conn, pid, "myapp", &[
-            "src/a.rs".to_string(),
-            "src/b.rs".to_string(),
-        ]).unwrap();
+        persist_structure(
+            &conn,
+            pid,
+            "myapp",
+            &["src/a.rs".to_string(), "src/b.rs".to_string()],
+        )
+        .unwrap();
 
         // Index a.rs
         let fg = FileGraph {
             file_rel_path: "src/a.rs".to_string(),
-            symbols: vec![make_symbol("foo", "src/a.rs::foo#1", SymbolType::Function, "src/a.rs", Persist::FileOwned)],
-            edges:   vec![],
+            symbols: vec![make_symbol(
+                "foo",
+                "src/a.rs::foo#1",
+                SymbolType::Function,
+                "src/a.rs",
+                Persist::FileOwned,
+            )],
+            edges: vec![],
         };
         persist_file_graph(&conn, pid, &fg).unwrap();
 
@@ -10078,7 +13096,10 @@ mod graph_tests {
             "SELECT id FROM code_symbols WHERE code_project_id=?1 AND qualified_name='folder::src'",
             rusqlite::params![pid], |r| r.get(0),
         ).unwrap();
-        assert_eq!(folder_id_before, folder_id_after, "Folder node id must be stable across reindexes");
+        assert_eq!(
+            folder_id_before, folder_id_after,
+            "Folder node id must be stable across reindexes"
+        );
 
         // Count folder nodes — still exactly one 'src'
         let folder_count: i32 = conn.query_row(
@@ -10096,8 +13117,20 @@ mod graph_tests {
         let fg = FileGraph {
             file_rel_path: "src/lib.rs".to_string(),
             symbols: vec![
-                make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned),
-                make_symbol("Bar", "src/lib.rs::Bar#5", SymbolType::Struct, "src/lib.rs", Persist::FileOwned),
+                make_symbol(
+                    "foo",
+                    "src/lib.rs::foo#1",
+                    SymbolType::Function,
+                    "src/lib.rs",
+                    Persist::FileOwned,
+                ),
+                make_symbol(
+                    "Bar",
+                    "src/lib.rs::Bar#5",
+                    SymbolType::Struct,
+                    "src/lib.rs",
+                    Persist::FileOwned,
+                ),
             ],
             edges: vec![],
         };
@@ -10125,12 +13158,19 @@ mod graph_tests {
 
         let fg = FileGraph {
             file_rel_path: "src/lib.rs".to_string(),
-            symbols: vec![
-                make_symbol("foo", "src/lib.rs::foo#1", SymbolType::Function, "src/lib.rs", Persist::FileOwned),
-            ],
-            edges: vec![
-                make_edge("file::src/lib.rs", "src/lib.rs::foo#1", EdgeType::Defines, "src/lib.rs"),
-            ],
+            symbols: vec![make_symbol(
+                "foo",
+                "src/lib.rs::foo#1",
+                SymbolType::Function,
+                "src/lib.rs",
+                Persist::FileOwned,
+            )],
+            edges: vec![make_edge(
+                "file::src/lib.rs",
+                "src/lib.rs::foo#1",
+                EdgeType::Defines,
+                "src/lib.rs",
+            )],
         };
         persist_file_graph(&conn, pid, &fg).unwrap();
 
@@ -10168,7 +13208,8 @@ mod mem_graph_tests {
     fn setup() -> (Connection, String, String) {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
-        let (org, user, _key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, _key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         (conn, org.id, user.id)
     }
 
@@ -10193,8 +13234,20 @@ mod mem_graph_tests {
             "INSERT INTO memories (id, org_id, user_id, project, project_id, tool, content, tags,
                                     title, session_id, collection_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 'claude', 'body', ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![id, org_id, user_id, project, project_id, tags, title, session_id, collection_id, created_at],
-        ).unwrap();
+            rusqlite::params![
+                id,
+                org_id,
+                user_id,
+                project,
+                project_id,
+                tags,
+                title,
+                session_id,
+                collection_id,
+                created_at
+            ],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -10211,19 +13264,52 @@ mod mem_graph_tests {
         let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
 
         for i in 0..5 {
-            insert_memory(&conn, &format!("m-fk-{i}"), &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+            insert_memory(
+                &conn,
+                &format!("m-fk-{i}"),
+                &org_id,
+                &user_id,
+                "acme",
+                Some(&project_id),
+                None,
+                None,
+                "[]",
+                None,
+                "2026-01-01T00:00:00Z",
+            );
         }
         for i in 0..3 {
-            insert_memory(&conn, &format!("m-legacy-{i}"), &org_id, &user_id, "acme", None, None, None, "[]", None, "2026-01-01T00:00:00Z");
+            insert_memory(
+                &conn,
+                &format!("m-legacy-{i}"),
+                &org_id,
+                &user_id,
+                "acme",
+                None,
+                None,
+                None,
+                "[]",
+                None,
+                "2026-01-01T00:00:00Z",
+            );
         }
 
         let (nodes, _edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
 
         let project_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "Project").collect();
-        assert_eq!(project_nodes.len(), 1, "exactly one Project node for 'acme', got {}", project_nodes.len());
+        assert_eq!(
+            project_nodes.len(),
+            1,
+            "exactly one Project node for 'acme', got {}",
+            project_nodes.len()
+        );
 
         let memory_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "Memory").collect();
-        assert_eq!(memory_nodes.len(), 8, "all 8 memories (5 FK-linked + 3 legacy) must appear");
+        assert_eq!(
+            memory_nodes.len(),
+            8,
+            "all 8 memories (5 FK-linked + 3 legacy) must appear"
+        );
     }
 
     #[test]
@@ -10237,40 +13323,97 @@ mod mem_graph_tests {
         conn.execute(
             "INSERT INTO collections (id, org_id, name) VALUES ('col1', ?1, 'My Collection')",
             rusqlite::params![org_id],
-        ).unwrap();
+        )
+        .unwrap();
 
-        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), Some("sess1"), Some("col1"), r#"["auth","bug"]"#, Some("Fixed auth bug"), "2026-01-01T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            &org_id,
+            &user_id,
+            "acme",
+            Some(&project_id),
+            Some("sess1"),
+            Some("col1"),
+            r#"["auth","bug"]"#,
+            Some("Fixed auth bug"),
+            "2026-01-01T00:00:00Z",
+        );
 
         let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
 
         // Memory, Project, Session, User, Collection, 2 Tag nodes = 7
-        assert_eq!(nodes.len(), 7, "expected 7 nodes (memory+project+session+user+collection+2 tags), got {}", nodes.len());
+        assert_eq!(
+            nodes.len(),
+            7,
+            "expected 7 nodes (memory+project+session+user+collection+2 tags), got {}",
+            nodes.len()
+        );
 
-        let edge_types: std::collections::HashSet<&str> = edges.iter().map(|e| e.edge_type.as_str()).collect();
+        let edge_types: std::collections::HashSet<&str> =
+            edges.iter().map(|e| e.edge_type.as_str()).collect();
         assert!(edge_types.contains("belongs_to"));
         assert!(edge_types.contains("in_session"));
         assert!(edge_types.contains("created_by"));
         assert!(edge_types.contains("in_collection"));
         assert!(edge_types.contains("tagged"));
         // 1 belongs_to + 1 in_session + 1 created_by + 1 in_collection + 2 tagged = 6
-        assert_eq!(edges.len(), 6, "expected 6 edges total, got {}", edges.len());
+        assert_eq!(
+            edges.len(),
+            6,
+            "expected 6 edges total, got {}",
+            edges.len()
+        );
     }
 
     #[test]
     fn get_memory_graph_omits_edges_for_null_session_and_collection() {
         let (conn, org_id, user_id) = setup();
         let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
-        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            &org_id,
+            &user_id,
+            "acme",
+            Some(&project_id),
+            None,
+            None,
+            "[]",
+            None,
+            "2026-01-01T00:00:00Z",
+        );
 
         let (_nodes, edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
 
-        let edge_types: std::collections::HashSet<&str> = edges.iter().map(|e| e.edge_type.as_str()).collect();
-        assert!(edge_types.contains("belongs_to"), "belongs_to must be present");
-        assert!(edge_types.contains("created_by"), "created_by must be present");
-        assert!(!edge_types.contains("in_session"), "in_session must be absent for NULL session_id");
-        assert!(!edge_types.contains("in_collection"), "in_collection must be absent for NULL collection_id");
-        assert!(!edge_types.contains("tagged"), "tagged must be absent for empty tags");
-        assert_eq!(edges.len(), 2, "only belongs_to + created_by, got {}", edges.len());
+        let edge_types: std::collections::HashSet<&str> =
+            edges.iter().map(|e| e.edge_type.as_str()).collect();
+        assert!(
+            edge_types.contains("belongs_to"),
+            "belongs_to must be present"
+        );
+        assert!(
+            edge_types.contains("created_by"),
+            "created_by must be present"
+        );
+        assert!(
+            !edge_types.contains("in_session"),
+            "in_session must be absent for NULL session_id"
+        );
+        assert!(
+            !edge_types.contains("in_collection"),
+            "in_collection must be absent for NULL collection_id"
+        );
+        assert!(
+            !edge_types.contains("tagged"),
+            "tagged must be absent for empty tags"
+        );
+        assert_eq!(
+            edges.len(),
+            2,
+            "only belongs_to + created_by, got {}",
+            edges.len()
+        );
     }
 
     #[test]
@@ -10281,17 +13424,54 @@ mod mem_graph_tests {
             "INSERT INTO sessions (id, org_id, project, directory) VALUES ('sess1', ?1, 'acme', '/ws')",
             rusqlite::params![org_id],
         ).unwrap();
-        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), Some("sess1"), None, r#"["x"]"#, None, "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", &org_id, &user_id, "acme", None, None, None, "[]", None, "2026-01-02T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            &org_id,
+            &user_id,
+            "acme",
+            Some(&project_id),
+            Some("sess1"),
+            None,
+            r#"["x"]"#,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            &org_id,
+            &user_id,
+            "acme",
+            None,
+            None,
+            None,
+            "[]",
+            None,
+            "2026-01-02T00:00:00Z",
+        );
 
         let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
 
-        let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let node_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.id.as_str()).collect();
         for edge in &edges {
-            assert!(node_ids.contains(edge.from_id.as_str()), "from_id {} not in node set", edge.from_id);
-            assert!(node_ids.contains(edge.to_id.as_str()), "to_id {} not in node set", edge.to_id);
+            assert!(
+                node_ids.contains(edge.from_id.as_str()),
+                "from_id {} not in node set",
+                edge.from_id
+            );
+            assert!(
+                node_ids.contains(edge.to_id.as_str()),
+                "to_id {} not in node set",
+                edge.to_id
+            );
         }
-        assert_eq!(nodes.len(), node_ids.len(), "node_count must equal nodes.len()");
+        assert_eq!(
+            nodes.len(),
+            node_ids.len(),
+            "node_count must equal nodes.len()"
+        );
     }
 
     // ── Phase 5: AuditEvent nodes/edges (Slice 2) ───────────────────────────
@@ -10300,23 +13480,75 @@ mod mem_graph_tests {
     fn get_memory_graph_audit_events_scoped_by_since_yield_performed_by_edge() {
         let (conn, org_id, user_id) = setup();
         let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
-        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            &org_id,
+            &user_id,
+            "acme",
+            Some(&project_id),
+            None,
+            None,
+            "[]",
+            None,
+            "2026-01-01T00:00:00Z",
+        );
 
         // One audit event before `since`, one at/after `since` — only the latter must appear.
-        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m1"), serde_json::json!({}), Some("2026-01-01T00:00:00Z")).unwrap();
-        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.updated", "memory", Some("m1"), serde_json::json!({}), Some("2026-06-01T00:00:00Z")).unwrap();
+        insert_audit_log_chained(
+            &conn,
+            &org_id,
+            &user_id,
+            "memory.read",
+            "memory",
+            Some("m1"),
+            serde_json::json!({}),
+            Some("2026-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        insert_audit_log_chained(
+            &conn,
+            &org_id,
+            &user_id,
+            "memory.updated",
+            "memory",
+            Some("m1"),
+            serde_json::json!({}),
+            Some("2026-06-01T00:00:00Z"),
+        )
+        .unwrap();
 
-        let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", Some("2026-03-01T00:00:00Z"), 2000, 0).unwrap();
+        let (nodes, edges) = get_memory_graph(
+            &conn,
+            &org_id,
+            "acme",
+            Some("2026-03-01T00:00:00Z"),
+            2000,
+            0,
+        )
+        .unwrap();
 
-        let audit_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "AuditEvent").collect();
-        assert_eq!(audit_nodes.len(), 1, "only the audit event at/after `since` must appear, got {}", audit_nodes.len());
+        let audit_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.node_type == "AuditEvent")
+            .collect();
+        assert_eq!(
+            audit_nodes.len(),
+            1,
+            "only the audit event at/after `since` must appear, got {}",
+            audit_nodes.len()
+        );
 
         let audit_node_id = &audit_nodes[0].id;
         let performed_by: Vec<_> = edges
             .iter()
             .filter(|e| &e.from_id == audit_node_id && e.edge_type == "performed_by")
             .collect();
-        assert_eq!(performed_by.len(), 1, "exactly one performed_by edge from the AuditEvent node");
+        assert_eq!(
+            performed_by.len(),
+            1,
+            "exactly one performed_by edge from the AuditEvent node"
+        );
         assert_eq!(performed_by[0].to_id, format!("user:{user_id}"));
     }
 
@@ -10324,28 +13556,80 @@ mod mem_graph_tests {
     fn get_memory_graph_audit_targets_edge_present_when_resource_in_graph_dropped_when_absent() {
         let (conn, org_id, user_id) = setup();
         let project_id = get_or_create_project(&conn, &org_id, "acme").unwrap();
-        insert_memory(&conn, "m1", &org_id, &user_id, "acme", Some(&project_id), None, None, "[]", None, "2026-01-01T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            &org_id,
+            &user_id,
+            "acme",
+            Some(&project_id),
+            None,
+            None,
+            "[]",
+            None,
+            "2026-01-01T00:00:00Z",
+        );
 
         // Targets a memory that IS in the graph (m1) -> targets edge must be present.
-        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m1"), serde_json::json!({}), Some("2026-01-02T00:00:00Z")).unwrap();
+        insert_audit_log_chained(
+            &conn,
+            &org_id,
+            &user_id,
+            "memory.read",
+            "memory",
+            Some("m1"),
+            serde_json::json!({}),
+            Some("2026-01-02T00:00:00Z"),
+        )
+        .unwrap();
         // Targets a memory that is NOT in the graph -> targets edge must be dropped (no dangling edge).
-        insert_audit_log_chained(&conn, &org_id, &user_id, "memory.read", "memory", Some("m-does-not-exist"), serde_json::json!({}), Some("2026-01-02T00:00:01Z")).unwrap();
+        insert_audit_log_chained(
+            &conn,
+            &org_id,
+            &user_id,
+            "memory.read",
+            "memory",
+            Some("m-does-not-exist"),
+            serde_json::json!({}),
+            Some("2026-01-02T00:00:01Z"),
+        )
+        .unwrap();
 
         let (nodes, edges) = get_memory_graph(&conn, &org_id, "acme", None, 2000, 0).unwrap();
 
         let targets_edges: Vec<_> = edges.iter().filter(|e| e.edge_type == "targets").collect();
-        assert_eq!(targets_edges.len(), 1, "only the audit event whose resource is in the graph gets a targets edge");
+        assert_eq!(
+            targets_edges.len(),
+            1,
+            "only the audit event whose resource is in the graph gets a targets edge"
+        );
         assert_eq!(targets_edges[0].to_id, "memory:m1");
 
         // No-dangling-edges invariant must still hold across the whole graph.
-        let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let node_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.id.as_str()).collect();
         for edge in &edges {
-            assert!(node_ids.contains(edge.from_id.as_str()), "from_id {} not in node set", edge.from_id);
-            assert!(node_ids.contains(edge.to_id.as_str()), "to_id {} not in node set", edge.to_id);
+            assert!(
+                node_ids.contains(edge.from_id.as_str()),
+                "from_id {} not in node set",
+                edge.from_id
+            );
+            assert!(
+                node_ids.contains(edge.to_id.as_str()),
+                "to_id {} not in node set",
+                edge.to_id
+            );
         }
 
         // Both audit events still produce AuditEvent nodes even though one has no targets edge.
-        let audit_nodes: Vec<_> = nodes.iter().filter(|n| n.node_type == "AuditEvent").collect();
-        assert_eq!(audit_nodes.len(), 2, "both audit events must still appear as AuditEvent nodes");
+        let audit_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.node_type == "AuditEvent")
+            .collect();
+        assert_eq!(
+            audit_nodes.len(),
+            2,
+            "both audit events must still appear as AuditEvent nodes"
+        );
     }
 }

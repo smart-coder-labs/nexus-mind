@@ -24,3 +24,6 @@ tmp/
 /apps/landing/.atl/
 /apps/*/.atl/
 **/.atl/
+
+# Local agent worktrees — generated locally, never tracked
+.claude/worktrees/

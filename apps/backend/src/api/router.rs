@@ -8,7 +8,10 @@ use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::api::{admin, agents, audit, auth, backup, code, context, conventions, github_auth, health, internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks};
+use crate::api::{
+    admin, agents, audit, auth, backup, code, context, conventions, github_auth, harnesses, health,
+    internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks,
+};
 use crate::config::Config;
 use crate::email::EmailConfig;
 use crate::embed::EmbedService;
@@ -45,7 +48,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let store = match embed {
         Some(svc) => SqliteStore::new(conn).with_embed(svc),
-        None      => SqliteStore::new(conn),
+        None => SqliteStore::new(conn),
     };
 
     let email_config: Option<Arc<EmailConfig>> = match (
@@ -75,41 +78,141 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/memory/export", get(memory::export))
         .route("/v1/memory/graph", get(memory::get_graph))
         .route("/v1/memory/bulk", delete(memory::bulk_delete))
-        .route("/v1/memory/:id", get(memory::get_by_id).delete(memory::delete).patch(memory::update))
+        .route(
+            "/v1/memory/:id",
+            get(memory::get_by_id)
+                .delete(memory::delete)
+                .patch(memory::update),
+        )
         .route("/v1/memory/:id/archive", post(memory::archive))
         .route("/v1/memory/:id/restore", post(memory::restore))
-        .route("/v1/memory/:id/pin", post(memory::pin).delete(memory::unpin))
+        .route(
+            "/v1/memory/:id/pin",
+            post(memory::pin).delete(memory::unpin),
+        )
         .route("/v1/memory/:id/unpin", post(memory::unpin))
         .route("/v1/memory", get(memory::list))
-        .route("/v1/sessions", get(sessions::list_sessions_handler).post(sessions::create_session_handler))
-        .route("/v1/sessions/:id", get(sessions::get_session_handler).patch(sessions::patch_session_handler))
-        .route("/v1/sessions/:id/memories", get(sessions::list_session_memories_handler))
+        .route(
+            "/v1/sessions",
+            get(sessions::list_sessions_handler).post(sessions::create_session_handler),
+        )
+        .route(
+            "/v1/sessions/:id",
+            get(sessions::get_session_handler).patch(sessions::patch_session_handler),
+        )
+        .route(
+            "/v1/sessions/:id/memories",
+            get(sessions::list_session_memories_handler),
+        )
         .route("/v1/users", get(users::list))
         .route("/v1/users/invite", post(users::invite))
         .route("/v1/users/:id", delete(users::remove))
         .route("/v1/users/:id/rotate-key", post(users::rotate_key))
         .route("/v1/users/:id/role", patch(users::update_role))
-        .route("/v1/roles", get(admin::list_roles_api).post(admin::create_role_api))
-        .route("/v1/roles/:id", delete(admin::delete_role_api).patch(admin::update_role_api))
-        .route("/v1/projects", get(admin::list_projects_api).post(admin::create_project_api))
-        .route("/v1/projects/:id", get(admin::get_project_api).delete(admin::delete_project_api).patch(admin::update_project_api))
+        .route(
+            "/v1/roles",
+            get(admin::list_roles_api).post(admin::create_role_api),
+        )
+        .route(
+            "/v1/roles/:id",
+            delete(admin::delete_role_api).patch(admin::update_role_api),
+        )
+        .route(
+            "/v1/projects",
+            get(admin::list_projects_api).post(admin::create_project_api),
+        )
+        .route(
+            "/v1/projects/:id",
+            get(admin::get_project_api)
+                .delete(admin::delete_project_api)
+                .patch(admin::update_project_api),
+        )
         .route("/v1/projects/:id/archive", post(admin::archive_project_api))
         .route("/v1/projects/:id/restore", post(admin::restore_project_api))
-        .route("/v1/projects/:project_id/members", get(admin::list_project_members_api).post(admin::upsert_project_member_api))
-        .route("/v1/projects/:project_id/members/:user_id", delete(admin::delete_project_member_api))
-        .route("/v1/projects/:id/settings", get(admin::get_project_settings_api).patch(admin::update_project_settings_api))
+        .route(
+            "/v1/projects/:project_id/members",
+            get(admin::list_project_members_api).post(admin::upsert_project_member_api),
+        )
+        .route(
+            "/v1/projects/:project_id/members/:user_id",
+            delete(admin::delete_project_member_api),
+        )
+        .route(
+            "/v1/projects/:id/settings",
+            get(admin::get_project_settings_api).patch(admin::update_project_settings_api),
+        )
         .route("/v1/projects/:id/stats", get(admin::get_project_stats_api))
-        .route("/v1/policies", get(policy::list_policies).post(policy::create_policy))
-        .route("/v1/policies/:id", patch(policy::update_policy).delete(policy::delete_policy))
+        .route(
+            "/v1/policies",
+            get(policy::list_policies).post(policy::create_policy),
+        )
+        .route(
+            "/v1/policies/:id",
+            patch(policy::update_policy).delete(policy::delete_policy),
+        )
         .route("/v1/policy/check", post(policy::check_policy))
-        .route("/v1/conventions", get(conventions::list_conventions).post(conventions::create_convention))
-        .route("/v1/conventions/:id", get(conventions::get_convention).patch(conventions::update_convention).delete(conventions::delete_convention))
-        .route("/v1/conventions/:id/archive", post(conventions::archive_convention))
-        .route("/v1/conventions/:id/restore", post(conventions::restore_convention))
+        .route(
+            "/v1/conventions",
+            get(conventions::list_conventions).post(conventions::create_convention),
+        )
+        .route(
+            "/v1/conventions/:id",
+            get(conventions::get_convention)
+                .patch(conventions::update_convention)
+                .delete(conventions::delete_convention),
+        )
+        .route(
+            "/v1/conventions/:id/archive",
+            post(conventions::archive_convention),
+        )
+        .route(
+            "/v1/conventions/:id/restore",
+            post(conventions::restore_convention),
+        )
+        .route(
+            "/v1/harnesses",
+            get(harnesses::list_harnesses).post(harnesses::create_harness),
+        )
+        .route("/v1/harnesses/:id", get(harnesses::get_harness))
+        .route(
+            "/v1/harnesses/:id/versions",
+            post(harnesses::publish_version),
+        )
+        .route(
+            "/v1/harnesses/:id/publish",
+            post(harnesses::publish_version),
+        )
+        .route(
+            "/v1/harnesses/:id/versions/:version/download",
+            get(harnesses::download_version),
+        )
+        .route(
+            "/v1/harnesses/:id/versions/:version/approval",
+            post(harnesses::approve_install),
+        )
+        .route(
+            "/v1/harnesses/:id/versions/:version/install-result",
+            post(harnesses::record_install_result),
+        )
+        .route(
+            "/v1/harness-recommendations",
+            get(harnesses::recommendations),
+        )
+        .route(
+            "/v1/harness-config-reviews",
+            post(harnesses::create_config_review),
+        )
+        .route(
+            "/v1/harness-config-reviews/:id",
+            get(harnesses::get_config_review),
+        )
         .route("/v1/context", get(context::get_global_context))
         .route("/v1/context/type/:type", get(context::get_type_context))
         .route("/v1/context/session/:id", get(context::get_session_context))
-        .route("/v1/context/project/:project", get(context::get_project_context))
+        .route(
+            "/v1/context/project/:project",
+            get(context::get_project_context),
+        )
         .route("/v1/code/index", post(code::post_index))
         .route("/v1/code/search", post(code::post_search))
         .route("/v1/code/status/:project", get(code::get_status))
@@ -117,8 +220,14 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/code/graph", get(code::get_graph))
         .route("/v1/code/snippet", get(code::get_snippet))
         .route("/v1/code/projects", get(code::list_projects))
-        .route("/v1/code/projects/:id", delete(code::delete_project).patch(code::update_code_project))
-        .route("/v1/code/projects/:id/schedule", patch(code::update_schedule))
+        .route(
+            "/v1/code/projects/:id",
+            delete(code::delete_project).patch(code::update_code_project),
+        )
+        .route(
+            "/v1/code/projects/:id/schedule",
+            patch(code::update_schedule),
+        )
         .route("/v1/code/projects/:id/files", get(code::get_project_files))
         .route("/v1/code/projects/:id/reindex", post(code::post_reindex))
         .route("/v1/code/projects/:id/archive", post(code::archive_project))
@@ -128,65 +237,172 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/audit/log", post(audit::post_audit))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/stats/memory-facets", get(admin::memory_facets))
-        .route("/v1/admin/stats/trends", get(admin::get_memory_trends_handler))
+        .route(
+            "/v1/admin/stats/trends",
+            get(admin::get_memory_trends_handler),
+        )
         .route("/v1/admin/stats/tags", get(admin::get_tag_stats_handler))
         .route("/v1/admin/stats/duplicates", get(admin::get_duplicates))
-        .route("/v1/admin/stats/agent-activity", get(admin::get_agent_activity))
-        .route("/v1/admin/stats/memory-heatmap", get(admin::get_memory_heatmap))
-        .route("/v1/admin/stats/top-contributors", get(admin::get_top_contributors))
+        .route(
+            "/v1/admin/stats/agent-activity",
+            get(admin::get_agent_activity),
+        )
+        .route(
+            "/v1/admin/stats/memory-heatmap",
+            get(admin::get_memory_heatmap),
+        )
+        .route(
+            "/v1/admin/stats/top-contributors",
+            get(admin::get_top_contributors),
+        )
         .route("/v1/admin/stats/usage", get(admin::usage_stats))
         .route("/v1/admin/onboarding", get(admin::get_onboarding))
-        .route("/v1/admin/org/projects/over-enrolled", get(admin::over_enrolled_projects_handler))
-        .route("/v1/admin/org", get(admin::get_org).patch(admin::update_org))
-        .route("/v1/admin/org/settings", get(admin::get_org_settings_api).patch(admin::update_org_settings_api))
-        .route("/v1/admin/settings/retention-preview", get(admin::get_retention_preview))
-        .route("/v1/webhooks", get(webhooks::list_webhooks).post(webhooks::create_webhook))
-        .route("/v1/webhooks/:id", patch(webhooks::update_webhook).delete(webhooks::delete_webhook))
+        .route(
+            "/v1/admin/org/projects/over-enrolled",
+            get(admin::over_enrolled_projects_handler),
+        )
+        .route(
+            "/v1/admin/org",
+            get(admin::get_org).patch(admin::update_org),
+        )
+        .route(
+            "/v1/admin/org/settings",
+            get(admin::get_org_settings_api).patch(admin::update_org_settings_api),
+        )
+        .route(
+            "/v1/admin/settings/retention-preview",
+            get(admin::get_retention_preview),
+        )
+        .route(
+            "/v1/webhooks",
+            get(webhooks::list_webhooks).post(webhooks::create_webhook),
+        )
+        .route(
+            "/v1/webhooks/:id",
+            patch(webhooks::update_webhook).delete(webhooks::delete_webhook),
+        )
         .route("/v1/webhooks/:id/test", post(webhooks::test_webhook))
-        .route("/v1/webhooks/:id/deliveries", get(webhooks::list_deliveries))
-        .route("/v1/webhooks/deliveries/:delivery_id/retry", post(webhooks::retry_delivery))
-        .route("/v1/admin/keys", get(admin::list_org_keys).post(admin::create_org_key))
-        .route("/v1/admin/keys/:key_id", get(admin::get_org_key).patch(admin::update_org_key).delete(admin::revoke_org_key))
+        .route(
+            "/v1/webhooks/:id/deliveries",
+            get(webhooks::list_deliveries),
+        )
+        .route(
+            "/v1/webhooks/deliveries/:delivery_id/retry",
+            post(webhooks::retry_delivery),
+        )
+        .route(
+            "/v1/admin/keys",
+            get(admin::list_org_keys).post(admin::create_org_key),
+        )
+        .route(
+            "/v1/admin/keys/:key_id",
+            get(admin::get_org_key)
+                .patch(admin::update_org_key)
+                .delete(admin::revoke_org_key),
+        )
         .route("/v1/admin/keys/:key_id/rotate", post(admin::rotate_org_key))
-        .route("/v1/admin/keys/:key_id/revoke", post(admin::revoke_org_key_post))
+        .route(
+            "/v1/admin/keys/:key_id/revoke",
+            post(admin::revoke_org_key_post),
+        )
         .route("/v1/admin/users", get(admin::list_users_admin))
-        .route("/v1/admin/users/:user_id/reset-key", post(admin::reset_user_key))
-        .route("/v1/admin/users/:user_id/disable", post(admin::disable_user))
+        .route(
+            "/v1/admin/users/:user_id/reset-key",
+            post(admin::reset_user_key),
+        )
+        .route(
+            "/v1/admin/users/:user_id/disable",
+            post(admin::disable_user),
+        )
         .route("/v1/admin/users/:user_id/enable", post(admin::enable_user))
         .route("/v1/admin/users/:id/note", patch(admin::update_user_note))
-        .route("/v1/admin/memories/:id/note", patch(admin::update_memory_note))
-        .route("/v1/admin/memories/:id/schedule-delete", patch(admin::schedule_memory_delete))
-        .route("/v1/admin/org/announcement", patch(admin::update_org_announcement))
+        .route(
+            "/v1/admin/memories/:id/note",
+            patch(admin::update_memory_note),
+        )
+        .route(
+            "/v1/admin/memories/:id/schedule-delete",
+            patch(admin::schedule_memory_delete),
+        )
+        .route(
+            "/v1/admin/org/announcement",
+            patch(admin::update_org_announcement),
+        )
         .route("/v1/admin/org/logo", patch(admin::update_org_logo))
-        .route("/v1/admin/memories/health", get(admin::get_memory_health_handler))
+        .route(
+            "/v1/admin/memories/health",
+            get(admin::get_memory_health_handler),
+        )
         .route("/v1/admin/memories/import", post(admin::import_memories))
         .route("/v1/admin/memories/merge", post(admin::merge_memories))
-        .route("/v1/admin/memories/bulk-tag", post(admin::bulk_tag_memories))
+        .route(
+            "/v1/admin/memories/bulk-tag",
+            post(admin::bulk_tag_memories),
+        )
         .route("/v1/admin/tags/rename", post(admin::rename_tag))
         .route("/v1/admin/export", get(admin::export_org_config))
         .route("/v1/admin/import", post(admin::import_org_config))
         .route("/v1/search", get(search::get_global_search))
-        .route("/v1/admin/auth/change-password", post(auth::change_password))
+        .route(
+            "/v1/admin/auth/change-password",
+            post(auth::change_password),
+        )
         .route("/v1/auth/change-password", post(auth::change_password))
         .route("/v1/admin/auth/me", get(auth::me))
         .route("/v1/admin/notifications", get(admin::get_notifications))
-        .route("/v1/admin/notifications/mark-all-read", post(admin::mark_all_notifications_read))
+        .route(
+            "/v1/admin/notifications/mark-all-read",
+            post(admin::mark_all_notifications_read),
+        )
         .route("/v1/admin/invites", post(admin::create_invite_link))
-        .route("/v1/admin/collections", get(admin::list_collections_api).post(admin::create_collection_api))
-        .route("/v1/admin/collections/:id", delete(admin::delete_collection_api))
-        .route("/v1/memories/:id/collection", post(admin::assign_memory_collection_api))
-        .route("/v1/agents", get(agents::list_agents).post(agents::create_agent))
-        .route("/v1/agents/:id", get(agents::get_agent).patch(agents::update_agent))
-        .route("/v1/agents/:id/assignments", get(agents::list_agent_assignments))
-        .route("/v1/backups", get(backup::list_backups_handler).post(backup::create_backup_handler))
+        .route(
+            "/v1/admin/collections",
+            get(admin::list_collections_api).post(admin::create_collection_api),
+        )
+        .route(
+            "/v1/admin/collections/:id",
+            delete(admin::delete_collection_api),
+        )
+        .route(
+            "/v1/memories/:id/collection",
+            post(admin::assign_memory_collection_api),
+        )
+        .route(
+            "/v1/agents",
+            get(agents::list_agents).post(agents::create_agent),
+        )
+        .route(
+            "/v1/agents/:id",
+            get(agents::get_agent).patch(agents::update_agent),
+        )
+        .route(
+            "/v1/agents/:id/assignments",
+            get(agents::list_agent_assignments),
+        )
+        .route(
+            "/v1/backups",
+            get(backup::list_backups_handler).post(backup::create_backup_handler),
+        )
         .route("/v1/backups/:id", get(backup::get_backup_handler))
-        .route("/v1/backups/:id/restore", post(backup::restore_backup_handler))
-        .route("/v1/backups/:id/download", get(backup::download_backup_handler))
+        .route(
+            "/v1/backups/:id/restore",
+            post(backup::restore_backup_handler),
+        )
+        .route(
+            "/v1/backups/:id/download",
+            get(backup::download_backup_handler),
+        )
         .route("/v1/github/auth", get(github_auth::get_auth_url))
         .route("/v1/github/callback", post(github_auth::post_callback))
         .route("/v1/github/status", get(github_auth::get_status))
-        .route("/v1/github/connection", delete(github_auth::delete_connection))
-        .route("/v1/github/disconnect", delete(github_auth::delete_connection))
+        .route(
+            "/v1/github/connection",
+            delete(github_auth::delete_connection),
+        )
+        .route(
+            "/v1/github/disconnect",
+            delete(github_auth::delete_connection),
+        )
         // Blanket audit is the innermost layer (added first) so it wraps the
         // handler and runs after auth has set the AuthContext. It records an
         // audit entry for every successful mutating request whose handler does
@@ -194,7 +410,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::audit))
         // Rate limit runs after auth (inner layer = runs second at runtime).
         // Auth is outermost (last `.layer()`) so it runs first.
-        .layer(middleware::from_fn_with_state(rate_state, rate_limit::rate_limit))
+        .layer(middleware::from_fn_with_state(
+            rate_state,
+            rate_limit::rate_limit,
+        ))
         .layer(middleware::from_fn_with_state(store.conn(), api_mw::auth));
 
     let cors_origins = config.cors_origins.clone();
@@ -223,11 +442,15 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
                     ".nexusmind-landing.pages.dev",
                 ];
                 if origin_str.starts_with("https://")
-                    && PAGES_PREVIEW_SUFFIXES.iter().any(|s| origin_str.ends_with(s))
+                    && PAGES_PREVIEW_SUFFIXES
+                        .iter()
+                        .any(|s| origin_str.ends_with(s))
                 {
                     return true;
                 }
-                cors_origins.split(',').any(|allowed| allowed.trim() == origin_str)
+                cors_origins
+                    .split(',')
+                    .any(|allowed| allowed.trim() == origin_str)
             },
         ))
         .allow_methods([
@@ -244,10 +467,21 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let internal_routes = Router::new()
         .route("/internal/metrics", get(internal::get_metrics))
-        .route("/internal/orgs", get(internal::list_orgs).post(internal::create_org))
-        .route("/internal/orgs/:id", get(internal::get_org).patch(internal::update_org).delete(internal::delete_org))
+        .route(
+            "/internal/orgs",
+            get(internal::list_orgs).post(internal::create_org),
+        )
+        .route(
+            "/internal/orgs/:id",
+            get(internal::get_org)
+                .patch(internal::update_org)
+                .delete(internal::delete_org),
+        )
         .route("/internal/orgs/:id/users", get(internal::list_org_users))
-        .route("/internal/orgs/:id/impersonate", post(internal::impersonate_org))
+        .route(
+            "/internal/orgs/:id/impersonate",
+            post(internal::impersonate_org),
+        )
         .route("/internal/users", get(internal::list_users))
         .route("/internal/users/:id/suspend", post(internal::suspend_user))
         .route("/internal/audit", get(internal::list_audit))
