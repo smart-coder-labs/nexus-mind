@@ -1,14 +1,11 @@
-# Harness Install Approval Specification
+# Delta for Harness Install Approval
 
-## Purpose
-
-Define the approval-first contract for agent recommendations, manifest downloads, and local installation so NexusMind never performs silent local configuration changes.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Recommendation Without Installation
 
 The system MAY recommend relevant harnesses to agents or users, but recommendations MUST expose metadata only until explicit approval is granted, including format, owner, executable/plugin warning metadata, and required permissions.
+(Previously: Recommendations exposed metadata and permissions only, without format/owner/executable warning metadata.)
 
 #### Scenario: Recommend matching harness
 
@@ -26,6 +23,7 @@ The system MAY recommend relevant harnesses to agents or users, but recommendati
 ### Requirement: Explicit Approval Before Download or Install
 
 The system MUST require explicit user approval, policy checks, executable/plugin warning acknowledgement, and immutable manifest-hash confirmation before any download intended for installation or any installation state transition.
+(Previously: Approval required user approval, policy checks, and manifest-hash confirmation, but not executable/plugin warning acknowledgement.)
 
 #### Scenario: Approve installation candidate
 
@@ -50,6 +48,7 @@ The system MUST require explicit user approval, policy checks, executable/plugin
 ### Requirement: Backend Must Not Mutate Local Config
 
 The system MUST NOT write to Claude, Codex, OpenCode, shell profiles, uploaded folders, plugin directories, theme files, or local project files. Local tools MUST perform diff preview and apply only after user confirmation.
+(Previously: The backend mutation prohibition listed tool/project files, but not uploaded folders, plugin directories, or theme files.)
 
 #### Scenario: Request local mutation from backend
 
