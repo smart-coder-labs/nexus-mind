@@ -21,6 +21,8 @@ const approveHarnessInstallMock = vi.fn()
 const downloadHarnessVersionMock = vi.fn()
 const createHarnessConfigReviewMock = vi.fn()
 const listHarnessConfigReviewsMock = vi.fn()
+const listHarnessConfigReviewCommentsMock = vi.fn()
+const createHarnessConfigReviewCommentMock = vi.fn()
 
 vi.mock('../api/client', () => ({
   createClient: vi.fn(() => ({
@@ -31,6 +33,8 @@ vi.mock('../api/client', () => ({
     downloadHarnessVersion: downloadHarnessVersionMock,
     createHarnessConfigReview: createHarnessConfigReviewMock,
     listHarnessConfigReviews: listHarnessConfigReviewsMock,
+    listHarnessConfigReviewComments: listHarnessConfigReviewCommentsMock,
+    createHarnessConfigReviewComment: createHarnessConfigReviewCommentMock,
   })),
 }))
 
@@ -125,8 +129,29 @@ beforeEach(() => {
       status: 'shared',
       created_at: '2026-07-02T00:00:00Z',
       shared_at: '2026-07-02T00:00:00Z',
+      author: { id: 'user-owner-1', name: 'Sarah Chen', email: 'sarah@example.com' },
     },
   ])
+  listHarnessConfigReviewCommentsMock.mockResolvedValue([
+    {
+      id: 'comment-1',
+      org_id: 'org-test-1',
+      review_id: 'review-1',
+      user_id: 'user-admin-1',
+      body: 'This setup looks safe to reuse.',
+      created_at: '2026-07-02T01:00:00Z',
+      author: { id: 'user-admin-1', name: 'Admin User', email: 'admin@example.com' },
+    },
+  ])
+  createHarnessConfigReviewCommentMock.mockResolvedValue({
+    id: 'comment-2',
+    org_id: 'org-test-1',
+    review_id: 'review-1',
+    user_id: 'user-admin-1',
+    body: 'Great, approved.',
+    created_at: '2026-07-02T02:00:00Z',
+    author: { id: 'user-admin-1', name: 'Admin User', email: 'admin@example.com' },
+  })
 })
 
 describe('Harnesses page', () => {
@@ -461,10 +486,29 @@ describe('Harnesses page', () => {
     await waitFor(() => expect(listHarnessConfigReviewsMock).toHaveBeenCalled())
     expect(screen.getByText('sha256:listedhash')).toBeInTheDocument()
     expect(screen.getByText(/1 redaction \(secret ×1\)/i)).toBeInTheDocument()
+    // The author of the shared config is shown.
+    expect(screen.getByText(/by Sarah Chen/i)).toBeInTheDocument()
 
     // The redacted config is hidden until explicitly inspected.
     expect(screen.queryByText(/"NEXUSMIND_API_KEY"/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /inspect config review review-1/i }))
     expect(await screen.findByText(/\[REDACTED:secret\]/)).toBeInTheDocument()
+  })
+
+  it('shows comments and posts a new one on an inspected config review', async () => {
+    renderWithProviders(<Harnesses />)
+    await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
+
+    await screen.findByText(/shared config reviews/i)
+    fireEvent.click(screen.getByRole('button', { name: /inspect config review review-1/i }))
+
+    // Existing comments load with their author.
+    expect(await screen.findByText(/this setup looks safe to reuse/i)).toBeInTheDocument()
+    await waitFor(() => expect(listHarnessConfigReviewCommentsMock).toHaveBeenCalledWith('review-1'))
+
+    fireEvent.change(screen.getByLabelText(/add a comment/i), { target: { value: 'Great, approved.' } })
+    fireEvent.click(screen.getByRole('button', { name: /post comment/i }))
+
+    await waitFor(() => expect(createHarnessConfigReviewCommentMock).toHaveBeenCalledWith('review-1', { body: 'Great, approved.' }))
   })
 })

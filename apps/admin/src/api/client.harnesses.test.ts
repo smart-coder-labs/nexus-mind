@@ -206,4 +206,24 @@ describe('NexusMindClient harness contracts', () => {
     expect(reviews[0].status).toBe('shared')
     expect(JSON.stringify(reviews[0].redacted_config)).toContain('[REDACTED:secret]')
   })
+
+  it('lists and posts config review comments', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { id: 'c-1', org_id: 'org-1', review_id: 'r-1', user_id: 'u-1', body: 'looks good', created_at: '2026-07-01T00:00:00Z', author: { id: 'u-1', name: 'Sarah', email: 's@example.com' } },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(
+        { id: 'c-2', org_id: 'org-1', review_id: 'r-1', user_id: 'u-1', body: 'approved', created_at: '2026-07-01T01:00:00Z', author: { id: 'u-1', name: 'Sarah', email: 's@example.com' } },
+      ), { status: 201 }))
+
+    const client = new NexusMindClient('https://api.test')
+    const comments = await client.listHarnessConfigReviewComments('r-1')
+    const posted = await client.createHarnessConfigReviewComment('r-1', { body: 'approved' })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://api.test/v1/harness-config-reviews/r-1/comments', expect.objectContaining({ credentials: 'include' }))
+    expect(comments[0].author?.name).toBe('Sarah')
+    const postBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(postBody).toEqual({ body: 'approved' })
+    expect(posted.id).toBe('c-2')
+  })
 })

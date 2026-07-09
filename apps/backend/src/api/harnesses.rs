@@ -156,6 +156,65 @@ pub async fn publish_version(
     Ok((StatusCode::CREATED, Json(version)))
 }
 
+pub async fn get_version(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path((id, version)): Path<(String, String)>,
+) -> Result<Json<HarnessVersion>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "harness:read")?;
+    let Some(version) = queries::get_visible_harness_version(
+        &conn,
+        &auth.org_id,
+        &id,
+        &version,
+        viewer_user_id(&auth),
+    )
+    .map_err(db_err)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Harness version not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    };
+    Ok(Json(version))
+}
+
+pub async fn archive_harness(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Harness>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "harness:write")?;
+    let Some(harness) =
+        queries::archive_harness(&conn, &auth.org_id, &id, viewer_user_id(&auth)).map_err(db_err)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Harness not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    };
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "harness.archived",
+        "harness",
+        Some(&id),
+        serde_json::json!({ "status": harness.status }),
+    );
+    Ok(Json(harness))
+}
+
 pub async fn approve_install(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -408,7 +467,9 @@ mod tests {
     fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/harnesses", get(list_harnesses).post(create_harness))
+            .route("/v1/harnesses/:id/archive", post(archive_harness))
             .route("/v1/harnesses/:id/versions", post(publish_version))
+            .route("/v1/harnesses/:id/versions/:version", get(get_version))
             .route(
                 "/v1/harnesses/:id/versions/:version/download",
                 get(download_version),
@@ -1097,6 +1158,119 @@ mod tests {
             "recommendations must not include installable manifest content"
         );
         assert_eq!(first["targets"].as_array().unwrap()[0], "claude");
+    }
+
+    #[tokio::test]
+    async fn archiving_a_harness_sets_status_and_requires_write() {
+        let (store, admin_key, org_id, admin_id) = setup_org();
+        let harness_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            q::create_harness(
+                &conn,
+                &org_id,
+                &admin_id,
+                &CreateHarnessRequest {
+                    slug: "base".into(),
+                    name: "Base".into(),
+                    description: None,
+                    project_id: None,
+                    visibility: None,
+                    owner_user_id: None,
+                },
+            )
+            .unwrap()
+            .id
+        };
+
+        let member_key = create_member_key(&store, &org_id, "member");
+        let denied = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/harnesses/{harness_id}/archive"))
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let ok = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/harnesses/{harness_id}/archive"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(ok.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "archived");
+    }
+
+    #[tokio::test]
+    async fn version_manifest_is_readable_for_preview_without_approval() {
+        let (store, admin_key, org_id, admin_id) = setup_org();
+        let harness_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let h = q::create_harness(
+                &conn,
+                &org_id,
+                &admin_id,
+                &CreateHarnessRequest {
+                    slug: "base".into(),
+                    name: "Base".into(),
+                    description: None,
+                    project_id: None,
+                    visibility: None,
+                    owner_user_id: None,
+                },
+            )
+            .unwrap();
+            q::publish_harness_version(
+                &conn,
+                &org_id,
+                &admin_id,
+                &h.id,
+                &PublishHarnessVersionRequest {
+                    version: "1.0.0".into(),
+                    manifest: manifest(),
+                    manifest_hash: None,
+                },
+            )
+            .unwrap();
+            h.id
+        };
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/harnesses/{harness_id}/versions/1.0.0"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["version"], "1.0.0");
+        assert!(
+            json["manifest"]["components"].is_array(),
+            "preview must expose manifest components with their content"
+        );
     }
 
     #[tokio::test]

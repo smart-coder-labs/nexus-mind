@@ -69,7 +69,9 @@ import type {
   HarnessDownloadResponse,
   HarnessRecommendation,
   CreateHarnessConfigReviewRequest,
+  CreateHarnessConfigReviewCommentRequest,
   HarnessConfigReview,
+  HarnessConfigReviewComment,
 } from '../types'
 
 export class NexusMindClient {
@@ -919,6 +921,17 @@ export class NexusMindClient {
     const qs = new URLSearchParams()
     if (params.status) qs.set('status', params.status)
     return this.request<HarnessConfigReview[]>(`/v1/harness-config-reviews${qs.toString() ? `?${qs}` : ''}`)
+  }
+
+  listHarnessConfigReviewComments(reviewId: string): Promise<HarnessConfigReviewComment[]> {
+    return this.request<HarnessConfigReviewComment[]>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`)
+  }
+
+  createHarnessConfigReviewComment(reviewId: string, data: CreateHarnessConfigReviewCommentRequest): Promise<HarnessConfigReviewComment> {
+    return this.request<HarnessConfigReviewComment>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 }
 

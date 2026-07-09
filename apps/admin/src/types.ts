@@ -785,6 +785,12 @@ export interface CreateHarnessConfigReviewRequest {
   status?: string
 }
 
+export interface HarnessConfigReviewAuthor {
+  id: string
+  name: string
+  email: string
+}
+
 export interface HarnessConfigReview {
   id: string
   org_id: string
@@ -796,4 +802,19 @@ export interface HarnessConfigReview {
   status: string
   created_at: string
   shared_at?: string | null
+  author?: HarnessConfigReviewAuthor | null
+}
+
+export interface HarnessConfigReviewComment {
+  id: string
+  org_id: string
+  review_id: string
+  user_id: string
+  body: string
+  created_at: string
+  author?: HarnessConfigReviewAuthor | null
+}
+
+export interface CreateHarnessConfigReviewCommentRequest {
+  body: string
 }

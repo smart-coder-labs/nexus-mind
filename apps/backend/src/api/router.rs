@@ -175,8 +175,16 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route("/v1/harnesses/:id", get(harnesses::get_harness))
         .route(
+            "/v1/harnesses/:id/archive",
+            post(harnesses::archive_harness),
+        )
+        .route(
             "/v1/harnesses/:id/versions",
             post(harnesses::publish_version),
+        )
+        .route(
+            "/v1/harnesses/:id/versions/:version",
+            get(harnesses::get_version),
         )
         .route(
             "/v1/harnesses/:id/publish",

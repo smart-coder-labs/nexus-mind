@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle2, Download, FileJson, PackagePlus, ShieldCheck, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import type { Harness, HarnessFormat, HarnessManifest, HarnessManifestEntry } from '../types'
+import type { Harness, HarnessConfigReview, HarnessFormat, HarnessManifest, HarnessManifestEntry } from '../types'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 const MAX_INLINE_UPLOAD_BYTES = 64 * 1024
@@ -646,10 +646,89 @@ function redactionSummary(report: Record<string, unknown>): string {
   return count > 0 ? `${count} redaction${count === 1 ? '' : 's'}${parts.length ? ` (${parts.join(', ')})` : ''}` : 'no sensitive values detected'
 }
 
+function ConfigReviewComments({ reviewId }: { reviewId: string }) {
+  const { session } = useAuth()
+  const client = useMemo(() => createClient(), [session])
+  const qc = useQueryClient()
+  const [body, setBody] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const { data: comments = [], isLoading } = useQuery({
+    queryKey: ['harness-config-review-comments', reviewId],
+    queryFn: () => client.listHarnessConfigReviewComments(reviewId),
+  })
+
+  const postMut = useMutation({
+    mutationFn: () => client.createHarnessConfigReviewComment(reviewId, { body: body.trim() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['harness-config-review-comments', reviewId] })
+      setBody('')
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to post comment'),
+  })
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!body.trim()) { setError('Write a comment before posting.'); return }
+    setError(null)
+    postMut.mutate()
+  }
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-border-secondary pt-3">
+      <p className="text-[11px] font-semibold text-text-primary">Comments</p>
+      <div className="space-y-2">
+        {isLoading && <p className="text-[11px] text-text-quaternary">Loading comments…</p>}
+        {!isLoading && comments.length === 0 && <p className="text-[11px] text-text-quaternary">No comments yet. Start the discussion.</p>}
+        {comments.map(comment => (
+          <div key={comment.id} className="rounded-[8px] border border-border-secondary bg-black/20 p-2.5">
+            <p className="mb-1 text-[10px] text-text-quaternary">{comment.author?.name ?? 'Unknown'}</p>
+            <p className="whitespace-pre-wrap text-[11px] text-text-secondary">{comment.body}</p>
+          </div>
+        ))}
+      </div>
+      <form onSubmit={submit} className="space-y-2">
+        <label className="block space-y-1.5 text-[10px] text-text-quaternary">
+          <span>Add a comment</span>
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={2} className="w-full resize-none rounded-[8px] border border-border-primary bg-white/[0.04] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60" />
+        </label>
+        {error && <p className="text-[10px] text-status-error">{error}</p>}
+        <div className="flex justify-end">
+          <button type="submit" disabled={postMut.isPending} className={`rounded-full bg-accent-blue px-3 py-1 text-[11px] font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}>{postMut.isPending ? 'Posting…' : 'Post comment'}</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function ConfigReviewItem({ review }: { review: HarnessConfigReview }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-[11px] border border-border-secondary bg-black/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
+            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-text-primary">{review.source_tool}</span>
+            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5">{review.status}</span>
+            <span className="text-text-quaternary">by {review.author?.name ?? 'Unknown'}</span>
+            <span className="text-text-quaternary">{redactionSummary(review.redaction_report)}</span>
+          </div>
+          <p className="break-all font-mono text-[10px] text-text-quaternary">{review.content_hash}</p>
+        </div>
+        <button onClick={() => setOpen(o => !o)} aria-label={`Inspect config review ${review.id}`} className={`rounded-full border border-border-primary px-3 py-1 text-[11px] text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>{open ? 'Hide' : 'Inspect'}</button>
+      </div>
+      {open && (
+        <>
+          <pre className="mt-3 max-h-56 overflow-auto rounded-[8px] border border-border-secondary bg-black/30 p-3 text-[11px] text-text-secondary">{JSON.stringify(review.redacted_config, null, 2)}</pre>
+          <ConfigReviewComments reviewId={review.id} />
+        </>
+      )}
+    </div>
+  )
+}
+
 function ConfigReviewList() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
-  const [inspecting, setInspecting] = useState<string | null>(null)
   const { data: reviews = [], isLoading, error } = useQuery({
     queryKey: ['harness-config-reviews'],
     queryFn: () => client.listHarnessConfigReviews(),
@@ -668,27 +747,7 @@ function ConfigReviewList() {
       <div className="space-y-2">
         {isLoading && [1, 2].map(i => <div key={i} className="h-16 animate-pulse rounded-[11px] border border-border-secondary bg-black/20" />)}
         {!isLoading && reviews.length === 0 && <p className="rounded-[11px] border border-border-secondary bg-black/20 p-6 text-center text-xs text-text-quaternary">No config reviews shared yet.</p>}
-        {reviews.map(review => {
-          const open = inspecting === review.id
-          return (
-            <div key={review.id} className="rounded-[11px] border border-border-secondary bg-black/20 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
-                    <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-text-primary">{review.source_tool}</span>
-                    <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5">{review.status}</span>
-                    <span className="text-text-quaternary">{redactionSummary(review.redaction_report)}</span>
-                  </div>
-                  <p className="break-all font-mono text-[10px] text-text-quaternary">{review.content_hash}</p>
-                </div>
-                <button onClick={() => setInspecting(open ? null : review.id)} aria-label={`Inspect config review ${review.id}`} className={`rounded-full border border-border-primary px-3 py-1 text-[11px] text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>{open ? 'Hide' : 'Inspect'}</button>
-              </div>
-              {open && (
-                <pre className="mt-3 max-h-56 overflow-auto rounded-[8px] border border-border-secondary bg-black/30 p-3 text-[11px] text-text-secondary">{JSON.stringify(review.redacted_config, null, 2)}</pre>
-              )}
-            </div>
-          )
-        })}
+        {reviews.map(review => <ConfigReviewItem key={review.id} review={review} />)}
       </div>
     </section>
   )

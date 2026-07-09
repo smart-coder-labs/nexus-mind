@@ -1694,6 +1694,24 @@ pub fn publish_harness_version(
         .ok_or_else(|| anyhow::anyhow!("version_not_found"))
 }
 
+/// Archives a harness (status = 'archived'). Returns the updated harness, or None
+/// if it does not exist or is not visible to the viewer.
+pub fn archive_harness(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<Harness>> {
+    if get_harness(conn, org_id, id, viewer_user_id)?.is_none() {
+        return Ok(None);
+    }
+    conn.execute(
+        "UPDATE harnesses SET status = 'archived', updated_at = datetime('now') WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    get_harness(conn, org_id, id, viewer_user_id)
+}
+
 pub fn get_harness_version(
     conn: &Connection,
     org_id: &str,
@@ -1901,7 +1919,7 @@ fn has_suspicious_content_key(value: &serde_json::Value) -> bool {
     }
 }
 
-fn get_visible_harness_version(
+pub fn get_visible_harness_version(
     conn: &Connection,
     org_id: &str,
     harness_id: &str,
