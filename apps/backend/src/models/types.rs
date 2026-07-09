@@ -1886,6 +1886,35 @@ pub struct HarnessConfigReview {
     pub status: String,
     pub created_at: String,
     pub shared_at: Option<String>,
+    /// Author identity, populated on read (joined from users). None on create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<HarnessConfigReviewAuthor>,
+}
+
+/// Lightweight author identity attached to a config review or comment on read.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessConfigReviewAuthor {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+}
+
+/// A comment left by a user on a shared config review (DB row + author on read).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessConfigReviewComment {
+    pub id: String,
+    pub org_id: String,
+    pub review_id: String,
+    pub user_id: String,
+    pub body: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<HarnessConfigReviewAuthor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateHarnessConfigReviewCommentRequest {
+    pub body: String,
 }
 
 /// Stored GitHub OAuth connection for an org (DB row).

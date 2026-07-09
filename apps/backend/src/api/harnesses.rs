@@ -9,9 +9,10 @@ use crate::{
     api::helpers::{require_permission, AppJson},
     db::queries,
     models::types::{
-        ApiError, AuthContext, CreateHarnessConfigReviewRequest, CreateHarnessRequest, Harness,
-        HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessDownloadResponse,
-        HarnessInstallResultRequest, HarnessRecommendation, HarnessVersion,
+        ApiError, AuthContext, CreateHarnessConfigReviewCommentRequest,
+        CreateHarnessConfigReviewRequest, CreateHarnessRequest, Harness, HarnessApproval,
+        HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewComment,
+        HarnessDownloadResponse, HarnessInstallResultRequest, HarnessRecommendation, HarnessVersion,
         PublishHarnessVersionRequest,
     },
     store::sqlite::SqliteStore,
@@ -29,6 +30,7 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         || msg.contains("mismatch")
         || msg.contains("secret_scan")
         || msg.contains("raw_local_content")
+        || msg.contains("empty_comment")
     {
         (StatusCode::UNPROCESSABLE_ENTITY, "validation_error")
     } else if msg.contains("UNIQUE constraint failed") {
@@ -335,6 +337,48 @@ pub async fn get_config_review(
     Ok(Json(review))
 }
 
+pub async fn list_config_review_comments(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<HarnessConfigReviewComment>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "harness:review_config")?;
+    let comments = queries::list_harness_config_review_comments(&conn, &auth.org_id, &id)
+        .map_err(db_err)?;
+    Ok(Json(comments))
+}
+
+pub async fn create_config_review_comment(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    AppJson(input): AppJson<CreateHarnessConfigReviewCommentRequest>,
+) -> Result<(StatusCode, Json<HarnessConfigReviewComment>), (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "harness:review_config")?;
+    let comment = queries::create_harness_config_review_comment(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        &id,
+        &input.body,
+    )
+    .map_err(db_err)?;
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "harness_config_review.commented",
+        "harness_config_review",
+        Some(&id),
+        serde_json::json!({ "comment_id": comment.id }),
+    );
+    Ok((StatusCode::CREATED, Json(comment)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +425,10 @@ mod tests {
             .route(
                 "/v1/harness-config-reviews",
                 get(list_config_reviews).post(create_config_review),
+            )
+            .route(
+                "/v1/harness-config-reviews/:id/comments",
+                get(list_config_review_comments).post(create_config_review_comment),
             )
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -1120,6 +1168,122 @@ mod tests {
             rows[0]["redacted_config"]["env"]["NEXUSMIND_API_KEY"],
             "[REDACTED:secret]"
         );
+        // The author identity is joined so reviewers see whose config it is.
+        assert_eq!(rows[0]["author"]["name"], "Admin");
+        assert_eq!(rows[0]["author"]["email"], "admin@acme.com");
+    }
+
+    async fn create_shared_review(store: &SqliteStore, key: &str) -> String {
+        let body = serde_json::json!({
+            "source_tool": "claude",
+            "redacted_config": { "env": { "NEXUSMIND_API_KEY": "[REDACTED:secret]" } },
+            "redaction_report": { "secret_scan_status": "passed", "secret_count": 1, "categories": { "secret": 1 } },
+            "content_hash": "sha256:abc",
+            "status": "shared"
+        });
+        let resp = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/harness-config-reviews")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn reviewers_can_comment_on_a_config_review_and_list_with_author() {
+        let (store, admin_key, _, _) = setup_org();
+        let review_id = create_shared_review(&store, &admin_key).await;
+
+        let posted = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/harness-config-reviews/{review_id}/comments"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "body": "Looks safe to me." }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(posted.status(), StatusCode::CREATED);
+
+        let listed = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/harness-config-reviews/{review_id}/comments"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["body"], "Looks safe to me.");
+        assert_eq!(rows[0]["review_id"], review_id);
+        assert_eq!(rows[0]["author"]["name"], "Admin");
+    }
+
+    #[tokio::test]
+    async fn empty_config_review_comment_is_rejected() {
+        let (store, admin_key, _, _) = setup_org();
+        let review_id = create_shared_review(&store, &admin_key).await;
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/harness-config-reviews/{review_id}/comments"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "body": "   " }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn commenting_requires_review_permission() {
+        let (store, admin_key, org_id, _) = setup_org();
+        let review_id = create_shared_review(&store, &admin_key).await;
+        let member_key = create_member_key(&store, &org_id, "member");
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/harness-config-reviews/{review_id}/comments"))
+                    .header("Authorization", format!("Bearer {member_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "body": "sneaky" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

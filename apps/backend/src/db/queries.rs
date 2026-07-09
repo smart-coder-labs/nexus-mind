@@ -11,7 +11,8 @@ use crate::models::types::{
     AuthContext, CodeChunk, CodeProject, Convention, CreateAgentRequest, CreateConventionRequest,
     CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
     CreateWebhookRequest, CustomRole, GitHubConnection, GlobalMetrics, GraphEdgeDto, GraphNodeDto,
-    Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessDownloadResponse,
+    Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewAuthor,
+    HarnessConfigReviewComment, HarnessDownloadResponse,
     HarnessInstallResultRequest, HarnessOwner, HarnessRecommendation, HarnessVersion,
     HarnessVersionSummary, InviteLink, MemGraphEdge, MemGraphNode, Memory, OnboardingItem,
     OnboardingStatus, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
@@ -1949,16 +1950,56 @@ pub fn create_harness_config_review(
         .ok_or_else(|| anyhow::anyhow!("config_review_not_found"))
 }
 
+fn config_review_author(
+    user_id: String,
+    name: Option<String>,
+    email: Option<String>,
+) -> Option<HarnessConfigReviewAuthor> {
+    match (name, email) {
+        (Some(name), Some(email)) => Some(HarnessConfigReviewAuthor {
+            id: user_id,
+            name,
+            email,
+        }),
+        _ => None,
+    }
+}
+
+const CONFIG_REVIEW_SELECT: &str = "SELECT hcr.id, hcr.org_id, hcr.user_id, hcr.source_tool, hcr.redacted_config_json, hcr.redaction_report_json, hcr.content_hash, hcr.status, hcr.created_at, hcr.shared_at, u.name, u.email FROM harness_config_reviews hcr LEFT JOIN users u ON u.id = hcr.user_id";
+
+fn map_config_review(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessConfigReview> {
+    let config_json: String = row.get(4)?;
+    let report_json: String = row.get(5)?;
+    let user_id: String = row.get(2)?;
+    let name: Option<String> = row.get(10)?;
+    let email: Option<String> = row.get(11)?;
+    Ok(HarnessConfigReview {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        user_id: user_id.clone(),
+        source_tool: row.get(3)?,
+        redacted_config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Null),
+        redaction_report: serde_json::from_str(&report_json).unwrap_or(serde_json::json!({})),
+        content_hash: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        shared_at: row.get(9)?,
+        author: config_review_author(user_id, name, email),
+    })
+}
+
 pub fn get_harness_config_review(
     conn: &Connection,
     org_id: &str,
     id: &str,
 ) -> Result<Option<HarnessConfigReview>> {
     conn.query_row(
-        "SELECT id, org_id, user_id, source_tool, redacted_config_json, redaction_report_json, content_hash, status, created_at, shared_at FROM harness_config_reviews WHERE org_id = ?1 AND id = ?2",
+        &format!("{CONFIG_REVIEW_SELECT} WHERE hcr.org_id = ?1 AND hcr.id = ?2"),
         rusqlite::params![org_id, id],
-        |row| { let config_json: String = row.get(4)?; let report_json: String = row.get(5)?; Ok(HarnessConfigReview { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, source_tool: row.get(3)?, redacted_config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Null), redaction_report: serde_json::from_str(&report_json).unwrap_or(serde_json::json!({})), content_hash: row.get(6)?, status: row.get(7)?, created_at: row.get(8)?, shared_at: row.get(9)? }) },
-    ).optional().map_err(Into::into)
+        map_config_review,
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Lists config reviews for an org, newest first. Optionally filters by status
@@ -1968,36 +2009,88 @@ pub fn list_harness_config_reviews(
     org_id: &str,
     status: Option<&str>,
 ) -> Result<Vec<HarnessConfigReview>> {
-    let mut sql = String::from(
-        "SELECT id, org_id, user_id, source_tool, redacted_config_json, redaction_report_json, content_hash, status, created_at, shared_at FROM harness_config_reviews WHERE org_id = ?1",
-    );
+    let mut sql = format!("{CONFIG_REVIEW_SELECT} WHERE hcr.org_id = ?1");
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
     if let Some(status) = status {
-        sql.push_str(" AND status = ?2");
+        sql.push_str(" AND hcr.status = ?2");
         params.push(Box::new(status.to_string()));
     }
-    sql.push_str(" ORDER BY created_at DESC, id DESC");
+    sql.push_str(" ORDER BY hcr.created_at DESC, hcr.id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let rows = stmt
-        .query_map(refs.as_slice(), |row| {
-            let config_json: String = row.get(4)?;
-            let report_json: String = row.get(5)?;
-            Ok(HarnessConfigReview {
-                id: row.get(0)?,
-                org_id: row.get(1)?,
-                user_id: row.get(2)?,
-                source_tool: row.get(3)?,
-                redacted_config: serde_json::from_str(&config_json)
-                    .unwrap_or(serde_json::Value::Null),
-                redaction_report: serde_json::from_str(&report_json)
-                    .unwrap_or(serde_json::json!({})),
-                content_hash: row.get(6)?,
-                status: row.get(7)?,
-                created_at: row.get(8)?,
-                shared_at: row.get(9)?,
-            })
-        })?
+        .query_map(refs.as_slice(), map_config_review)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Adds a comment to a config review, returning the stored comment with author.
+/// Callers must have already checked review-config permission and review existence.
+pub fn create_harness_config_review_comment(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    review_id: &str,
+    body: &str,
+) -> Result<HarnessConfigReviewComment> {
+    let body = body.trim();
+    if body.is_empty() {
+        anyhow::bail!("empty_comment");
+    }
+    if get_harness_config_review(conn, org_id, review_id)?.is_none() {
+        anyhow::bail!("config_review_not_found");
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO harness_config_review_comments (id, org_id, review_id, user_id, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+        rusqlite::params![id, org_id, review_id, user_id, body],
+    )?;
+    get_harness_config_review_comment(conn, org_id, &id)?
+        .ok_or_else(|| anyhow::anyhow!("comment_not_found"))
+}
+
+const CONFIG_REVIEW_COMMENT_SELECT: &str = "SELECT c.id, c.org_id, c.review_id, c.user_id, c.body, c.created_at, u.name, u.email FROM harness_config_review_comments c LEFT JOIN users u ON u.id = c.user_id";
+
+fn map_config_review_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessConfigReviewComment> {
+    let user_id: String = row.get(3)?;
+    let name: Option<String> = row.get(6)?;
+    let email: Option<String> = row.get(7)?;
+    Ok(HarnessConfigReviewComment {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        review_id: row.get(2)?,
+        user_id: user_id.clone(),
+        body: row.get(4)?,
+        created_at: row.get(5)?,
+        author: config_review_author(user_id, name, email),
+    })
+}
+
+fn get_harness_config_review_comment(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<HarnessConfigReviewComment>> {
+    conn.query_row(
+        &format!("{CONFIG_REVIEW_COMMENT_SELECT} WHERE c.org_id = ?1 AND c.id = ?2"),
+        rusqlite::params![org_id, id],
+        map_config_review_comment,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Lists comments on a config review, oldest first.
+pub fn list_harness_config_review_comments(
+    conn: &Connection,
+    org_id: &str,
+    review_id: &str,
+) -> Result<Vec<HarnessConfigReviewComment>> {
+    let mut stmt = conn.prepare(&format!(
+        "{CONFIG_REVIEW_COMMENT_SELECT} WHERE c.org_id = ?1 AND c.review_id = ?2 ORDER BY c.created_at ASC, c.id ASC"
+    ))?;
+    let rows = stmt
+        .query_map(rusqlite::params![org_id, review_id], map_config_review_comment)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }

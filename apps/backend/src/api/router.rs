@@ -206,6 +206,11 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/harness-config-reviews/:id",
             get(harnesses::get_config_review),
         )
+        .route(
+            "/v1/harness-config-reviews/:id/comments",
+            get(harnesses::list_config_review_comments)
+                .post(harnesses::create_config_review_comment),
+        )
         .route("/v1/context", get(context::get_global_context))
         .route("/v1/context/type/:type", get(context::get_type_context))
         .route("/v1/context/session/:id", get(context::get_session_context))
