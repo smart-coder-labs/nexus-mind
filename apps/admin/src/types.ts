@@ -637,8 +637,47 @@ export interface HarnessVersionSummary {
   version: string
   manifest_hash: string
   targets: string[]
+  format?: HarnessFormat
+  warning_metadata?: Record<string, unknown> | null
   status: string
   published_at: string
+}
+
+export type HarnessFormat = 'agent' | 'skill' | 'command' | 'hook' | 'output_style' | 'claude_code_plugin' | 'theme'
+export type HarnessComponentKind = 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'
+
+export interface HarnessOwner {
+  id: string
+  name: string
+  email: string
+}
+
+export interface HarnessManifestEntry {
+  kind: 'file'
+  path: string
+  media_type: string
+  size_bytes: number
+  sha256: string
+  content?: string
+}
+
+export interface HarnessManifestComponent {
+  kind: HarnessComponentKind
+  path: string
+  media_type?: string
+  size_bytes?: number
+  sha256?: string
+  content?: string
+  entries?: HarnessManifestEntry[]
+}
+
+export interface HarnessManifest {
+  schema_version: '1.1'
+  targets: Array<'claude' | 'codex' | 'opencode'>
+  format: HarnessFormat
+  components: HarnessManifestComponent[]
+  provenance: { source: string }
+  security: { requires_approval: true; executable?: boolean; secret_scan_status?: 'passed' }
 }
 
 export interface Harness {
@@ -651,6 +690,8 @@ export interface Harness {
   visibility: string
   status: string
   created_by: string
+  owner_user_id: string
+  owner?: HarnessOwner | null
   created_at: string
   updated_at: string
   latest_version?: HarnessVersionSummary | null
@@ -662,11 +703,12 @@ export interface CreateHarnessRequest {
   description?: string
   project_id?: string
   visibility?: string
+  owner_user_id?: string
 }
 
 export interface PublishHarnessVersionRequest {
   version: string
-  manifest: Record<string, unknown>
+  manifest: HarnessManifest | Record<string, unknown>
   manifest_hash?: string
 }
 
@@ -677,6 +719,7 @@ export interface HarnessVersion {
   manifest: Record<string, unknown>
   manifest_hash: string
   targets: string[]
+  format?: HarnessFormat
   provenance: Record<string, unknown>
   status: string
   published_by: string
@@ -725,6 +768,9 @@ export interface HarnessRecommendation {
   name: string
   description?: string | null
   targets: string[]
+  owner?: HarnessOwner | null
+  format?: HarnessFormat
+  warning_metadata?: Record<string, unknown> | null
   manifest_hash: string
   approval_required: boolean
   download_url: string
@@ -739,6 +785,12 @@ export interface CreateHarnessConfigReviewRequest {
   status?: string
 }
 
+export interface HarnessConfigReviewAuthor {
+  id: string
+  name: string
+  email: string
+}
+
 export interface HarnessConfigReview {
   id: string
   org_id: string
@@ -750,4 +802,19 @@ export interface HarnessConfigReview {
   status: string
   created_at: string
   shared_at?: string | null
+  author?: HarnessConfigReviewAuthor | null
+}
+
+export interface HarnessConfigReviewComment {
+  id: string
+  org_id: string
+  review_id: string
+  user_id: string
+  body: string
+  created_at: string
+  author?: HarnessConfigReviewAuthor | null
+}
+
+export interface CreateHarnessConfigReviewCommentRequest {
+  body: string
 }

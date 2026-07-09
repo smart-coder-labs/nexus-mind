@@ -7,17 +7,18 @@ use uuid::Uuid;
 use crate::auth::api_keys;
 use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
 use crate::models::types::{
-    Agent, AgentAssignment, ApiKeyWithUser, AuditEntry, AuthContext, CodeChunk, CodeProject,
-    Convention, CreateAgentRequest, CreateConventionRequest, CreateHarnessConfigReviewRequest,
-    CreateHarnessRequest, CreateSessionRequest, CreateWebhookRequest, CustomRole, GitHubConnection,
-    GlobalMetrics, GraphEdgeDto, GraphNodeDto, Harness, HarnessApproval, HarnessApprovalRequest,
-    HarnessConfigReview, HarnessDownloadResponse, HarnessInstallResultRequest,
-    HarnessRecommendation, HarnessVersion, HarnessVersionSummary, InviteLink, MemGraphEdge,
-    MemGraphNode, Memory, OnboardingItem, OnboardingStatus, Org, OrgSettings, OrgStats,
-    OrgWithStats, PatchSessionRequest, Policy, Project, ProjectEventOverrides, ProjectMember,
-    PublishHarnessVersionRequest, Session, SessionWithCount, StoreMemoryRequest, ToolUsage,
-    UpdateAgentRequest, UpdateConventionRequest, UpdateWebhookRequest, User, UserRole, Webhook,
-    WebhookDelivery,
+    validate_typed_harness_manifest, Agent, AgentAssignment, ApiKeyWithUser, AuditEntry,
+    AuthContext, CodeChunk, CodeProject, Convention, CreateAgentRequest, CreateConventionRequest,
+    CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
+    CreateWebhookRequest, CustomRole, GitHubConnection, GlobalMetrics, GraphEdgeDto, GraphNodeDto,
+    Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewAuthor,
+    HarnessConfigReviewComment, HarnessDownloadResponse,
+    HarnessInstallResultRequest, HarnessOwner, HarnessRecommendation, HarnessVersion,
+    HarnessVersionSummary, InviteLink, MemGraphEdge, MemGraphNode, Memory, OnboardingItem,
+    OnboardingStatus, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
+    Project, ProjectEventOverrides, ProjectMember, PublishHarnessVersionRequest, Session,
+    SessionWithCount, StoreMemoryRequest, ToolUsage, UpdateAgentRequest, UpdateConventionRequest,
+    UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
 };
 
 /// Looks up an API key by its SHA-256 hash.
@@ -1443,7 +1444,39 @@ fn json_vec(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
+fn manifest_format(manifest: &serde_json::Value) -> Option<String> {
+    manifest
+        .get("format")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn warning_metadata(manifest: &serde_json::Value) -> Option<serde_json::Value> {
+    let format = manifest.get("format").and_then(|v| v.as_str())?;
+    if matches!(format, "hook" | "claude_code_plugin") {
+        Some(serde_json::json!({
+            "high_trust": true,
+            "requires_acknowledgement": true,
+            "message": "Review executable hooks or plugin metadata before approval."
+        }))
+    } else {
+        None
+    }
+}
+
+fn user_belongs_to_org(conn: &Connection, org_id: &str, user_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE id = ?1 AND org_id = ?2 AND status = 'active'",
+        rusqlite::params![user_id, org_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 fn map_harness(row: &rusqlite::Row<'_>) -> rusqlite::Result<Harness> {
+    let owner_user_id: String = row.get(9)?;
+    let owner_name: Option<String> = row.get(10)?;
+    let owner_email: Option<String> = row.get(11)?;
     Ok(Harness {
         id: row.get(0)?,
         org_id: row.get(1)?,
@@ -1454,8 +1487,14 @@ fn map_harness(row: &rusqlite::Row<'_>) -> rusqlite::Result<Harness> {
         visibility: row.get(6)?,
         status: row.get(7)?,
         created_by: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        owner_user_id: owner_user_id.clone(),
+        owner: Some(HarnessOwner {
+            id: owner_user_id,
+            name: owner_name.unwrap_or_default(),
+            email: owner_email.unwrap_or_default(),
+        }),
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
         latest_version: None,
     })
 }
@@ -1464,11 +1503,14 @@ fn map_harness_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessVersi
     let manifest_json: String = row.get(3)?;
     let targets_json: String = row.get(5)?;
     let provenance_json: String = row.get(6)?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_json).unwrap_or(serde_json::Value::Null);
     Ok(HarnessVersion {
         id: row.get(0)?,
         harness_id: row.get(1)?,
         version: row.get(2)?,
-        manifest: serde_json::from_str(&manifest_json).unwrap_or(serde_json::Value::Null),
+        format: manifest_format(&manifest),
+        manifest,
         manifest_hash: row.get(4)?,
         targets: json_vec(&targets_json),
         provenance: serde_json::from_str(&provenance_json).unwrap_or(serde_json::json!({})),
@@ -1482,6 +1524,11 @@ fn map_harness_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessVersi
 fn validate_manifest(
     manifest: &serde_json::Value,
 ) -> Result<(Vec<String>, serde_json::Value), &'static str> {
+    if manifest.get("format").is_some()
+        || manifest.get("schema_version").and_then(|v| v.as_str()) == Some("1.1")
+    {
+        validate_typed_harness_manifest(manifest)?;
+    }
     let targets = manifest
         .get("targets")
         .and_then(|v| v.as_array())
@@ -1513,11 +1560,15 @@ pub fn create_harness(
     }
     let id = Uuid::new_v4().to_string();
     let visibility = input.visibility.as_deref().unwrap_or("org");
+    let owner_user_id = input.owner_user_id.as_deref().unwrap_or(user_id);
+    if !user_belongs_to_org(conn, org_id, owner_user_id)? {
+        anyhow::bail!("owner_not_in_org");
+    }
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     conn.execute(
-        "INSERT INTO harnesses (id, org_id, project_id, slug, name, description, visibility, status, created_by, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'draft', ?8, ?9, ?9)",
-        rusqlite::params![id, org_id, input.project_id, input.slug.trim(), input.name.trim(), input.description, visibility, user_id, now],
+        "INSERT INTO harnesses (id, org_id, project_id, slug, name, description, visibility, status, created_by, owner_user_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'draft', ?8, ?9, ?10, ?10)",
+        rusqlite::params![id, org_id, input.project_id, input.slug.trim(), input.name.trim(), input.description, visibility, user_id, owner_user_id, now],
     )?;
     get_harness(conn, org_id, &id, None)?.ok_or_else(|| anyhow::anyhow!("harness_not_found"))
 }
@@ -1527,8 +1578,9 @@ pub fn list_visible_harnesses(
     org_id: &str,
     viewer_user_id: Option<&str>,
     target: Option<&str>,
+    owner_user_id: Option<&str>,
 ) -> Result<Vec<Harness>> {
-    let mut sql = String::from("SELECT h.id, h.org_id, h.project_id, h.slug, h.name, h.description, h.visibility, h.status, h.created_by, h.created_at, h.updated_at FROM harnesses h WHERE h.org_id = ?1");
+    let mut sql = String::from("SELECT h.id, h.org_id, h.project_id, h.slug, h.name, h.description, h.visibility, h.status, h.created_by, h.owner_user_id, u.name, u.email, h.created_at, h.updated_at FROM harnesses h LEFT JOIN users u ON u.id = h.owner_user_id WHERE h.org_id = ?1");
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
     let mut idx = 2usize;
     if let Some(user_id) = viewer_user_id {
@@ -1539,6 +1591,11 @@ pub fn list_visible_harnesses(
     if let Some(target) = target.filter(|t| !t.is_empty()) {
         sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM harness_versions hv WHERE hv.harness_id = h.id AND hv.status = 'published' AND hv.revoked_at IS NULL AND hv.targets_json LIKE ?{idx})"));
         params.push(Box::new(format!("%\"{}\"%", target)));
+        idx += 1;
+    }
+    if let Some(owner_user_id) = owner_user_id.filter(|v| !v.is_empty()) {
+        sql.push_str(&format!(" AND h.owner_user_id = ?{idx}"));
+        params.push(Box::new(owner_user_id.to_string()));
     }
     sql.push_str(" ORDER BY h.updated_at DESC");
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
@@ -1560,7 +1617,7 @@ pub fn get_harness(
     viewer_user_id: Option<&str>,
 ) -> Result<Option<Harness>> {
     let result = conn.query_row(
-        "SELECT id, org_id, project_id, slug, name, description, visibility, status, created_by, created_at, updated_at FROM harnesses WHERE org_id = ?1 AND id = ?2",
+        "SELECT h.id, h.org_id, h.project_id, h.slug, h.name, h.description, h.visibility, h.status, h.created_by, h.owner_user_id, u.name, u.email, h.created_at, h.updated_at FROM harnesses h LEFT JOIN users u ON u.id = h.owner_user_id WHERE h.org_id = ?1 AND h.id = ?2",
         rusqlite::params![org_id, harness_id], map_harness,
     ).optional()?;
     let Some(mut harness) = result else {
@@ -1585,11 +1642,13 @@ pub fn latest_harness_version_summary(
     harness_id: &str,
 ) -> Result<Option<HarnessVersionSummary>> {
     conn.query_row(
-        "SELECT id, version, manifest_hash, targets_json, status, published_at FROM harness_versions WHERE harness_id = ?1 AND revoked_at IS NULL ORDER BY published_at DESC LIMIT 1",
+        "SELECT id, version, manifest_hash, targets_json, status, published_at, manifest_json FROM harness_versions WHERE harness_id = ?1 AND revoked_at IS NULL ORDER BY published_at DESC LIMIT 1",
         [harness_id],
         |row| {
             let targets_json: String = row.get(3)?;
-            Ok(HarnessVersionSummary { id: row.get(0)?, version: row.get(1)?, manifest_hash: row.get(2)?, targets: json_vec(&targets_json), status: row.get(4)?, published_at: row.get(5)? })
+            let manifest_json: String = row.get(6)?;
+            let manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap_or(serde_json::Value::Null);
+            Ok(HarnessVersionSummary { id: row.get(0)?, version: row.get(1)?, manifest_hash: row.get(2)?, targets: json_vec(&targets_json), format: manifest_format(&manifest), warning_metadata: warning_metadata(&manifest), status: row.get(4)?, published_at: row.get(5)? })
         },
     ).optional().map_err(Into::into)
 }
@@ -1635,6 +1694,24 @@ pub fn publish_harness_version(
         .ok_or_else(|| anyhow::anyhow!("version_not_found"))
 }
 
+/// Archives a harness (status = 'archived'). Returns the updated harness, or None
+/// if it does not exist or is not visible to the viewer.
+pub fn archive_harness(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<Harness>> {
+    if get_harness(conn, org_id, id, viewer_user_id)?.is_none() {
+        return Ok(None);
+    }
+    conn.execute(
+        "UPDATE harnesses SET status = 'archived', updated_at = datetime('now') WHERE id = ?1 AND org_id = ?2",
+        rusqlite::params![id, org_id],
+    )?;
+    get_harness(conn, org_id, id, viewer_user_id)
+}
+
 pub fn get_harness_version(
     conn: &Connection,
     org_id: &str,
@@ -1661,11 +1738,19 @@ pub fn create_harness_approval(
     if hv.manifest_hash != input.manifest_hash {
         anyhow::bail!("manifest_hash_mismatch");
     }
-    let id = Uuid::new_v4().to_string();
     let metadata = input
         .metadata
         .clone()
         .unwrap_or_else(|| serde_json::json!({}));
+    if warning_metadata(&hv.manifest).is_some()
+        && metadata
+            .get("warning_acknowledged")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+    {
+        anyhow::bail!("warning_acknowledgement_required");
+    }
+    let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO harness_install_approvals (id, org_id, user_id, harness_version_id, target_tool, target_scope, manifest_hash, status, metadata_json, approved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, datetime('now'))",
         rusqlite::params![id, org_id, user_id, hv.id, input.target_tool, input.target_scope, input.manifest_hash, serde_json::to_string(&metadata)?],
@@ -1769,7 +1854,7 @@ pub fn list_harness_recommendations(
     viewer_user_id: Option<&str>,
     target: Option<&str>,
 ) -> Result<Vec<HarnessRecommendation>> {
-    let harnesses = list_visible_harnesses(conn, org_id, viewer_user_id, target)?;
+    let harnesses = list_visible_harnesses(conn, org_id, viewer_user_id, target, None)?;
     Ok(harnesses
         .into_iter()
         .filter_map(|h| {
@@ -1783,7 +1868,10 @@ pub fn list_harness_recommendations(
                 version: version.version,
                 name: h.name,
                 description: h.description,
+                owner: h.owner,
                 targets: version.targets,
+                format: version.format,
+                warning_metadata: version.warning_metadata,
                 manifest_hash: version.manifest_hash,
                 approval_required: true,
                 required_permissions: vec![
@@ -1831,7 +1919,7 @@ fn has_suspicious_content_key(value: &serde_json::Value) -> bool {
     }
 }
 
-fn get_visible_harness_version(
+pub fn get_visible_harness_version(
     conn: &Connection,
     org_id: &str,
     harness_id: &str,
@@ -1880,16 +1968,149 @@ pub fn create_harness_config_review(
         .ok_or_else(|| anyhow::anyhow!("config_review_not_found"))
 }
 
+fn config_review_author(
+    user_id: String,
+    name: Option<String>,
+    email: Option<String>,
+) -> Option<HarnessConfigReviewAuthor> {
+    match (name, email) {
+        (Some(name), Some(email)) => Some(HarnessConfigReviewAuthor {
+            id: user_id,
+            name,
+            email,
+        }),
+        _ => None,
+    }
+}
+
+const CONFIG_REVIEW_SELECT: &str = "SELECT hcr.id, hcr.org_id, hcr.user_id, hcr.source_tool, hcr.redacted_config_json, hcr.redaction_report_json, hcr.content_hash, hcr.status, hcr.created_at, hcr.shared_at, u.name, u.email FROM harness_config_reviews hcr LEFT JOIN users u ON u.id = hcr.user_id";
+
+fn map_config_review(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessConfigReview> {
+    let config_json: String = row.get(4)?;
+    let report_json: String = row.get(5)?;
+    let user_id: String = row.get(2)?;
+    let name: Option<String> = row.get(10)?;
+    let email: Option<String> = row.get(11)?;
+    Ok(HarnessConfigReview {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        user_id: user_id.clone(),
+        source_tool: row.get(3)?,
+        redacted_config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Null),
+        redaction_report: serde_json::from_str(&report_json).unwrap_or(serde_json::json!({})),
+        content_hash: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        shared_at: row.get(9)?,
+        author: config_review_author(user_id, name, email),
+    })
+}
+
 pub fn get_harness_config_review(
     conn: &Connection,
     org_id: &str,
     id: &str,
 ) -> Result<Option<HarnessConfigReview>> {
     conn.query_row(
-        "SELECT id, org_id, user_id, source_tool, redacted_config_json, redaction_report_json, content_hash, status, created_at, shared_at FROM harness_config_reviews WHERE org_id = ?1 AND id = ?2",
+        &format!("{CONFIG_REVIEW_SELECT} WHERE hcr.org_id = ?1 AND hcr.id = ?2"),
         rusqlite::params![org_id, id],
-        |row| { let config_json: String = row.get(4)?; let report_json: String = row.get(5)?; Ok(HarnessConfigReview { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, source_tool: row.get(3)?, redacted_config: serde_json::from_str(&config_json).unwrap_or(serde_json::Value::Null), redaction_report: serde_json::from_str(&report_json).unwrap_or(serde_json::json!({})), content_hash: row.get(6)?, status: row.get(7)?, created_at: row.get(8)?, shared_at: row.get(9)? }) },
-    ).optional().map_err(Into::into)
+        map_config_review,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Lists config reviews for an org, newest first. Optionally filters by status
+/// (e.g. "shared"). Returns redacted snapshots only — raw secrets are never stored.
+pub fn list_harness_config_reviews(
+    conn: &Connection,
+    org_id: &str,
+    status: Option<&str>,
+) -> Result<Vec<HarnessConfigReview>> {
+    let mut sql = format!("{CONFIG_REVIEW_SELECT} WHERE hcr.org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(status) = status {
+        sql.push_str(" AND hcr.status = ?2");
+        params.push(Box::new(status.to_string()));
+    }
+    sql.push_str(" ORDER BY hcr.created_at DESC, hcr.id DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt
+        .query_map(refs.as_slice(), map_config_review)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Adds a comment to a config review, returning the stored comment with author.
+/// Callers must have already checked review-config permission and review existence.
+pub fn create_harness_config_review_comment(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    review_id: &str,
+    body: &str,
+) -> Result<HarnessConfigReviewComment> {
+    let body = body.trim();
+    if body.is_empty() {
+        anyhow::bail!("empty_comment");
+    }
+    if get_harness_config_review(conn, org_id, review_id)?.is_none() {
+        anyhow::bail!("config_review_not_found");
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO harness_config_review_comments (id, org_id, review_id, user_id, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+        rusqlite::params![id, org_id, review_id, user_id, body],
+    )?;
+    get_harness_config_review_comment(conn, org_id, &id)?
+        .ok_or_else(|| anyhow::anyhow!("comment_not_found"))
+}
+
+const CONFIG_REVIEW_COMMENT_SELECT: &str = "SELECT c.id, c.org_id, c.review_id, c.user_id, c.body, c.created_at, u.name, u.email FROM harness_config_review_comments c LEFT JOIN users u ON u.id = c.user_id";
+
+fn map_config_review_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessConfigReviewComment> {
+    let user_id: String = row.get(3)?;
+    let name: Option<String> = row.get(6)?;
+    let email: Option<String> = row.get(7)?;
+    Ok(HarnessConfigReviewComment {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        review_id: row.get(2)?,
+        user_id: user_id.clone(),
+        body: row.get(4)?,
+        created_at: row.get(5)?,
+        author: config_review_author(user_id, name, email),
+    })
+}
+
+fn get_harness_config_review_comment(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<HarnessConfigReviewComment>> {
+    conn.query_row(
+        &format!("{CONFIG_REVIEW_COMMENT_SELECT} WHERE c.org_id = ?1 AND c.id = ?2"),
+        rusqlite::params![org_id, id],
+        map_config_review_comment,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Lists comments on a config review, oldest first.
+pub fn list_harness_config_review_comments(
+    conn: &Connection,
+    org_id: &str,
+    review_id: &str,
+) -> Result<Vec<HarnessConfigReviewComment>> {
+    let mut stmt = conn.prepare(&format!(
+        "{CONFIG_REVIEW_COMMENT_SELECT} WHERE c.org_id = ?1 AND c.review_id = ?2 ORDER BY c.created_at ASC, c.id ASC"
+    ))?;
+    let rows = stmt
+        .query_map(rusqlite::params![org_id, review_id], map_config_review_comment)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 // ── Admin / Org ───────────────────────────────────────────────────────────────
@@ -8570,6 +8791,25 @@ mod tests {
         })
     }
 
+    fn executable_harness_manifest() -> serde_json::Value {
+        let content = "#!/bin/sh\nexit 0";
+        serde_json::json!({
+            "schema_version": "1.1",
+            "format": "hook",
+            "targets": ["claude"],
+            "components": [{
+                "kind": "file",
+                "path": "hooks/pre-commit.sh",
+                "media_type": "text/x-shellscript",
+                "size_bytes": content.as_bytes().len(),
+                "sha256": format!("sha256:{}", hex::encode(Sha256::digest(content.as_bytes()))),
+                "content": content
+            }],
+            "provenance": { "source": "test" },
+            "security": { "requires_approval": true, "executable": true, "secret_scan_status": "passed" }
+        })
+    }
+
     #[test]
     fn harness_catalog_visibility_hides_inaccessible_project_harnesses() {
         let conn = setup();
@@ -8593,6 +8833,7 @@ mod tests {
                 description: None,
                 project_id: None,
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
@@ -8606,6 +8847,7 @@ mod tests {
                 description: None,
                 project_id: Some(project_a.id),
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
@@ -8619,16 +8861,94 @@ mod tests {
                 description: None,
                 project_id: Some(project_b.id),
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
 
-        let visible = list_visible_harnesses(&conn, &org.id, Some(&user_id), None).unwrap();
+        let visible = list_visible_harnesses(&conn, &org.id, Some(&user_id), None, None).unwrap();
         let names: Vec<&str> = visible.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(visible.len(), 2);
         assert!(names.contains(&"Org Wide"));
         assert!(names.contains(&"Visible"));
         assert!(!names.contains(&"Hidden"));
+    }
+
+    #[test]
+    fn harness_ownership_defaults_joins_filters_and_validates_org_owner() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let owner = invite_user(&conn, &org.id, "owner@acme.com", "Owner User", "member")
+            .unwrap()
+            .0;
+        let other_org = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Other', 'other')",
+            [&other_org],
+        )
+        .unwrap();
+        let other_owner = Uuid::new_v4().to_string();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, ?2, 'other@example.com', 'Other User', 'member', 'active', datetime('now'))", rusqlite::params![other_owner, other_org]).unwrap();
+
+        let default_owned = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "default-owned".into(),
+                name: "Default Owned".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+                owner_user_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(default_owned.owner_user_id, admin.id);
+        assert_eq!(
+            default_owned.owner.as_ref().map(|o| o.name.as_str()),
+            Some("Admin")
+        );
+
+        let assigned = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "assigned".into(),
+                name: "Assigned".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+                owner_user_id: Some(owner.id.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(assigned.owner_user_id, owner.id);
+        assert_eq!(
+            assigned.owner.as_ref().map(|o| o.email.as_str()),
+            Some("owner@acme.com")
+        );
+
+        let filtered = list_visible_harnesses(&conn, &org.id, None, None, Some(&owner.id)).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].slug, "assigned");
+
+        let invalid = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "bad-owner".into(),
+                name: "Bad Owner".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+                owner_user_id: Some(other_owner),
+            },
+        )
+        .unwrap_err();
+        assert!(invalid.to_string().contains("owner_not_in_org"));
     }
 
     #[test]
@@ -8645,6 +8965,7 @@ mod tests {
                 description: None,
                 project_id: None,
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
@@ -8710,6 +9031,114 @@ mod tests {
     }
 
     #[test]
+    fn executable_harness_approval_requires_and_persists_warning_acknowledgement() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "hook-base".into(),
+                name: "Hook Base".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+                owner_user_id: None,
+            },
+        )
+        .unwrap();
+        let version = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest: executable_harness_manifest(),
+                manifest_hash: None,
+            },
+        )
+        .unwrap();
+
+        let missing_ack = create_harness_approval(
+            &conn,
+            &org.id,
+            &admin.id,
+            None,
+            &harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: version.manifest_hash.clone(),
+                metadata: Some(serde_json::json!({ "source": "test" })),
+            },
+        )
+        .unwrap_err();
+        assert!(missing_ack
+            .to_string()
+            .contains("warning_acknowledgement_required"));
+
+        let acknowledged = create_harness_approval(
+            &conn,
+            &org.id,
+            &admin.id,
+            None,
+            &harness.id,
+            "1.0.0",
+            &HarnessApprovalRequest {
+                target_tool: "claude".into(),
+                target_scope: "project".into(),
+                manifest_hash: version.manifest_hash,
+                metadata: Some(serde_json::json!({
+                    "source": "test",
+                    "warning_acknowledged": true
+                })),
+            },
+        )
+        .unwrap();
+        assert_eq!(acknowledged.metadata["warning_acknowledged"], true);
+    }
+
+    #[test]
+    fn publish_harness_version_rejects_component_integrity_mismatch() {
+        let conn = setup();
+        let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let harness = create_harness(
+            &conn,
+            &org.id,
+            &admin.id,
+            &CreateHarnessRequest {
+                slug: "integrity-check".into(),
+                name: "Integrity Check".into(),
+                description: None,
+                project_id: None,
+                visibility: None,
+                owner_user_id: None,
+            },
+        )
+        .unwrap();
+        let mut manifest = executable_harness_manifest();
+        manifest["components"][0]["sha256"] = serde_json::json!("sha256:template");
+
+        let err = publish_harness_version(
+            &conn,
+            &org.id,
+            &admin.id,
+            &harness.id,
+            &PublishHarnessVersionRequest {
+                version: "1.0.0".into(),
+                manifest,
+                manifest_hash: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("component_integrity_mismatch"));
+    }
+
+    #[test]
     fn harness_approval_and_download_require_project_visibility() {
         let conn = setup();
         let (org, admin, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
@@ -8732,6 +9161,7 @@ mod tests {
                 description: None,
                 project_id: Some(hidden_project.id),
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
@@ -8786,6 +9216,7 @@ mod tests {
                 description: None,
                 project_id: Some(allowed_project.id),
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();
@@ -8842,6 +9273,7 @@ mod tests {
                 description: None,
                 project_id: None,
                 visibility: None,
+                owner_user_id: None,
             },
         )
         .unwrap();

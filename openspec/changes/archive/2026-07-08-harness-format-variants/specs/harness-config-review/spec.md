@@ -1,14 +1,11 @@
-# Harness Config Review Specification
+# Delta for Harness Config Review
 
-## Purpose
-
-Allow users to share redacted Claude configuration snapshots for review while preserving deterministic redaction, preview-before-upload, and strict boundaries against raw secret exposure.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Redacted Config Snapshot Upload
 
 The system MUST accept only user-reviewed, redacted configuration snapshots or config-derived harness examples with source tool, redaction report, content hash, and review status. Config-derived examples MUST NOT store raw secrets, tokens, private local paths, or unreviewed shell/hook arguments.
+(Previously: The requirement covered redacted config snapshots, but not config-derived harness examples.)
 
 #### Scenario: Upload reviewed redacted snapshot
 
@@ -34,6 +31,7 @@ The system MUST accept only user-reviewed, redacted configuration snapshots or c
 ### Requirement: Deterministic Redaction Report
 
 The system MUST require a redaction report that identifies redaction categories without exposing secret values, raw shell profile content, sensitive hook arguments, or private local path values.
+(Previously: The report excluded secret values, shell profile content, and hook arguments, but did not explicitly exclude private local paths.)
 
 #### Scenario: Inspect redaction report
 
@@ -47,28 +45,3 @@ The system MUST require a redaction report that identifies redaction categories 
 - GIVEN a redacted snapshot lacks a stable content hash
 - WHEN the upload is submitted
 - THEN the system MUST reject it with validation details
-
-### Requirement: Permissioned Sharing Boundary
-
-The system MUST require config review permission for upload, sharing, and inspection, and MUST audit those actions using safe metadata only.
-
-#### Scenario: Share config review
-
-- GIVEN a user has config review permission
-- WHEN the user marks a redacted snapshot as shared
-- THEN authorized reviewers can inspect the redacted snapshot
-- AND the system records a safe audit event
-
-#### Scenario: List shared config reviews
-
-- GIVEN redacted config reviews exist for an organization
-- WHEN a reviewer with config review permission lists them (optionally filtered by status)
-- THEN the system returns only the redacted snapshots, redaction reports, and safe metadata, newest first
-- AND MUST NOT return raw secrets or private local paths
-
-#### Scenario: Unauthorized inspection denied
-
-- GIVEN a user lacks config review permission
-- WHEN the user attempts to inspect a shared snapshot
-- THEN the system MUST deny access
-- AND MUST NOT disclose redacted configuration content

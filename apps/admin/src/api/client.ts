@@ -69,7 +69,9 @@ import type {
   HarnessDownloadResponse,
   HarnessRecommendation,
   CreateHarnessConfigReviewRequest,
+  CreateHarnessConfigReviewCommentRequest,
   HarnessConfigReview,
+  HarnessConfigReviewComment,
 } from '../types'
 
 export class NexusMindClient {
@@ -860,14 +862,23 @@ export class NexusMindClient {
 
   // ── Harness library (admin) ────────────────────────────────────────────────
 
-  listHarnesses(params: { target?: string } = {}): Promise<Harness[]> {
+  listHarnesses(params: { target?: string; owner_user_id?: string } = {}): Promise<Harness[]> {
     const qs = new URLSearchParams()
     if (params.target) qs.set('target', params.target)
+    if (params.owner_user_id) qs.set('owner_user_id', params.owner_user_id)
     return this.request<Harness[]>(`/v1/harnesses${qs.toString() ? `?${qs}` : ''}`)
   }
 
   createHarness(data: CreateHarnessRequest): Promise<Harness> {
     return this.request<Harness>('/v1/harnesses', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  archiveHarness(harnessId: string): Promise<Harness> {
+    return this.request<Harness>(`/v1/harnesses/${encodeURIComponent(harnessId)}/archive`, { method: 'POST' })
+  }
+
+  getHarnessVersion(harnessId: string, version: string): Promise<HarnessVersion> {
+    return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}`)
   }
 
   publishHarnessVersion(harnessId: string, data: PublishHarnessVersionRequest): Promise<HarnessVersion> {
@@ -912,6 +923,23 @@ export class NexusMindClient {
 
   getHarnessConfigReview(id: string): Promise<HarnessConfigReview> {
     return this.request<HarnessConfigReview>(`/v1/harness-config-reviews/${encodeURIComponent(id)}`)
+  }
+
+  listHarnessConfigReviews(params: { status?: string } = {}): Promise<HarnessConfigReview[]> {
+    const qs = new URLSearchParams()
+    if (params.status) qs.set('status', params.status)
+    return this.request<HarnessConfigReview[]>(`/v1/harness-config-reviews${qs.toString() ? `?${qs}` : ''}`)
+  }
+
+  listHarnessConfigReviewComments(reviewId: string): Promise<HarnessConfigReviewComment[]> {
+    return this.request<HarnessConfigReviewComment[]>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`)
+  }
+
+  createHarnessConfigReviewComment(reviewId: string, data: CreateHarnessConfigReviewCommentRequest): Promise<HarnessConfigReviewComment> {
+    return this.request<HarnessConfigReviewComment>(`/v1/harness-config-reviews/${encodeURIComponent(reviewId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 }
 
