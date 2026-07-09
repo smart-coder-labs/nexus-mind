@@ -1,4 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::str::FromStr;
 
@@ -1475,10 +1476,20 @@ pub struct Harness {
     pub visibility: String,
     pub status: String,
     pub created_by: String,
+    pub owner_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<HarnessOwner>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<HarnessVersionSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HarnessOwner {
+    pub id: String,
+    pub name: String,
+    pub email: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -1487,6 +1498,10 @@ pub struct HarnessVersionSummary {
     pub version: String,
     pub manifest_hash: String,
     pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_metadata: Option<serde_json::Value>,
     pub status: String,
     pub published_at: String,
 }
@@ -1499,6 +1514,8 @@ pub struct HarnessVersion {
     pub manifest: serde_json::Value,
     pub manifest_hash: String,
     pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     pub provenance: serde_json::Value,
     pub status: String,
     pub published_by: String,
@@ -1516,6 +1533,8 @@ pub struct CreateHarnessRequest {
     pub project_id: Option<String>,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1573,10 +1592,276 @@ pub struct HarnessRecommendation {
     pub name: String,
     pub description: Option<String>,
     pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<HarnessOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_metadata: Option<serde_json::Value>,
     pub manifest_hash: String,
     pub approval_required: bool,
     pub download_url: String,
     pub required_permissions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessFormat {
+    Agent,
+    Skill,
+    Command,
+    Hook,
+    OutputStyle,
+    ClaudeCodePlugin,
+    Theme,
+}
+
+impl HarnessFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HarnessFormat::Agent => "agent",
+            HarnessFormat::Skill => "skill",
+            HarnessFormat::Command => "command",
+            HarnessFormat::Hook => "hook",
+            HarnessFormat::OutputStyle => "output_style",
+            HarnessFormat::ClaudeCodePlugin => "claude_code_plugin",
+            HarnessFormat::Theme => "theme",
+        }
+    }
+}
+
+impl FromStr for HarnessFormat {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "agent" => Ok(HarnessFormat::Agent),
+            "skill" => Ok(HarnessFormat::Skill),
+            "command" => Ok(HarnessFormat::Command),
+            "hook" => Ok(HarnessFormat::Hook),
+            "output_style" => Ok(HarnessFormat::OutputStyle),
+            "claude_code_plugin" => Ok(HarnessFormat::ClaudeCodePlugin),
+            "theme" => Ok(HarnessFormat::Theme),
+            _ => Err("unsupported_format"),
+        }
+    }
+}
+
+pub fn validate_typed_harness_manifest(manifest: &serde_json::Value) -> Result<(), &'static str> {
+    if manifest.get("schema_version").and_then(|v| v.as_str()) != Some("1.1") {
+        return Err("unsupported_schema_version");
+    }
+    let targets = manifest
+        .get("targets")
+        .and_then(|v| v.as_array())
+        .ok_or("missing_targets")?;
+    if targets.is_empty()
+        || targets
+            .iter()
+            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "opencode")))
+    {
+        return Err("missing_targets");
+    }
+    let format = manifest
+        .get("format")
+        .and_then(|v| v.as_str())
+        .ok_or("missing_format")?
+        .parse::<HarnessFormat>()?;
+    let provenance = manifest
+        .get("provenance")
+        .and_then(|v| v.as_object())
+        .ok_or("missing_provenance")?;
+    if provenance
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return Err("missing_provenance");
+    }
+    let security = manifest
+        .get("security")
+        .and_then(|v| v.as_object())
+        .ok_or("missing_security")?;
+    if security.get("requires_approval").and_then(|v| v.as_bool()) != Some(true) {
+        return Err("approval_required");
+    }
+    if security.get("secret_scan_status").and_then(|v| v.as_str()) == Some("failed") {
+        return Err("secret_scan_failed");
+    }
+    if matches!(
+        format,
+        HarnessFormat::Hook | HarnessFormat::ClaudeCodePlugin
+    ) && security.get("executable").and_then(|v| v.as_bool()) != Some(true)
+    {
+        return Err("executable_warning_required");
+    }
+    let components = manifest
+        .get("components")
+        .and_then(|v| v.as_array())
+        .ok_or("missing_components")?;
+    if components.is_empty() {
+        return Err("missing_components");
+    }
+    for component in components {
+        validate_manifest_component(&format, component)?;
+    }
+    Ok(())
+}
+
+fn validate_manifest_component(
+    format: &HarnessFormat,
+    component: &serde_json::Value,
+) -> Result<(), &'static str> {
+    let kind = component
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .ok_or("missing_component_kind")?;
+    let path = component
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or("missing_component_path")?;
+    validate_safe_manifest_path(path)?;
+    if let Some(content) = component.get("content").and_then(|v| v.as_str()) {
+        validate_safe_manifest_content(content)?;
+    }
+    if kind == "folder" {
+        let entries = component
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .ok_or("missing_folder_entries")?;
+        if entries.is_empty() {
+            return Err("missing_folder_entries");
+        }
+        for entry in entries {
+            if entry.get("kind").and_then(|v| v.as_str()) != Some("file") {
+                return Err("format_component_mismatch");
+            }
+            let entry_path = entry
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("missing_component_path")?;
+            validate_safe_manifest_path(entry_path)?;
+            require_file_metadata(entry)?;
+            if let Some(content) = entry.get("content").and_then(|v| v.as_str()) {
+                validate_safe_manifest_content(content)?;
+            }
+        }
+    } else {
+        require_file_metadata(component)?;
+    }
+    let valid = match format {
+        HarnessFormat::Agent => kind == "file" && path.ends_with(".md"),
+        HarnessFormat::Skill => (kind == "file" && path.ends_with(".md")) || kind == "folder",
+        HarnessFormat::Command => kind == "file" && path.ends_with(".md"),
+        HarnessFormat::Hook => kind == "file" && path.ends_with(".sh"),
+        HarnessFormat::OutputStyle => kind == "file" && path.ends_with(".md"),
+        HarnessFormat::ClaudeCodePlugin => {
+            kind == "plugin_marketplace"
+                && path.ends_with(".json")
+                && component
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(json_content_is_object)
+                    .unwrap_or(false)
+        }
+        HarnessFormat::Theme => {
+            kind == "theme_json"
+                && path.ends_with(".json")
+                && component
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(json_content_is_object)
+                    .unwrap_or(false)
+        }
+    };
+    if !valid {
+        return Err("format_component_mismatch");
+    }
+    Ok(())
+}
+
+fn require_file_metadata(value: &serde_json::Value) -> Result<(), &'static str> {
+    let media_type = value
+        .get("media_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let sha256 = value
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let Some(size_bytes) = value.get("size_bytes").and_then(|v| v.as_u64()) else {
+        return Err("missing_component_metadata");
+    };
+    if media_type.is_empty() || sha256.is_empty() {
+        return Err("missing_component_metadata");
+    }
+    if let Some(content) = value.get("content").and_then(|v| v.as_str()) {
+        if size_bytes != content_size_bytes(content) || sha256 != expected_content_sha256(content) {
+            return Err("component_integrity_mismatch");
+        }
+    }
+    Ok(())
+}
+
+fn content_size_bytes(content: &str) -> u64 {
+    content.len() as u64
+}
+
+fn expected_content_sha256(content: &str) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(content.as_bytes())))
+}
+
+fn validate_safe_manifest_path(path: &str) -> Result<(), &'static str> {
+    let lower = path.to_lowercase();
+    if path.trim().is_empty()
+        || path.starts_with('/')
+        || path.starts_with('~')
+        || looks_like_windows_absolute_path(path)
+        || path.contains("..")
+        || lower.contains("/users/")
+        || lower.contains("\\users\\")
+        || lower.contains(".ssh")
+        || lower.contains(".env")
+    {
+        return Err("unsafe_component_path");
+    }
+    Ok(())
+}
+
+fn looks_like_windows_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
+    if content.len() > 64 * 1024 {
+        return Err("component_content_too_large");
+    }
+    let lower = content.to_lowercase();
+    if lower.contains("raw-secret")
+        || lower.contains("bearer ")
+        || lower.contains("nm_live")
+        || lower.contains("ghp_")
+        || lower.contains("sk-")
+        || lower.contains("/users/")
+    {
+        return Err("secret_scan_failed");
+    }
+    Ok(())
+}
+
+fn json_content_is_object(content: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|v| v.as_object().map(|_| ()))
+        .is_some()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1620,6 +1905,22 @@ pub struct GitHubConnection {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn manifest_file_component(
+        kind: &str,
+        path: &str,
+        media_type: &str,
+        content: &str,
+    ) -> serde_json::Value {
+        json!({
+            "kind": kind,
+            "path": path,
+            "media_type": media_type,
+            "size_bytes": content_size_bytes(content),
+            "sha256": expected_content_sha256(content),
+            "content": content,
+        })
+    }
 
     #[test]
     fn org_roundtrip() {
@@ -1728,6 +2029,112 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let back: AuditEntry = serde_json::from_str(&json).unwrap();
         assert!(back.resource_id.is_none());
+    }
+
+    #[test]
+    fn typed_harness_manifest_accepts_all_supported_formats() {
+        for manifest in [
+            json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "skill", "targets": ["claude"], "components": [{ "kind": "folder", "path": "skills/reviewer", "entries": [manifest_file_component("file", "skills/reviewer/SKILL.md", "text/markdown", "---\nname: reviewer\n---")] }], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "command", "targets": ["claude"], "components": [manifest_file_component("file", "commands/review.md", "text/markdown", "Review this")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "hook", "targets": ["claude"], "components": [manifest_file_component("file", "hooks/pre-commit.sh", "text/x-shellscript", "#!/bin/sh\nexit 0")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "executable": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "output_style", "targets": ["claude"], "components": [manifest_file_component("file", "output-styles/direct.md", "text/markdown", "Be direct")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "claude_code_plugin", "targets": ["claude"], "components": [manifest_file_component("plugin_marketplace", "plugins/reviewer.json", "application/json", "{\"name\":\"reviewer\"}")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "executable": true, "secret_scan_status": "passed" } }),
+            json!({ "schema_version": "1.1", "format": "theme", "targets": ["claude"], "components": [manifest_file_component("theme_json", "themes/dark.json", "application/json", "{\"name\":\"Dark\"}")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
+        ] {
+            validate_typed_harness_manifest(&manifest).expect("supported manifest should validate");
+        }
+    }
+
+    #[test]
+    fn typed_harness_manifest_rejects_mismatched_or_unsafe_structures() {
+        let mismatched = json!({ "schema_version": "1.1", "format": "theme", "targets": ["claude"], "components": [manifest_file_component("file", "hooks/run.sh", "text/x-shellscript", "#!/bin/sh")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+        let unsafe_path = json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "/Users/me/.claude/agent.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+        let windows_absolute_path = json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "C:\\Users\\me\\.claude\\agent.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+        let unsafe_content = json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "token nm_live_secret")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+
+        assert_eq!(
+            validate_typed_harness_manifest(&mismatched),
+            Err("format_component_mismatch")
+        );
+        assert_eq!(
+            validate_typed_harness_manifest(&unsafe_path),
+            Err("unsafe_component_path")
+        );
+        assert_eq!(
+            validate_typed_harness_manifest(&windows_absolute_path),
+            Err("unsafe_component_path")
+        );
+        assert_eq!(
+            validate_typed_harness_manifest(&unsafe_content),
+            Err("secret_scan_failed")
+        );
+    }
+
+    #[test]
+    fn typed_harness_manifest_rejects_fake_or_mismatched_integrity_metadata() {
+        let fake_hash = json!({
+            "schema_version": "1.1",
+            "format": "agent",
+            "targets": ["claude"],
+            "components": [{
+                "kind": "file",
+                "path": "agents/reviewer.md",
+                "media_type": "text/markdown",
+                "size_bytes": content_size_bytes("# Agent"),
+                "sha256": "sha256:template",
+                "content": "# Agent"
+            }],
+            "provenance": { "source": "admin-ui" },
+            "security": { "requires_approval": true, "secret_scan_status": "passed" }
+        });
+        let wrong_size = json!({
+            "schema_version": "1.1",
+            "format": "theme",
+            "targets": ["claude"],
+            "components": [{
+                "kind": "theme_json",
+                "path": "themes/utf8.json",
+                "media_type": "application/json",
+                "size_bytes": content_size_bytes("{\"name\":\"Café ☕\"}") - 1,
+                "sha256": expected_content_sha256("{\"name\":\"Café ☕\"}"),
+                "content": "{\"name\":\"Café ☕\"}"
+            }],
+            "provenance": { "source": "admin-ui" },
+            "security": { "requires_approval": true, "secret_scan_status": "passed" }
+        });
+        let wrong_folder_entry = json!({
+            "schema_version": "1.1",
+            "format": "skill",
+            "targets": ["claude"],
+            "components": [{
+                "kind": "folder",
+                "path": "skills/reviewer",
+                "entries": [{
+                    "kind": "file",
+                    "path": "skills/reviewer/SKILL.md",
+                    "media_type": "text/markdown",
+                    "size_bytes": content_size_bytes("---\nname: reviewer\n---"),
+                    "sha256": "sha256:template",
+                    "content": "---\nname: reviewer\n---"
+                }]
+            }],
+            "provenance": { "source": "admin-ui" },
+            "security": { "requires_approval": true, "secret_scan_status": "passed" }
+        });
+
+        assert_eq!(
+            validate_typed_harness_manifest(&fake_hash),
+            Err("component_integrity_mismatch")
+        );
+        assert_eq!(
+            validate_typed_harness_manifest(&wrong_size),
+            Err("component_integrity_mismatch")
+        );
+        assert_eq!(
+            validate_typed_harness_manifest(&wrong_folder_entry),
+            Err("component_integrity_mismatch")
+        );
     }
 
     // ── T-04 tests ────────────────────────────────────────────────────────────

@@ -200,7 +200,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route(
             "/v1/harness-config-reviews",
-            post(harnesses::create_config_review),
+            get(harnesses::list_config_reviews).post(harnesses::create_config_review),
         )
         .route(
             "/v1/harness-config-reviews/:id",
