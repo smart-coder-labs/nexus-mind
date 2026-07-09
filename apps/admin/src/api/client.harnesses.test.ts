@@ -18,9 +18,11 @@ describe('NexusMindClient harness contracts', () => {
         slug: 'claude-base',
         name: 'Claude Base',
         visibility: 'org',
-        status: 'published',
-        created_by: 'user-1',
-        created_at: '2026-07-01T00:00:00Z',
+          status: 'published',
+          created_by: 'user-1',
+          owner_user_id: 'user-owner-1',
+          owner: { id: 'user-owner-1', name: 'Owner User', email: 'owner@example.com' },
+          created_at: '2026-07-01T00:00:00Z',
         updated_at: '2026-07-01T00:00:00Z',
         latest_version: {
           id: 'hv-1',
@@ -41,6 +43,39 @@ describe('NexusMindClient harness contracts', () => {
       expect.objectContaining({ credentials: 'include' }),
     )
     expect(rows[0].latest_version?.manifest_hash).toBe('sha256:abc')
+    expect(rows[0].owner?.name).toBe('Owner User')
+  })
+
+  it('lists harnesses with owner filtering and publishes typed manifests without local mutation fields', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'hv-typed',
+        harness_id: 'h-1',
+        version: '1.1.0',
+        manifest: { schema_version: '1.1', format: 'hook', targets: ['claude'], components: [], provenance: { source: 'admin-ui' }, security: { requires_approval: true, executable: true } },
+        manifest_hash: 'sha256:typed',
+        targets: ['claude'],
+        format: 'hook',
+        provenance: { source: 'admin-ui' },
+        status: 'published',
+        published_by: 'user-1',
+        published_at: '2026-07-01T00:00:00Z',
+        revoked_at: null,
+      }), { status: 201 }))
+
+    const client = new NexusMindClient('https://api.test')
+    await client.listHarnesses({ owner_user_id: 'user-owner-1' })
+    const typed = await client.publishHarnessVersion('h-1', {
+      version: '1.1.0',
+      manifest: { schema_version: '1.1', format: 'hook', targets: ['claude'], components: [], provenance: { source: 'admin-ui' }, security: { requires_approval: true, executable: true } },
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://api.test/v1/harnesses?owner_user_id=user-owner-1', expect.objectContaining({ credentials: 'include' }))
+    const publishBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(publishBody.manifest.format).toBe('hook')
+    expect(publishBody.manifest).not.toHaveProperty('apply_local_changes')
+    expect(typed.format).toBe('hook')
   })
 
   it('publishes, approves, records install result, and downloads exact harness versions without local mutation fields', async () => {
@@ -142,5 +177,33 @@ describe('NexusMindClient harness contracts', () => {
     expect(fetchMock).toHaveBeenCalledWith('/v1/harness-config-reviews', expect.objectContaining({ method: 'POST' }))
     expect(JSON.stringify(review.redacted_config)).toContain('[REDACTED]')
     expect(JSON.stringify(review.redacted_config)).not.toContain('nm_secret')
+  })
+
+  it('lists shared config reviews with an optional status filter', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([
+      {
+        id: 'review-1',
+        org_id: 'org-1',
+        user_id: 'user-1',
+        source_tool: 'claude',
+        redacted_config: { env: { NEXUSMIND_API_KEY: '[REDACTED:secret]' } },
+        redaction_report: { secret_scan_status: 'passed', secret_count: 1, categories: { secret: 1 } },
+        content_hash: 'sha256:redacted',
+        status: 'shared',
+        created_at: '2026-07-01T00:00:00Z',
+        shared_at: '2026-07-01T00:00:00Z',
+      },
+    ]), { status: 200 }))
+
+    const client = new NexusMindClient('https://api.test')
+    const reviews = await client.listHarnessConfigReviews({ status: 'shared' })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.test/v1/harness-config-reviews?status=shared',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0].status).toBe('shared')
+    expect(JSON.stringify(reviews[0].redacted_config)).toContain('[REDACTED:secret]')
   })
 })

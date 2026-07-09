@@ -860,9 +860,10 @@ export class NexusMindClient {
 
   // ── Harness library (admin) ────────────────────────────────────────────────
 
-  listHarnesses(params: { target?: string } = {}): Promise<Harness[]> {
+  listHarnesses(params: { target?: string; owner_user_id?: string } = {}): Promise<Harness[]> {
     const qs = new URLSearchParams()
     if (params.target) qs.set('target', params.target)
+    if (params.owner_user_id) qs.set('owner_user_id', params.owner_user_id)
     return this.request<Harness[]>(`/v1/harnesses${qs.toString() ? `?${qs}` : ''}`)
   }
 
@@ -912,6 +913,12 @@ export class NexusMindClient {
 
   getHarnessConfigReview(id: string): Promise<HarnessConfigReview> {
     return this.request<HarnessConfigReview>(`/v1/harness-config-reviews/${encodeURIComponent(id)}`)
+  }
+
+  listHarnessConfigReviews(params: { status?: string } = {}): Promise<HarnessConfigReview[]> {
+    const qs = new URLSearchParams()
+    if (params.status) qs.set('status', params.status)
+    return this.request<HarnessConfigReview[]>(`/v1/harness-config-reviews${qs.toString() ? `?${qs}` : ''}`)
   }
 }
 
