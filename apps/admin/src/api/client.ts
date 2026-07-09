@@ -873,6 +873,14 @@ export class NexusMindClient {
     return this.request<Harness>('/v1/harnesses', { method: 'POST', body: JSON.stringify(data) })
   }
 
+  archiveHarness(harnessId: string): Promise<Harness> {
+    return this.request<Harness>(`/v1/harnesses/${encodeURIComponent(harnessId)}/archive`, { method: 'POST' })
+  }
+
+  getHarnessVersion(harnessId: string, version: string): Promise<HarnessVersion> {
+    return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions/${encodeURIComponent(version)}`)
+  }
+
   publishHarnessVersion(harnessId: string, data: PublishHarnessVersionRequest): Promise<HarnessVersion> {
     return this.request<HarnessVersion>(`/v1/harnesses/${encodeURIComponent(harnessId)}/versions`, {
       method: 'POST',

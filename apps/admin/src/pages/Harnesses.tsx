@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle2, Download, FileJson, PackagePlus, ShieldCheck, X } from 'lucide-react'
+import { AlertCircle, Archive, CheckCircle2, Download, Eye, FileJson, PackagePlus, ShieldCheck, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import type { Harness, HarnessConfigReview, HarnessFormat, HarnessManifest, HarnessManifestEntry } from '../types'
+import { sha256Hex } from '../lib/sha256'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 const MAX_INLINE_UPLOAD_BYTES = 64 * 1024
@@ -80,12 +81,19 @@ function folderComponentPath(format: HarnessFormat, entries: HarnessManifestEntr
 }
 
 async function sha256ForContent(content: string): Promise<string> {
-  if (!globalThis.crypto?.subtle) {
-    throw new Error('This browser cannot compute upload integrity hashes.')
+  const data = new TextEncoder().encode(content)
+  // Prefer Web Crypto, but fall back to a pure-JS digest when it is unavailable
+  // (non-secure origins like http://<LAN-IP>) so the manifest preview always builds.
+  if (globalThis.crypto?.subtle) {
+    try {
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', data)
+      const hex = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+      return `sha256:${hex}`
+    } catch {
+      // fall through to the JS implementation
+    }
   }
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(content))
-  const hex = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-  return `sha256:${hex}`
+  return `sha256:${sha256Hex(data)}`
 }
 
 function byteLengthForContent(content: string): number {
@@ -157,6 +165,24 @@ async function buildManifest(format: HarnessFormat, entries: HarnessManifestEntr
 }
 
 type Flash = { kind: 'success' | 'error'; message: string } | null
+
+// Triggers a browser download of `data` as a pretty-printed JSON file. Guarded so
+// a browser that blocks object URLs never breaks the surrounding approval flow.
+function downloadJsonFile(filename: string, data: unknown): void {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } catch {
+    // Download blocked by the browser; the approval + flash still inform the user.
+  }
+}
 
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
   const parsed = JSON.parse(value)
@@ -502,7 +528,8 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
       return client.downloadHarnessVersion(harness.id, latest.version)
     },
     onSuccess: (download) => {
-      onFlash({ kind: 'success', message: `Approved and downloaded metadata for ${harness.name} ${download.version}.` })
+      downloadJsonFile(`${harness.slug}-${download.version}.json`, download.manifest)
+      onFlash({ kind: 'success', message: `Downloaded ${harness.name} ${download.version} manifest.` })
       onClose()
     },
     onError: (err) => onFlash({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to approve download.' }),
@@ -753,6 +780,110 @@ function ConfigReviewList() {
   )
 }
 
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5 border-b border-border-secondary py-2 last:border-b-0 sm:flex-row sm:justify-between sm:gap-4">
+      <span className="text-[10px] uppercase tracking-wide text-text-quaternary">{label}</span>
+      <span className="min-w-0 break-words text-right text-[11px] text-text-secondary">{children}</span>
+    </div>
+  )
+}
+
+type PreviewFile = { path: string; mediaType?: string; content: string }
+
+function manifestPreviewFiles(manifest: Record<string, unknown> | undefined): PreviewFile[] {
+  const components = Array.isArray((manifest as { components?: unknown })?.components)
+    ? ((manifest as { components: unknown[] }).components)
+    : []
+  const files: PreviewFile[] = []
+  const pushFile = (item: Record<string, unknown>) => {
+    if (typeof item.content === 'string') {
+      files.push({ path: typeof item.path === 'string' ? item.path : '(file)', mediaType: typeof item.media_type === 'string' ? item.media_type : undefined, content: item.content })
+    }
+  }
+  for (const raw of components) {
+    if (!raw || typeof raw !== 'object') continue
+    const component = raw as Record<string, unknown>
+    pushFile(component)
+    if (Array.isArray(component.entries)) {
+      for (const entry of component.entries) {
+        if (entry && typeof entry === 'object') pushFile(entry as Record<string, unknown>)
+      }
+    }
+  }
+  return files
+}
+
+function HarnessContentPreview({ harness }: { harness: Harness }) {
+  const { session } = useAuth()
+  const client = useMemo(() => createClient(), [session])
+  const version = harness.latest_version
+  const { data: fullVersion, isLoading, error } = useQuery({
+    queryKey: ['harness-version', harness.id, version?.version],
+    queryFn: () => client.getHarnessVersion(harness.id, version!.version),
+    enabled: !!version,
+  })
+
+  if (!version) return <p className="text-[11px] text-text-quaternary">No version published yet — nothing to preview.</p>
+  if (isLoading) return <p className="text-[11px] text-text-quaternary">Loading content…</p>
+  if (error) return <p className="text-[11px] text-status-error">{error instanceof Error ? error.message : 'Failed to load content'}</p>
+
+  const files = manifestPreviewFiles(fullVersion?.manifest)
+  if (files.length === 0) return <p className="text-[11px] text-text-quaternary">This version has no inline file content to preview.</p>
+
+  return (
+    <div className="space-y-3">
+      {files.map((file, i) => (
+        <div key={`${file.path}-${i}`}>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-text-quaternary">
+            <span className="break-all font-mono text-text-secondary">{file.path}</span>
+            {file.mediaType && <span>{file.mediaType}</span>}
+          </div>
+          <pre className="max-h-56 overflow-auto rounded-[8px] border border-border-secondary bg-black/30 p-3 text-[11px] text-text-secondary">{file.content}</pre>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function HarnessDetailModal({ harness, onClose }: { harness: Harness; onClose: () => void }) {
+  const version = harness.latest_version
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label={`Harness detail ${harness.name}`} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[18px] border border-border-primary bg-[#1d1d1f] p-6" onClick={e => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
+          <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
+        </div>
+        <div className="space-y-0">
+          <DetailRow label="Slug"><span className="font-mono">{harness.slug}</span></DetailRow>
+          <DetailRow label="Description">{harness.description ?? 'No description'}</DetailRow>
+          <DetailRow label="Status">{harness.status}</DetailRow>
+          <DetailRow label="Visibility">{harness.visibility}</DetailRow>
+          <DetailRow label="Owner">{harness.owner?.name ?? harness.owner_user_id}{harness.owner?.email ? ` · ${harness.owner.email}` : ''}</DetailRow>
+          <DetailRow label="Created">{harness.created_at}</DetailRow>
+          <DetailRow label="Updated">{harness.updated_at}</DetailRow>
+          {version ? (
+            <>
+              <DetailRow label="Latest version">{version.version}</DetailRow>
+              {version.format && <DetailRow label="Format">{version.format}</DetailRow>}
+              <DetailRow label="Manifest hash"><span className="font-mono">{version.manifest_hash}</span></DetailRow>
+              <DetailRow label="Targets">{version.targets.join(', ')}</DetailRow>
+              <DetailRow label="Published">{version.published_at}</DetailRow>
+            </>
+          ) : (
+            <DetailRow label="Latest version">No version published yet</DetailRow>
+          )}
+        </div>
+        <div className="mt-5">
+          <p className="mb-2 text-[11px] font-semibold text-text-primary">Content preview</p>
+          <HarnessContentPreview harness={harness} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Harnesses() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
@@ -761,7 +892,18 @@ export default function Harnesses() {
   const [showCreate, setShowCreate] = useState(false)
   const [publishTarget, setPublishTarget] = useState<Harness | null>(null)
   const [approvalTarget, setApprovalTarget] = useState<Harness | null>(null)
+  const [detailTarget, setDetailTarget] = useState<Harness | null>(null)
   const [flash, setFlash] = useState<Flash>(null)
+  const qc = useQueryClient()
+
+  const archiveMut = useMutation({
+    mutationFn: (harness: Harness) => client.archiveHarness(harness.id),
+    onSuccess: (archived) => {
+      qc.invalidateQueries({ queryKey: ['harnesses'] })
+      setFlash({ kind: 'success', message: `Archived ${archived.name}.` })
+    },
+    onError: (err) => setFlash({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to archive harness' }),
+  })
 
   const { data: harnesses = [], isLoading, error } = useQuery({
     queryKey: ['harnesses', target, ownerUserId],
@@ -829,8 +971,10 @@ export default function Harnesses() {
                 )}
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
+                <button onClick={() => setDetailTarget(harness)} aria-label={`View ${harness.name} details`} className={`flex items-center gap-1.5 rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}><Eye className="h-3.5 w-3.5" />Details</button>
                 <button onClick={() => setPublishTarget(harness)} aria-label={`Publish version for ${harness.name}`} className={`rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>Publish version</button>
                 <button onClick={() => setApprovalTarget(harness)} disabled={!harness.latest_version} aria-label={`Download ${harness.name}`} className={`flex items-center gap-1.5 rounded-full bg-accent-blue px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}><Download className="h-3.5 w-3.5" />Download</button>
+                <button onClick={() => archiveMut.mutate(harness)} disabled={archiveMut.isPending || harness.status === 'archived'} aria-label={`Archive ${harness.name}`} className={`flex items-center gap-1.5 rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] disabled:opacity-50 ${FOCUS}`}><Archive className="h-3.5 w-3.5" />Archive</button>
               </div>
             </div>
           </article>
@@ -843,6 +987,7 @@ export default function Harnesses() {
       {showCreate && <CreateHarnessModal onClose={() => setShowCreate(false)} onFlash={setFlash} />}
       {publishTarget && <PublishModal harness={publishTarget} onClose={() => setPublishTarget(null)} onFlash={setFlash} />}
       {approvalTarget && <ApprovalModal harness={approvalTarget} onClose={() => setApprovalTarget(null)} onFlash={setFlash} />}
+      {detailTarget && <HarnessDetailModal harness={detailTarget} onClose={() => setDetailTarget(null)} />}
     </div>
   )
 }

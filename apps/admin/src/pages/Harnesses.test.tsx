@@ -16,6 +16,8 @@ function byteLengthFor(content: string): number {
 
 const listHarnessesMock = vi.fn()
 const createHarnessMock = vi.fn()
+const archiveHarnessMock = vi.fn()
+const getHarnessVersionMock = vi.fn()
 const publishHarnessVersionMock = vi.fn()
 const approveHarnessInstallMock = vi.fn()
 const downloadHarnessVersionMock = vi.fn()
@@ -28,6 +30,8 @@ vi.mock('../api/client', () => ({
   createClient: vi.fn(() => ({
     listHarnesses: listHarnessesMock,
     createHarness: createHarnessMock,
+    archiveHarness: archiveHarnessMock,
+    getHarnessVersion: getHarnessVersionMock,
     publishHarnessVersion: publishHarnessVersionMock,
     approveHarnessInstall: approveHarnessInstallMock,
     downloadHarnessVersion: downloadHarnessVersionMock,
@@ -73,6 +77,28 @@ beforeEach(() => {
   vi.clearAllMocks()
   listHarnessesMock.mockResolvedValue(baseHarnesses)
   createHarnessMock.mockResolvedValue({ ...baseHarnesses[0], id: 'h-new', slug: 'team-open-code', name: 'Team OpenCode' })
+  archiveHarnessMock.mockResolvedValue({ ...baseHarnesses[0], status: 'archived' })
+  getHarnessVersionMock.mockResolvedValue({
+    id: 'hv-1',
+    harness_id: 'h-1',
+    version: '1.0.0',
+    manifest: {
+      schema_version: '1.1',
+      format: 'hook',
+      targets: ['claude'],
+      components: [{ kind: 'file', path: 'hooks/pre-commit.sh', media_type: 'text/x-shellscript', content: '#!/bin/sh\necho hello-harness' }],
+      provenance: { source: 'admin-ui-template' },
+      security: { requires_approval: true },
+    },
+    manifest_hash: 'sha256:abc',
+    targets: ['claude'],
+    format: 'hook',
+    provenance: { source: 'admin-ui-template' },
+    status: 'published',
+    published_by: 'user-admin-1',
+    published_at: '2026-07-01T00:00:00Z',
+    revoked_at: null,
+  })
   publishHarnessVersionMock.mockResolvedValue({
     id: 'hv-new',
     harness_id: 'h-1',
@@ -493,6 +519,56 @@ describe('Harnesses page', () => {
     expect(screen.queryByText(/"NEXUSMIND_API_KEY"/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /inspect config review review-1/i }))
     expect(await screen.findByText(/\[REDACTED:secret\]/)).toBeInTheDocument()
+  })
+
+  it('saves the harness manifest as a file on approved download', async () => {
+    const createObjectURL = vi.fn(() => 'blob:harness')
+    const revokeObjectURL = vi.fn()
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    URL.createObjectURL = createObjectURL
+    URL.revokeObjectURL = revokeObjectURL
+    try {
+      renderWithProviders(<Harnesses />)
+      await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
+
+      fireEvent.click(screen.getByRole('button', { name: /download claude base/i }))
+      const dialog = await screen.findByRole('dialog', { name: /approve harness download/i })
+      fireEvent.click(within(dialog).getByRole('checkbox', { name: /i reviewed and acknowledge/i }))
+      fireEvent.click(within(dialog).getByRole('button', { name: /approve and download/i }))
+
+      await waitFor(() => expect(downloadHarnessVersionMock).toHaveBeenCalledWith('h-1', '1.0.0'))
+      // A real file download is triggered from the fetched manifest.
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalled())
+    } finally {
+      URL.createObjectURL = originalCreate
+      URL.revokeObjectURL = originalRevoke
+    }
+  })
+
+  it('opens the harness detail view from the eye button', async () => {
+    renderWithProviders(<Harnesses />)
+    await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /view claude base details/i }))
+    const dialog = await screen.findByRole('dialog', { name: /harness detail claude base/i })
+    expect(within(dialog).getByText('claude-base')).toBeInTheDocument()
+    expect(within(dialog).getByText(/shared claude setup/i)).toBeInTheDocument()
+    expect(within(dialog).getByText('sha256:abc')).toBeInTheDocument()
+    expect(within(dialog).getByText(/owner user/i)).toBeInTheDocument()
+
+    // The detail view previews the actual file content of the harness.
+    await waitFor(() => expect(getHarnessVersionMock).toHaveBeenCalledWith('h-1', '1.0.0'))
+    expect(await within(dialog).findByText(/echo hello-harness/i)).toBeInTheDocument()
+    expect(within(dialog).getByText('hooks/pre-commit.sh')).toBeInTheDocument()
+  })
+
+  it('archives a harness from the card action', async () => {
+    renderWithProviders(<Harnesses />)
+    await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /archive claude base/i }))
+    await waitFor(() => expect(archiveHarnessMock).toHaveBeenCalledWith('h-1'))
   })
 
   it('shows comments and posts a new one on an inspected config review', async () => {

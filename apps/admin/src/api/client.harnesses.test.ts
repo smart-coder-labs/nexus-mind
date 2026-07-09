@@ -207,6 +207,19 @@ describe('NexusMindClient harness contracts', () => {
     expect(JSON.stringify(reviews[0].redacted_config)).toContain('[REDACTED:secret]')
   })
 
+  it('archives a harness via POST', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'h-1', org_id: 'org-1', slug: 'base', name: 'Base', visibility: 'org', status: 'archived',
+      created_by: 'u-1', owner_user_id: 'u-1', created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-02T00:00:00Z',
+    }), { status: 200 }))
+
+    const client = new NexusMindClient('https://api.test')
+    const archived = await client.archiveHarness('h-1')
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v1/harnesses/h-1/archive', expect.objectContaining({ method: 'POST' }))
+    expect(archived.status).toBe('archived')
+  })
+
   it('lists and posts config review comments', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify([
