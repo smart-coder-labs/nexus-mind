@@ -206,8 +206,8 @@ pub async fn get_task_handler(
 ) -> Result<Json<Task>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let task = load_visible_task(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&task.project), "task:read")?;
     Ok(Json(task))
 }
 
@@ -248,8 +248,8 @@ pub async fn list_subtasks_handler(
 ) -> Result<Json<Vec<Task>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let parent = load_visible_task(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&parent.project), "task:read")?;
     let children = queries::list_subtasks(&conn, &auth.org_id, &parent.id).map_err(db_err)?;
     Ok(Json(children))
 }
@@ -322,8 +322,8 @@ pub async fn list_task_comments_handler(
 ) -> Result<Json<Vec<TaskComment>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let task = load_visible_task(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&task.project), "task:read")?;
     let comments = queries::list_task_comments(&conn, &task.id).map_err(db_err)?;
     Ok(Json(comments))
 }
@@ -401,8 +401,8 @@ pub async fn list_task_spec_links_handler(
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let task = load_visible_task(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&task.project), "task:read")?;
     let links = queries::list_task_spec_links(&conn, &task.id).map_err(db_err)?;
     Ok(Json(links))
 }
@@ -506,8 +506,8 @@ pub async fn get_sprint_handler(
 ) -> Result<Json<Sprint>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let sprint = load_visible_sprint(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&sprint.project), "task:read")?;
     Ok(Json(sprint))
 }
 
@@ -548,8 +548,8 @@ pub async fn list_retrospectives_handler(
 ) -> Result<Json<Vec<SprintRetrospective>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    require_permission(&conn, &auth, None, "task:read")?;
     let sprint = load_visible_sprint(&conn, &auth, &id)?;
+    require_permission(&conn, &auth, Some(&sprint.project), "task:read")?;
     let retros = queries::list_retrospectives(&conn, &sprint.id).map_err(db_err)?;
     Ok(Json(retros))
 }
@@ -1171,6 +1171,137 @@ mod tests {
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::json!({ "project": "proj", "title": "T" }).to_string())).unwrap(),
             )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── FIX 1: project-scoped role override must apply on read handlers ────
+    //
+    // A `viewer` global role has NO task:read at all (see get_role_permissions).
+    // A `project_members.role = 'dev-junior'` override grants task:read (+ write) but
+    // ONLY when the handler threads `Some(&project)` into require_permission. Passing
+    // `None` (the pre-fix behavior) ignores the override and always falls back to the
+    // global role, producing a false 403 for a project-scoped grant.
+    fn add_member_with_project_role(store: &SqliteStore, org_id: &str, project: &str, user_id: &str, role: &str) {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let project_id = q::get_or_create_project(&conn, org_id, project).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), project_id, user_id, role],
+        ).unwrap();
+        // Overwrite in case get_or_create_project auto-seeded a 'member' row for this user.
+        conn.execute(
+            "UPDATE project_members SET role = ?1 WHERE project_id = ?2 AND user_id = ?3",
+            rusqlite::params![role, project_id, user_id],
+        ).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_scoped_role_override_grants_read_on_all_read_handlers() {
+        let (store, admin_key, org_id) = setup_with_key();
+
+        // Global role 'viewer' has no task:read. Only the project-level 'dev-junior'
+        // override (task:read + task:write) should grant access.
+        let (viewer_key, viewer_id) = create_member_with_id(&store, &org_id, "viewer");
+        add_member_with_project_role(&store, &org_id, "scoped-proj", &viewer_id, "dev-junior");
+
+        // Task + subtask.
+        let task_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "scoped-proj", "title": "Parent" })).await;
+        let task_id = json_body(task_resp).await["id"].as_str().unwrap().to_string();
+        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "scoped-proj", "title": "Child", "parent_id": task_id })).await;
+
+        // Comment.
+        let admin_id = admin_user_id(&store, &org_id);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            queries::add_task_comment(&conn, &task_id, &admin_id, "hi").unwrap();
+            queries::link_task_spec(&conn, &task_id, &admin_id, "team-tasks").unwrap();
+        }
+
+        // Sprint + retrospective.
+        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "scoped-proj", "name": "Sprint 1" })).await;
+        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            queries::create_retrospective(
+                &conn, &sprint_id, &org_id, &admin_id,
+                &CreateRetrospectiveRequest { went_well: Some("ok".to_string()), went_wrong: None, action_items: None },
+            ).unwrap();
+        }
+
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}")).await.status(), StatusCode::OK, "get_task_handler must honor project-scoped role override");
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/subtasks")).await.status(), StatusCode::OK, "list_subtasks_handler must honor project-scoped role override");
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/comments")).await.status(), StatusCode::OK, "list_task_comments_handler must honor project-scoped role override");
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/spec-links")).await.status(), StatusCode::OK, "list_task_spec_links_handler must honor project-scoped role override");
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/sprints/{sprint_id}")).await.status(), StatusCode::OK, "get_sprint_handler must honor project-scoped role override");
+        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/sprints/{sprint_id}/retrospectives")).await.status(), StatusCode::OK, "list_retrospectives_handler must honor project-scoped role override");
+    }
+
+    // ── FIX 2: create_task must validate sprint_id like patch_task does ────
+
+    #[tokio::test]
+    async fn create_task_rejects_sprint_from_different_project() {
+        let (store, admin_key, _org_id) = setup_with_key();
+        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj-a", "name": "Sprint A" })).await;
+        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+
+        let resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
+            "project": "proj-b", "title": "T", "sprint_id": sprint_id
+        })).await;
+        assert!(resp.status().is_client_error(), "expected 4xx, got {}", resp.status());
+
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE project = 'proj-b'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "no task row created when sprint validation fails");
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_nonexistent_sprint_id() {
+        let (store, admin_key, _org_id) = setup_with_key();
+        let resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
+            "project": "proj-a", "title": "T", "sprint_id": "does-not-exist"
+        })).await;
+        assert!(resp.status().is_client_error(), "expected 4xx, got {}", resp.status());
+    }
+
+    // ── FIX 4: 401 (unauthenticated) coverage beyond create_task ───────────
+
+    #[tokio::test]
+    async fn list_tasks_unauthenticated_returns_401() {
+        let (store, _admin_key, _org_id) = setup_with_key();
+        let resp = app(store)
+            .oneshot(Request::builder().uri("/v1/tasks").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn assign_task_unauthenticated_returns_401() {
+        let (store, admin_key, _org_id) = setup_with_key();
+        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
+        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let resp = app(store)
+            .oneshot(
+                Request::builder().method("POST").uri(format!("/v1/tasks/{task_id}/assignees"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "user_ids": [] }).to_string())).unwrap(),
+            )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_sprint_unauthenticated_returns_401() {
+        let (store, admin_key, _org_id) = setup_with_key();
+        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj", "name": "Sprint 1" })).await;
+        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let resp = app(store)
+            .oneshot(Request::builder().uri(format!("/v1/sprints/{sprint_id}")).body(Body::empty()).unwrap())
             .await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }

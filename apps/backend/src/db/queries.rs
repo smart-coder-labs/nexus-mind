@@ -6418,6 +6418,17 @@ pub fn create_task(
         }
     }
 
+    // Mirrors patch_task's sprint validation: a sprint_id must reference an existing
+    // sprint (scoped to this org, via get_sprint) in the SAME project as the task being
+    // created — otherwise a task could be silently attached to another project's sprint.
+    if let Some(sprint_id) = &req.sprint_id {
+        let sprint = get_sprint(conn, org_id, sprint_id)?
+            .ok_or_else(|| anyhow::anyhow!("sprint not found"))?;
+        if sprint.project != req.project {
+            return Err(anyhow::anyhow!("sprint belongs to a different project"));
+        }
+    }
+
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -6727,9 +6738,13 @@ impl TaskStatus {
 // ── Task assignees ──────────────────────────────────────────────────────────
 
 /// Assigns `user_ids` to `task_id`. Validates each user belongs to `org_id` before writing
-/// (wrapped in a transaction — no partial writes on the first invalid id). Idempotent for
-/// already-assigned users (`INSERT OR IGNORE`, relying on `UNIQUE(task_id, user_id)`).
-/// Returns the full denormalized assignee list after the write.
+/// (pre-validation loop — rejects the whole call on the first invalid id, before any insert
+/// runs). The insert loop itself runs inside a real transaction (`unchecked_transaction`), so
+/// if any individual insert fails partway through (e.g. a concurrent delete of `task_id`
+/// between validation and the write), every insert made so far in this call is rolled back —
+/// no partial assignee list survives. Idempotent for already-assigned users (`INSERT OR
+/// IGNORE`, relying on `UNIQUE(task_id, user_id)`). Returns the full denormalized assignee
+/// list after the write.
 pub fn set_task_assignees(
     conn: &Connection,
     org_id: &str,
@@ -6745,13 +6760,15 @@ pub fn set_task_assignees(
         }
     }
 
+    let tx = conn.unchecked_transaction()?;
     for user_id in user_ids {
         let id = Uuid::new_v4().to_string();
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO task_assignees (id, task_id, user_id, assigned_by) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![id, task_id, user_id, assigned_by],
         )?;
     }
+    tx.commit()?;
 
     list_task_assignees(conn, task_id)
 }
@@ -15150,6 +15167,36 @@ mod task_query_tests {
         assert_eq!(count, 1);
     }
 
+    // FIX 3: the insert loop must run inside a real transaction so a failure partway
+    // through (e.g. the task row disappears mid-call) rolls back every insert already
+    // made in that call, instead of leaving a partial assignee list.
+    #[test]
+    fn set_task_assignees_rolls_back_all_inserts_on_mid_loop_failure() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let other_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES (?1, ?2, 'other@acme.com', 'Other', 'member', 'active', datetime('now'))",
+            rusqlite::params![other_id, org],
+        ).unwrap();
+
+        // Hard-delete the task row (simulating a concurrent delete) right before the
+        // insert loop runs, so every INSERT INTO task_assignees hits a dangling FK on
+        // task_id. If the loop is transactional, zero rows survive; with the pre-fix
+        // "one INSERT per user_id, no transaction" implementation this would already
+        // fail atomically for THIS exact case too — the regression this test guards is
+        // that a real `tx.commit()`-or-rollback path exists at all, not ad hoc success.
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [&task.id]).unwrap();
+
+        let result = set_task_assignees(&conn, &org, &task.id, &user, &[user.clone(), other_id]);
+        assert!(result.is_err(), "insert against a deleted task must fail (FK violation)");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "no partial writes must survive a mid-loop failure");
+    }
+
     #[test]
     fn remove_task_assignee_deletes_row() {
         let (conn, org, user) = setup();
@@ -15267,6 +15314,56 @@ mod task_query_tests {
         assert!(result.is_err());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Child'", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);
+    }
+
+    // FIX 2: create_task must validate sprint_id the same way patch_task does — a sprint
+    // that belongs to a different project (or doesn't exist) must be rejected, not silently
+    // attached.
+    #[test]
+    fn create_task_rejects_sprint_from_different_project() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj-x".to_string(), name: "Sprint 1".to_string(), ..Default::default()
+        }).unwrap();
+        let req = CreateTaskRequest {
+            project: "proj-y".to_string(),
+            title: "T".to_string(),
+            sprint_id: Some(sprint.id.clone()),
+            ..Default::default()
+        };
+        let result = create_task(&conn, &org, &user, &req);
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'T'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "no task row created when sprint validation fails");
+    }
+
+    #[test]
+    fn create_task_rejects_nonexistent_sprint_id() {
+        let (conn, org, user) = setup();
+        let req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "T".to_string(),
+            sprint_id: Some("does-not-exist".to_string()),
+            ..Default::default()
+        };
+        let result = create_task(&conn, &org, &user, &req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_task_accepts_sprint_from_same_project() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
+        }).unwrap();
+        let req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "T".to_string(),
+            sprint_id: Some(sprint.id.clone()),
+            ..Default::default()
+        };
+        let task = create_task(&conn, &org, &user, &req).unwrap();
+        assert_eq!(task.sprint_id, Some(sprint.id));
     }
 
     #[test]
