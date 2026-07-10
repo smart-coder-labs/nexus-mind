@@ -69,18 +69,28 @@ const {
   listTasksMock,
   listProjectsMock,
   listUsersMock,
+  getTaskMock,
   createTaskMock,
   updateTaskMock,
   deleteTaskMock,
   assignTaskMock,
+  unassignTaskMock,
+  listTaskCommentsMock,
+  listTaskSubtasksMock,
+  listTaskSpecLinksMock,
 } = vi.hoisted(() => ({
   listTasksMock: vi.fn(),
   listProjectsMock: vi.fn(),
   listUsersMock: vi.fn(),
+  getTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
   updateTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
   assignTaskMock: vi.fn(),
+  unassignTaskMock: vi.fn(),
+  listTaskCommentsMock: vi.fn(),
+  listTaskSubtasksMock: vi.fn(),
+  listTaskSpecLinksMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -88,10 +98,15 @@ vi.mock('../api/client', () => ({
     listTasks: listTasksMock,
     listProjects: listProjectsMock,
     listUsers: listUsersMock,
+    getTask: getTaskMock,
     createTask: createTaskMock,
     updateTask: updateTaskMock,
     deleteTask: deleteTaskMock,
     assignTask: assignTaskMock,
+    unassignTask: unassignTaskMock,
+    listTaskComments: listTaskCommentsMock,
+    listTaskSubtasks: listTaskSubtasksMock,
+    listTaskSpecLinks: listTaskSpecLinksMock,
   })),
 }))
 
@@ -132,10 +147,15 @@ beforeEach(() => {
   listTasksMock.mockResolvedValue(tasks)
   listProjectsMock.mockResolvedValue(projects)
   listUsersMock.mockResolvedValue(users)
+  getTaskMock.mockImplementation((id: string) => Promise.resolve(tasks.find(t => t.id === id) ?? tasks[0]))
   createTaskMock.mockResolvedValue(tasks[0])
   updateTaskMock.mockResolvedValue({ ...tasks[0], status: 'done' })
   deleteTaskMock.mockResolvedValue(undefined)
   assignTaskMock.mockResolvedValue([])
+  unassignTaskMock.mockResolvedValue(undefined)
+  listTaskCommentsMock.mockResolvedValue([])
+  listTaskSubtasksMock.mockResolvedValue([])
+  listTaskSpecLinksMock.mockResolvedValue([])
   vi.spyOn(window, 'confirm').mockReturnValue(true)
 })
 
@@ -234,8 +254,8 @@ describe('Tasks — permission guard on direct navigation', () => {
   })
 })
 
-describe('Tasks — edit status via modal', () => {
-  it('calls updateTask with the new status and reflects the pill', async () => {
+describe('Tasks — edit via unified detail modal', () => {
+  it('opens the same detail modal (with assignees section) when clicking the Edit pencil', async () => {
     renderWithProviders(<Tasks />)
 
     await waitFor(() => {
@@ -245,15 +265,44 @@ describe('Tasks — edit status via modal', () => {
     const row = screen.getByText('Fix login redirect bug').closest('tr')!
     fireEvent.click(within(row).getByRole('button', { name: /edit/i }))
 
-    const dialog = await screen.findByText('Edit Task')
-    const modal = dialog.closest('div')!.parentElement!
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /unassign sarah chen/i })).toBeInTheDocument()
+    })
+  })
+
+  it('opens the same detail modal when clicking a row', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('Fix login redirect bug'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /unassign sarah chen/i })).toBeInTheDocument()
+    })
+  })
+
+  it('calls updateTask with the new status via the detail modal form and closes it', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Fix login redirect bug').closest('tr')!
+    fireEvent.click(within(row).getByRole('button', { name: /edit/i }))
+
+    const titleInput = await screen.findByLabelText(/^title$/i)
+    const modal = titleInput.closest('form')!.parentElement!
 
     const statusSelect = within(modal).getByRole('button', { name: /^status$/i })
     fireEvent.click(statusSelect)
     const doneOption = await screen.findByRole('option', { name: /^done$/i })
     fireEvent.click(doneOption)
 
-    const saveButton = within(modal).getByRole('button', { name: /save/i })
+    const saveButton = within(modal).getByRole('button', { name: /^save$/i })
     fireEvent.click(saveButton)
 
     await waitFor(() => {

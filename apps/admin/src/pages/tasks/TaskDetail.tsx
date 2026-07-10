@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, UserMinus, Tag } from 'lucide-react'
 import { createClient } from '../../api/client'
@@ -7,14 +7,32 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../../components/ui/Select/Select'
 import { Badge } from '../../components/ui/Badge/Badge'
-import { STATUS_BADGE_VARIANT } from '../Tasks'
-import type { Task } from '../../types'
+import { STATUS_BADGE_VARIANT, STATUS_OPTIONS, PRIORITY_OPTIONS } from '../Tasks'
+import type { Task, TaskStatus, TaskPriority } from '../../types'
 
 const client = createClient()
 
 interface TaskDetailProps {
   task: Task
   onClose: () => void
+}
+
+interface TaskEditFormState {
+  title: string
+  description: string
+  status: TaskStatus
+  priority: TaskPriority
+  due_date: string
+}
+
+function formStateFromTask(t: Task): TaskEditFormState {
+  return {
+    title: t.title,
+    description: t.description ?? '',
+    status: t.status,
+    priority: t.priority,
+    due_date: t.due_date ?? '',
+  }
 }
 
 export default function TaskDetail({ task, onClose }: TaskDetailProps) {
@@ -29,6 +47,29 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const [labelInput, setLabelInput] = useState('')
   const [subtaskTitle, setSubtaskTitle] = useState('')
   const [specInput, setSpecInput] = useState('')
+  const [selectedAssignee, setSelectedAssignee] = useState('')
+
+  // The list view (list_tasks) returns tasks with empty assignees/labels to
+  // avoid N+1 queries. Fetch the hydrated task so assign/label mutations —
+  // which invalidate ['task', task.id] — actually reflect in this view.
+  const { data: fullTask } = useQuery({
+    queryKey: ['task', task.id],
+    queryFn: () => client.getTask(task.id),
+  })
+
+  const t = fullTask ?? task
+
+  const [editForm, setEditForm] = useState<TaskEditFormState>(() => formStateFromTask(t))
+
+  // Seed the edit form only when the task identity changes (opening a different
+  // task), NOT on every fullTask refetch — otherwise adding a label/assignee mid-edit
+  // would refetch and silently clobber in-progress Title/Description edits. The
+  // editable fields (title/desc/status/priority/due) are already present on the list
+  // item, so seeding from `task` needs no hydration.
+  useEffect(() => {
+    setEditForm(formStateFromTask(task))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id])
 
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
@@ -104,6 +145,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
       qc.invalidateQueries({ queryKey: ['task', task.id] })
+      setSelectedAssignee('')
     },
   })
 
@@ -115,8 +157,23 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     },
   })
 
+  const updateMut = useMutation({
+    mutationFn: () =>
+      client.updateTask(task.id, {
+        title: editForm.title,
+        description: editForm.description || undefined,
+        status: editForm.status,
+        priority: editForm.priority,
+        due_date: editForm.due_date || undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      qc.invalidateQueries({ queryKey: ['task', task.id] })
+    },
+  })
+
   const availableAssignees = users.filter(
-    u => !task.assignees.some(a => a.id === u.id),
+    u => !(t.assignees ?? []).some(a => a.id === u.id),
   )
 
   const handleCommentSubmit = (e: React.FormEvent) => {
@@ -143,6 +200,17 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     linkSpecMut.mutate(specInput.trim())
   }
 
+  const handleEditSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editForm.title.trim()) return
+    updateMut.mutate()
+  }
+
+  const handleAddAssignee = () => {
+    if (!selectedAssignee) return
+    assignMut.mutate(selectedAssignee)
+  }
+
   return (
     <div className="relative bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
       <button
@@ -154,12 +222,90 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       </button>
 
       <div className="mb-5">
-        <div className="flex items-center gap-2 mb-1">
-          <Badge variant={STATUS_BADGE_VARIANT[task.status]} size="sm">{task.status}</Badge>
-        </div>
-        <h2 className="text-sm font-semibold text-text-primary">{task.title}</h2>
-        {task.description && (
-          <p className="text-xs text-text-tertiary mt-1">{task.description}</p>
+        {canWrite ? (
+          <form onSubmit={handleEditSubmit} className="space-y-4 text-xs">
+            <div className="space-y-1">
+              <label htmlFor="task-detail-title" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Title</label>
+              <input
+                id="task-detail-title"
+                type="text"
+                value={editForm.title}
+                onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                required
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label htmlFor="task-detail-description" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
+              <textarea
+                id="task-detail-description"
+                value={editForm.description}
+                onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
+                <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v as TaskStatus }))}>
+                  <SelectTrigger className="h-8 text-xs" aria-label="Status">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATUS_OPTIONS.map(s => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex-1 space-y-1">
+                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Priority</label>
+                <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v as TaskPriority }))}>
+                  <SelectTrigger className="h-8 text-xs" aria-label="Priority">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRIORITY_OPTIONS.map(p => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label htmlFor="task-detail-due-date" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Due date</label>
+              <input
+                id="task-detail-due-date"
+                type="date"
+                value={editForm.due_date}
+                onChange={e => setEditForm(f => ({ ...f, due_date: e.target.value }))}
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+              />
+            </div>
+
+            <div className="flex items-center justify-end pt-1">
+              <button
+                type="submit"
+                disabled={updateMut.isPending || !editForm.title.trim()}
+                className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+              >
+                {updateMut.isPending ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 mb-1">
+              <Badge variant={STATUS_BADGE_VARIANT[t.status]} size="sm">{t.status}</Badge>
+            </div>
+            <h2 className="text-sm font-semibold text-text-primary">{t.title}</h2>
+            {t.description && (
+              <p className="text-xs text-text-tertiary mt-1">{t.description}</p>
+            )}
+          </>
         )}
       </div>
 
@@ -167,10 +313,10 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       <section className="mb-6">
         <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Assignees</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          {task.assignees.length === 0 && (
+          {(t.assignees ?? []).length === 0 && (
             <span className="text-xs text-text-quaternary">Unassigned</span>
           )}
-          {task.assignees.map(a => (
+          {(t.assignees ?? []).map(a => (
             <span
               key={a.id}
               className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
@@ -190,16 +336,27 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           ))}
         </div>
         {canAssign && (
-          <Select value="" onValueChange={v => v && assignMut.mutate(v)}>
-            <SelectTrigger className="w-56 h-8 text-xs" aria-label="Assignee">
-              <SelectValue placeholder="Add assignee…" />
-            </SelectTrigger>
-            <SelectContent>
-              {availableAssignees.map(u => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2">
+            <Select value={selectedAssignee} onValueChange={setSelectedAssignee}>
+              <SelectTrigger className="w-56 h-8 text-xs" aria-label="Assignee">
+                <SelectValue placeholder="Add assignee…" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableAssignees.map(u => (
+                  <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <button
+              type="button"
+              onClick={handleAddAssignee}
+              aria-label="Add assignee"
+              disabled={!selectedAssignee || assignMut.isPending}
+              className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+            >
+              Add
+            </button>
+          </div>
         )}
       </section>
 
@@ -207,10 +364,10 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       <section className="mb-6">
         <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Labels</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          {task.labels.length === 0 && (
+          {(t.labels ?? []).length === 0 && (
             <span className="text-xs text-text-quaternary">No labels</span>
           )}
-          {task.labels.map(label => (
+          {(t.labels ?? []).map(label => (
             <span
               key={label}
               className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
