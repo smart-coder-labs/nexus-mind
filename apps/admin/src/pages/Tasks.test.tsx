@@ -295,7 +295,10 @@ describe('Tasks — edit via unified detail modal', () => {
     fireEvent.click(within(row).getByRole('button', { name: /edit/i }))
 
     const titleInput = await screen.findByLabelText(/^title$/i)
-    const modal = titleInput.closest('form')!.parentElement!
+    // The Save button lives in a footer at the bottom of the modal (after Comments),
+    // associated to the edit form via `form="task-edit-form"` rather than nested inside
+    // it, so scope to the whole modal container instead of just the form's parent.
+    const modal = titleInput.closest('form')!.closest('.rounded-\\[18px\\]') as HTMLElement
 
     const statusSelect = within(modal).getByRole('button', { name: /^status$/i })
     fireEvent.click(statusSelect)

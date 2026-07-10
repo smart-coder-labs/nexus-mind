@@ -223,7 +223,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
       <div className="mb-5">
         {canWrite ? (
-          <form onSubmit={handleEditSubmit} className="space-y-4 text-xs">
+          <form id="task-edit-form" onSubmit={handleEditSubmit} className="space-y-4 text-xs">
             <div className="space-y-1">
               <label htmlFor="task-detail-title" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Title</label>
               <input
@@ -284,16 +284,6 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 onChange={e => setEditForm(f => ({ ...f, due_date: e.target.value }))}
                 className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
               />
-            </div>
-
-            <div className="flex items-center justify-end pt-1">
-              <button
-                type="submit"
-                disabled={updateMut.isPending || !editForm.title.trim()}
-                className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-              >
-                {updateMut.isPending ? 'Saving…' : 'Save'}
-              </button>
             </div>
           </form>
         ) : (
@@ -538,6 +528,19 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           </form>
         )}
       </section>
+
+      {canWrite && (
+        <div className="flex items-center justify-end pt-4 mt-2 border-t border-border-primary">
+          <button
+            type="submit"
+            form="task-edit-form"
+            disabled={updateMut.isPending || !editForm.title.trim()}
+            className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+          >
+            {updateMut.isPending ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

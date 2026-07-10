@@ -6659,10 +6659,68 @@ fn build_task_filter_sql(
     (sql, params)
 }
 
+/// Batch-hydrates `assignees` and `labels` on every task in `tasks` using two queries total
+/// (one for assignees, one for labels), regardless of how many tasks are passed in. This
+/// avoids the N+1 pattern of calling `list_task_assignees`/`list_task_labels` per task — used
+/// by list-oriented reads (`list_tasks`, `list_tasks_in_sprint`) where `get_task`'s per-row
+/// hydration would be too expensive. No-ops on an empty slice (no queries run).
+fn hydrate_tasks(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
+    let placeholders: String = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
+    let id_refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+
+    let mut assignees_by_task: HashMap<String, Vec<TaskAssignee>> = HashMap::new();
+    {
+        let sql = format!(
+            "SELECT ta.task_id, u.id, u.name, u.email FROM task_assignees ta
+             JOIN users u ON u.id = ta.user_id
+             WHERE ta.task_id IN ({placeholders}) ORDER BY u.name"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(id_refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                TaskAssignee { id: row.get(1)?, name: row.get(2)?, email: row.get(3)? },
+            ))
+        })?;
+        for row in rows {
+            let (task_id, assignee) = row?;
+            assignees_by_task.entry(task_id).or_default().push(assignee);
+        }
+    }
+
+    let mut labels_by_task: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let sql = format!(
+            "SELECT task_id, label FROM task_labels WHERE task_id IN ({placeholders}) ORDER BY label"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(id_refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (task_id, label) = row?;
+            labels_by_task.entry(task_id).or_default().push(label);
+        }
+    }
+
+    for task in tasks.iter_mut() {
+        task.assignees = assignees_by_task.remove(&task.id).unwrap_or_default();
+        task.labels = labels_by_task.remove(&task.id).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
 /// Lists tasks scoped to `org_id`, applying `filters` and, when `viewer` is `Some(uid)`,
 /// project-membership visibility (org-shared/unregistered projects are visible to everyone).
 /// `None` viewer = no membership restriction (admin). Excludes archived tasks unless
-/// `filters.include_archived` is set. Ordered by `created_at DESC`.
+/// `filters.include_archived` is set. Ordered by `created_at DESC`. Batch-hydrates
+/// assignees/labels on the returned page (two extra queries total, not per-task).
 pub fn list_tasks(
     conn: &Connection,
     org_id: &str,
@@ -6687,6 +6745,7 @@ pub fn list_tasks(
     for row in rows {
         tasks.push(row?);
     }
+    hydrate_tasks(conn, &mut tasks)?;
     Ok(tasks)
 }
 
@@ -7189,6 +7248,7 @@ pub fn list_tasks_in_sprint(conn: &Connection, sprint_id: &str) -> Result<Vec<Ta
     for row in rows {
         tasks.push(row?);
     }
+    hydrate_tasks(conn, &mut tasks)?;
     Ok(tasks)
 }
 
@@ -15259,6 +15319,63 @@ mod task_query_tests {
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, a.id);
+    }
+
+    // FIX 1: list_tasks previously returned tasks via map_task_row alone, which always
+    // leaves assignees/labels empty — only get_task hydrated them. This asserts list_tasks
+    // batch-hydrates both relations so the admin list view stops showing "Unassigned" for
+    // tasks that actually have an assignee.
+    #[test]
+    fn list_tasks_hydrates_assignees_and_labels() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        add_task_label(&conn, &task.id, "bug").unwrap();
+        mk_task(&conn, &org, &user, "proj", "Other"); // no assignees/labels
+
+        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert_eq!(listed.len(), 2);
+        let listed_task = listed.iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!(listed_task.assignees.len(), 1);
+        assert_eq!(listed_task.assignees[0].id, user);
+        assert_eq!(listed_task.labels, vec!["bug".to_string()]);
+        let other_task = listed.iter().find(|t| t.id != task.id).unwrap();
+        assert!(other_task.assignees.is_empty());
+        assert!(other_task.labels.is_empty());
+    }
+
+    // Same hydration requirement applies to the sprint board view.
+    #[test]
+    fn list_tasks_in_sprint_hydrates_assignees_and_labels() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(
+            &conn, &org, &user,
+            &CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() },
+        ).unwrap();
+        let req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "In sprint".to_string(),
+            sprint_id: Some(sprint.id.clone()),
+            ..Default::default()
+        };
+        let task = create_task(&conn, &org, &user, &req).unwrap();
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        add_task_label(&conn, &task.id, "bug").unwrap();
+
+        let listed = list_tasks_in_sprint(&conn, &sprint.id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].assignees.len(), 1);
+        assert_eq!(listed[0].labels, vec!["bug".to_string()]);
+    }
+
+    // Batch-hydration must not run any queries for an empty result set.
+    #[test]
+    fn list_tasks_empty_result_hydrates_without_error() {
+        let (conn, org, _user) = setup();
+        let filters = TaskListFilters { project: Some("does-not-exist".to_string()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert!(listed.is_empty());
     }
 
     #[test]

@@ -490,4 +490,29 @@ describe('TaskDetail — editable fields form', () => {
     expect(screen.queryByLabelText(/^title$/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument()
   })
+
+  // FIX 2: Save previously sat inline between the "Due date" field and the "Assignees"
+  // section (top of the modal). It now renders in a footer after Comments (the last
+  // section) and submits the edit form via the HTML5 form-association attribute
+  // (`form="task-edit-form"`) rather than being nested inside the <form> itself.
+  it('renders the Save button after the Comments section, not inside the edit fields form', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(getTaskMock).toHaveBeenCalledWith('t1')
+    })
+    await screen.findByLabelText(/^title$/i)
+
+    const saveButton = screen.getByRole('button', { name: /^save$/i })
+    const commentsHeading = screen.getByText('Comments')
+
+    // DOM order: Comments heading must precede the Save button.
+    expect(
+      commentsHeading.compareDocumentPosition(saveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+
+    // Save must NOT be inside the edit-fields <form> — it's associated via `form=`.
+    expect(saveButton.closest('form')).toBeNull()
+    expect(saveButton).toHaveAttribute('form', 'task-edit-form')
+  })
 })
