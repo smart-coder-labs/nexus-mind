@@ -390,8 +390,54 @@ pub fn spec_change_exists(root: &std::path::Path, name: &str) -> bool {
     }
 }
 
+/// Resolves the monorepo root that contains `openspec/`, so `spec_change_exists`
+/// can validate spec change names regardless of the server's working directory
+/// (e.g. run from `apps/backend` in dev, or from the repo root in some deploys).
+///
+/// Priority order:
+/// 1. `env_override` (in practice the `OPENSPEC_ROOT` env var) — explicit config.
+/// 2. Walk up from `start_dir` looking for a directory containing `openspec/changes/`.
+/// 3. `CARGO_MANIFEST_DIR/../../openspec`'s parent (compile-time apps/backend ->
+///    monorepo root), if that `openspec` directory exists.
+/// 4. Fallback: `start_dir` itself. Combined with `spec_change_exists`'s
+///    "root unreadable -> advisory pass" behavior, this preserves the
+///    intentional accept-by-default outcome (design R5) when no repo tree
+///    can be found at all (e.g. a deployed prod binary with no repo checkout).
+fn resolve_openspec_root(
+    env_override: Option<String>,
+    start_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    if let Some(root) = env_override {
+        if !root.is_empty() {
+            return std::path::PathBuf::from(root);
+        }
+    }
+
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        if dir.join("openspec/changes").is_dir() {
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        let candidate = std::path::PathBuf::from(manifest_dir).join("../../openspec");
+        if candidate.is_dir() {
+            // candidate is `<repo-root>/openspec`; return `<repo-root>`.
+            if let Some(repo_root) = candidate.parent() {
+                return repo_root.to_path_buf();
+            }
+        }
+    }
+
+    start_dir.to_path_buf()
+}
+
 fn repo_root() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    let env_override = std::env::var("OPENSPEC_ROOT").ok();
+    let start_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    resolve_openspec_root(env_override, &start_dir)
 }
 
 pub async fn list_task_spec_links_handler(
@@ -585,6 +631,16 @@ mod tests {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
         SqliteStore::new(conn)
+    }
+
+    /// `OPENSPEC_ROOT` is a process-global env var. `cargo test` runs tests in
+    /// parallel threads within the same process, so any test that mutates it
+    /// via `std::env::set_var`/`remove_var` MUST hold this lock for the
+    /// duration of the mutation + assertions, or it races with other tests
+    /// reading/mutating the same var.
+    fn openspec_root_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
     fn app(store: SqliteStore) -> Router {
@@ -1028,6 +1084,132 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("nm-spec-test-nonexistent-{}", uuid::Uuid::new_v4()));
         // Root does not exist at all — cannot confirm, advisory pass.
         assert!(spec_change_exists(&tmp, "anything"));
+    }
+
+    // ── openspec root resolution (server run from apps/backend vs repo root) ──
+
+    #[tokio::test]
+    async fn resolve_openspec_root_prefers_env_override() {
+        let tmp = std::env::temp_dir().join(format!("nm-root-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("openspec/changes/known-change")).unwrap();
+
+        let resolved = resolve_openspec_root(Some(tmp.to_string_lossy().to_string()), &tmp);
+        assert_eq!(resolved, tmp);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn resolve_openspec_root_walks_up_from_nested_cwd() {
+        // Simulates the server process running from `apps/backend` while
+        // `openspec/` lives at the monorepo root.
+        let tmp = std::env::temp_dir().join(format!("nm-root-walkup-{}", uuid::Uuid::new_v4()));
+        let nested_cwd = tmp.join("apps/backend");
+        std::fs::create_dir_all(tmp.join("openspec/changes/known-change")).unwrap();
+        std::fs::create_dir_all(&nested_cwd).unwrap();
+
+        let resolved = resolve_openspec_root(None, &nested_cwd);
+        assert_eq!(resolved, tmp);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn resolve_openspec_root_uses_manifest_relative_fallback_when_walkup_fails() {
+        // Nothing above the isolated temp start dir has an `openspec/changes`
+        // tree, so priority 2 (walk-up) fails. Priority 3 (CARGO_MANIFEST_DIR
+        // relative to the compiled test binary) resolves to this real repo's
+        // root, which DOES have an `openspec/changes` tree — so it must win
+        // over falling straight back to `start_dir`.
+        let tmp = std::env::temp_dir().join(format!("nm-root-none-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let resolved = resolve_openspec_root(None, &tmp);
+        assert_ne!(resolved, tmp);
+        assert!(resolved.join("openspec/changes").is_dir());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn resolve_openspec_root_falls_back_to_start_dir_when_truly_unresolvable() {
+        // Point OPENSPEC_ROOT explicitly at an isolated dir with no
+        // `openspec/changes` tree anywhere above it. Since priority 1 (env
+        // override) is set, it wins outright and no further fallback runs —
+        // this covers the deployed-binary-with-no-repo-checkout case, where
+        // an explicit misconfigured/empty OPENSPEC_ROOT should not silently
+        // discover the CI/dev repo tree.
+        let tmp = std::env::temp_dir().join(format!("nm-root-forced-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let resolved = resolve_openspec_root(Some(tmp.to_string_lossy().to_string()), &tmp);
+        assert_eq!(resolved, tmp);
+        assert!(spec_change_exists(&resolved, "anything"), "advisory pass when tree absent under explicit root");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn link_task_spec_handler_rejects_unknown_via_openspec_root_env() {
+        let _guard = openspec_root_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("nm-link-handler-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("openspec/changes/known-change")).unwrap();
+
+        std::env::set_var("OPENSPEC_ROOT", &tmp);
+
+        let (store, admin_key, _org_id) = setup_with_key();
+        let create_resp =
+            post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
+        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+
+        let ok_resp = post_json(
+            &store,
+            &admin_key,
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            serde_json::json!({ "spec_change_name": "known-change" }),
+        )
+        .await;
+        assert_eq!(ok_resp.status(), StatusCode::CREATED);
+
+        let bad_resp = post_json(
+            &store,
+            &admin_key,
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            serde_json::json!({ "spec_change_name": "unknown-change" }),
+        )
+        .await;
+        assert_eq!(bad_resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        std::env::remove_var("OPENSPEC_ROOT");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn link_task_spec_handler_advisory_passes_when_root_unresolvable() {
+        let _guard = openspec_root_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("nm-link-handler-noroot-{}", uuid::Uuid::new_v4()));
+        // Point OPENSPEC_ROOT at an empty dir with no openspec/changes tree at all —
+        // root is "resolvable" as a path but has no changes tree, and there is
+        // nothing above it in this isolated temp location either.
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("OPENSPEC_ROOT", &tmp);
+
+        let (store, admin_key, _org_id) = setup_with_key();
+        let create_resp =
+            post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
+        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+
+        let resp = post_json(
+            &store,
+            &admin_key,
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            serde_json::json!({ "spec_change_name": "anything-goes" }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        std::env::remove_var("OPENSPEC_ROOT");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
