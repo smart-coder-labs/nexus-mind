@@ -83,18 +83,62 @@ Once connected, Cursor's AI has access to these tools:
 | `list_memories` | Browse recent memories, filtered by project or type |
 | `get_context` | **Cursor-specific** — fetch team context as a formatted block for rules or notepads |
 
-## Harness Library approval flow
+## Harness Library — agent tools
 
-Cursor agents may receive NexusMind harness recommendations for MCP or editor setup, but recommendations contain metadata only by default. Installable manifest content requires explicit user approval for an exact version and `manifest_hash`.
+A **harness** is a reusable, shareable bundle of agent configuration. NexusMind hosts a shared library so a setup one teammate builds can be discovered, previewed, and installed from Cursor — the same library Claude Code and Codex agents use. Cursor is a first-class target (it replaced `opencode`).
 
-Safe flow:
+Cursor's AI drives the library through MCP tools. The backend only records approval state and serves immutable manifests — it never touches your filesystem. Diff computation, path resolution, and file writes all happen locally in the MCP process.
 
-1. Inspect the recommendation metadata, compatibility targets, and provenance.
-2. Approve the exact harness version before requesting the manifest download.
-3. Use a local tool to preview the Cursor MCP/config diff.
-4. Apply the diff only after user confirmation.
+### Tools
 
-NexusMind does not silently edit `.cursor/mcp.json`, global Cursor settings, shell profiles, or project files from the backend.
+| Tool | Purpose |
+|------|---------|
+| `recommend_harnesses` | Suggest relevant harnesses for a target tool (metadata only) |
+| `list_harnesses` | Browse published harnesses, optionally filtered by `target` or owner |
+| `get_harness_version` | Read a specific version's manifest for preview — no approval, no install |
+| `list_harness_config_reviews` | List submitted config reviews, optionally by `status` |
+| `plan_harness_install` | **Phase 1** — dry-run: compute the install diff, write nothing |
+| `apply_harness_install` | **Phase 2** — record approval, then materialize files to disk |
+| `build_harness_manifest_from_path` | Build a manifest from local files (runs a secret scan) |
+| `create_harness` | Create a new harness record (`slug`, `name`) |
+| `publish_harness_version` | Publish a version with its manifest |
+| `create_harness_config_review` | Submit a redacted local config for team review |
+
+Set `target_tool: "cursor"` when planning a Cursor install. Targets are `claude`, `codex`, or `cursor`.
+
+### Two-phase, approval-first install
+
+Installs are never one-shot. Nothing is written until you have seen the exact diff and confirmed it.
+
+**Phase 1 — `plan_harness_install`** (writes nothing)
+
+Inputs: `harness_id`, `version`, `target_tool`, `target_scope` (`user` or `project`, defaults to `project`). It reads the version manifest (readable without approval), resolves where each component would land, hashes any existing on-disk files, and returns a `diff` — one entry per component with `destination`, `relative_path`, `action` (`create` / `overwrite` / `skip`), `sha256`, `existing_sha256`, `size_bytes`, `executable`, and an optional `warning` — plus `warnings[]` and `requires_acknowledgement`. This phase only reads files, so it is a true dry run. Show the diff to the user and get explicit confirmation before proceeding.
+
+**Phase 2 — `apply_harness_install`** (writes to disk)
+
+Inputs: everything from the plan plus `manifest_hash`, and the acknowledgement flags below when required. It records backend approval (persisting a `(user_id, harness_version_id, manifest_hash)` row that the backend requires before serving the download), verifies the manifest hash (drift → `result_status: "hash_mismatch"`), re-runs the plan to refuse unconfirmed overwrites, then materializes files and records the result. `result_status` is one of `installed`, `failed`, `hash_mismatch`, or `overwrite_not_confirmed`; the response also lists `written[]`, `skipped[]`, and any `errors`.
+
+### Acknowledgement gates
+
+| Flag | When required |
+|------|---------------|
+| `warning_acknowledged: true` | The plan reports `requires_acknowledgement: true` — i.e. the harness includes an executable format (`hook` or `claude_code_plugin`). Without it, apply bails with `warning_acknowledgement_required`. |
+| `overwrite_confirmed: true` | The diff contains an `overwrite` action for an existing local file. Without it, apply returns `overwrite_not_confirmed`. |
+
+Both are opt-in booleans and must come from an explicit user decision, never a default.
+
+### Where files land (Cursor)
+
+Destinations resolve under `.cursor/` — `<project>/.cursor/` for `project` scope or `~/.cursor/` for `user` scope. Cursor supports a **narrower** set of formats than Claude Code:
+
+| Format | Destination |
+|--------|-------------|
+| `agent` | `rules/` |
+| `claude_code_plugin` | single `mcp.json` + settings merge |
+
+Formats `skill`, `command`, `hook`, `output_style`, and `theme` are **not** supported for Cursor — `skill` and `output_style` in particular are Claude-centric and have no Cursor destination. Planning an unsupported format/target pair fails with *"Unsupported format/tool combination"* at plan time, so nothing is ever written.
+
+NexusMind does not silently edit `.cursor/mcp.json`, global Cursor settings, shell profiles, or project files from the backend. It only records approval state and serves immutable manifests for local tools to preview and apply.
 
 ---
 

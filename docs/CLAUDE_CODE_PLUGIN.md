@@ -51,14 +51,79 @@ Then restart your shell and open Claude Code — NexusMind connects automaticall
 
 Always pass `tool="claude-code"` and `project="<your-project>"` when storing.
 
-## Harness Library approval flow
+## Harness Library — agent tools
 
-NexusMind may recommend reusable Claude Code harnesses, but recommendations are metadata only until a user approves an exact version and manifest hash.
+A **harness** is a reusable, shareable bundle of agent configuration — a skill, an agent, a slash command, a hook, an output style, a Claude Code plugin, or a theme. NexusMind hosts a shared library of harnesses so a convention one teammate builds can be discovered, previewed, and installed by everyone else.
 
-1. Review the recommended harness name, targets, provenance, compatibility, and `manifest_hash`.
-2. Approve the exact version before downloading the manifest.
-3. Let the local Claude Code setup tool show a file diff.
-4. Apply changes only after confirming that local diff.
+Agents (in Claude Code, Codex, or Cursor) drive this library through MCP tools. The backend only records approval state and serves immutable manifests — it never touches your filesystem. All diff computation, path resolution, and file writes happen locally in the MCP process.
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `recommend_harnesses` | Suggest relevant harnesses for a target tool (metadata only) |
+| `list_harnesses` | Browse published harnesses, optionally filtered by `target` or owner |
+| `get_harness_version` | Read a specific version's manifest for preview — no approval, no install |
+| `list_harness_config_reviews` | List submitted config reviews, optionally by `status` |
+| `plan_harness_install` | **Phase 1** — dry-run: compute the install diff, write nothing |
+| `apply_harness_install` | **Phase 2** — record approval, then materialize files to disk |
+| `build_harness_manifest_from_path` | Build a manifest from local files (runs a secret scan) |
+| `create_harness` | Create a new harness record (`slug`, `name`) |
+| `publish_harness_version` | Publish a version with its manifest |
+| `create_harness_config_review` | Submit a redacted local config for team review |
+
+Targets are one of `claude`, `codex`, or `cursor`. Formats are one of `agent`, `skill`, `command`, `hook`, `output_style`, `claude_code_plugin`, or `theme`.
+
+### Two-phase, approval-first install
+
+Installs are never one-shot. Nothing is written until you have seen the exact diff and confirmed it.
+
+**Phase 1 — `plan_harness_install`** (writes nothing)
+
+Inputs: `harness_id`, `version`, `target_tool`, `target_scope` (`user` or `project`, defaults to `project`). It reads the version manifest (readable without approval), resolves where each component would land, hashes any existing on-disk files, and returns:
+
+- `diff` — one entry per component with `destination`, `relative_path`, `action` (`create` / `overwrite` / `skip`), `sha256`, `existing_sha256`, `size_bytes`, `executable`, and an optional `warning`.
+- `warnings[]` and `requires_acknowledgement` — set when the harness contains executable formats.
+
+This phase only reads files and imports nothing that can write to disk, so it is a true dry run. Show the diff to the user and get an explicit confirmation before proceeding.
+
+**Phase 2 — `apply_harness_install`** (writes to disk)
+
+Inputs: everything from the plan plus `manifest_hash`, and the acknowledgement flags below when required. It:
+
+1. Records backend approval — persists a `(user_id, harness_version_id, manifest_hash)` approval row. The backend refuses the manifest download without a matching approved row.
+2. Verifies the manifest hash — a drift returns `result_status: "hash_mismatch"` and stops.
+3. Re-runs the plan and refuses any unconfirmed overwrite.
+4. Materializes files and records the install result back on the approval row.
+
+`result_status` is one of `installed`, `failed`, `hash_mismatch`, or `overwrite_not_confirmed`. The response also lists `written[]`, `skipped[]`, and any `errors`.
+
+### Acknowledgement gates
+
+Two flags on `apply_harness_install` guard destructive or executable actions:
+
+| Flag | When required |
+|------|---------------|
+| `warning_acknowledged: true` | The plan reports `requires_acknowledgement: true` — i.e. the harness includes an executable format (`hook` or `claude_code_plugin`). Without it, apply bails with `warning_acknowledgement_required`. |
+| `overwrite_confirmed: true` | The diff contains an `overwrite` action for an existing local file. Without it, apply returns `overwrite_not_confirmed` — *"this install would overwrite one or more existing files — re-run apply_harness_install with overwrite_confirmed: true to proceed"*. |
+
+Both are opt-in booleans and must come from an explicit user decision, never a default.
+
+### Where files land (Claude Code)
+
+Destinations resolve under `~/.claude/` for `user` scope, or `<project>/.claude/` for `project` scope:
+
+| Format | Destination |
+|--------|-------------|
+| `agent` | `agents/` |
+| `skill` | `skills/` |
+| `command` | `commands/` |
+| `hook` | `hooks/` + merge into `settings.json` |
+| `output_style` | `output-styles/` |
+| `claude_code_plugin` | `plugins/` + merge into `settings.json` |
+| `theme` | `themes/` |
+
+Claude Code supports every format. (Codex and Cursor support a narrower set — see their plugin docs.)
 
 The backend never writes to `~/.claude/settings.json`, shell profiles, hooks, MCP configs, or project files. It only records approval state and serves immutable manifests for local tools to preview and apply.
 
