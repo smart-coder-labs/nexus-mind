@@ -1935,6 +1935,284 @@ pub struct GitHubConnection {
     pub updated_at: String,
 }
 
+// ── Team Tasks types ─────────────────────────────────────────────────────────
+
+/// Fixed task status set (team-tasks-core / "Fixed Task Status Set"). Custom or
+/// per-organization statuses are not supported in v1. Hand-rolled `FromStr`/
+/// `Display` mirrors `Role`'s pattern — stored as TEXT, parsed on write
+/// (invalid -> 4xx), serialized as the snake_case string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Backlog,
+    Todo,
+    InProgress,
+    InReview,
+    Done,
+    Cancelled,
+}
+
+impl FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "backlog" => Ok(TaskStatus::Backlog),
+            "todo" => Ok(TaskStatus::Todo),
+            "in_progress" => Ok(TaskStatus::InProgress),
+            "in_review" => Ok(TaskStatus::InReview),
+            "done" => Ok(TaskStatus::Done),
+            "cancelled" => Ok(TaskStatus::Cancelled),
+            other => Err(format!("unknown task status: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            TaskStatus::Backlog => "backlog",
+            TaskStatus::Todo => "todo",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::InReview => "in_review",
+            TaskStatus::Done => "done",
+            TaskStatus::Cancelled => "cancelled",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Status transition matrix (design.md §2.2). Any active state may transition
+/// to `cancelled`; `done` is reached only from `in_progress` or `in_review`;
+/// `done`/`cancelled` may be reopened (to `in_progress` / `backlog`
+/// respectively); same-state transitions are a no-op allowed (idempotent
+/// PATCH). Auto-resolve (resolve-by-spec) bypasses this matrix entirely — it
+/// is a system transition, not a user edit — and must call the DB write
+/// directly rather than going through this function.
+pub fn can_transition(from: TaskStatus, to: TaskStatus) -> bool {
+    use TaskStatus::*;
+    if from == to {
+        return true;
+    }
+    matches!(
+        (from, to),
+        (Backlog, Todo)
+            | (Backlog, InProgress)
+            | (Backlog, Cancelled)
+            | (Todo, Backlog)
+            | (Todo, InProgress)
+            | (Todo, Cancelled)
+            | (InProgress, Backlog)
+            | (InProgress, Todo)
+            | (InProgress, InReview)
+            | (InProgress, Done)
+            | (InProgress, Cancelled)
+            | (InReview, InProgress)
+            | (InReview, Done)
+            | (InReview, Cancelled)
+            | (Done, InProgress)
+            | (Cancelled, Backlog)
+    )
+}
+
+/// Denormalized assignee display — mirrors `HarnessOwner` exactly (joined from `users`).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TaskAssignee {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+}
+
+/// Core task entity (DB row + hydrated relations on detail reads).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Task {
+    pub id: String,
+    pub org_id: String,
+    pub project: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_id: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    #[serde(default)]
+    pub assignees: Vec<TaskAssignee>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub comment_count: i64,
+    #[serde(default)]
+    pub spec_links: Vec<String>,
+    #[serde(default)]
+    pub subtask_count: i64,
+}
+
+/// Threaded comment on a task (flat, chronologically-ordered per task).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TaskComment {
+    pub id: String,
+    pub task_id: String,
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
+    pub body: String,
+    pub created_at: String,
+}
+
+/// A sprint groups tasks (grouping only, no burndown, one sprint per task).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Sprint {
+    pub id: String,
+    pub org_id: String,
+    pub project: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    pub status: String,
+    pub created_by: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    #[serde(default)]
+    pub task_count: i64,
+}
+
+/// A retrospective note for a sprint.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SprintRetrospective {
+    pub id: String,
+    pub sprint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub went_well: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub went_wrong: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_items: Option<String>,
+    pub created_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
+    pub created_at: String,
+}
+
+/// Request body for `POST /v1/tasks`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CreateTaskRequest {
+    pub project: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub sprint_id: Option<String>,
+}
+
+/// Request body for `PATCH /v1/tasks/:id`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PatchTaskRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub sprint_id: Option<String>,
+}
+
+/// Request body for `POST /v1/tasks/:id/assignees`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AssignTaskRequest {
+    pub user_ids: Vec<String>,
+}
+
+/// Request body for `POST /v1/tasks/:id/labels`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AddLabelRequest {
+    pub label: String,
+}
+
+/// Request body for `POST /v1/tasks/:id/comments`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AddCommentRequest {
+    pub body: String,
+}
+
+/// Request body for `POST /v1/tasks/:id/spec-links`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LinkSpecRequest {
+    pub spec_change_name: String,
+}
+
+/// Request body for `POST /v1/tasks/resolve-by-spec`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResolveBySpecRequest {
+    pub spec_change_name: String,
+}
+
+/// Request body for `POST /v1/sprints`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CreateSprintRequest {
+    pub project: String,
+    pub name: String,
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub starts_at: Option<String>,
+    #[serde(default)]
+    pub ends_at: Option<String>,
+}
+
+/// Request body for `PATCH /v1/sprints/:id`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PatchSprintRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub starts_at: Option<String>,
+    #[serde(default)]
+    pub ends_at: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// Request body for `POST /v1/sprints/:id/retrospectives`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CreateRetrospectiveRequest {
+    #[serde(default)]
+    pub went_well: Option<String>,
+    #[serde(default)]
+    pub went_wrong: Option<String>,
+    #[serde(default)]
+    pub action_items: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2601,5 +2879,94 @@ mod tests {
         let without_top_k: SearchCodeRequest =
             serde_json::from_str(r#"{"project":"p","query":"q"}"#).unwrap();
         assert!(without_top_k.top_k.is_none());
+    }
+
+    // ── TaskStatus ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn task_status_from_str_parses_all_valid_values() {
+        assert_eq!(TaskStatus::from_str("backlog").unwrap(), TaskStatus::Backlog);
+        assert_eq!(TaskStatus::from_str("todo").unwrap(), TaskStatus::Todo);
+        assert_eq!(TaskStatus::from_str("in_progress").unwrap(), TaskStatus::InProgress);
+        assert_eq!(TaskStatus::from_str("in_review").unwrap(), TaskStatus::InReview);
+        assert_eq!(TaskStatus::from_str("done").unwrap(), TaskStatus::Done);
+        assert_eq!(TaskStatus::from_str("cancelled").unwrap(), TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn task_status_from_str_rejects_unrecognized_value() {
+        assert!(TaskStatus::from_str("bogus").is_err());
+        assert!(TaskStatus::from_str("").is_err());
+        assert!(TaskStatus::from_str("Backlog").is_err(), "must be case-sensitive snake_case");
+    }
+
+    #[test]
+    fn task_status_display_roundtrips_to_snake_case() {
+        let cases = [
+            (TaskStatus::Backlog, "backlog"),
+            (TaskStatus::Todo, "todo"),
+            (TaskStatus::InProgress, "in_progress"),
+            (TaskStatus::InReview, "in_review"),
+            (TaskStatus::Done, "done"),
+            (TaskStatus::Cancelled, "cancelled"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(variant.to_string(), expected);
+            assert_eq!(TaskStatus::from_str(expected).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn can_transition_matches_design_matrix() {
+        use TaskStatus::*;
+        let allowed: &[(TaskStatus, TaskStatus)] = &[
+            (Backlog, Todo),
+            (Backlog, InProgress),
+            (Backlog, Cancelled),
+            (Todo, Backlog),
+            (Todo, InProgress),
+            (Todo, Cancelled),
+            (InProgress, Backlog),
+            (InProgress, Todo),
+            (InProgress, InReview),
+            (InProgress, Done),
+            (InProgress, Cancelled),
+            (InReview, InProgress),
+            (InReview, Done),
+            (InReview, Cancelled),
+            (Done, InProgress),
+            (Cancelled, Backlog),
+        ];
+        for (from, to) in allowed {
+            assert!(can_transition(*from, *to), "{from} -> {to} must be allowed");
+        }
+
+        let all = [Backlog, Todo, InProgress, InReview, Done, Cancelled];
+        for from in all {
+            for to in all {
+                if from == to {
+                    assert!(can_transition(from, to), "{from} -> {to} same-state no-op must be allowed");
+                    continue;
+                }
+                let expected_allowed = allowed.contains(&(from, to));
+                assert_eq!(
+                    can_transition(from, to),
+                    expected_allowed,
+                    "{from} -> {to} must be {}",
+                    if expected_allowed { "allowed" } else { "rejected" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn can_transition_rejects_illegal_edges() {
+        use TaskStatus::*;
+        assert!(!can_transition(Done, Todo), "done cannot revert directly to todo");
+        assert!(!can_transition(Done, Backlog), "done cannot revert directly to backlog");
+        assert!(!can_transition(Cancelled, Todo), "cancelled can only reopen to backlog");
+        assert!(!can_transition(Cancelled, InProgress), "cancelled can only reopen to backlog");
+        assert!(!can_transition(Backlog, InReview), "backlog cannot jump straight to in_review");
+        assert!(!can_transition(Backlog, Done), "backlog cannot jump straight to done");
     }
 }
