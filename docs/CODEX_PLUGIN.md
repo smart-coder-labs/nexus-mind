@@ -116,3 +116,15 @@ NexusMind does not silently edit `~/.codex/` configuration, shell profiles, or p
 If you're running NexusMind on-premise, set `NEXUSMIND_BASE_URL` to your server URL in the `env` block of your Codex MCP config.
 
 See [RUNNING.md](./RUNNING.md) for self-hosting the backend.
+
+## Troubleshooting (Windows)
+
+First step for any problem: `npx @smart-coder-labs/nexusmind-mcp doctor`. It reports the API key the current process sees vs. the Windows user registry vs. `config.toml`, checks that the server launches via npx, and validates the key against the backend.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `connection closed: initialize response` (MCP won't start) | Corrupted npx cache — `npx -y <pkg>@latest` can't resolve the server bin | `doctor` (or re-running `setup`) clears it automatically; otherwise `npm cache clean --force`. Then restart Codex |
+| Hooks show "Failed", no approve prompt | Fixed in `nexusmind-mcp` ≥ 0.8.2. Older versions wrote the hook command in a form Codex couldn't spawn on Windows | Upgrade and re-run `setup`, then run `/hooks` and approve the NexusMind hooks (the fix changes each hook's hash, so re-approval is required once) |
+| `Invalid API key` after rotating the key | `setx` doesn't update already-running programs; the old key lingers in the running Codex | Fully quit and reopen Codex from the Start menu (not from an existing terminal) |
+
+Codex hooks are trusted by hash (`config.toml` `[hooks.state]`); any change to a hook's command requires re-approval via `/hooks`.
