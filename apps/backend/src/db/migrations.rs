@@ -73,7 +73,7 @@ pub fn run_v52(conn: &Connection) -> Result<()> {
     }
 
     let grants: &[(&str, &[&str])] = &[
-        ("tmpl_dev_junior", &["task:read"]),
+        ("tmpl_dev_junior", &["task:read", "task:write"]),
         ("tmpl_dev_senior", &["task:read", "task:write", "task:assign", "task:delete"]),
         ("tmpl_security_officer", &["task:read"]),
         ("tmpl_auditor", &["task:read"]),
@@ -3794,7 +3794,7 @@ mod tests {
 
         let junior = perms_json("tmpl_dev_junior");
         assert!(has_perm(&junior, "task:read"));
-        assert!(!has_perm(&junior, "task:write"));
+        assert!(has_perm(&junior, "task:write"));
         assert!(!has_perm(&junior, "task:assign"));
         assert!(!has_perm(&junior, "task:delete"));
         assert!(!has_perm(&junior, "task:manage"));
