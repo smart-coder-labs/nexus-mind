@@ -818,3 +818,122 @@ export interface HarnessConfigReviewComment {
 export interface CreateHarnessConfigReviewCommentRequest {
   body: string
 }
+
+// ── Team Tasks (admin UI) ─────────────────────────────────────────────────────
+
+export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled'
+export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
+
+export interface TaskAssignee {
+  id: string
+  name: string
+  email: string
+}
+
+export interface Task {
+  id: string
+  org_id: string
+  project: string
+  title: string
+  description?: string | null
+  status: TaskStatus
+  priority: TaskPriority
+  due_date?: string | null
+  parent_id?: string | null
+  sprint_id?: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  archived_at?: string | null
+  assignees: TaskAssignee[]
+  labels: string[]
+  comment_count: number
+  spec_links: string[]
+  subtask_count: number
+}
+
+export interface TaskComment {
+  id: string
+  task_id: string
+  user_id: string
+  author_name: string
+  body: string
+  created_at: string
+}
+
+export type SprintStatus = 'planned' | 'active' | 'completed'
+
+export interface Sprint {
+  id: string
+  org_id: string
+  project: string
+  name: string
+  goal?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  status: SprintStatus
+  created_by: string
+  created_at: string
+  archived_at?: string | null
+  task_count: number
+}
+
+export interface ListTasksParams {
+  project?: string
+  assignee?: string
+  status?: TaskStatus
+  sprint?: string
+  label?: string
+  parent_id?: string
+  include_archived?: boolean
+  limit?: number
+  offset?: number
+}
+
+export interface CreateTaskRequest {
+  project: string
+  title: string
+  description?: string
+  status?: TaskStatus
+  priority?: TaskPriority
+  due_date?: string
+  parent_id?: string
+  sprint_id?: string
+}
+
+export interface PatchTaskRequest {
+  title?: string
+  description?: string
+  status?: TaskStatus
+  priority?: TaskPriority
+  due_date?: string
+  sprint_id?: string
+}
+
+export interface AssignTaskRequest {
+  user_ids: string[]
+}
+
+export interface AddLabelRequest {
+  label: string
+}
+
+export interface LinkSpecRequest {
+  spec_change_name: string
+}
+
+export interface ListSprintsParams {
+  project?: string
+  status?: SprintStatus
+  include_archived?: boolean
+  limit?: number
+  offset?: number
+}
+
+export interface CreateSprintRequest {
+  project: string
+  name: string
+  goal?: string
+  starts_at?: string
+  ends_at?: string
+}
