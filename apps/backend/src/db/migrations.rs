@@ -53,6 +53,153 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v48(conn)?;
     run_v49(conn)?;
     run_v50(conn)?;
+    run_v51(conn)?;
+    run_v52(conn)?;
+    Ok(())
+}
+
+/// Migration v52: grants the new `task:*` permission strings to the seeded
+/// role templates per the team-tasks design's grant matrix (design.md §1.4):
+/// `tmpl_dev_junior` = read+write (create/edit tasks; assigning to others stays
+/// senior-gated); `tmpl_dev_senior` = read+write+assign+delete;
+/// `tmpl_security_officer`/`tmpl_auditor` = read only; `task:manage` is granted
+/// to no template (admin-only, via the existing privilege bypass). The
+/// mutation only appends missing permission strings to each template's
+/// `permissions` JSON array — pre-existing permissions are never touched —
+/// and is idempotent (checks membership via `json_each` before inserting).
+pub fn run_v52(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 52 {
+        return Ok(());
+    }
+
+    let grants: &[(&str, &[&str])] = &[
+        ("tmpl_dev_junior", &["task:read", "task:write"]),
+        ("tmpl_dev_senior", &["task:read", "task:write", "task:assign", "task:delete"]),
+        ("tmpl_security_officer", &["task:read"]),
+        ("tmpl_auditor", &["task:read"]),
+    ];
+
+    for (template_id, perms) in grants {
+        for perm in *perms {
+            conn.execute(
+                "UPDATE roles
+                 SET permissions = json_insert(permissions, '$[#]', ?1)
+                 WHERE id = ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM json_each(roles.permissions) WHERE value = ?1
+                   )",
+                rusqlite::params![perm, template_id],
+            )?;
+        }
+    }
+
+    conn.execute_batch("PRAGMA user_version = 52;")?;
+    Ok(())
+}
+
+/// Migration v51: creates the team-tasks data layer — 7 new tables
+/// (`sprints` first so `tasks.sprint_id` can reference it; SQLite resolves FK
+/// targets lazily so table order within the batch does not otherwise matter)
+/// plus their indexes. See design.md §1.2 for the authoritative column/FK/index
+/// list. Purely additive: no existing table is touched. `tasks.project` /
+/// `sprints.project` are project **name** strings (mirrors `sessions.project`),
+/// not a `project_id` FK, to preserve org-shared/unregistered-project reads via
+/// the existing `visibility_predicate` path.
+pub fn run_v51(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 51 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sprints (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            project TEXT NOT NULL,
+            name TEXT NOT NULL,
+            goal TEXT,
+            starts_at TEXT,
+            ends_at TEXT,
+            status TEXT NOT NULL DEFAULT 'planned',
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            archived_at TEXT,
+            UNIQUE(org_id, project, name)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sprints_org_project_status ON sprints(org_id, project, status);
+
+         CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            project TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'backlog',
+            priority TEXT NOT NULL DEFAULT 'medium',
+            due_date TEXT,
+            parent_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+            sprint_id TEXT REFERENCES sprints(id) ON DELETE SET NULL,
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            archived_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_tasks_org_project_status ON tasks(org_id, project, status);
+         CREATE INDEX IF NOT EXISTS idx_tasks_org_parent ON tasks(org_id, parent_id);
+         CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(sprint_id);
+
+         CREATE TABLE IF NOT EXISTS task_assignees (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            assigned_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(task_id, user_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_assignees_user ON task_assignees(user_id);
+
+         CREATE TABLE IF NOT EXISTS task_labels (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            label TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(task_id, label)
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_labels_label ON task_labels(label);
+
+         CREATE TABLE IF NOT EXISTS task_comments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, created_at);
+
+         CREATE TABLE IF NOT EXISTS task_spec_links (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            spec_change_name TEXT NOT NULL,
+            linked_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(task_id, spec_change_name)
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_spec_links_change ON task_spec_links(spec_change_name);
+
+         CREATE TABLE IF NOT EXISTS sprint_retrospectives (
+            id TEXT PRIMARY KEY,
+            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            went_well TEXT,
+            went_wrong TEXT,
+            action_items TEXT,
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_sprint_retros_sprint ON sprint_retrospectives(sprint_id, created_at);
+
+         PRAGMA user_version = 51;",
+    )?;
     Ok(())
 }
 
@@ -1893,7 +2040,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
@@ -2290,7 +2437,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
@@ -2299,7 +2446,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must remain 50 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2431,7 +2578,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2458,14 +2605,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
@@ -2583,7 +2730,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2602,14 +2749,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2686,14 +2833,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2776,7 +2923,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -2970,14 +3117,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
@@ -3014,14 +3161,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3060,14 +3207,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 50, "user_version must be 50 after run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -3192,7 +3339,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must remain 50 (run_all already applied v41-v50)");
+        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 (run_all already applied v41-v52)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -3203,8 +3350,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            50,
-            "user_version must be 50 after v41-v50 are included in run_all"
+            52,
+            "user_version must be 52 after v41-v52 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3296,7 +3443,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "version must remain 50 on second run_all");
+        assert_eq!(get_user_version(&conn), 52, "version must remain 52 on second run_all");
     }
 
     #[test]
@@ -3422,7 +3569,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 50, "user_version must reach 50 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 52, "user_version must reach 52 after the backfill migration");
     }
 
     #[test]
@@ -3431,6 +3578,305 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 50, "user_version must remain 50 on second run_all");
+        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 on second run_all");
+    }
+
+    // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
+
+    #[test]
+    fn run_all_creates_tasks_tables_on_fresh_db() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        for table in [
+            "tasks",
+            "task_assignees",
+            "task_labels",
+            "task_comments",
+            "task_spec_links",
+            "sprints",
+            "sprint_retrospectives",
+        ] {
+            assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
+        }
+        assert_eq!(get_user_version(&conn), 52, "user_version must reach 52 on a fresh db");
+    }
+
+    #[test]
+    fn run_v51_creates_task_tables_with_expected_columns() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for col in [
+            "id", "org_id", "project", "title", "description", "status", "priority", "due_date",
+            "parent_id", "sprint_id", "created_by", "created_at", "updated_at", "archived_at",
+        ] {
+            assert!(column_exists(&conn, "tasks", col), "tasks.{col} must exist");
+        }
+        for col in ["id", "task_id", "user_id", "assigned_by", "assigned_at"] {
+            assert!(column_exists(&conn, "task_assignees", col), "task_assignees.{col} must exist");
+        }
+        for col in ["id", "task_id", "label", "created_at"] {
+            assert!(column_exists(&conn, "task_labels", col), "task_labels.{col} must exist");
+        }
+        for col in ["id", "task_id", "user_id", "body", "created_at"] {
+            assert!(column_exists(&conn, "task_comments", col), "task_comments.{col} must exist");
+        }
+        for col in ["id", "task_id", "spec_change_name", "linked_by", "created_at"] {
+            assert!(column_exists(&conn, "task_spec_links", col), "task_spec_links.{col} must exist");
+        }
+        for col in [
+            "id", "org_id", "project", "name", "goal", "starts_at", "ends_at", "status",
+            "created_by", "created_at", "archived_at",
+        ] {
+            assert!(column_exists(&conn, "sprints", col), "sprints.{col} must exist");
+        }
+        for col in [
+            "id", "sprint_id", "org_id", "went_well", "went_wrong", "action_items", "created_by",
+            "created_at",
+        ] {
+            assert!(column_exists(&conn, "sprint_retrospectives", col), "sprint_retrospectives.{col} must exist");
+        }
+    }
+
+    #[test]
+    fn run_v51_creates_indexes() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(index_exists(&conn, "tasks", "idx_tasks_org_project_status"));
+        assert!(index_exists(&conn, "tasks", "idx_tasks_org_parent"));
+        assert!(index_exists(&conn, "tasks", "idx_tasks_sprint"));
+        assert!(index_exists(&conn, "task_assignees", "idx_task_assignees_user"));
+        assert!(index_exists(&conn, "task_labels", "idx_task_labels_label"));
+        assert!(index_exists(&conn, "task_comments", "idx_task_comments_task"));
+        assert!(index_exists(&conn, "task_spec_links", "idx_task_spec_links_change"));
+        assert!(index_exists(&conn, "sprints", "idx_sprints_org_project_status"));
+        assert!(index_exists(&conn, "sprint_retrospectives", "idx_sprint_retros_sprint"));
+    }
+
+    #[test]
+    fn run_v51_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let table_count_before: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))
+            .unwrap();
+        let index_count_before: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index'", [], |r| r.get(0))
+            .unwrap();
+
+        let result = run_all(&conn);
+        assert!(result.is_ok(), "run_all must be idempotent after v51/v52: {:?}", result.err());
+
+        let table_count_after: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))
+            .unwrap();
+        let index_count_after: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(table_count_before, table_count_after, "table count must not change on re-run");
+        assert_eq!(index_count_before, index_count_after, "index count must not change on re-run");
+    }
+
+    #[test]
+    fn run_v51_fk_cascade_and_unique_constraints() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme');
+             INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'u1@acme.com', 'U1', 'admin');
+             INSERT INTO users (id, org_id, email, name, role) VALUES ('u2', 'org1', 'u2@acme.com', 'U2', 'admin');
+             INSERT INTO sprints (id, org_id, project, name, created_by) VALUES ('sp1', 'org1', 'proj', 'Sprint 1', 'u1');
+             INSERT INTO tasks (id, org_id, project, title, created_by, sprint_id) VALUES ('t1', 'org1', 'proj', 'Task 1', 'u1', 'sp1');",
+        )
+        .unwrap();
+
+        // task_assignees cascades with task, UNIQUE(task_id, user_id) enforced.
+        conn.execute(
+            "INSERT INTO task_assignees (id, task_id, user_id, assigned_by) VALUES ('ta1', 't1', 'u2', 'u1')",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO task_assignees (id, task_id, user_id, assigned_by) VALUES ('ta2', 't1', 'u2', 'u1')",
+            [],
+        );
+        assert!(dup.is_err(), "UNIQUE(task_id, user_id) on task_assignees must be enforced");
+
+        // task_labels cascades with task, UNIQUE(task_id, label) enforced.
+        conn.execute("INSERT INTO task_labels (id, task_id, label) VALUES ('tl1', 't1', 'bug')", [])
+            .unwrap();
+        let dup_label = conn.execute("INSERT INTO task_labels (id, task_id, label) VALUES ('tl2', 't1', 'bug')", []);
+        assert!(dup_label.is_err(), "UNIQUE(task_id, label) on task_labels must be enforced");
+
+        // task_comments cascades with task.
+        conn.execute(
+            "INSERT INTO task_comments (id, task_id, user_id, body) VALUES ('tc1', 't1', 'u1', 'hello')",
+            [],
+        )
+        .unwrap();
+
+        // task_spec_links cascades with task, UNIQUE(task_id, spec_change_name) enforced.
+        conn.execute(
+            "INSERT INTO task_spec_links (id, task_id, spec_change_name, linked_by) VALUES ('tsl1', 't1', 'team-tasks', 'u1')",
+            [],
+        )
+        .unwrap();
+        let dup_link = conn.execute(
+            "INSERT INTO task_spec_links (id, task_id, spec_change_name, linked_by) VALUES ('tsl2', 't1', 'team-tasks', 'u1')",
+            [],
+        );
+        assert!(dup_link.is_err(), "UNIQUE(task_id, spec_change_name) on task_spec_links must be enforced");
+
+        // sprints UNIQUE(org_id, project, name) enforced.
+        let dup_sprint = conn.execute(
+            "INSERT INTO sprints (id, org_id, project, name, created_by) VALUES ('sp2', 'org1', 'proj', 'Sprint 1', 'u1')",
+            [],
+        );
+        assert!(dup_sprint.is_err(), "UNIQUE(org_id, project, name) on sprints must be enforced");
+
+        // sprint_retrospectives cascades with sprint.
+        conn.execute(
+            "INSERT INTO sprint_retrospectives (id, sprint_id, org_id, created_by) VALUES ('sr1', 'sp1', 'org1', 'u1')",
+            [],
+        )
+        .unwrap();
+
+        // Deleting the task cascades to assignees/labels/comments/spec_links.
+        conn.execute("DELETE FROM tasks WHERE id = 't1'", []).unwrap();
+        let remaining_assignees: i32 = conn
+            .query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        let remaining_labels: i32 = conn
+            .query_row("SELECT COUNT(*) FROM task_labels WHERE task_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        let remaining_comments: i32 = conn
+            .query_row("SELECT COUNT(*) FROM task_comments WHERE task_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        let remaining_links: i32 = conn
+            .query_row("SELECT COUNT(*) FROM task_spec_links WHERE task_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining_assignees, 0, "task_assignees must cascade-delete with task");
+        assert_eq!(remaining_labels, 0, "task_labels must cascade-delete with task");
+        assert_eq!(remaining_comments, 0, "task_comments must cascade-delete with task");
+        assert_eq!(remaining_links, 0, "task_spec_links must cascade-delete with task");
+
+        // Deleting the sprint cascades to retrospectives and SETs task.sprint_id NULL
+        // (re-create a task pointing at sp1 to verify the SET NULL path independently).
+        conn.execute(
+            "INSERT INTO tasks (id, org_id, project, title, created_by, sprint_id) VALUES ('t2', 'org1', 'proj', 'Task 2', 'u1', 'sp1')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM sprints WHERE id = 'sp1'", []).unwrap();
+        let remaining_retros: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sprint_retrospectives WHERE sprint_id = 'sp1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining_retros, 0, "sprint_retrospectives must cascade-delete with sprint");
+        let t2_sprint_id: Option<String> = conn
+            .query_row("SELECT sprint_id FROM tasks WHERE id = 't2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(t2_sprint_id, None, "tasks.sprint_id must be SET NULL when the sprint is deleted");
+    }
+
+    #[test]
+    fn run_v52_grants_task_perms() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        let perms_json = |template_id: &str| -> String {
+            conn.query_row("SELECT permissions FROM roles WHERE id = ?1", [template_id], |r| r.get(0))
+                .unwrap()
+        };
+        let has_perm = |json: &str, perm: &str| -> bool {
+            let arr: Vec<String> = serde_json::from_str(json).unwrap();
+            arr.iter().any(|p| p == perm)
+        };
+
+        let junior = perms_json("tmpl_dev_junior");
+        assert!(has_perm(&junior, "task:read"));
+        assert!(has_perm(&junior, "task:write"));
+        assert!(!has_perm(&junior, "task:assign"));
+        assert!(!has_perm(&junior, "task:delete"));
+        assert!(!has_perm(&junior, "task:manage"));
+
+        let senior = perms_json("tmpl_dev_senior");
+        assert!(has_perm(&senior, "task:read"));
+        assert!(has_perm(&senior, "task:write"));
+        assert!(has_perm(&senior, "task:assign"));
+        assert!(has_perm(&senior, "task:delete"));
+        assert!(!has_perm(&senior, "task:manage"));
+
+        let security_officer = perms_json("tmpl_security_officer");
+        assert!(has_perm(&security_officer, "task:read"));
+        assert!(!has_perm(&security_officer, "task:write"));
+
+        let auditor = perms_json("tmpl_auditor");
+        assert!(has_perm(&auditor, "task:read"));
+        assert!(!has_perm(&auditor, "task:write"));
+    }
+
+    #[test]
+    fn run_v52_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let before: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_dev_senior'", [], |r| r.get(0))
+            .unwrap();
+
+        run_all(&conn).unwrap();
+
+        let after: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_dev_senior'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after, "re-running run_all must not duplicate permission strings");
+        let arr: Vec<String> = serde_json::from_str(&after).unwrap();
+        let task_write_count = arr.iter().filter(|p| p.as_str() == "task:write").count();
+        assert_eq!(task_write_count, 1, "task:write must appear exactly once after re-run");
+    }
+
+    #[test]
+    fn run_v52_preserves_existing_permissions() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        let senior: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_dev_senior'", [], |r| r.get(0))
+            .unwrap();
+        let senior_arr: Vec<String> = serde_json::from_str(&senior).unwrap();
+        for pre_existing in ["memory:read", "memory:write", "memory:delete", "memory:search"] {
+            assert!(
+                senior_arr.iter().any(|p| p == pre_existing),
+                "tmpl_dev_senior must retain pre-existing permission {pre_existing}"
+            );
+        }
+
+        let junior: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_dev_junior'", [], |r| r.get(0))
+            .unwrap();
+        let junior_arr: Vec<String> = serde_json::from_str(&junior).unwrap();
+        for pre_existing in ["memory:read", "memory:search"] {
+            assert!(
+                junior_arr.iter().any(|p| p == pre_existing),
+                "tmpl_dev_junior must retain pre-existing permission {pre_existing}"
+            );
+        }
+
+        let auditor: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_auditor'", [], |r| r.get(0))
+            .unwrap();
+        let auditor_arr: Vec<String> = serde_json::from_str(&auditor).unwrap();
+        assert!(auditor_arr.iter().any(|p| p == "audit:read"), "tmpl_auditor must retain pre-existing audit:read");
+
+        let security_officer: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = 'tmpl_security_officer'", [], |r| r.get(0))
+            .unwrap();
+        let so_arr: Vec<String> = serde_json::from_str(&security_officer).unwrap();
+        for pre_existing in ["audit:read", "settings:write"] {
+            assert!(
+                so_arr.iter().any(|p| p == pre_existing),
+                "tmpl_security_officer must retain pre-existing permission {pre_existing}"
+            );
+        }
     }
 }
