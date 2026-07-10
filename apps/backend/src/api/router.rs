@@ -10,7 +10,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, backup, code, context, conventions, github_auth, harnesses, health,
-    internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, users, webhooks,
+    internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, tasks, users,
+    webhooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -218,6 +219,61 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/harness-config-reviews/:id/comments",
             get(harnesses::list_config_review_comments)
                 .post(harnesses::create_config_review_comment),
+        )
+        .route(
+            "/v1/tasks/resolve-by-spec",
+            post(tasks::resolve_by_spec_handler),
+        )
+        .route(
+            "/v1/tasks",
+            get(tasks::list_tasks_handler).post(tasks::create_task_handler),
+        )
+        .route(
+            "/v1/tasks/:id",
+            get(tasks::get_task_handler)
+                .patch(tasks::patch_task_handler)
+                .delete(tasks::delete_task_handler),
+        )
+        .route("/v1/tasks/:id/subtasks", get(tasks::list_subtasks_handler))
+        .route("/v1/tasks/:id/assignees", post(tasks::assign_task_handler))
+        .route(
+            "/v1/tasks/:id/assignees/:user_id",
+            delete(tasks::unassign_task_handler),
+        )
+        .route("/v1/tasks/:id/labels", post(tasks::add_task_label_handler))
+        .route(
+            "/v1/tasks/:id/labels/:label",
+            delete(tasks::remove_task_label_handler),
+        )
+        .route(
+            "/v1/tasks/:id/comments",
+            get(tasks::list_task_comments_handler).post(tasks::add_task_comment_handler),
+        )
+        .route(
+            "/v1/tasks/:id/comments/:comment_id",
+            delete(tasks::delete_task_comment_handler),
+        )
+        .route(
+            "/v1/tasks/:id/spec-links",
+            get(tasks::list_task_spec_links_handler).post(tasks::link_task_spec_handler),
+        )
+        .route(
+            "/v1/tasks/:id/spec-links/:name",
+            delete(tasks::unlink_task_spec_handler),
+        )
+        .route(
+            "/v1/sprints",
+            get(tasks::list_sprints_handler).post(tasks::create_sprint_handler),
+        )
+        .route(
+            "/v1/sprints/:id",
+            get(tasks::get_sprint_handler)
+                .patch(tasks::patch_sprint_handler)
+                .delete(tasks::delete_sprint_handler),
+        )
+        .route(
+            "/v1/sprints/:id/retrospectives",
+            get(tasks::list_retrospectives_handler).post(tasks::create_retrospective_handler),
         )
         .route("/v1/context", get(context::get_global_context))
         .route("/v1/context/type/:type", get(context::get_type_context))

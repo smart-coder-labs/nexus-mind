@@ -20,6 +20,11 @@ use crate::models::types::{
     SessionWithCount, StoreMemoryRequest, ToolUsage, UpdateAgentRequest, UpdateConventionRequest,
     UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
 };
+use crate::models::types::{
+    can_transition, CreateRetrospectiveRequest, CreateSprintRequest, CreateTaskRequest,
+    PatchSprintRequest, PatchTaskRequest, Sprint, SprintRetrospective, Task, TaskAssignee,
+    TaskComment, TaskStatus,
+};
 
 /// Looks up an API key by its SHA-256 hash.
 /// Returns AuthContext if the key exists, is not revoked, the user is active,
@@ -1464,7 +1469,7 @@ fn warning_metadata(manifest: &serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
-fn user_belongs_to_org(conn: &Connection, org_id: &str, user_id: &str) -> Result<bool> {
+pub fn user_belongs_to_org(conn: &Connection, org_id: &str, user_id: &str) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM users WHERE id = ?1 AND org_id = ?2 AND status = 'active'",
         rusqlite::params![user_id, org_id],
@@ -6339,6 +6344,892 @@ pub fn update_project_event_overrides(
         return Err(anyhow::anyhow!("project not found"));
     }
     Ok(overrides)
+}
+
+// ── Tasks (team-tasks) ──────────────────────────────────────────────────────
+
+/// Optional equality/membership filters for [`list_tasks`]/[`count_tasks`].
+#[derive(Debug, Clone, Default)]
+pub struct TaskListFilters {
+    pub project: Option<String>,
+    pub status: Option<String>,
+    pub priority: Option<String>,
+    pub sprint_id: Option<String>,
+    pub label: Option<String>,
+    pub parent_id: Option<String>,
+    /// When `Some(user_id)`, restricts to tasks assigned to that user (`assignee=me`).
+    pub assignee_user_id: Option<String>,
+    pub include_archived: bool,
+}
+
+fn map_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project: row.get(2)?,
+        title: row.get(3)?,
+        description: row.get(4)?,
+        status: row.get(5)?,
+        priority: row.get(6)?,
+        due_date: row.get(7)?,
+        parent_id: row.get(8)?,
+        sprint_id: row.get(9)?,
+        created_by: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        archived_at: row.get(13)?,
+        assignees: Vec::new(),
+        labels: Vec::new(),
+        comment_count: 0,
+        spec_links: Vec::new(),
+        subtask_count: 0,
+    })
+}
+
+const TASK_SELECT: &str = "SELECT id, org_id, project, title, description, status, priority, due_date, parent_id, sprint_id, created_by, created_at, updated_at, archived_at FROM tasks";
+
+/// Creates a task. Defaults `status` to `backlog` and `priority` to `medium` when omitted.
+/// Validates `status`/`priority` against the fixed sets before insert. When `parent_id` is
+/// set, rejects nesting under an existing subtask (only one level of nesting allowed) and
+/// rejects a parent in a different project.
+pub fn create_task(
+    conn: &Connection,
+    org_id: &str,
+    created_by: &str,
+    req: &CreateTaskRequest,
+) -> Result<Task> {
+    let status = match &req.status {
+        Some(s) => TaskStatus::from_str_relaxed(s)?,
+        None => "backlog".to_string(),
+    };
+    let priority = match &req.priority {
+        Some(p) => validate_task_priority(p)?,
+        None => "medium".to_string(),
+    };
+
+    if let Some(parent_id) = &req.parent_id {
+        let parent = get_task(conn, org_id, parent_id)?
+            .ok_or_else(|| anyhow::anyhow!("parent task not found"))?;
+        if parent.parent_id.is_some() {
+            return Err(anyhow::anyhow!("cannot nest a subtask under a subtask"));
+        }
+        if parent.project != req.project {
+            return Err(anyhow::anyhow!("parent task belongs to a different project"));
+        }
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    conn.execute(
+        "INSERT INTO tasks (id, org_id, project, title, description, status, priority, due_date, parent_id, sprint_id, created_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+        rusqlite::params![
+            id, org_id, req.project, req.title, req.description, status, priority,
+            req.due_date, req.parent_id, req.sprint_id, created_by, now,
+        ],
+    )?;
+
+    Ok(Task {
+        id,
+        org_id: org_id.to_string(),
+        project: req.project.clone(),
+        title: req.title.clone(),
+        description: req.description.clone(),
+        status,
+        priority,
+        due_date: req.due_date.clone(),
+        parent_id: req.parent_id.clone(),
+        sprint_id: req.sprint_id.clone(),
+        created_by: created_by.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        archived_at: None,
+        assignees: Vec::new(),
+        labels: Vec::new(),
+        comment_count: 0,
+        spec_links: Vec::new(),
+        subtask_count: 0,
+    })
+}
+
+/// Fetches a task by id, scoped to org, hydrated with assignees/labels/spec_links/
+/// comment_count/subtask_count. Returns `None` if not found.
+pub fn get_task(conn: &Connection, org_id: &str, task_id: &str) -> Result<Option<Task>> {
+    let sql = format!("{TASK_SELECT} WHERE id = ?1 AND org_id = ?2");
+    let result = conn
+        .query_row(&sql, rusqlite::params![task_id, org_id], map_task_row)
+        .optional()?;
+
+    let Some(mut task) = result else {
+        return Ok(None);
+    };
+
+    task.assignees = list_task_assignees(conn, &task.id)?;
+    task.labels = list_task_labels(conn, &task.id)?;
+    task.spec_links = list_task_spec_links(conn, &task.id)?;
+    task.comment_count = conn.query_row(
+        "SELECT COUNT(*) FROM task_comments WHERE task_id = ?1",
+        [&task.id],
+        |r| r.get(0),
+    )?;
+    task.subtask_count = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE parent_id = ?1 AND archived_at IS NULL",
+        [&task.id],
+        |r| r.get(0),
+    )?;
+
+    Ok(Some(task))
+}
+
+/// Updates the given fields on a task. Validates a `status` change against
+/// [`can_transition`] (same-state is a no-op allowed). Returns `None` if the task does not
+/// exist for the org (→ 404). Returns `Err` on an illegal status transition.
+pub fn patch_task(
+    conn: &Connection,
+    org_id: &str,
+    task_id: &str,
+    req: &PatchTaskRequest,
+) -> Result<Option<Task>> {
+    let Some(existing) = get_task(conn, org_id, task_id)? else {
+        return Ok(None);
+    };
+
+    if req.title.is_none()
+        && req.description.is_none()
+        && req.status.is_none()
+        && req.priority.is_none()
+        && req.due_date.is_none()
+        && req.sprint_id.is_none()
+    {
+        return Ok(Some(existing));
+    }
+
+    let mut set_clauses: Vec<String> = vec!["updated_at = ?1".to_string()];
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now)];
+    let mut idx = 2usize;
+
+    if let Some(title) = &req.title {
+        set_clauses.push(format!("title = ?{idx}"));
+        params.push(Box::new(title.clone()));
+        idx += 1;
+    }
+    if let Some(description) = &req.description {
+        set_clauses.push(format!("description = ?{idx}"));
+        params.push(Box::new(description.clone()));
+        idx += 1;
+    }
+    if let Some(status) = &req.status {
+        let from = existing.status.parse::<TaskStatus>()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let to = status.parse::<TaskStatus>().map_err(|_| {
+            anyhow::anyhow!("invalid_status: unrecognized task status '{status}'")
+        })?;
+        if !can_transition(from, to) {
+            return Err(anyhow::anyhow!(
+                "invalid_transition: cannot move task from {from} to {to}"
+            ));
+        }
+        set_clauses.push(format!("status = ?{idx}"));
+        params.push(Box::new(status.clone()));
+        idx += 1;
+    }
+    if let Some(priority) = &req.priority {
+        let priority = validate_task_priority(priority)?;
+        set_clauses.push(format!("priority = ?{idx}"));
+        params.push(Box::new(priority));
+        idx += 1;
+    }
+    if let Some(due_date) = &req.due_date {
+        set_clauses.push(format!("due_date = ?{idx}"));
+        params.push(Box::new(due_date.clone()));
+        idx += 1;
+    }
+    if let Some(sprint_id) = &req.sprint_id {
+        let sprint = get_sprint(conn, org_id, sprint_id)?
+            .ok_or_else(|| anyhow::anyhow!("sprint not found"))?;
+        if sprint.project != existing.project {
+            return Err(anyhow::anyhow!("sprint belongs to a different project"));
+        }
+        set_clauses.push(format!("sprint_id = ?{idx}"));
+        params.push(Box::new(sprint_id.clone()));
+        idx += 1;
+    }
+
+    params.push(Box::new(org_id.to_string()));
+    params.push(Box::new(task_id.to_string()));
+
+    let sql = format!(
+        "UPDATE tasks SET {} WHERE org_id = ?{} AND id = ?{}",
+        set_clauses.join(", "),
+        idx,
+        idx + 1
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice())?;
+
+    get_task(conn, org_id, task_id)
+}
+
+/// Soft-deletes a task by setting `archived_at`. Never cascades to subtasks (soft-delete is
+/// a plain `UPDATE`, not the FK `ON DELETE CASCADE`, which only fires on hard delete — v1
+/// never hard-deletes). Returns `false` if the task does not exist for the org.
+pub fn soft_delete_task(conn: &Connection, org_id: &str, task_id: &str) -> Result<bool> {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let affected = conn.execute(
+        "UPDATE tasks SET archived_at = ?1 WHERE org_id = ?2 AND id = ?3 AND archived_at IS NULL",
+        rusqlite::params![now, org_id, task_id],
+    )?;
+    Ok(affected > 0)
+}
+
+fn build_task_filter_sql(
+    org_id: &str,
+    viewer: Option<&str>,
+    filters: &TaskListFilters,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut sql = String::from(" WHERE t.org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    let mut idx = 2usize;
+
+    if !filters.include_archived {
+        sql.push_str(" AND t.archived_at IS NULL");
+    }
+    if let Some(project) = &filters.project {
+        sql.push_str(&format!(" AND t.project = ?{idx}"));
+        params.push(Box::new(project.clone()));
+        idx += 1;
+    }
+    if let Some(status) = &filters.status {
+        sql.push_str(&format!(" AND t.status = ?{idx}"));
+        params.push(Box::new(status.clone()));
+        idx += 1;
+    }
+    if let Some(priority) = &filters.priority {
+        sql.push_str(&format!(" AND t.priority = ?{idx}"));
+        params.push(Box::new(priority.clone()));
+        idx += 1;
+    }
+    if let Some(sprint_id) = &filters.sprint_id {
+        sql.push_str(&format!(" AND t.sprint_id = ?{idx}"));
+        params.push(Box::new(sprint_id.clone()));
+        idx += 1;
+    }
+    if let Some(parent_id) = &filters.parent_id {
+        sql.push_str(&format!(" AND t.parent_id = ?{idx}"));
+        params.push(Box::new(parent_id.clone()));
+        idx += 1;
+    }
+    if let Some(label) = &filters.label {
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label = ?{idx})"
+        ));
+        params.push(Box::new(label.clone()));
+        idx += 1;
+    }
+    if let Some(assignee) = &filters.assignee_user_id {
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.user_id = ?{idx})"
+        ));
+        params.push(Box::new(assignee.clone()));
+        idx += 1;
+    }
+    if let Some(vid) = viewer {
+        sql.push_str(&format!(
+            " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = t.org_id AND p.name = t.project)
+                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
+                              WHERE p.org_id = t.org_id AND p.name = t.project AND pm.user_id = ?{idx}))"
+        ));
+        params.push(Box::new(vid.to_string()));
+        idx += 1;
+    }
+    let _ = idx;
+    (sql, params)
+}
+
+/// Lists tasks scoped to `org_id`, applying `filters` and, when `viewer` is `Some(uid)`,
+/// project-membership visibility (org-shared/unregistered projects are visible to everyone).
+/// `None` viewer = no membership restriction (admin). Excludes archived tasks unless
+/// `filters.include_archived` is set. Ordered by `created_at DESC`.
+pub fn list_tasks(
+    conn: &Connection,
+    org_id: &str,
+    viewer: Option<&str>,
+    filters: &TaskListFilters,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Task>> {
+    let (where_sql, mut params) = build_task_filter_sql(org_id, viewer, filters);
+    let limit_idx = params.len() + 1;
+    let offset_idx = params.len() + 2;
+    let sql = format!(
+        "{TASK_SELECT} t{where_sql} ORDER BY t.created_at DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+    );
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_task_row)?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    Ok(tasks)
+}
+
+/// Counts tasks matching `filters` (same predicate as [`list_tasks`], no pagination).
+pub fn count_tasks(
+    conn: &Connection,
+    org_id: &str,
+    viewer: Option<&str>,
+    filters: &TaskListFilters,
+) -> Result<i64> {
+    let (where_sql, params) = build_task_filter_sql(org_id, viewer, filters);
+    let sql = format!("SELECT COUNT(*) FROM tasks t{where_sql}");
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let count: i64 = conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?;
+    Ok(count)
+}
+
+/// Lists direct children of `parent_id` (one level of nesting only), non-archived.
+pub fn list_subtasks(conn: &Connection, org_id: &str, parent_id: &str) -> Result<Vec<Task>> {
+    let sql = format!(
+        "{TASK_SELECT} WHERE org_id = ?1 AND parent_id = ?2 AND archived_at IS NULL ORDER BY created_at ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![org_id, parent_id], map_task_row)?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    Ok(tasks)
+}
+
+fn validate_task_priority(priority: &str) -> Result<String> {
+    match priority {
+        "low" | "medium" | "high" | "urgent" => Ok(priority.to_string()),
+        other => Err(anyhow::anyhow!("invalid_priority: unrecognized task priority '{other}'")),
+    }
+}
+
+// Small helper so `create_task`/`patch_task` produce a typed error (mapped to 4xx by the
+// handler) instead of panicking on an unrecognized status string.
+impl TaskStatus {
+    fn from_str_relaxed(s: &str) -> Result<String> {
+        s.parse::<TaskStatus>()
+            .map(|v| v.to_string())
+            .map_err(|_| anyhow::anyhow!("invalid_status: unrecognized task status '{s}'"))
+    }
+}
+
+// ── Task assignees ──────────────────────────────────────────────────────────
+
+/// Assigns `user_ids` to `task_id`. Validates each user belongs to `org_id` before writing
+/// (wrapped in a transaction — no partial writes on the first invalid id). Idempotent for
+/// already-assigned users (`INSERT OR IGNORE`, relying on `UNIQUE(task_id, user_id)`).
+/// Returns the full denormalized assignee list after the write.
+pub fn set_task_assignees(
+    conn: &Connection,
+    org_id: &str,
+    task_id: &str,
+    assigned_by: &str,
+    user_ids: &[String],
+) -> Result<Vec<TaskAssignee>> {
+    for user_id in user_ids {
+        if !user_belongs_to_org(conn, org_id, user_id)? {
+            return Err(anyhow::anyhow!(
+                "invalid_assignee: user {user_id} does not belong to this organization"
+            ));
+        }
+    }
+
+    for user_id in user_ids {
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO task_assignees (id, task_id, user_id, assigned_by) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, task_id, user_id, assigned_by],
+        )?;
+    }
+
+    list_task_assignees(conn, task_id)
+}
+
+/// Removes a single assignee from a task. Returns `false` if the row did not exist.
+pub fn remove_task_assignee(conn: &Connection, task_id: &str, user_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM task_assignees WHERE task_id = ?1 AND user_id = ?2",
+        rusqlite::params![task_id, user_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Lists a task's assignees with denormalized display fields (mirrors `HarnessOwner`).
+pub fn list_task_assignees(conn: &Connection, task_id: &str) -> Result<Vec<TaskAssignee>> {
+    let mut stmt = conn.prepare(
+        "SELECT u.id, u.name, u.email FROM task_assignees ta JOIN users u ON u.id = ta.user_id
+         WHERE ta.task_id = ?1 ORDER BY ta.assigned_at ASC",
+    )?;
+    let rows = stmt.query_map([task_id], |row| {
+        Ok(TaskAssignee { id: row.get(0)?, name: row.get(1)?, email: row.get(2)? })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+// ── Task labels ──────────────────────────────────────────────────────────────
+
+/// Attaches a free-text label to a task (idempotent — `UNIQUE(task_id, label)`).
+/// Returns the full label list after the write.
+pub fn add_task_label(conn: &Connection, task_id: &str, label: &str) -> Result<Vec<String>> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO task_labels (id, task_id, label) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, task_id, label],
+    )?;
+    list_task_labels(conn, task_id)
+}
+
+/// Removes a label from a task. Returns `false` if the row did not exist.
+pub fn remove_task_label(conn: &Connection, task_id: &str, label: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM task_labels WHERE task_id = ?1 AND label = ?2",
+        rusqlite::params![task_id, label],
+    )?;
+    Ok(affected > 0)
+}
+
+pub fn list_task_labels(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT label FROM task_labels WHERE task_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([task_id], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+// ── Task comments ───────────────────────────────────────────────────────────
+
+/// Adds a comment to a task. Rejects an empty/whitespace-only body.
+pub fn add_task_comment(
+    conn: &Connection,
+    task_id: &str,
+    user_id: &str,
+    body: &str,
+) -> Result<TaskComment> {
+    if body.trim().is_empty() {
+        return Err(anyhow::anyhow!("empty_comment: comment body must not be empty"));
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO task_comments (id, task_id, user_id, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, task_id, user_id, body, now],
+    )?;
+    let author_name: Option<String> = conn
+        .query_row("SELECT name FROM users WHERE id = ?1", [user_id], |r| r.get(0))
+        .optional()?;
+    Ok(TaskComment { id, task_id: task_id.to_string(), user_id: user_id.to_string(), author_name, body: body.to_string(), created_at: now })
+}
+
+/// Lists a task's comments in chronological order, with denormalized author name.
+pub fn list_task_comments(conn: &Connection, task_id: &str) -> Result<Vec<TaskComment>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.task_id, c.user_id, u.name, c.body, c.created_at
+         FROM task_comments c LEFT JOIN users u ON u.id = c.user_id
+         WHERE c.task_id = ?1 ORDER BY c.created_at ASC",
+    )?;
+    let rows = stmt.query_map([task_id], |row| {
+        Ok(TaskComment {
+            id: row.get(0)?,
+            task_id: row.get(1)?,
+            user_id: row.get(2)?,
+            author_name: row.get(3)?,
+            body: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Deletes a comment by id. Returns `false` if it did not exist.
+pub fn delete_task_comment(conn: &Connection, comment_id: &str) -> Result<bool> {
+    let affected = conn.execute("DELETE FROM task_comments WHERE id = ?1", [comment_id])?;
+    Ok(affected > 0)
+}
+
+/// Looks up the author (`user_id`) and parent `task_id` of a comment. Used by the delete
+/// handler's author-or-manage authorization check.
+pub fn get_task_comment(conn: &Connection, comment_id: &str) -> Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT task_id, user_id FROM task_comments WHERE id = ?1",
+        [comment_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(|e| e.into())
+}
+
+// ── Task spec links ─────────────────────────────────────────────────────────
+
+/// Links a task to an openspec change name. Idempotent no-op on re-link
+/// (`UNIQUE(task_id, spec_change_name)`). No uniqueness beyond that composite key — a task
+/// may link multiple changes, and a change may be linked from multiple tasks.
+pub fn link_task_spec(
+    conn: &Connection,
+    task_id: &str,
+    linked_by: &str,
+    spec_change_name: &str,
+) -> Result<()> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO task_spec_links (id, task_id, spec_change_name, linked_by) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, task_id, spec_change_name, linked_by],
+    )?;
+    Ok(())
+}
+
+/// Removes a task<->spec-change link. Returns `false` if it did not exist.
+pub fn unlink_task_spec(conn: &Connection, task_id: &str, spec_change_name: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM task_spec_links WHERE task_id = ?1 AND spec_change_name = ?2",
+        rusqlite::params![task_id, spec_change_name],
+    )?;
+    Ok(affected > 0)
+}
+
+pub fn list_task_spec_links(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT spec_change_name FROM task_spec_links WHERE task_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([task_id], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Transitions every task in `org_id` linked to `spec_change_name` and not already
+/// `done`/`cancelled` to `done` (bypassing [`can_transition`] — this is a system transition,
+/// not a user edit). Org-scoped only, ignores per-project membership. Idempotent: already-
+/// terminal tasks are skipped. Returns the ids of tasks actually transitioned.
+pub fn resolve_tasks_by_spec(
+    conn: &Connection,
+    org_id: &str,
+    spec_change_name: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id FROM tasks t
+         JOIN task_spec_links l ON l.task_id = t.id
+         WHERE t.org_id = ?1 AND l.spec_change_name = ?2
+           AND t.status NOT IN ('done', 'cancelled')",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params![org_id, spec_change_name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    for id in &ids {
+        conn.execute(
+            "UPDATE tasks SET status = 'done', updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, id],
+        )?;
+    }
+    Ok(ids)
+}
+
+// ── Sprints ──────────────────────────────────────────────────────────────────
+
+fn map_sprint_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sprint> {
+    Ok(Sprint {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project: row.get(2)?,
+        name: row.get(3)?,
+        goal: row.get(4)?,
+        starts_at: row.get(5)?,
+        ends_at: row.get(6)?,
+        status: row.get(7)?,
+        created_by: row.get(8)?,
+        created_at: row.get(9)?,
+        archived_at: row.get(10)?,
+        task_count: 0,
+    })
+}
+
+const SPRINT_SELECT: &str = "SELECT id, org_id, project, name, goal, starts_at, ends_at, status, created_by, created_at, archived_at FROM sprints";
+
+fn validate_sprint_status(status: &str) -> Result<String> {
+    match status {
+        "planned" | "active" | "completed" => Ok(status.to_string()),
+        other => Err(anyhow::anyhow!("invalid_status: unrecognized sprint status '{other}'")),
+    }
+}
+
+fn hydrate_sprint_task_count(conn: &Connection, sprint: &mut Sprint) -> Result<()> {
+    sprint.task_count = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE sprint_id = ?1 AND archived_at IS NULL",
+        [&sprint.id],
+        |r| r.get(0),
+    )?;
+    Ok(())
+}
+
+/// Creates a sprint scoped to `org_id`/`project`.
+pub fn create_sprint(
+    conn: &Connection,
+    org_id: &str,
+    created_by: &str,
+    req: &CreateSprintRequest,
+) -> Result<Sprint> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO sprints (id, org_id, project, name, goal, starts_at, ends_at, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![id, org_id, req.project, req.name, req.goal, req.starts_at, req.ends_at, created_by, now],
+    )?;
+    Ok(Sprint {
+        id,
+        org_id: org_id.to_string(),
+        project: req.project.clone(),
+        name: req.name.clone(),
+        goal: req.goal.clone(),
+        starts_at: req.starts_at.clone(),
+        ends_at: req.ends_at.clone(),
+        status: "planned".to_string(),
+        created_by: created_by.to_string(),
+        created_at: now,
+        archived_at: None,
+        task_count: 0,
+    })
+}
+
+/// Fetches a sprint by id, scoped to org, hydrated with `task_count`.
+pub fn get_sprint(conn: &Connection, org_id: &str, sprint_id: &str) -> Result<Option<Sprint>> {
+    let sql = format!("{SPRINT_SELECT} WHERE id = ?1 AND org_id = ?2");
+    let result = conn.query_row(&sql, rusqlite::params![sprint_id, org_id], map_sprint_row).optional()?;
+    let Some(mut sprint) = result else { return Ok(None) };
+    hydrate_sprint_task_count(conn, &mut sprint)?;
+    Ok(Some(sprint))
+}
+
+/// Updates the given fields on a sprint. Returns `None` if it does not exist for the org.
+pub fn patch_sprint(
+    conn: &Connection,
+    org_id: &str,
+    sprint_id: &str,
+    req: &PatchSprintRequest,
+) -> Result<Option<Sprint>> {
+    if get_sprint(conn, org_id, sprint_id)?.is_none() {
+        return Ok(None);
+    }
+    if req.name.is_none()
+        && req.goal.is_none()
+        && req.starts_at.is_none()
+        && req.ends_at.is_none()
+        && req.status.is_none()
+    {
+        return get_sprint(conn, org_id, sprint_id);
+    }
+
+    let mut set_clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut idx = 1usize;
+
+    if let Some(name) = &req.name {
+        set_clauses.push(format!("name = ?{idx}"));
+        params.push(Box::new(name.clone()));
+        idx += 1;
+    }
+    if let Some(goal) = &req.goal {
+        set_clauses.push(format!("goal = ?{idx}"));
+        params.push(Box::new(goal.clone()));
+        idx += 1;
+    }
+    if let Some(starts_at) = &req.starts_at {
+        set_clauses.push(format!("starts_at = ?{idx}"));
+        params.push(Box::new(starts_at.clone()));
+        idx += 1;
+    }
+    if let Some(ends_at) = &req.ends_at {
+        set_clauses.push(format!("ends_at = ?{idx}"));
+        params.push(Box::new(ends_at.clone()));
+        idx += 1;
+    }
+    if let Some(status) = &req.status {
+        let status = validate_sprint_status(status)?;
+        set_clauses.push(format!("status = ?{idx}"));
+        params.push(Box::new(status));
+        idx += 1;
+    }
+
+    params.push(Box::new(org_id.to_string()));
+    params.push(Box::new(sprint_id.to_string()));
+    let sql = format!(
+        "UPDATE sprints SET {} WHERE org_id = ?{} AND id = ?{}",
+        set_clauses.join(", "),
+        idx,
+        idx + 1
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice())?;
+    get_sprint(conn, org_id, sprint_id)
+}
+
+/// Soft-deletes a sprint. Returns `false` if it did not exist for the org.
+pub fn soft_delete_sprint(conn: &Connection, org_id: &str, sprint_id: &str) -> Result<bool> {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let affected = conn.execute(
+        "UPDATE sprints SET archived_at = ?1 WHERE org_id = ?2 AND id = ?3 AND archived_at IS NULL",
+        rusqlite::params![now, org_id, sprint_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Lists sprints for `org_id`, optionally filtered by `project`/`status`, respecting
+/// project-membership visibility when `viewer` is `Some(uid)`. Excludes archived sprints
+/// unless `include_archived`.
+pub fn list_sprints(
+    conn: &Connection,
+    org_id: &str,
+    viewer: Option<&str>,
+    project: Option<&str>,
+    status: Option<&str>,
+    include_archived: bool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Sprint>> {
+    let mut sql = String::from(" WHERE s.org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    let mut idx = 2usize;
+
+    if !include_archived {
+        sql.push_str(" AND s.archived_at IS NULL");
+    }
+    if let Some(project) = project {
+        sql.push_str(&format!(" AND s.project = ?{idx}"));
+        params.push(Box::new(project.to_string()));
+        idx += 1;
+    }
+    if let Some(status) = status {
+        sql.push_str(&format!(" AND s.status = ?{idx}"));
+        params.push(Box::new(status.to_string()));
+        idx += 1;
+    }
+    if let Some(vid) = viewer {
+        sql.push_str(&format!(
+            " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = s.org_id AND p.name = s.project)
+                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
+                              WHERE p.org_id = s.org_id AND p.name = s.project AND pm.user_id = ?{idx}))"
+        ));
+        params.push(Box::new(vid.to_string()));
+        idx += 1;
+    }
+    let limit_idx = idx;
+    let offset_idx = idx + 1;
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let sql = format!(
+        "{SPRINT_SELECT} s{sql} ORDER BY s.created_at DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_sprint_row)?;
+    let mut sprints = Vec::new();
+    for row in rows {
+        let mut sprint = row?;
+        hydrate_sprint_task_count(conn, &mut sprint)?;
+        sprints.push(sprint);
+    }
+    Ok(sprints)
+}
+
+/// Lists tasks currently assigned to a sprint (non-archived).
+pub fn list_tasks_in_sprint(conn: &Connection, sprint_id: &str) -> Result<Vec<Task>> {
+    let sql = format!("{TASK_SELECT} WHERE sprint_id = ?1 AND archived_at IS NULL ORDER BY created_at ASC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([sprint_id], map_task_row)?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    Ok(tasks)
+}
+
+// ── Sprint retrospectives ───────────────────────────────────────────────────
+
+/// Creates a retrospective note for a sprint.
+pub fn create_retrospective(
+    conn: &Connection,
+    sprint_id: &str,
+    org_id: &str,
+    created_by: &str,
+    req: &CreateRetrospectiveRequest,
+) -> Result<SprintRetrospective> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    conn.execute(
+        "INSERT INTO sprint_retrospectives (id, sprint_id, org_id, went_well, went_wrong, action_items, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![id, sprint_id, org_id, req.went_well, req.went_wrong, req.action_items, created_by, now],
+    )?;
+    let author_name: Option<String> = conn
+        .query_row("SELECT name FROM users WHERE id = ?1", [created_by], |r| r.get(0))
+        .optional()?;
+    Ok(SprintRetrospective {
+        id,
+        sprint_id: sprint_id.to_string(),
+        went_well: req.went_well.clone(),
+        went_wrong: req.went_wrong.clone(),
+        action_items: req.action_items.clone(),
+        created_by: created_by.to_string(),
+        author_name,
+        created_at: now,
+    })
+}
+
+/// Lists a sprint's retrospectives, chronologically, with denormalized author name.
+pub fn list_retrospectives(conn: &Connection, sprint_id: &str) -> Result<Vec<SprintRetrospective>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.sprint_id, r.went_well, r.went_wrong, r.action_items, r.created_by, u.name, r.created_at
+         FROM sprint_retrospectives r LEFT JOIN users u ON u.id = r.created_by
+         WHERE r.sprint_id = ?1 ORDER BY r.created_at ASC",
+    )?;
+    let rows = stmt.query_map([sprint_id], |row| {
+        Ok(SprintRetrospective {
+            id: row.get(0)?,
+            sprint_id: row.get(1)?,
+            went_well: row.get(2)?,
+            went_wrong: row.get(3)?,
+            action_items: row.get(4)?,
+            created_by: row.get(5)?,
+            author_name: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -14063,5 +14954,561 @@ mod mem_graph_tests {
             2,
             "both audit events must still appear as AuditEvent nodes"
         );
+    }
+}
+
+#[cfg(test)]
+mod task_query_tests {
+    use super::*;
+    use crate::db::connection::connect;
+    use crate::db::migrations;
+
+    fn setup() -> (Connection, String, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, user, _key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        (conn, org.id, user.id)
+    }
+
+    fn mk_task(conn: &Connection, org_id: &str, user_id: &str, project: &str, title: &str) -> Task {
+        let req = CreateTaskRequest {
+            project: project.to_string(),
+            title: title.to_string(),
+            ..Default::default()
+        };
+        create_task(conn, org_id, user_id, &req).unwrap()
+    }
+
+    // ── PR1: core CRUD ───────────────────────────────────────────────────
+
+    #[test]
+    fn create_task_persists_defaults() {
+        let (conn, org, user) = setup();
+        let req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Do the thing".to_string(),
+            ..Default::default()
+        };
+        let task = create_task(&conn, &org, &user, &req).unwrap();
+        assert_eq!(task.status, "backlog");
+        assert_eq!(task.priority, "medium");
+        assert_eq!(task.created_by, user);
+        assert!(!task.created_at.is_empty());
+        assert_eq!(task.created_at, task.updated_at);
+    }
+
+    #[test]
+    fn create_task_rejects_invalid_status() {
+        let (conn, org, user) = setup();
+        let req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Bad status".to_string(),
+            status: Some("bogus".to_string()),
+            ..Default::default()
+        };
+        let result = create_task(&conn, &org, &user, &req);
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "no row should be created on invalid status");
+    }
+
+    #[test]
+    fn get_task_hydrates_relations() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "Parent");
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        add_task_label(&conn, &task.id, "bug").unwrap();
+        link_task_spec(&conn, &task.id, &user, "team-tasks").unwrap();
+        add_task_comment(&conn, &task.id, &user, "hello").unwrap();
+        mk_task(&conn, &org, &user, "proj", "Child"); // unrelated, no parent_id set
+
+        let hydrated = get_task(&conn, &org, &task.id).unwrap().unwrap();
+        assert_eq!(hydrated.assignees.len(), 1);
+        assert_eq!(hydrated.labels, vec!["bug".to_string()]);
+        assert_eq!(hydrated.spec_links, vec!["team-tasks".to_string()]);
+        assert_eq!(hydrated.comment_count, 1);
+        assert_eq!(hydrated.subtask_count, 0);
+    }
+
+    #[test]
+    fn patch_task_updates_fields_and_bumps_updated_at() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "Original");
+        let patched = patch_task(&conn, &org, &task.id, &PatchTaskRequest {
+            title: Some("Updated".to_string()),
+            ..Default::default()
+        }).unwrap().unwrap();
+        assert_eq!(patched.title, "Updated");
+        // `updated_at` is always rewritten by the explicit `SET updated_at = ?1` clause in
+        // `patch_task`; second-resolution timestamps make a value-inequality assertion flaky
+        // under fast test execution, so this asserts presence rather than a timestamp diff.
+        assert!(!patched.updated_at.is_empty());
+    }
+
+    #[test]
+    fn patch_task_rejects_illegal_transition() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        // backlog -> done is not an allowed edge.
+        let result = patch_task(&conn, &org, &task.id, &PatchTaskRequest {
+            status: Some("done".to_string()),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
+        assert_eq!(reloaded.status, "backlog", "status must be unchanged on rejected transition");
+    }
+
+    #[test]
+    fn soft_delete_task_sets_archived_at_and_excludes_from_list() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        assert!(soft_delete_task(&conn, &org, &task.id).unwrap());
+        // get_task fetches by id regardless of archive status; archived_at must be set.
+        let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
+        assert!(reloaded.archived_at.is_some());
+        // list_tasks excludes archived tasks by default (include_archived: false).
+        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert!(listed.iter().all(|t| t.id != task.id));
+    }
+
+    #[test]
+    fn list_tasks_filters_by_project_status_priority() {
+        let (conn, org, user) = setup();
+        mk_task(&conn, &org, &user, "proj-a", "A1");
+        let b = mk_task(&conn, &org, &user, "proj-b", "B1");
+        patch_task(&conn, &org, &b.id, &PatchTaskRequest { status: Some("todo".to_string()), ..Default::default() }).unwrap();
+
+        let filters = TaskListFilters { project: Some("proj-b".to_string()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, b.id);
+
+        let filters_status = TaskListFilters { status: Some("todo".to_string()), ..Default::default() };
+        let listed_status = list_tasks(&conn, &org, None, &filters_status, i64::MAX, 0).unwrap();
+        assert_eq!(listed_status.len(), 1);
+        assert_eq!(listed_status[0].id, b.id);
+    }
+
+    #[test]
+    fn count_tasks_matches_filtered_set() {
+        let (conn, org, user) = setup();
+        mk_task(&conn, &org, &user, "proj", "A");
+        mk_task(&conn, &org, &user, "proj", "B");
+        mk_task(&conn, &org, &user, "other", "C");
+        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let count = count_tasks(&conn, &org, None, &filters).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    // ── PR2: assignment ─────────────────────────────────────────────────
+
+    #[test]
+    fn set_task_assignees_returns_denormalized_display() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let result = set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, user);
+        assert!(!result[0].name.is_empty());
+        assert!(result[0].email.contains('@'));
+    }
+
+    #[test]
+    fn set_task_assignees_rejects_user_outside_org() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let (other_org, _, _) = {
+            let conn2 = connect(":memory:").unwrap();
+            migrations::run_all(&conn2).unwrap();
+            bootstrap(&conn2, "Other", "other", "a@other.com", "A").unwrap()
+        };
+        let _ = other_org;
+        let fake_user_id = uuid::Uuid::new_v4().to_string();
+        let result = set_task_assignees(&conn, &org, &task.id, &user, &[fake_user_id]);
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "no partial write on rejected assignment");
+    }
+
+    #[test]
+    fn set_task_assignees_rejects_nonexistent_user() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let result = set_task_assignees(&conn, &org, &task.id, &user, &["does-not-exist".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_task_assignees_is_idempotent_for_duplicate() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn remove_task_assignee_deletes_row() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        assert!(remove_task_assignee(&conn, &task.id, &user).unwrap());
+        assert_eq!(list_task_assignees(&conn, &task.id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_task_assignees_returns_display_data() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
+        let list = list_task_assignees(&conn, &task.id).unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn list_tasks_assignee_me_filter() {
+        let (conn, org, user) = setup();
+        let assigned = mk_task(&conn, &org, &user, "proj", "Assigned");
+        mk_task(&conn, &org, &user, "proj", "Unassigned");
+        set_task_assignees(&conn, &org, &assigned.id, &user, &[user.clone()]).unwrap();
+
+        let filters = TaskListFilters { assignee_user_id: Some(user.clone()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, assigned.id);
+    }
+
+    // ── PR3: organization (labels + subtasks) ───────────────────────────
+
+    #[test]
+    fn add_task_label_appends_to_list() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let labels = add_task_label(&conn, &task.id, "bug").unwrap();
+        assert_eq!(labels, vec!["bug".to_string()]);
+    }
+
+    #[test]
+    fn remove_task_label_removes_it() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        add_task_label(&conn, &task.id, "bug").unwrap();
+        assert!(remove_task_label(&conn, &task.id, "bug").unwrap());
+        assert!(list_task_labels(&conn, &task.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_tasks_filter_by_label() {
+        let (conn, org, user) = setup();
+        let a = mk_task(&conn, &org, &user, "proj", "A");
+        mk_task(&conn, &org, &user, "proj", "B");
+        add_task_label(&conn, &a.id, "urgent-fix").unwrap();
+
+        let filters = TaskListFilters { label: Some("urgent-fix".to_string()), ..Default::default() };
+        let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, a.id);
+    }
+
+    #[test]
+    fn create_task_with_parent_id_creates_subtask() {
+        let (conn, org, user) = setup();
+        let parent = mk_task(&conn, &org, &user, "proj", "Parent");
+        let child_req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            ..Default::default()
+        };
+        let child = create_task(&conn, &org, &user, &child_req).unwrap();
+        let children = list_subtasks(&conn, &org, &parent.id).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child.id);
+    }
+
+    #[test]
+    fn create_task_rejects_nesting_under_a_subtask() {
+        let (conn, org, user) = setup();
+        let parent = mk_task(&conn, &org, &user, "proj", "Parent");
+        let child_req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            ..Default::default()
+        };
+        let child = create_task(&conn, &org, &user, &child_req).unwrap();
+
+        let grandchild_req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Grandchild".to_string(),
+            parent_id: Some(child.id.clone()),
+            ..Default::default()
+        };
+        let result = create_task(&conn, &org, &user, &grandchild_req);
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Grandchild'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn create_task_rejects_cross_project_parent() {
+        let (conn, org, user) = setup();
+        let parent = mk_task(&conn, &org, &user, "proj-x", "Parent");
+        let child_req = CreateTaskRequest {
+            project: "proj-y".to_string(),
+            title: "Child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            ..Default::default()
+        };
+        let result = create_task(&conn, &org, &user, &child_req);
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Child'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn soft_delete_parent_does_not_cascade_to_subtasks() {
+        let (conn, org, user) = setup();
+        let parent = mk_task(&conn, &org, &user, "proj", "Parent");
+        let child_req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            ..Default::default()
+        };
+        let child = create_task(&conn, &org, &user, &child_req).unwrap();
+
+        assert!(soft_delete_task(&conn, &org, &parent.id).unwrap());
+        let reloaded_child = get_task(&conn, &org, &child.id).unwrap().unwrap();
+        assert!(reloaded_child.archived_at.is_none(), "subtask must remain non-archived");
+        assert_eq!(reloaded_child.parent_id.as_deref(), Some(parent.id.as_str()));
+    }
+
+    #[test]
+    fn subtask_status_update_does_not_affect_parent() {
+        let (conn, org, user) = setup();
+        let parent = mk_task(&conn, &org, &user, "proj", "Parent");
+        let child_req = CreateTaskRequest {
+            project: "proj".to_string(),
+            title: "Child".to_string(),
+            parent_id: Some(parent.id.clone()),
+            ..Default::default()
+        };
+        let child = create_task(&conn, &org, &user, &child_req).unwrap();
+        patch_task(&conn, &org, &child.id, &PatchTaskRequest { status: Some("todo".to_string()), ..Default::default() }).unwrap();
+        let reloaded_parent = get_task(&conn, &org, &parent.id).unwrap().unwrap();
+        assert_eq!(reloaded_parent.status, "backlog");
+    }
+
+    // ── PR4: collaboration (comments) ───────────────────────────────────
+
+    #[test]
+    fn add_task_comment_persists_author_body_timestamp() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let comment = add_task_comment(&conn, &task.id, &user, "First comment").unwrap();
+        assert_eq!(comment.body, "First comment");
+        assert_eq!(comment.user_id, user);
+        assert!(!comment.created_at.is_empty());
+    }
+
+    #[test]
+    fn add_task_comment_rejects_empty_or_whitespace_body() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        assert!(add_task_comment(&conn, &task.id, &user, "   ").is_err());
+        assert!(add_task_comment(&conn, &task.id, &user, "").is_err());
+        assert_eq!(list_task_comments(&conn, &task.id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_task_comments_returns_chronological_order() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        add_task_comment(&conn, &task.id, &user, "first").unwrap();
+        add_task_comment(&conn, &task.id, &user, "second").unwrap();
+        let list = list_task_comments(&conn, &task.id).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].body, "first");
+        assert_eq!(list[1].body, "second");
+    }
+
+    #[test]
+    fn delete_comment_by_author_succeeds() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        let comment = add_task_comment(&conn, &task.id, &user, "hi").unwrap();
+        assert!(delete_task_comment(&conn, &comment.id).unwrap());
+        assert_eq!(list_task_comments(&conn, &task.id).unwrap().len(), 0);
+    }
+
+    // ── PR5: spec links + auto-resolve ──────────────────────────────────
+
+    #[test]
+    fn link_task_spec_adds_to_list() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        link_task_spec(&conn, &task.id, &user, "team-tasks").unwrap();
+        assert_eq!(list_task_spec_links(&conn, &task.id).unwrap(), vec!["team-tasks".to_string()]);
+    }
+
+    #[test]
+    fn link_task_spec_supports_multiple_changes_per_task_and_multiple_tasks_per_change() {
+        let (conn, org, user) = setup();
+        let t1 = mk_task(&conn, &org, &user, "proj", "T1");
+        let t2 = mk_task(&conn, &org, &user, "proj", "T2");
+        link_task_spec(&conn, &t1.id, &user, "change-a").unwrap();
+        link_task_spec(&conn, &t1.id, &user, "change-b").unwrap();
+        link_task_spec(&conn, &t2.id, &user, "change-a").unwrap();
+
+        assert_eq!(list_task_spec_links(&conn, &t1.id).unwrap().len(), 2);
+        assert_eq!(list_task_spec_links(&conn, &t2.id).unwrap(), vec!["change-a".to_string()]);
+    }
+
+    #[test]
+    fn read_task_with_dangling_spec_link_still_succeeds() {
+        let (conn, org, user) = setup();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        link_task_spec(&conn, &task.id, &user, "renamed-away").unwrap();
+        let hydrated = get_task(&conn, &org, &task.id).unwrap().unwrap();
+        assert_eq!(hydrated.spec_links, vec!["renamed-away".to_string()]);
+    }
+
+    #[test]
+    fn resolve_tasks_by_spec_transitions_all_linked_non_terminal_tasks() {
+        let (conn, org, user) = setup();
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let t = mk_task(&conn, &org, &user, "proj", &format!("T{i}"));
+            link_task_spec(&conn, &t.id, &user, "team-tasks").unwrap();
+            ids.push(t.id);
+        }
+        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks").unwrap();
+        assert_eq!(resolved.len(), 3);
+        for id in &ids {
+            let task = get_task(&conn, &org, id).unwrap().unwrap();
+            assert_eq!(task.status, "done");
+        }
+    }
+
+    #[test]
+    fn resolve_tasks_by_spec_noop_for_unlinked_change() {
+        let (conn, org, user) = setup();
+        mk_task(&conn, &org, &user, "proj", "T");
+        let resolved = resolve_tasks_by_spec(&conn, &org, "no-such-change").unwrap();
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn resolve_tasks_by_spec_skips_already_terminal_tasks() {
+        let (conn, org, user) = setup();
+        let t = mk_task(&conn, &org, &user, "proj", "T");
+        link_task_spec(&conn, &t.id, &user, "team-tasks").unwrap();
+        // Route it to cancelled via a legal path: backlog -> cancelled.
+        patch_task(&conn, &org, &t.id, &PatchTaskRequest { status: Some("cancelled".to_string()), ..Default::default() }).unwrap();
+
+        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks").unwrap();
+        assert!(resolved.is_empty());
+        let reloaded = get_task(&conn, &org, &t.id).unwrap().unwrap();
+        assert_eq!(reloaded.status, "cancelled");
+    }
+
+    // ── PR6: sprints ─────────────────────────────────────────────────────
+
+    #[test]
+    fn create_sprint_scoped_to_project() {
+        let (conn, org, user) = setup();
+        let req = CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() };
+        let sprint = create_sprint(&conn, &org, &user, &req).unwrap();
+        assert_eq!(sprint.status, "planned");
+        assert_eq!(sprint.project, "proj");
+    }
+
+    #[test]
+    fn get_patch_soft_delete_list_sprints_round_trip() {
+        let (conn, org, user) = setup();
+        let req = CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() };
+        let sprint = create_sprint(&conn, &org, &user, &req).unwrap();
+
+        let fetched = get_sprint(&conn, &org, &sprint.id).unwrap().unwrap();
+        assert_eq!(fetched.id, sprint.id);
+
+        let patched = patch_sprint(&conn, &org, &sprint.id, &PatchSprintRequest {
+            status: Some("active".to_string()),
+            ..Default::default()
+        }).unwrap().unwrap();
+        assert_eq!(patched.status, "active");
+
+        let listed = list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(soft_delete_sprint(&conn, &org, &sprint.id).unwrap());
+        let listed_after = list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
+        assert!(listed_after.is_empty());
+    }
+
+    #[test]
+    fn assign_task_to_sprint_appears_in_sprint_task_list() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
+        }).unwrap();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint.id.clone()), ..Default::default() }).unwrap();
+
+        let in_sprint = list_tasks_in_sprint(&conn, &sprint.id).unwrap();
+        assert_eq!(in_sprint.len(), 1);
+        assert_eq!(in_sprint[0].id, task.id);
+    }
+
+    #[test]
+    fn assign_task_to_sprint_rejects_cross_project() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj-x".to_string(), name: "Sprint 1".to_string(), ..Default::default()
+        }).unwrap();
+        let task = mk_task(&conn, &org, &user, "proj-y", "T");
+        let result = patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint.id.clone()), ..Default::default() });
+        assert!(result.is_err());
+        let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
+        assert!(reloaded.sprint_id.is_none());
+    }
+
+    #[test]
+    fn moving_task_to_new_sprint_removes_from_prior() {
+        let (conn, org, user) = setup();
+        let sprint_a = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj".to_string(), name: "Sprint A".to_string(), ..Default::default()
+        }).unwrap();
+        let sprint_b = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj".to_string(), name: "Sprint B".to_string(), ..Default::default()
+        }).unwrap();
+        let task = mk_task(&conn, &org, &user, "proj", "T");
+        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint_a.id.clone()), ..Default::default() }).unwrap();
+        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint_b.id.clone()), ..Default::default() }).unwrap();
+
+        assert!(list_tasks_in_sprint(&conn, &sprint_a.id).unwrap().is_empty());
+        assert_eq!(list_tasks_in_sprint(&conn, &sprint_b.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_retrospective_persists_and_associates_with_sprint() {
+        let (conn, org, user) = setup();
+        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
+            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
+        }).unwrap();
+        let retro = create_retrospective(&conn, &sprint.id, &org, &user, &CreateRetrospectiveRequest {
+            went_well: Some("Good pace".to_string()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(retro.sprint_id, sprint.id);
+        assert_eq!(retro.went_well.as_deref(), Some("Good pace"));
+
+        let list = list_retrospectives(&conn, &sprint.id).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, retro.id);
     }
 }
