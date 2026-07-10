@@ -61,10 +61,15 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
   const [editForm, setEditForm] = useState<TaskEditFormState>(() => formStateFromTask(t))
 
+  // Seed the edit form only when the task identity changes (opening a different
+  // task), NOT on every fullTask refetch — otherwise adding a label/assignee mid-edit
+  // would refetch and silently clobber in-progress Title/Description edits. The
+  // editable fields (title/desc/status/priority/due) are already present on the list
+  // item, so seeding from `task` needs no hydration.
   useEffect(() => {
-    setEditForm(formStateFromTask(t))
+    setEditForm(formStateFromTask(task))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullTask])
+  }, [task.id])
 
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
