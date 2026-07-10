@@ -47,9 +47,19 @@ const subtasks: Task[] = [
 
 const specLinks = ['team-tasks']
 
+// A hydrated version of the task as returned by GET /v1/tasks/:id — this is
+// what list_tasks does NOT include (assignees/labels are empty on the list).
+const hydratedTask: Task = {
+  ...task,
+  assignees: [{ id: 'user-1', name: 'Sarah Chen', email: 'sarah@acme.test' }],
+  labels: ['bug'],
+}
+
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const {
+  getTaskMock,
+  updateTaskMock,
   listUsersMock,
   assignTaskMock,
   unassignTaskMock,
@@ -63,6 +73,8 @@ const {
   linkTaskSpecMock,
   unlinkTaskSpecMock,
 } = vi.hoisted(() => ({
+  getTaskMock: vi.fn(),
+  updateTaskMock: vi.fn(),
   listUsersMock: vi.fn(),
   assignTaskMock: vi.fn(),
   unassignTaskMock: vi.fn(),
@@ -79,6 +91,8 @@ const {
 
 vi.mock('../../api/client', () => ({
   createClient: vi.fn(() => ({
+    getTask: getTaskMock,
+    updateTask: updateTaskMock,
     listUsers: listUsersMock,
     assignTask: assignTaskMock,
     unassignTask: unassignTaskMock,
@@ -128,6 +142,8 @@ function renderAsMember(ui: ReactElement, permissions: string[]): ReturnType<typ
 
 beforeEach(() => {
   vi.clearAllMocks()
+  getTaskMock.mockResolvedValue(hydratedTask)
+  updateTaskMock.mockResolvedValue(hydratedTask)
   listUsersMock.mockResolvedValue(users)
   assignTaskMock.mockResolvedValue([{ id: 'user-2', name: 'Raj Patel', email: 'raj@acme.test' }])
   unassignTaskMock.mockResolvedValue(undefined)
@@ -330,21 +346,40 @@ describe('TaskDetail — spec links', () => {
 })
 
 describe('TaskDetail — assignee editing', () => {
-  it('calls assignTask when selecting a new assignee', async () => {
+  it('calls assignTask when selecting a user and clicking Add', async () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
     await waitFor(() => {
       expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
     })
 
-    const assigneeSelect = screen.getByRole('button', { name: /assignee/i })
+    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
     fireEvent.click(assigneeSelect)
     const rajOption = await screen.findByRole('option', { name: /raj patel/i })
     fireEvent.click(rajOption)
 
+    const addButton = screen.getByRole('button', { name: /^add assignee$/i })
+    expect(addButton).not.toBeDisabled()
+    fireEvent.click(addButton)
+
     await waitFor(() => {
       expect(assignTaskMock).toHaveBeenCalledWith('t1', ['user-2'])
     })
+  })
+
+  it('does not assign immediately on select — only after clicking Add', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
+    })
+
+    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
+    fireEvent.click(assigneeSelect)
+    const rajOption = await screen.findByRole('option', { name: /raj patel/i })
+    fireEvent.click(rajOption)
+
+    expect(assignTaskMock).not.toHaveBeenCalled()
   })
 
   it('calls unassignTask when removing an existing assignee', async () => {
@@ -368,7 +403,91 @@ describe('TaskDetail — assignee editing', () => {
       expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
     })
 
-    expect(screen.queryByRole('button', { name: /assignee/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^assignee$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /unassign sarah chen/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('TaskDetail — hydrated task via getTask', () => {
+  it('fetches the full task via getTask and renders assignees/labels from it, not the list item', async () => {
+    const listItem: Task = { ...task, assignees: [], labels: [] }
+    renderWithProviders(<TaskDetail task={listItem} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(getTaskMock).toHaveBeenCalledWith('t1')
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
+    })
+    expect(screen.getByText('bug')).toBeInTheDocument()
+  })
+
+  it('does not crash when getTask has not resolved yet and the list item has no assignees/labels', async () => {
+    getTaskMock.mockImplementation(() => new Promise(() => undefined))
+    const listItem: Task = { ...task, assignees: [], labels: [] }
+    renderWithProviders(<TaskDetail task={listItem} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Unassigned')).toBeInTheDocument()
+    })
+  })
+
+  it('re-renders assignees after assigning because the getTask query is invalidated', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(getTaskMock).toHaveBeenCalledTimes(1)
+    })
+
+    const assigneeSelect = screen.getByRole('button', { name: /^assignee$/i })
+    fireEvent.click(assigneeSelect)
+    const rajOption = await screen.findByRole('option', { name: /raj patel/i })
+    fireEvent.click(rajOption)
+    fireEvent.click(screen.getByRole('button', { name: /^add assignee$/i }))
+
+    await waitFor(() => {
+      expect(assignTaskMock).toHaveBeenCalledWith('t1', ['user-2'])
+    })
+
+    await waitFor(() => {
+      expect(getTaskMock).toHaveBeenCalledTimes(2)
+    })
+  })
+})
+
+describe('TaskDetail — editable fields form', () => {
+  it('initializes the form from the hydrated task and calls updateTask on Save', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(getTaskMock).toHaveBeenCalledWith('t1')
+    })
+
+    const titleInput = await screen.findByLabelText(/^title$/i)
+    expect(titleInput).toHaveValue('Fix login redirect bug')
+
+    fireEvent.change(titleInput, { target: { value: 'Fix login redirect bug — updated' } })
+
+    const saveButton = screen.getByRole('button', { name: /^save$/i })
+    fireEvent.click(saveButton)
+
+    await waitFor(() => {
+      expect(updateTaskMock).toHaveBeenCalledWith(
+        't1',
+        expect.objectContaining({ title: 'Fix login redirect bug — updated' }),
+      )
+    })
+  })
+
+  it('hides the editable form without task:write and shows read-only fields instead', async () => {
+    renderAsMember(<TaskDetail task={task} onClose={() => undefined} />, ['task:read'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByLabelText(/^title$/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument()
   })
 })

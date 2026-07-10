@@ -16,8 +16,8 @@ import type { Task, TaskStatus, TaskPriority } from '../types'
 
 type TasksView = 'list' | 'board'
 
-const STATUS_OPTIONS: TaskStatus[] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']
-const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
+export const STATUS_OPTIONS: TaskStatus[] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']
+export const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
 
 export const STATUS_BADGE_VARIANT: Record<TaskStatus, 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info'> = {
   backlog: 'default',
@@ -70,9 +70,6 @@ export default function Tasks() {
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<TaskFormState>(EMPTY_FORM)
 
-  const [editingTask, setEditingTask] = useState<Task | null>(null)
-  const [editForm, setEditForm] = useState<TaskFormState>(EMPTY_FORM)
-
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [view, setView] = useState<TasksView>('list')
 
@@ -112,24 +109,6 @@ export default function Tasks() {
     },
   })
 
-  const updateMut = useMutation({
-    mutationFn: () => {
-      if (!editingTask) return Promise.reject(new Error('no task selected'))
-      return client.updateTask(editingTask.id, {
-        title: editForm.title,
-        description: editForm.description || undefined,
-        status: editForm.status,
-        priority: editForm.priority,
-        due_date: editForm.due_date || undefined,
-      })
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tasks'] })
-      if (editingTask) qc.invalidateQueries({ queryKey: ['task', editingTask.id] })
-      setEditingTask(null)
-    },
-  })
-
   const deleteMut = useMutation({
     mutationFn: (id: string) => client.deleteTask(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
@@ -139,23 +118,6 @@ export default function Tasks() {
     e.preventDefault()
     if (!createForm.title.trim()) return
     createMut.mutate()
-  }
-
-  const handleEditSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    updateMut.mutate()
-  }
-
-  const openEdit = (task: Task) => {
-    setEditingTask(task)
-    setEditForm({
-      title: task.title,
-      description: task.description ?? '',
-      project: task.project,
-      status: task.status,
-      priority: task.priority,
-      due_date: task.due_date ?? '',
-    })
   }
 
   const handleDelete = (task: Task) => {
@@ -288,7 +250,7 @@ export default function Tasks() {
                     <div className="flex items-center gap-2">
                       {canWrite && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); openEdit(task) }}
+                          onClick={(e) => { e.stopPropagation(); setDetailTask(task) }}
                           aria-label={`Edit ${task.title}`}
                           title="Edit"
                           className="text-text-quaternary hover:text-accent-blue transition-colors"
@@ -415,97 +377,6 @@ export default function Tasks() {
             </div>
           </form>
         </div>
-      </Modal>
-
-      {/* Edit Task Modal */}
-      <Modal open={!!editingTask} onOpenChange={(open) => { if (!open) setEditingTask(null) }}>
-        <ModalCloseButton />
-        {editingTask && (
-          <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
-            <h2 className="text-xs font-semibold text-text-primary mb-1">Edit Task</h2>
-            <p className="text-[10px] text-text-quaternary mb-4">{editingTask.title}</p>
-            <form onSubmit={handleEditSubmit} className="space-y-4 text-xs">
-              <div className="space-y-1">
-                <label htmlFor="edit-task-title" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Title</label>
-                <input
-                  id="edit-task-title"
-                  type="text"
-                  value={editForm.title}
-                  onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="edit-task-description" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Description</label>
-                <textarea
-                  id="edit-task-description"
-                  value={editForm.description}
-                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex-1 space-y-1">
-                  <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Status</label>
-                  <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v as TaskStatus }))}>
-                    <SelectTrigger className="h-8 text-xs" aria-label="Status">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {STATUS_OPTIONS.map(s => (
-                        <SelectItem key={s} value={s}>{s}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex-1 space-y-1">
-                  <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Priority</label>
-                  <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v as TaskPriority }))}>
-                    <SelectTrigger className="h-8 text-xs" aria-label="Priority">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PRIORITY_OPTIONS.map(p => (
-                        <SelectItem key={p} value={p}>{p}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="edit-task-due-date" className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">Due date</label>
-                <input
-                  id="edit-task-due-date"
-                  type="date"
-                  value={editForm.due_date}
-                  onChange={e => setEditForm(f => ({ ...f, due_date: e.target.value }))}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingTask(null)}
-                  className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={updateMut.isPending}
-                  className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-                >
-                  {updateMut.isPending ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
       </Modal>
 
       {/* Task Detail Modal */}
