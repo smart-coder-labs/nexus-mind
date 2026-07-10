@@ -7123,6 +7123,7 @@ pub fn soft_delete_sprint(conn: &Connection, org_id: &str, sprint_id: &str) -> R
 /// Lists sprints for `org_id`, optionally filtered by `project`/`status`, respecting
 /// project-membership visibility when `viewer` is `Some(uid)`. Excludes archived sprints
 /// unless `include_archived`.
+#[allow(clippy::too_many_arguments)]
 pub fn list_sprints(
     conn: &Connection,
     org_id: &str,
