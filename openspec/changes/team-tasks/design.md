@@ -138,7 +138,7 @@ Index: `idx_sprint_retros_sprint ON sprint_retrospectives(sprint_id, created_at)
 
 ### 1.3 Table count
 
-**8 new tables**: `tasks`, `task_assignees`, `task_labels`, `task_comments`, `task_spec_links`, `sprints`, `sprint_retrospectives` (+ the `roles` table is modified by v52, not created).
+**7 new tables**: `tasks`, `task_assignees`, `task_labels`, `task_comments`, `task_spec_links`, `sprints`, `sprint_retrospectives` (+ the `roles` table is modified by v52, not created).
 
 ### 1.4 `run_v52` — permission grants
 
@@ -148,12 +148,12 @@ Grant matrix (locked):
 
 | Template | task:read | task:write | task:assign | task:delete | task:manage |
 |----------|:---:|:---:|:---:|:---:|:---:|
-| `tmpl_dev_junior` | ✅ | — | — | — | — |
+| `tmpl_dev_junior` | ✅ | ✅ | — | — | — |
 | `tmpl_dev_senior` | ✅ | ✅ | ✅ | ✅ | — |
 | `tmpl_security_officer` | ✅ | — | — | — | — |
 | `tmpl_auditor` | ✅ | — | — | — | — |
 
-Reconciled with the brief's "read+write→all dev templates, assign→senior/lead, delete+manage→senior/admin". There is no `lead` template in migration v5 (`tmpl_dev_senior`, `tmpl_dev_junior`, `tmpl_security_officer`, `tmpl_auditor`), so **senior gets assign+delete**; **`task:manage` is granted to no template** and is therefore admin-only (admins bypass `require_permission` entirely via `is_privileged()`). This is the conservative reading the risk table asks for. **HUMAN SANITY-CHECK**: confirm junior should be read-only (not read+write) — the brief says "read+write→all dev templates" but the risk table says grant conservatively; design chose junior=read-only. See §11 open risk R1.
+Reconciled with the brief's "read+write→all dev templates, assign→senior/lead, delete+manage→senior/admin". There is no `lead` template in migration v5 (`tmpl_dev_senior`, `tmpl_dev_junior`, `tmpl_security_officer`, `tmpl_auditor`), so **senior gets assign+delete**; **`task:manage` is granted to no template** and is therefore admin-only (admins bypass `require_permission` entirely via `is_privileged()`). **R1 RESOLVED**: junior gets `task:read`+`task:write` (juniors create/edit tasks; assigning to others stays senior-gated via `task:assign`), per the brief's "read+write→all dev templates". See §11 R1.
 
 ---
 
@@ -404,7 +404,7 @@ returns { resolved: [ids...] }  →  tool prints "Resolved N task(s) linked to <
 
 ## 9. Migration / versioning / backward-compat
 
-- **Versions**: `run_v51` (8 tables + indexes, `PRAGMA user_version = 51`), `run_v52` (grant `task:*` to templates, `PRAGMA user_version = 52`). Appended to `run_all()` in order after v50. Each gets `run_vNN_creates_*`, `run_vNN_is_idempotent`, and (v51) FK/cascade + UNIQUE tests; (v52) `grants_task_perms` + `is_idempotent` + `preserves_existing_permissions`.
+- **Versions**: `run_v51` (7 tables + indexes, `PRAGMA user_version = 51`), `run_v52` (grant `task:*` to templates, `PRAGMA user_version = 52`). Appended to `run_all()` in order after v50. Each gets `run_vNN_creates_*`, `run_vNN_is_idempotent`, and (v51) FK/cascade + UNIQUE tests; (v52) `grants_task_perms` + `is_idempotent` + `preserves_existing_permissions`.
 - **Backward-compat**: purely additive. No existing table altered except `roles.permissions` JSON (append-only per template; existing perms preserved and asserted). Existing rows unaffected. Rollback leaves the tables inert (guarded forward-only migrations); reverting v52 removes `task:*` from templates and safely denies task access (admins still bypass). MCP/hook/UI are removable without backend impact (unregister tools / drop route / drop nav item).
 - **Idempotency**: v52 JSON mutation must be self-idempotent (check membership before `json_insert`) so a re-run after a `user_version` reset does not duplicate permission strings — tested.
 
@@ -416,7 +416,7 @@ Ordered, chained, each targeting < ~400 lines where feasible; every impl task is
 
 | PR | Slice | Capability | Contents | Depends on | Est. lines |
 |----|-------|-----------|----------|-----------|-----------|
-| 1 | **core-migration+model** | team-tasks-core | `run_v51` (all 8 tables + indexes) + `run_v52` grants + migration tests + `TaskStatus` enum + transition matrix + `Task`/DTO structs | — | ~350 |
+| 1 | **core-migration+model** | team-tasks-core | `run_v51` (all 7 tables + indexes) + `run_v52` grants + migration tests + `TaskStatus` enum + transition matrix + `Task`/DTO structs | — | ~350 |
 | 2 | **core-api** | team-tasks-core | `queries` create/get/patch/soft-delete/list/count_tasks + `tasks.rs` handlers 1–5 + routes + sessions-style test suite (CRUD + 401/403/404 + visibility) | PR1 | ~400 |
 | 3 | **assignment** | team-tasks-assignment | assignee queries + handlers 7–8 + `assignee=me` list filter + org-membership validation + tests | PR2 | ~300 |
 | 4 | **organization** | team-tasks-organization | labels (9–10) + subtasks (6, `parent_id` create + list) + label/parent list filters + tests | PR2 | ~300 |
@@ -442,7 +442,7 @@ Ordered, chained, each targeting < ~400 lines where feasible; every impl task is
 - **`create_sprint_retrospective` repurposed to a real route** (see §5.3) rather than adding a parallel `record_sprint_retrospective` tool — avoids the duplication risk called out in the proposal.
 
 **Open risks needing human sanity-check:**
-- **R1 — junior permission scope.** Design granted `tmpl_dev_junior` = `task:read` only. Brief text said "read+write→all dev templates"; risk table said grant conservatively. Confirm juniors should be read-only, or bump junior to include `task:write`.
+- **R1 — junior permission scope. RESOLVED (PR0):** `tmpl_dev_junior` = `task:read`+`task:write` — juniors create/edit tasks; assigning to others stays senior-gated via `task:assign`. Implemented in `run_v52`.
 - **R2 — repurposing `create_sprint_retrospective`** changes an existing tool's args/behavior. Confirm no external prompt/automation relies on its old memory-aggregation output. If it does, keep the old tool and add `create_sprint_retro` for the persisted one.
 - **R3 — no `lead` template exists** in migration v5, so "assign→senior/lead" collapses to senior-only. If a lead template is expected, it must be seeded first (out of this change's scope).
 - **R4 — resolve-by-spec is `task:write`-gated** and org-scoped; the sdd-verify/archive skill must run under a key that holds `task:write` in the relevant project. If skills run under a low-privilege key, auto-resolve silently no-ops (403). Confirm the skill's execution identity.

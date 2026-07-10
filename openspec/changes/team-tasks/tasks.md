@@ -9,7 +9,7 @@
 >
 > Locked decisions restated here for acceptance criteria:
 > - Status set: `backlog` / `todo` / `in_progress` / `in_review` / `done` / `cancelled` (fixed, no custom statuses).
-> - Permissions: `task:read`, `task:write`, `task:assign`, `task:delete`, `task:manage`. Grant matrix (run_v52): `tmpl_dev_junior` = read only; `tmpl_dev_senior` = read+write+assign+delete; `tmpl_security_officer`/`tmpl_auditor` = read only; `task:manage` granted to no template (admin-only via privilege bypass).
+> - Permissions: `task:read`, `task:write`, `task:assign`, `task:delete`, `task:manage`. Grant matrix (run_v52): `tmpl_dev_junior` = read+write (create/edit; assigning to others stays senior-gated); `tmpl_dev_senior` = read+write+assign+delete; `tmpl_security_officer`/`tmpl_auditor` = read only; `task:manage` granted to no template (admin-only via privilege bypass).
 > - `spec_change_exists` filesystem validation for spec-links is **ADVISORY**: an unmatched name is still rejected at link-creation time (4xx, per spec `team-tasks-spec-links`), but the check itself does not hard-fail the request if the openspec root is unreadable — it logs and treats an unreadable root as "cannot confirm, allow" rather than blocking all linking. This resolves design's open risk R5: unreadable root does not brick spec-links.
 > - `create_sprint_retrospective` is repurposed (not duplicated) to back the real `POST /v1/sprints/:id/retrospectives` endpoint.
 
@@ -51,7 +51,7 @@ Chain strategy: pending
 
 ## PR0 — core-migration+model (team-tasks-core: data layer)
 
-**Goal**: create all 8 task tables + indexes, grant `task:*` permissions to role templates, and define the `TaskStatus` enum + transition matrix + core model structs. No HTTP surface yet.
+**Goal**: create all 7 task tables + indexes, grant `task:*` permissions to role templates, and define the `TaskStatus` enum + transition matrix + core model structs. No HTTP surface yet.
 
 **Satisfies**: `team-tasks-core` / "Fixed Task Status Set" (status enum + validation), status-transition groundwork for "Task Updates Require Write Permission and Validate Status Transitions". Grant-matrix groundwork for every permission-gated requirement across all 7 backend capabilities.
 
@@ -60,15 +60,15 @@ Chain strategy: pending
 
 ### Checklist
 
-- [ ] 0.1 RED: migration test `run_v51_creates_task_tables` in `apps/backend/src/db/migrations.rs` asserting all 8 tables (`tasks`, `task_assignees`, `task_labels`, `task_comments`, `task_spec_links`, `sprints`, `sprint_retrospectives`) exist with expected columns after `run_all` on a fresh `:memory:` connection.
-- [ ] 0.2 GREEN: implement `run_v51` in `apps/backend/src/db/migrations.rs` — `CREATE TABLE IF NOT EXISTS` for all 8 tables per design section 1.2 (columns, FKs `ON DELETE CASCADE/SET NULL/RESTRICT`, `UNIQUE` composites), guard `PRAGMA user_version` < 51, tail `PRAGMA user_version = 51;`. Append `run_v51(conn)?;` to `run_all()` after `run_v50(conn)?;`.
+- [ ] 0.1 RED: migration test `run_v51_creates_task_tables` in `apps/backend/src/db/migrations.rs` asserting all 7 tables (`tasks`, `task_assignees`, `task_labels`, `task_comments`, `task_spec_links`, `sprints`, `sprint_retrospectives`) exist with expected columns after `run_all` on a fresh `:memory:` connection.
+- [ ] 0.2 GREEN: implement `run_v51` in `apps/backend/src/db/migrations.rs` — `CREATE TABLE IF NOT EXISTS` for all 7 tables per design section 1.2 (columns, FKs `ON DELETE CASCADE/SET NULL/RESTRICT`, `UNIQUE` composites), guard `PRAGMA user_version` < 51, tail `PRAGMA user_version = 51;`. Append `run_v51(conn)?;` to `run_all()` after `run_v50(conn)?;`.
 - [ ] 0.3 RED: migration test `run_v51_creates_indexes` asserting `idx_tasks_org_project_status`, `idx_tasks_org_parent`, `idx_tasks_sprint`, `idx_task_assignees_user`, `idx_task_labels_label`, `idx_task_comments_task`, `idx_task_spec_links_change`, `idx_sprints_org_project_status`, `idx_sprint_retros_sprint` exist via `sqlite_master`.
 - [ ] 0.4 GREEN: add the 9 `CREATE INDEX IF NOT EXISTS` statements to `run_v51`.
 - [ ] 0.5 RED: migration test `run_v51_is_idempotent` — running `run_all` twice on the same connection does not error and table/index counts are unchanged.
 - [ ] 0.6 GREEN: ensure `run_v51`'s guard makes double-invocation a no-op (covered by the `user_version` gate already in 0.2; add explicit assertion if guard logic needs adjustment).
 - [ ] 0.7 RED: migration test `run_v51_fk_cascade_and_unique` — deleting a task cascades to `task_assignees`/`task_labels`/`task_comments`/`task_spec_links`; deleting a sprint cascades to `sprint_retrospectives` and SETs `tasks.sprint_id` NULL; `UNIQUE(task_id, user_id)` on `task_assignees`, `UNIQUE(task_id, label)` on `task_labels`, `UNIQUE(task_id, spec_change_name)` on `task_spec_links`, `UNIQUE(org_id, project, name)` on `sprints` are enforced (insert duplicate -> constraint error).
 - [ ] 0.8 GREEN: verify/adjust FK `ON DELETE` clauses and `UNIQUE` composites in `run_v51` to satisfy 0.7 (implementation already drafted in 0.2; this task closes any gaps found by the cascade test).
-- [ ] 0.9 RED: migration test `run_v52_grants_task_perms` — after `run_all`, the seeded `roles` rows for `tmpl_dev_junior`, `tmpl_dev_senior`, `tmpl_security_officer`, `tmpl_auditor` have `permissions` JSON containing exactly the grant matrix from design section 1.4 (junior: `task:read`; senior: `task:read`,`task:write`,`task:assign`,`task:delete`; security_officer/auditor: `task:read`; no template gets `task:manage`).
+- [ ] 0.9 RED: migration test `run_v52_grants_task_perms` — after `run_all`, the seeded `roles` rows for `tmpl_dev_junior`, `tmpl_dev_senior`, `tmpl_security_officer`, `tmpl_auditor` have `permissions` JSON containing exactly the grant matrix from design section 1.4 (junior: `task:read`,`task:write`; senior: `task:read`,`task:write`,`task:assign`,`task:delete`; security_officer/auditor: `task:read`; no template gets `task:manage`).
 - [ ] 0.10 GREEN: implement `run_v52` in `apps/backend/src/db/migrations.rs` — `json_insert`/`json_set` on each template's `permissions` column per the grant matrix, guarded by `PRAGMA user_version` < 52, checking membership before insert (idempotency requirement). Append `run_v52(conn)?;` to `run_all()` after `run_v51(conn)?;`. Tail `PRAGMA user_version = 52;`.
 - [ ] 0.11 RED: migration test `run_v52_is_idempotent` — running `run_all` twice does not duplicate permission strings in any template's JSON array.
 - [ ] 0.12 GREEN: adjust `run_v52`'s `json_insert` guard (existence check via `json_each`/`instr` before insert) to satisfy 0.11.

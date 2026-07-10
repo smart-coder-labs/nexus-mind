@@ -60,7 +60,8 @@ pub fn run_all(conn: &Connection) -> Result<()> {
 
 /// Migration v52: grants the new `task:*` permission strings to the seeded
 /// role templates per the team-tasks design's grant matrix (design.md §1.4):
-/// `tmpl_dev_junior` = read only; `tmpl_dev_senior` = read+write+assign+delete;
+/// `tmpl_dev_junior` = read+write (create/edit tasks; assigning to others stays
+/// senior-gated); `tmpl_dev_senior` = read+write+assign+delete;
 /// `tmpl_security_officer`/`tmpl_auditor` = read only; `task:manage` is granted
 /// to no template (admin-only, via the existing privilege bypass). The
 /// mutation only appends missing permission strings to each template's
