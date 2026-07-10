@@ -8,6 +8,7 @@ const BOARD_COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: 'in_progress', label: 'In Progress' },
   { status: 'in_review', label: 'In Review' },
   { status: 'done', label: 'Done' },
+  { status: 'cancelled', label: 'Cancelled' },
 ]
 
 interface TasksBoardProps {
@@ -17,7 +18,7 @@ interface TasksBoardProps {
 
 export default function TasksBoard({ tasks, onTaskClick }: TasksBoardProps) {
   return (
-    <div className="grid grid-cols-5 gap-3">
+    <div className="grid grid-cols-6 gap-3">
       {BOARD_COLUMNS.map(col => {
         const columnTasks = tasks.filter(t => t.status === col.status)
         return (

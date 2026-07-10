@@ -221,6 +221,19 @@ describe('Tasks — create via modal', () => {
   })
 })
 
+describe('Tasks — permission guard on direct navigation', () => {
+  it('does not render the task list for a member without task:read', async () => {
+    renderAsMember(<Tasks />, [])
+
+    await waitFor(() => {
+      expect(listTasksMock).not.toHaveBeenCalled()
+    })
+
+    expect(screen.queryByText('Fix login redirect bug')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new task/i })).not.toBeInTheDocument()
+  })
+})
+
 describe('Tasks — edit status via modal', () => {
   it('calls updateTask with the new status and reflects the pill', async () => {
     renderWithProviders(<Tasks />)

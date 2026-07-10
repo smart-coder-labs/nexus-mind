@@ -67,6 +67,27 @@ const tasks: Task[] = [
     spec_links: [],
     subtask_count: 0,
   },
+  {
+    id: 't4',
+    org_id: 'org-test-1',
+    project: 'acme-platform',
+    title: 'Retire legacy export job',
+    description: null,
+    status: 'cancelled',
+    priority: 'low',
+    due_date: null,
+    parent_id: null,
+    sprint_id: null,
+    created_by: 'user-admin-1',
+    created_at: '2026-07-04T00:00:00Z',
+    updated_at: '2026-07-04T00:00:00Z',
+    archived_at: null,
+    assignees: [],
+    labels: [],
+    comment_count: 0,
+    spec_links: [],
+    subtask_count: 0,
+  },
 ]
 
 describe('TasksBoard — columns by status', () => {
@@ -78,6 +99,14 @@ describe('TasksBoard — columns by status', () => {
     expect(screen.getByText('In Progress')).toBeInTheDocument()
     expect(screen.getByText('In Review')).toBeInTheDocument()
     expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Cancelled')).toBeInTheDocument()
+  })
+
+  it('renders a cancelled task under the Cancelled column instead of dropping it', () => {
+    render(<TasksBoard tasks={tasks} onTaskClick={() => undefined} />)
+
+    const cancelledColumn = screen.getByTestId('board-column-cancelled')
+    expect(within(cancelledColumn).getByText('Retire legacy export job')).toBeInTheDocument()
   })
 
   it('places each task card under its status column', () => {

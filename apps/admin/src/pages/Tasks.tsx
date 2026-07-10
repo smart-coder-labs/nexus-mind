@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid } from 'lucide-react'
+import { Navigate } from 'react-router-dom'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { Modal, ModalCloseButton } from '../components/ui/Modal/Modal'
@@ -61,6 +62,7 @@ export default function Tasks() {
   const permissions = session?.user.permissions ?? []
   const canWrite = isAdmin || permissions.includes('task:write')
   const canDelete = isAdmin || permissions.includes('task:delete')
+  const canRead = isAdmin || permissions.includes('task:read')
 
   const [projectFilter, setProjectFilter] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('')
@@ -85,6 +87,7 @@ export default function Tasks() {
   const { data: tasks = [], isLoading } = useQuery({
     queryKey: ['tasks', filters],
     queryFn: () => client.listTasks(filters),
+    enabled: canRead,
   })
 
   const { data: projects = [] } = useQuery({
@@ -159,6 +162,8 @@ export default function Tasks() {
     if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
     deleteMut.mutate(task.id)
   }
+
+  if (!canRead) return <Navigate to="/401" replace />
 
   return (
     <div className="p-6 max-w-6xl">
