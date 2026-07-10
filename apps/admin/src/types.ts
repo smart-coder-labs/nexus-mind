@@ -673,7 +673,7 @@ export interface HarnessManifestComponent {
 
 export interface HarnessManifest {
   schema_version: '1.1'
-  targets: Array<'claude' | 'codex' | 'opencode'>
+  targets: Array<'claude' | 'codex' | 'cursor'>
   format: HarnessFormat
   components: HarnessManifestComponent[]
   provenance: { source: string }

@@ -543,7 +543,7 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
           <h2 className="text-xs font-semibold">Approve harness download</h2>
         </div>
         <div className="space-y-3 text-xs text-text-secondary">
-          <p>NexusMind will not mutate local files. Local tools must show a diff and ask before applying Claude, Codex, OpenCode, shell, or project file changes.</p>
+          <p>NexusMind will not mutate local files. Local tools must show a diff and ask before applying Claude, Codex, Cursor, shell, or project file changes.</p>
           {requiresWarningAck && (
             <div role="alert" className="rounded-[11px] border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-status-warning">
               <p>{warningMessage}</p>
@@ -937,7 +937,7 @@ export default function Harnesses() {
           <option value="">All targets</option>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
-          <option value="opencode">OpenCode</option>
+          <option value="cursor">Cursor</option>
         </select>
         <label className="text-[10px] text-text-quaternary" htmlFor="owner-filter">Owner filter</label>
         <select id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="rounded-[8px] border border-border-primary bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">

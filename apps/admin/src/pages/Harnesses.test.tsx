@@ -201,6 +201,15 @@ describe('Harnesses page', () => {
     await waitFor(() => expect(listHarnessesMock).toHaveBeenCalledWith({ target: 'claude', owner_user_id: 'user-owner-1' }))
   })
 
+  it('offers cursor as a target filter option instead of opencode', async () => {
+    renderWithProviders(<Harnesses />)
+    await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
+
+    const targetFilter = screen.getByRole('combobox', { name: /target filter/i })
+    expect(within(targetFilter).getByRole('option', { name: 'Cursor' })).toHaveAttribute('value', 'cursor')
+    expect(within(targetFilter).queryByRole('option', { name: /opencode/i })).not.toBeInTheDocument()
+  })
+
   it('builds typed format manifests from templates and file metadata', async () => {
     renderWithProviders(<Harnesses />)
     await waitFor(() => expect(screen.getByText('Claude Base')).toBeInTheDocument())
@@ -433,6 +442,7 @@ describe('Harnesses page', () => {
     fireEvent.click(screen.getByRole('button', { name: /download claude base/i }))
     const dialog = await screen.findByRole('dialog', { name: /approve harness download/i })
     expect(within(dialog).getByText(/nexusmind will not mutate local files/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/claude, codex, cursor, shell/i)).toBeInTheDocument()
     expect(within(dialog).getByText(/review executable hooks or plugin metadata before approval/i)).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: /approve and download/i })).toBeDisabled()
     fireEvent.click(within(dialog).getByRole('checkbox', { name: /i reviewed and acknowledge/i }))

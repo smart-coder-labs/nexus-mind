@@ -1655,10 +1655,15 @@ pub fn validate_typed_harness_manifest(manifest: &serde_json::Value) -> Result<(
         .get("targets")
         .and_then(|v| v.as_array())
         .ok_or("missing_targets")?;
+    // Valid targets: claude, codex, cursor. `opencode` was removed in favor of `cursor`
+    // (SDD change harness-agent-tools, Phase 0). Any already-published `harness_versions`
+    // rows with `opencode` in `targets` need an operational data UPDATE to `cursor`
+    // (or archival) before/with rollout — see openspec/changes/harness-agent-tools/tasks.md
+    // task 0.8 and MIGRATION_NOTE.md in that change dir.
     if targets.is_empty()
         || targets
             .iter()
-            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "opencode")))
+            .any(|v| !matches!(v.as_str(), Some("claude" | "codex" | "cursor")))
     {
         return Err("missing_targets");
     }
@@ -2097,6 +2102,18 @@ mod tests {
         assert_eq!(
             validate_typed_harness_manifest(&unsafe_content),
             Err("secret_scan_failed")
+        );
+    }
+
+    #[test]
+    fn typed_harness_manifest_accepts_cursor_and_rejects_opencode_target() {
+        let cursor_manifest = json!({ "schema_version": "1.1", "format": "agent", "targets": ["cursor"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+        let opencode_manifest = json!({ "schema_version": "1.1", "format": "agent", "targets": ["opencode"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } });
+
+        validate_typed_harness_manifest(&cursor_manifest).expect("cursor should be a valid target");
+        assert_eq!(
+            validate_typed_harness_manifest(&opencode_manifest),
+            Err("missing_targets")
         );
     }
 
