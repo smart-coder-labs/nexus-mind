@@ -249,6 +249,45 @@ describe('Tasks — edit status via modal', () => {
   })
 })
 
+describe('Tasks — list/board view toggle', () => {
+  it('shows the list view by default', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole('columnheader', { name: /title/i })).toBeInTheDocument()
+  })
+
+  it('switches to the board view and renders status columns', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /board view/i }))
+
+    expect(screen.getByText('In Progress')).toBeInTheDocument()
+    expect(screen.getByText('Backlog')).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /title/i })).not.toBeInTheDocument()
+  })
+
+  it('switches back to list view', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /board view/i }))
+    fireEvent.click(screen.getByRole('button', { name: /list view/i }))
+
+    expect(screen.getByRole('columnheader', { name: /title/i })).toBeInTheDocument()
+  })
+})
+
 describe('Tasks — delete requires confirmation', () => {
   it('calls deleteTask when the user confirms', async () => {
     renderWithProviders(<Tasks />)

@@ -985,6 +985,12 @@ export class NexusMindClient {
     })
   }
 
+  unassignTask(id: string, userId: string): Promise<void> {
+    return this.request(`/v1/tasks/${encodeURIComponent(id)}/assignees/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    })
+  }
+
   listTaskComments(id: string): Promise<TaskComment[]> {
     return this.request<TaskComment[]>(`/v1/tasks/${encodeURIComponent(id)}/comments`)
   }
@@ -1000,10 +1006,33 @@ export class NexusMindClient {
     return this.request<Task[]>(`/v1/tasks/${encodeURIComponent(id)}/subtasks`)
   }
 
+  addTaskLabel(id: string, label: string): Promise<string[]> {
+    return this.request<string[]>(`/v1/tasks/${encodeURIComponent(id)}/labels`, {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    })
+  }
+
+  removeTaskLabel(id: string, label: string): Promise<void> {
+    return this.request(`/v1/tasks/${encodeURIComponent(id)}/labels/${encodeURIComponent(label)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  listTaskSpecLinks(id: string): Promise<string[]> {
+    return this.request<string[]>(`/v1/tasks/${encodeURIComponent(id)}/spec-links`)
+  }
+
   linkTaskSpec(id: string, specChangeName: string): Promise<void> {
     return this.request(`/v1/tasks/${encodeURIComponent(id)}/spec-links`, {
       method: 'POST',
       body: JSON.stringify({ spec_change_name: specChangeName }),
+    })
+  }
+
+  unlinkTaskSpec(id: string, specChangeName: string): Promise<void> {
+    return this.request(`/v1/tasks/${encodeURIComponent(id)}/spec-links/${encodeURIComponent(specChangeName)}`, {
+      method: 'DELETE',
     })
   }
 

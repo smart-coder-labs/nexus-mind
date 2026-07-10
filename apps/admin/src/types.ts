@@ -914,6 +914,14 @@ export interface AssignTaskRequest {
   user_ids: string[]
 }
 
+export interface AddLabelRequest {
+  label: string
+}
+
+export interface LinkSpecRequest {
+  spec_change_name: string
+}
+
 export interface ListSprintsParams {
   project?: string
   status?: SprintStatus

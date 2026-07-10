@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, ListTodo } from 'lucide-react'
+import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { Modal, ModalCloseButton } from '../components/ui/Modal/Modal'
@@ -9,12 +9,16 @@ import {
 } from '../components/ui/Select/Select'
 import { Badge } from '../components/ui/Badge/Badge'
 import { EmptyState } from '../components/ui/EmptyState/EmptyState'
+import TaskDetail from './tasks/TaskDetail'
+import TasksBoard from './tasks/TasksBoard'
 import type { Task, TaskStatus, TaskPriority } from '../types'
+
+type TasksView = 'list' | 'board'
 
 const STATUS_OPTIONS: TaskStatus[] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']
 const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
 
-const STATUS_BADGE_VARIANT: Record<TaskStatus, 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info'> = {
+export const STATUS_BADGE_VARIANT: Record<TaskStatus, 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info'> = {
   backlog: 'default',
   todo: 'info',
   in_progress: 'primary',
@@ -23,7 +27,7 @@ const STATUS_BADGE_VARIANT: Record<TaskStatus, 'default' | 'primary' | 'success'
   cancelled: 'error',
 }
 
-const PRIORITY_BADGE_VARIANT: Record<TaskPriority, 'default' | 'primary' | 'warning' | 'error'> = {
+export const PRIORITY_BADGE_VARIANT: Record<TaskPriority, 'default' | 'primary' | 'warning' | 'error'> = {
   low: 'default',
   medium: 'primary',
   high: 'warning',
@@ -66,6 +70,9 @@ export default function Tasks() {
 
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [editForm, setEditForm] = useState<TaskFormState>(EMPTY_FORM)
+
+  const [detailTask, setDetailTask] = useState<Task | null>(null)
+  const [view, setView] = useState<TasksView>('list')
 
   const filters = useMemo(
     () => ({
@@ -173,33 +180,56 @@ export default function Tasks() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 mb-4">
-        <Select value={projectFilter} onValueChange={setProjectFilter}>
-          <SelectTrigger className="w-48" aria-label="Project">
-            <SelectValue placeholder="All projects" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="">All projects</SelectItem>
-            {projects.map(p => (
-              <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3">
+          <Select value={projectFilter} onValueChange={setProjectFilter}>
+            <SelectTrigger className="w-48" aria-label="Project">
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All projects</SelectItem>
+              {projects.map(p => (
+                <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-40" aria-label="Status">
-            <SelectValue placeholder="All statuses" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="">All statuses</SelectItem>
-            {STATUS_OPTIONS.map(s => (
-              <SelectItem key={s} value={s}>{s}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-40" aria-label="Status">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All statuses</SelectItem>
+              {STATUS_OPTIONS.map(s => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-1 rounded-full border border-border-primary p-0.5">
+          <button
+            onClick={() => setView('list')}
+            aria-label="List view"
+            aria-pressed={view === 'list'}
+            title="List view"
+            className={`p-1.5 rounded-full transition-colors ${view === 'list' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
+          >
+            <List className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setView('board')}
+            aria-label="Board view"
+            aria-pressed={view === 'board'}
+            title="Board view"
+            className={`p-1.5 rounded-full transition-colors ${view === 'board' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
-      {/* Task list */}
+      {/* Task list/board */}
       {isLoading ? (
         <div className="space-y-2">
           {[...Array(4)].map((_, i) => (
@@ -212,6 +242,8 @@ export default function Tasks() {
           title="No tasks found"
           description="No tasks match the current filters. Try adjusting the filters or create a new task."
         />
+      ) : view === 'board' ? (
+        <TasksBoard tasks={tasks} onTaskClick={setDetailTask} />
       ) : (
         <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#272729]">
           <table className="w-full border-collapse text-left">
@@ -227,7 +259,11 @@ export default function Tasks() {
             </thead>
             <tbody>
               {tasks.map(task => (
-                <tr key={task.id} className="border-b border-border-secondary last:border-b-0">
+                <tr
+                  key={task.id}
+                  onClick={() => setDetailTask(task)}
+                  className="border-b border-border-secondary last:border-b-0 cursor-pointer hover:bg-background-tertiary/40 transition-colors"
+                >
                   <td className="px-4 py-3 text-xs text-text-primary font-semibold">{task.title}</td>
                   <td className="px-4 py-3">
                     <Badge variant={STATUS_BADGE_VARIANT[task.status]} size="sm">{task.status}</Badge>
@@ -247,7 +283,7 @@ export default function Tasks() {
                     <div className="flex items-center gap-2">
                       {canWrite && (
                         <button
-                          onClick={() => openEdit(task)}
+                          onClick={(e) => { e.stopPropagation(); openEdit(task) }}
                           aria-label={`Edit ${task.title}`}
                           title="Edit"
                           className="text-text-quaternary hover:text-accent-blue transition-colors"
@@ -257,7 +293,7 @@ export default function Tasks() {
                       )}
                       {canDelete && (
                         <button
-                          onClick={() => handleDelete(task)}
+                          onClick={(e) => { e.stopPropagation(); handleDelete(task) }}
                           aria-label={`Delete ${task.title}`}
                           title="Delete"
                           className="text-text-quaternary hover:text-status-error transition-colors"
@@ -464,6 +500,16 @@ export default function Tasks() {
               </div>
             </form>
           </div>
+        )}
+      </Modal>
+
+      {/* Task Detail Modal */}
+      <Modal open={!!detailTask} onOpenChange={(open) => { if (!open) setDetailTask(null) }} size="lg">
+        {detailTask && (
+          <TaskDetail
+            task={tasks.find(t => t.id === detailTask.id) ?? detailTask}
+            onClose={() => setDetailTask(null)}
+          />
         )}
       </Modal>
     </div>
