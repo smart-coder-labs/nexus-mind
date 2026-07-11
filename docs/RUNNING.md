@@ -92,6 +92,23 @@ NEXUSMIND_API_KEY=nm_demo_acme_sarah make mcp-inspect
 
 ---
 
+## SDD artifact import (one-shot backfill)
+
+Backfills `openspec/changes/**` and the legacy `sdd/*` memories into the SDD
+artifact store. Idempotent — a second run creates zero revisions, so it is safe to
+re-run after every archive.
+
+```bash
+cargo run --bin import-sdd -- --db <path> --org-id <id> --project nexus-mind --root <repo-root>
+# Add --dry-run first — it reports exactly what it would write, and writes nothing.
+# --org-id may be omitted when the database holds a single org.
+```
+
+The legacy `sdd/*` memories are **tagged** `sdd-migrated`, never removed: whether to
+retire them is your call, made after you can see the imported artifacts in the admin.
+
+---
+
 ## Makefile reference
 
 | Command | What it does |
