@@ -20,4 +20,5 @@ pub mod conventions;
 pub mod github_auth;
 pub mod agents;
 pub mod harnesses;
+pub mod sdd;
 pub mod tasks;

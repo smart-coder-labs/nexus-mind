@@ -2321,7 +2321,12 @@ pub struct UpsertChangeRequest {
 /// identity is not patchable: renaming it would silently orphan every
 /// `task_spec_links.spec_change_name` row that points at the old name, since
 /// tasks join by name, not by FK. Move/rename is a delete-and-recreate.
+///
+/// `deny_unknown_fields` makes that refusal *loud*: a caller who sends
+/// `{"project": "other"}` gets a 422, not a silent no-op that leaves them
+/// believing the rename landed.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PatchChangeRequest {
     #[serde(default)]
     pub title: Option<String>,
@@ -3424,21 +3429,27 @@ mod tests {
         );
     }
 
-    /// 1.32 — the identity tuple is not patchable: `PatchChangeRequest` must expose no
-    /// `project` and no `name`. Enforced structurally, not by a runtime check — if the
-    /// field does not exist, no handler can accidentally honour it.
+    /// 1.32 / 3.23 — the identity tuple is not patchable, and the refusal is LOUD.
+    ///
+    /// `deny_unknown_fields` turns `{"project": …}` into a deserialization error, which
+    /// `AppJson` surfaces as a 422. Without it the field would be silently dropped and
+    /// the caller would walk away believing a rename had landed when nothing moved.
     #[test]
     fn patch_change_request_cannot_touch_identity_fields() {
-        let json = serde_json::json!({
-            "title": "New title",
-            "phase": "design",
-            "project": "some-other-project",
-            "name": "some-other-name",
-        });
-        let patch: PatchChangeRequest = serde_json::from_value(json).unwrap();
+        let valid = serde_json::json!({ "title": "New title", "phase": "design" });
+        let patch: PatchChangeRequest = serde_json::from_value(valid).unwrap();
         assert_eq!(patch.title.as_deref(), Some("New title"));
         assert_eq!(patch.phase.as_deref(), Some("design"));
-        // `project` and `name` are silently dropped — they are not fields on the struct.
+
+        for identity_field in ["project", "name"] {
+            let json = serde_json::json!({ "title": "x", identity_field: "hijacked" });
+            let result: Result<PatchChangeRequest, _> = serde_json::from_value(json);
+            assert!(
+                result.is_err(),
+                "a PATCH body carrying `{identity_field}` must be REJECTED, not silently ignored"
+            );
+        }
+
         let round_tripped = serde_json::to_value(&patch).unwrap();
         assert!(
             round_tripped.get("project").is_none(),
