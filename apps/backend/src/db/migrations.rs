@@ -55,6 +55,150 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v50(conn)?;
     run_v51(conn)?;
     run_v52(conn)?;
+    run_v53(conn)?;
+    run_v54(conn)?;
+    Ok(())
+}
+
+/// Migration v54: grants the new `sdd:*` permission strings to the seeded role
+/// templates per the sdd-artifacts design's grant matrix (design.md §2):
+/// `tmpl_dev_junior` = read+write (agents run the SDD pipeline and must be able
+/// to save artifacts); `tmpl_dev_senior` = read+write+delete;
+/// `tmpl_security_officer`/`tmpl_auditor` = read only. Same shape as `run_v52`:
+/// appends only the missing strings to each template's `permissions` JSON array,
+/// never replacing pre-existing grants, and idempotent via a `json_each`
+/// membership check.
+pub fn run_v54(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 54 {
+        return Ok(());
+    }
+
+    let grants: &[(&str, &[&str])] = &[
+        ("tmpl_dev_junior", &["sdd:read", "sdd:write"]),
+        ("tmpl_dev_senior", &["sdd:read", "sdd:write", "sdd:delete"]),
+        ("tmpl_security_officer", &["sdd:read"]),
+        ("tmpl_auditor", &["sdd:read"]),
+    ];
+
+    for (template_id, perms) in grants {
+        for perm in *perms {
+            conn.execute(
+                "UPDATE roles
+                 SET permissions = json_insert(permissions, '$[#]', ?1)
+                 WHERE id = ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM json_each(roles.permissions) WHERE value = ?1
+                   )",
+                rusqlite::params![perm, template_id],
+            )?;
+        }
+    }
+
+    conn.execute_batch("PRAGMA user_version = 54;")?;
+    Ok(())
+}
+
+/// Migration v53: creates the SDD-artifacts data layer — 4 tables plus the
+/// `sdd_artifacts_fts` FTS5 index. See design.md §2 for the authoritative
+/// column/FK/index list. Purely additive: no existing table is touched.
+///
+/// `sdd_changes.project` is a project **name** string (mirrors `tasks.project`
+/// and `sessions.project`), not a `project_id` FK — deliberate, so that
+/// org-shared and unregistered project names stay visible (design.md D4).
+///
+/// `sdd_artifacts.capability` is `NOT NULL DEFAULT ''` and MUST NOT be made
+/// nullable. SQLite treats every `NULL` as distinct inside a `UNIQUE`
+/// constraint, so a nullable `capability` would let `(change, 'design', NULL)`
+/// be inserted twice and `UNIQUE(change_id, kind, capability)` would silently
+/// not hold. The empty-string sentinel is what makes the uniqueness real.
+/// `spec` is the only kind that repeats within a change (once per capability).
+pub fn run_v53(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 53 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sdd_changes (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            project TEXT NOT NULL,
+            name TEXT NOT NULL,
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            phase TEXT NOT NULL DEFAULT 'propose',
+            repo_url TEXT,
+            repo_ref TEXT,
+            sprint_id TEXT REFERENCES sprints(id) ON DELETE SET NULL,
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            archived_at TEXT,
+            UNIQUE(org_id, project, name)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_changes_org_project_status
+            ON sdd_changes(org_id, project, status);
+         CREATE INDEX IF NOT EXISTS idx_sdd_changes_name ON sdd_changes(org_id, name);
+         CREATE INDEX IF NOT EXISTS idx_sdd_changes_sprint ON sdd_changes(sprint_id);
+
+         CREATE TABLE IF NOT EXISTS sdd_artifacts (
+            id TEXT PRIMARY KEY,
+            change_id TEXT NOT NULL REFERENCES sdd_changes(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            capability TEXT NOT NULL DEFAULT '',
+            path TEXT,
+            latest_revision INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(change_id, kind, capability)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_artifacts_change ON sdd_artifacts(change_id, kind);
+
+         CREATE TABLE IF NOT EXISTS sdd_artifact_revisions (
+            id TEXT PRIMARY KEY,
+            artifact_id TEXT NOT NULL REFERENCES sdd_artifacts(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            git_commit TEXT,
+            git_path TEXT,
+            source TEXT NOT NULL DEFAULT 'agent',
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(artifact_id, revision)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_revisions_artifact
+            ON sdd_artifact_revisions(artifact_id, revision DESC);
+         CREATE INDEX IF NOT EXISTS idx_sdd_revisions_hash
+            ON sdd_artifact_revisions(artifact_id, content_hash);
+
+         CREATE TABLE IF NOT EXISTS sdd_change_memories (
+            id TEXT PRIMARY KEY,
+            change_id TEXT NOT NULL REFERENCES sdd_changes(id) ON DELETE CASCADE,
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            relation TEXT NOT NULL DEFAULT 'produced',
+            linked_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(change_id, memory_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_change_memories_memory
+            ON sdd_change_memories(memory_id);
+
+         -- Standalone FTS5, NOT external-content: the `memories_fts` trigger pattern
+         -- assumes a 1:1 row mapping, which we do not have (many revisions -> one
+         -- indexed doc). `upsert_sdd_artifact` maintains this table explicitly,
+         -- delete-then-insert on artifact_id for every new revision.
+         CREATE VIRTUAL TABLE IF NOT EXISTS sdd_artifacts_fts USING fts5(
+            artifact_id UNINDEXED,
+            change_name,
+            kind,
+            capability,
+            content
+         );
+
+         PRAGMA user_version = 53;",
+    )?;
     Ok(())
 }
 
@@ -2040,7 +2184,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
@@ -2437,7 +2581,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
@@ -2446,7 +2590,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2578,7 +2722,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2605,14 +2749,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
@@ -2730,7 +2874,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2749,14 +2893,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2833,14 +2977,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -2923,7 +3067,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -3117,14 +3261,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
@@ -3161,14 +3305,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3207,14 +3351,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 52, "user_version must be 52 after run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -3339,7 +3483,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 (run_all already applied v41-v52)");
+        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 (run_all already applied v41-v52)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -3350,8 +3494,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            52,
-            "user_version must be 52 after v41-v52 are included in run_all"
+            54,
+            "user_version must be 54 after v41-v54 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3443,7 +3587,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "version must remain 52 on second run_all");
+        assert_eq!(get_user_version(&conn), 54, "version must remain 54 on second run_all");
     }
 
     #[test]
@@ -3569,7 +3713,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 52, "user_version must reach 52 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 54, "user_version must reach 54 after the backfill migration");
     }
 
     #[test]
@@ -3578,7 +3722,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 52, "user_version must remain 52 on second run_all");
+        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 on second run_all");
     }
 
     // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
@@ -3598,7 +3742,7 @@ mod tests {
         ] {
             assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
         }
-        assert_eq!(get_user_version(&conn), 52, "user_version must reach 52 on a fresh db");
+        assert_eq!(get_user_version(&conn), 54, "user_version must reach 54 on a fresh db");
     }
 
     #[test]
@@ -3878,5 +4022,573 @@ mod tests {
                 "tmpl_security_officer must retain pre-existing permission {pre_existing}"
             );
         }
+    }
+
+    // ── SDD artifacts (v53 schema, v54 permissions) ─────────────────────────
+
+    /// Column metadata from `PRAGMA table_info`: (notnull, dflt_value).
+    fn column_info(conn: &Connection, table: &str, column: &str) -> Option<(bool, Option<String>)> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(1)?,         // name
+                    r.get::<_, i32>(3)? != 0,       // notnull
+                    r.get::<_, Option<String>>(4)?, // dflt_value
+                ))
+            })
+            .unwrap();
+        for row in rows.flatten() {
+            if row.0 == column {
+                return Some((row.1, row.2));
+            }
+        }
+        None
+    }
+
+    fn permissions_of(conn: &Connection, template_id: &str) -> Vec<String> {
+        let raw: String = conn
+            .query_row(
+                "SELECT permissions FROM roles WHERE id = ?1",
+                [template_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    /// Seeds the minimal FK ancestry the SDD tables hang off: org, user, sprint,
+    /// memory. Returns (org_id, user_id, sprint_id, memory_id).
+    fn seed_sdd_fixtures(conn: &Connection) -> (String, String, String, String) {
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Org One', 'org-one')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'u1@test.dev', 'U One', 'admin')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sprints (id, org_id, project, name, created_by)
+             VALUES ('sp1', 'org1', 'nexus-mind', 'Sprint 1', 'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content)
+             VALUES ('m1', 'org1', 'u1', 'claude-code', 'a decision')",
+            [],
+        )
+        .unwrap();
+        ("org1".into(), "u1".into(), "sp1".into(), "m1".into())
+    }
+
+    fn insert_change(conn: &Connection, id: &str, project: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO sdd_changes (id, org_id, project, name, created_by)
+             VALUES (?1, 'org1', ?2, ?3, 'u1')",
+            rusqlite::params![id, project, name],
+        )
+        .unwrap();
+    }
+
+    /// 1.1 — every SDD table exists with the design §2 columns.
+    #[test]
+    fn run_v53_creates_sdd_tables_with_expected_columns() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for table in [
+            "sdd_changes",
+            "sdd_artifacts",
+            "sdd_artifact_revisions",
+            "sdd_change_memories",
+        ] {
+            assert!(table_exists(&conn, table), "missing table: {table}");
+        }
+
+        for col in [
+            "id",
+            "org_id",
+            "project",
+            "name",
+            "title",
+            "status",
+            "phase",
+            "repo_url",
+            "repo_ref",
+            "sprint_id",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "archived_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_changes", col).is_some(),
+                "sdd_changes missing column: {col}"
+            );
+        }
+        for col in [
+            "id",
+            "change_id",
+            "kind",
+            "capability",
+            "path",
+            "latest_revision",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_artifacts", col).is_some(),
+                "sdd_artifacts missing column: {col}"
+            );
+        }
+        for col in [
+            "id",
+            "artifact_id",
+            "revision",
+            "content",
+            "content_hash",
+            "byte_size",
+            "git_commit",
+            "git_path",
+            "source",
+            "created_by",
+            "created_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_artifact_revisions", col).is_some(),
+                "sdd_artifact_revisions missing column: {col}"
+            );
+        }
+        for col in [
+            "id",
+            "change_id",
+            "memory_id",
+            "relation",
+            "linked_by",
+            "created_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_change_memories", col).is_some(),
+                "sdd_change_memories missing column: {col}"
+            );
+        }
+    }
+
+    /// 1.3 — the FTS5 virtual table exists, is queryable, and `artifact_id` is UNINDEXED
+    /// (searching for the id value must NOT match; searching content must).
+    #[test]
+    fn run_v53_creates_fts_virtual_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        assert!(
+            table_exists(&conn, "sdd_artifacts_fts"),
+            "missing fts table: sdd_artifacts_fts"
+        );
+
+        conn.execute(
+            "INSERT INTO sdd_artifacts_fts (artifact_id, change_name, kind, capability, content)
+             VALUES ('art1', 'team-tasks', 'design', '', 'the rate limiter uses a token bucket')",
+            [],
+        )
+        .unwrap();
+
+        let hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_artifacts_fts WHERE sdd_artifacts_fts MATCH 'rate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "content column must be indexed and searchable");
+
+        let id_hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_artifacts_fts WHERE sdd_artifacts_fts MATCH 'art1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            id_hits, 0,
+            "artifact_id must be UNINDEXED — it is a payload, not a search term"
+        );
+    }
+
+    /// 1.5 — every index from design §2 is present.
+    #[test]
+    fn run_v53_creates_indexes() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for (table, idx) in [
+            ("sdd_changes", "idx_sdd_changes_org_project_status"),
+            ("sdd_changes", "idx_sdd_changes_name"),
+            ("sdd_changes", "idx_sdd_changes_sprint"),
+            ("sdd_artifacts", "idx_sdd_artifacts_change"),
+            ("sdd_artifact_revisions", "idx_sdd_revisions_artifact"),
+            ("sdd_artifact_revisions", "idx_sdd_revisions_hash"),
+            ("sdd_change_memories", "idx_sdd_change_memories_memory"),
+        ] {
+            assert!(
+                index_exists(&conn, table, idx),
+                "missing index: {idx} on {table}"
+            );
+        }
+    }
+
+    /// 1.7 — THE TRAP. `capability` must be NOT NULL DEFAULT '' so that
+    /// UNIQUE(change_id, kind, capability) actually holds. SQLite treats every NULL as
+    /// distinct inside a UNIQUE constraint, so a nullable capability would silently let
+    /// two `design` artifacts into the same change.
+    #[test]
+    fn run_v53_capability_empty_string_sentinel_enforces_uniqueness() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+        insert_change(&conn, "c1", "nexus-mind", "team-tasks");
+
+        let (notnull, default) = column_info(&conn, "sdd_artifacts", "capability")
+            .expect("sdd_artifacts.capability must exist");
+        assert!(
+            notnull,
+            "capability MUST be NOT NULL — a nullable column defeats the UNIQUE constraint"
+        );
+        assert_eq!(
+            default.as_deref(),
+            Some("''"),
+            "capability MUST default to the empty-string sentinel, not NULL"
+        );
+
+        // Relying on DEFAULT '' — no explicit capability.
+        conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind) VALUES ('a1', 'c1', 'design')",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind) VALUES ('a2', 'c1', 'design')",
+            [],
+        );
+        assert!(dup.is_err(), "a second 'design' artifact in the same change MUST violate UNIQUE(change_id, kind, capability)");
+    }
+
+    /// 1.9 — `spec` is the only kind that repeats within a change, discriminated by capability.
+    #[test]
+    fn run_v53_spec_kind_repeats_per_capability() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+        insert_change(&conn, "c1", "nexus-mind", "sdd-artifacts");
+
+        conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind, capability)
+             VALUES ('a1', 'c1', 'spec', 'sdd-artifact-store')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind, capability)
+             VALUES ('a2', 'c1', 'spec', 'sdd-artifact-links')",
+            [],
+        )
+        .expect("two spec artifacts with different capabilities must both insert");
+    }
+
+    /// 1.11 — the three remaining UNIQUE composites reject duplicates.
+    #[test]
+    fn run_v53_unique_constraints() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+
+        // UNIQUE(org_id, project, name) on sdd_changes
+        insert_change(&conn, "c1", "nexus-mind", "team-tasks");
+        let dup_change = conn.execute(
+            "INSERT INTO sdd_changes (id, org_id, project, name, created_by)
+             VALUES ('c2', 'org1', 'nexus-mind', 'team-tasks', 'u1')",
+            [],
+        );
+        assert!(
+            dup_change.is_err(),
+            "UNIQUE(org_id, project, name) must reject a duplicate change"
+        );
+
+        // UNIQUE(artifact_id, revision) on sdd_artifact_revisions
+        conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind) VALUES ('a1', 'c1', 'design')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_artifact_revisions (id, artifact_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r1', 'a1', 1, 'body', 'hash1', 4, 'u1')",
+            [],
+        )
+        .unwrap();
+        let dup_rev = conn.execute(
+            "INSERT INTO sdd_artifact_revisions (id, artifact_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r2', 'a1', 1, 'other', 'hash2', 5, 'u1')",
+            [],
+        );
+        assert!(
+            dup_rev.is_err(),
+            "UNIQUE(artifact_id, revision) must reject a duplicate revision number"
+        );
+
+        // UNIQUE(change_id, memory_id) on sdd_change_memories
+        conn.execute(
+            "INSERT INTO sdd_change_memories (id, change_id, memory_id, linked_by)
+             VALUES ('l1', 'c1', 'm1', 'u1')",
+            [],
+        )
+        .unwrap();
+        let dup_link = conn.execute(
+            "INSERT INTO sdd_change_memories (id, change_id, memory_id, linked_by)
+             VALUES ('l2', 'c1', 'm1', 'u1')",
+            [],
+        );
+        assert!(
+            dup_link.is_err(),
+            "UNIQUE(change_id, memory_id) must reject a duplicate memory link"
+        );
+    }
+
+    /// 1.13 — CASCADE / SET NULL / RESTRICT semantics.
+    #[test]
+    fn run_v53_fk_cascade_and_restrict() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+
+        let fk_on: i32 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            fk_on, 1,
+            "connect() must enable foreign_keys for this test to mean anything"
+        );
+
+        insert_change(&conn, "c1", "nexus-mind", "team-tasks");
+        conn.execute(
+            "UPDATE sdd_changes SET sprint_id = 'sp1' WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_artifacts (id, change_id, kind) VALUES ('a1', 'c1', 'design')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_artifact_revisions (id, artifact_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r1', 'a1', 1, 'body', 'hash1', 4, 'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_change_memories (id, change_id, memory_id, linked_by)
+             VALUES ('l1', 'c1', 'm1', 'u1')",
+            [],
+        )
+        .unwrap();
+
+        // users RESTRICT — u1 is referenced by created_by / linked_by.
+        let del_user = conn.execute("DELETE FROM users WHERE id = 'u1'", []);
+        assert!(
+            del_user.is_err(),
+            "deleting a user referenced by created_by/linked_by must be RESTRICTed"
+        );
+
+        // sprints SET NULL — the change survives, sprint_id is cleared.
+        conn.execute("DELETE FROM sprints WHERE id = 'sp1'", [])
+            .unwrap();
+        let (change_count, sprint_id): (i32, Option<String>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(sprint_id) FROM sdd_changes WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            change_count, 1,
+            "deleting a sprint must NOT delete the change"
+        );
+        assert!(
+            sprint_id.is_none(),
+            "deleting a sprint must SET NULL on sdd_changes.sprint_id"
+        );
+
+        // memories CASCADE — deleting the memory removes the link.
+        conn.execute("DELETE FROM memories WHERE id = 'm1'", [])
+            .unwrap();
+        let links: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_change_memories WHERE id = 'l1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            links, 0,
+            "deleting a memory must cascade to sdd_change_memories"
+        );
+
+        // changes CASCADE — artifacts and (transitively) revisions go with it.
+        conn.execute("DELETE FROM sdd_changes WHERE id = 'c1'", [])
+            .unwrap();
+        let artifacts: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_artifacts WHERE change_id = 'c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            artifacts, 0,
+            "deleting a change must cascade to its artifacts"
+        );
+        let revisions: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_artifact_revisions WHERE artifact_id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions, 0,
+            "deleting a change must cascade transitively to its revisions"
+        );
+    }
+
+    /// 1.15 — v53 is a no-op on a second run.
+    #[test]
+    fn run_v53_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        let count_objects = |c: &Connection| -> i32 {
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sdd_%' OR name LIKE 'idx_sdd_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let before = count_objects(&conn);
+
+        run_all(&conn).expect("run_all must be idempotent");
+
+        assert_eq!(
+            count_objects(&conn),
+            before,
+            "a second run_all must not create additional sdd objects"
+        );
+    }
+
+    /// 1.17 — the v54 grant matrix, exactly as design §2 specifies.
+    #[test]
+    fn run_v54_grants_sdd_perms() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        let expected: &[(&str, &[&str])] = &[
+            ("tmpl_dev_junior", &["sdd:read", "sdd:write"]),
+            ("tmpl_dev_senior", &["sdd:read", "sdd:write", "sdd:delete"]),
+            ("tmpl_security_officer", &["sdd:read"]),
+            ("tmpl_auditor", &["sdd:read"]),
+        ];
+
+        for (template_id, grants) in expected {
+            let perms = permissions_of(&conn, template_id);
+            for grant in *grants {
+                assert!(
+                    perms.iter().any(|p| p == grant),
+                    "{template_id} must be granted {grant}"
+                );
+            }
+            // No template gets more sdd:* than its row in the matrix.
+            let actual_sdd: Vec<&String> = perms.iter().filter(|p| p.starts_with("sdd:")).collect();
+            assert_eq!(
+                actual_sdd.len(),
+                grants.len(),
+                "{template_id} must have exactly {} sdd:* grants, got {actual_sdd:?}",
+                grants.len()
+            );
+        }
+    }
+
+    /// 1.19 — re-running v54 must not duplicate any sdd:* string.
+    #[test]
+    fn run_v54_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        run_all(&conn).unwrap();
+
+        for template_id in [
+            "tmpl_dev_junior",
+            "tmpl_dev_senior",
+            "tmpl_security_officer",
+            "tmpl_auditor",
+        ] {
+            let perms = permissions_of(&conn, template_id);
+            let sdd: Vec<&String> = perms.iter().filter(|p| p.starts_with("sdd:")).collect();
+            let mut deduped = sdd.clone();
+            deduped.sort();
+            deduped.dedup();
+            assert_eq!(
+                sdd.len(),
+                deduped.len(),
+                "{template_id} has duplicate sdd:* grants after a second run: {sdd:?}"
+            );
+        }
+    }
+
+    /// 1.21 — v54 appends; it never replaces. Everything v52 and earlier granted survives.
+    #[test]
+    fn run_v54_preserves_existing_permissions() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        let junior = permissions_of(&conn, "tmpl_dev_junior");
+        for pre_existing in ["memory:read", "memory:search", "task:read", "task:write"] {
+            assert!(
+                junior.iter().any(|p| p == pre_existing),
+                "tmpl_dev_junior must retain {pre_existing}"
+            );
+        }
+
+        let senior = permissions_of(&conn, "tmpl_dev_senior");
+        for pre_existing in ["task:read", "task:write", "task:assign", "task:delete"] {
+            assert!(
+                senior.iter().any(|p| p == pre_existing),
+                "tmpl_dev_senior must retain {pre_existing}"
+            );
+        }
+
+        let auditor = permissions_of(&conn, "tmpl_auditor");
+        assert!(
+            auditor.iter().any(|p| p == "audit:read"),
+            "tmpl_auditor must retain audit:read"
+        );
+    }
+
+    /// 1.23 — run_all lands on 54.
+    #[test]
+    fn run_all_sets_user_version_to_54() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(
+            get_user_version(&conn),
+            54,
+            "run_all must leave user_version at 54"
+        );
     }
 }
