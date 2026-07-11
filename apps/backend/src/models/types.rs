@@ -1028,6 +1028,11 @@ pub struct GlobalSearchResult {
     pub projects: Vec<Project>,
     pub policies: Vec<Policy>,
     pub conventions: Vec<Convention>,
+    /// Additive facet. Empty (never a 403) for a caller without `sdd:read` —
+    /// gating the whole search on a brand-new permission would break global
+    /// search for every existing user (design.md A4).
+    #[serde(default)]
+    pub sdd_changes: Vec<SddChangeSummary>,
 }
 
 /// Result type for the internal (backoffice) search endpoint.

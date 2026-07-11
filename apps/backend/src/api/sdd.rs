@@ -428,7 +428,7 @@ mod tests {
             .with_state(store)
     }
 
-    fn setup_with_key() -> (SqliteStore, String, String) {
+    pub(super) fn setup_with_key() -> (SqliteStore, String, String) {
         let store = make_store();
         let (org_id, raw_key) = {
             let db = store.conn();
@@ -442,7 +442,7 @@ mod tests {
 
     /// Creates a user whose role is a custom role holding EXACTLY `perms` — so a test can
     /// isolate one permission string at a time (e.g. sdd:write without sdd:read).
-    fn member_with_perms(store: &SqliteStore, org_id: &str, perms: &[&str]) -> (String, String) {
+    pub(super) fn member_with_perms(store: &SqliteStore, org_id: &str, perms: &[&str]) -> (String, String) {
         use crate::auth::api_keys;
         use uuid::Uuid;
         let db = store.conn();
@@ -513,7 +513,7 @@ mod tests {
         (raw_key, org_id)
     }
 
-    async fn req(
+    pub(super) async fn req(
         store: &SqliteStore,
         key: &str,
         method: &str,
@@ -532,7 +532,7 @@ mod tests {
         app(store.clone()).oneshot(builder.body(body).unwrap()).await.unwrap()
     }
 
-    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+    pub(super) async fn body_json(resp: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
@@ -558,7 +558,7 @@ mod tests {
         }
     }
 
-    async fn save_artifact(store: &SqliteStore, key: &str, change: &str, kind: &str, content: &str) -> serde_json::Value {
+    pub(super) async fn save_artifact(store: &SqliteStore, key: &str, change: &str, kind: &str, content: &str) -> serde_json::Value {
         let resp = req(
             store,
             key,
@@ -576,7 +576,7 @@ mod tests {
         body_json(resp).await
     }
 
-    fn count(store: &SqliteStore, table: &str) -> i64 {
+    pub(super) fn count(store: &SqliteStore, table: &str) -> i64 {
         let db = store.conn();
         let conn = db.lock().unwrap();
         conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
@@ -1245,5 +1245,238 @@ mod tests {
         assert_eq!(again.status(), StatusCode::NOT_FOUND, "the link is already gone");
 
         assert_eq!(count(&store, "memories"), 1, "unlinking must not delete the memory");
+    }
+}
+
+/// PR-4 — the `spec_change_exists` behavior change and the global-search facet.
+///
+/// These live here rather than in `api/tasks.rs` because they are the integration
+/// seam between the two domains, and because the bug they close is an
+/// sdd-artifacts bug: the task-side check had no real referent to check against.
+#[cfg(test)]
+mod integration_tests {
+    use super::tests::*;
+    use super::*;
+    use axum::{body::Body, http::Request, middleware, routing::post, Router};
+    use tower::util::ServiceExt;
+
+    use crate::{
+        api::{middleware as auth_mw, search, tasks},
+        db::queries as q,
+        store::sqlite::SqliteStore,
+    };
+
+    /// A router carrying the task spec-link route and global search, so the
+    /// cross-domain behavior can be driven end to end.
+    fn cross_app(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/tasks/:id/spec-links", post(tasks::link_task_spec_handler))
+            .route("/v1/search", axum::routing::get(search::get_global_search))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    async fn cross_req(
+        store: &SqliteStore,
+        key: &str,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> axum::response::Response {
+        let builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Authorization", format!("Bearer {key}"))
+            .header("Content-Type", "application/json");
+        let body = match body {
+            Some(v) => Body::from(v.to_string()),
+            None => Body::empty(),
+        };
+        cross_app(store.clone()).oneshot(builder.body(body).unwrap()).await.unwrap()
+    }
+
+    fn mk_task(store: &SqliteStore, org_id: &str) -> String {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let user_id = q::list_users(&conn, org_id).unwrap()[0].id.clone();
+        q::create_task(
+            &conn,
+            org_id,
+            &user_id,
+            &crate::models::types::CreateTaskRequest {
+                project: "nexus-mind".into(),
+                title: "A task".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    /// Points `OPENSPEC_ROOT` at an empty temp dir, reproducing production: the backend
+    /// runs on Fly.io where no `openspec/` tree exists. Serialized against other tests
+    /// that touch the same process-global env var.
+    /// `OPENSPEC_ROOT` is a process-global env var and `cargo test` runs tests in
+    /// parallel threads within one process, so every test that mutates it must hold
+    /// this lock for the duration.
+    fn openspec_env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// 4.7 — THE BUG THIS PR CLOSES.
+    ///
+    /// Before: the check read the filesystem, found no openspec tree (Fly.io has none),
+    /// fell through to its "root unreadable -> allow" branch, and returned 201 for ANY
+    /// string. Confirmed live on 2026-07-11: 11 tasks linked to a folder that existed
+    /// only on one laptop. Now the sdd_changes table is the referent.
+    #[tokio::test]
+    async fn link_task_spec_rejects_an_unknown_change_when_no_openspec_tree_exists() {
+        let (store, admin_key, org_id) = setup_with_key();
+        let task_id = mk_task(&store, &org_id);
+
+        // A real change, in the DB only — exactly how production will have it.
+        save_artifact(&store, &admin_key, "sdd-artifacts", "design", "D").await;
+
+        // An empty root: no openspec/ tree anywhere, exactly like the Fly.io container.
+        let guard = openspec_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("sdd-no-openspec-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OPENSPEC_ROOT").ok();
+        std::env::set_var("OPENSPEC_ROOT", &tmp);
+
+        let known = cross_req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            Some(serde_json::json!({ "spec_change_name": "sdd-artifacts" })),
+        )
+        .await
+        .status();
+
+        let unknown = cross_req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            Some(serde_json::json!({ "spec_change_name": "totally-made-up" })),
+        )
+        .await
+        .status();
+
+        match prev {
+            Some(p) => std::env::set_var("OPENSPEC_ROOT", p),
+            None => std::env::remove_var("OPENSPEC_ROOT"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        drop(guard);
+
+        assert_eq!(known, StatusCode::CREATED, "a change that exists in the DB must link");
+        assert_eq!(
+            unknown,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a typo'd change name must now 422 in production — this returned 201 before PR-4"
+        );
+    }
+
+    /// 4.5 — the non-regression guard. The permissive-on-unreadable-root FS branch is
+    /// PRESERVED: a repo whose changes were never pushed to NexusMind must keep working
+    /// for a backend running locally inside that checkout.
+    #[tokio::test]
+    async fn link_task_spec_still_allows_a_filesystem_only_change() {
+        let (store, admin_key, org_id) = setup_with_key();
+        let task_id = mk_task(&store, &org_id);
+
+        let _guard = openspec_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = std::env::temp_dir().join(format!("sdd-fs-only-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("openspec/changes/on-disk-only")).unwrap();
+        let prev = std::env::var("OPENSPEC_ROOT").ok();
+        std::env::set_var("OPENSPEC_ROOT", &tmp);
+
+        let resp = cross_req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/tasks/{task_id}/spec-links"),
+            Some(serde_json::json!({ "spec_change_name": "on-disk-only" })),
+        )
+        .await;
+
+        match prev {
+            Some(p) => std::env::set_var("OPENSPEC_ROOT", p),
+            None => std::env::remove_var("OPENSPEC_ROOT"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "a change present only on disk must still link — the FS fallback is kept on purpose"
+        );
+    }
+
+    /// 4.11 — GET /v1/sdd/changes/:id/tasks joins through task_spec_links by name.
+    #[tokio::test]
+    async fn change_tasks_endpoint_returns_the_linked_tasks() {
+        let (store, admin_key, org_id) = setup_with_key();
+        save_artifact(&store, &admin_key, "sdd-artifacts", "design", "D").await;
+        let list = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let change_id = list[0]["id"].as_str().unwrap().to_string();
+
+        let task_id = mk_task(&store, &org_id);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let user_id = q::list_users(&conn, &org_id).unwrap()[0].id.clone();
+            q::link_task_spec(&conn, &task_id, &user_id, "sdd-artifacts").unwrap();
+        }
+
+        let json = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/tasks"), None).await,
+        )
+        .await;
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["id"], task_id);
+    }
+
+    /// 4.15 — the facet is present for a caller with sdd:read.
+    #[tokio::test]
+    async fn global_search_returns_the_sdd_facet() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_artifact(&store, &admin_key, "rate-limiting", "design", "D").await;
+
+        let json = body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
+        let hits = json["sdd_changes"].as_array().expect("the sdd_changes facet must exist");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["name"], "rate-limiting");
+        assert_eq!(hits[0]["phase"], "propose");
+    }
+
+    /// 4.17 — A4: WITHOUT sdd:read the facet is EMPTY, and global search still 200s.
+    /// Gating the whole endpoint on a brand-new permission would break search for
+    /// every existing user the moment this ships.
+    #[tokio::test]
+    async fn global_search_without_sdd_read_returns_an_empty_facet_not_403() {
+        let (store, admin_key, org_id) = setup_with_key();
+        save_artifact(&store, &admin_key, "rate-limiting", "design", "D").await;
+
+        // memory:search but NO sdd:read.
+        let (key, _) = member_with_perms(&store, &org_id, &["memory:search", "memory:read"]);
+
+        let resp = cross_req(&store, &key, "GET", "/v1/search?q=rate", None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "global search must NOT start 403ing for users who lack the new sdd:read grant"
+        );
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["sdd_changes"].as_array().unwrap().len(),
+            0,
+            "the facet is empty, not populated, and not an error"
+        );
     }
 }

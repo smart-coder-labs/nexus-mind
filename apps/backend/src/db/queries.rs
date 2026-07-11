@@ -27,7 +27,8 @@ use crate::models::types::{
 };
 use crate::models::types::{
     PatchChangeRequest, SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
-    SddChange, SddChangeFilters, SddPhase, SddRevision, SddRevisionMeta, SddSearchHit, SddStatus,
+    SddChange, SddChangeFilters, SddChangeSummary, SddPhase, SddRevision, SddRevisionMeta,
+    SddSearchHit, SddStatus,
     UpsertChangeRequest,
 };
 use anyhow::anyhow;
@@ -8033,6 +8034,42 @@ pub fn list_tasks_for_sdd_change(
     }
     hydrate_tasks(conn, &mut tasks)?;
     Ok(tasks)
+}
+
+/// Keyword search over change names and titles, for the `global_search` facet.
+/// LIKE-based, mirroring `search_conventions_by_query_visible` — `global_search`
+/// is keyword-only, not semantic. Archived changes are excluded.
+pub fn search_sdd_changes_by_query(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddChangeSummary>> {
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, project, name, title, phase, status
+         FROM sdd_changes
+         WHERE org_id = ?1
+           AND archived_at IS NULL
+           AND (name LIKE ?2 OR title LIKE ?2)
+         ORDER BY updated_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+        Ok(SddChangeSummary {
+            id: row.get(0)?,
+            project: row.get(1)?,
+            name: row.get(2)?,
+            title: row.get(3)?,
+            phase: row.get(4)?,
+            status: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 /// Backs the DB-first half of `spec_change_exists` (design.md D5).

@@ -243,11 +243,39 @@ fn spec_change_exists(conn: &Connection, org_id: &str, name: &str) -> bool {
 }
 ```
 
-DB first (real in production), filesystem second (still works for a local backend inside a checkout
-whose changes were never pushed to NexusMind). The permissive-on-unreadable-root behaviour of the FS
-path is preserved, so nothing that links today stops linking — but once the importer has run, a typo'd
-change name in production hits neither branch and correctly 422s. **This is a behaviour change on an
-existing endpoint; it gets its own test.**
+**CORRECTION (found while implementing PR-4 — the version above does not work).** OR-ing a DB lookup in
+front of the existing check changes nothing. The FS branch returns `true` *unconditionally* when there is
+no tree, so it swallows the DB's verdict every time. **A permissive fallback placed after an
+authoritative check makes the authoritative check dead code.**
+
+The two worlds have to be separated by whether an `openspec/` tree exists at all:
+
+```rust
+fn spec_change_is_known(conn: &Connection, org_id: &str, name: &str) -> bool {
+    if queries::sdd_change_exists(conn, org_id, name).unwrap_or(false) { return true }
+
+    let root = repo_root();
+    if !root.join("openspec/changes").is_dir() {
+        // No tree to consult. The DB already said no, and a check that cannot fail
+        // is not a check.
+        return false;
+    }
+    fs_spec_change_exists(&root, name)   // a tree exists → keep the FS fallback
+}
+```
+
+- **A tree exists** (a dev running the backend inside a checkout): the FS stays a fallback, so a change
+  that lives on disk but was never pushed to NexusMind still links. Nothing that works today breaks.
+- **No tree** (production): the DB is the *only* referent. If it says no, the answer is no.
+
+**This is a behaviour change on a shipped endpoint.** The existing test
+`link_task_spec_handler_advisory_passes_when_root_unresolvable` asserted a 201 here — it encoded the bug
+as intended behaviour — and is rewritten to assert the 422.
+
+**DEPLOYMENT ORDER (a constraint the original design missed):** PR-4 makes `link_task_spec` genuinely
+reject unknown names in production, so `sdd_changes` must be populated *first*. The importer (PR-5) ships
+**before, or with, PR-4 — never after.** Merging PR-4 alone would 422 every link in production until the
+table is filled.
 
 ---
 
