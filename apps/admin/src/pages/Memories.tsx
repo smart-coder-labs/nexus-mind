@@ -1,12 +1,12 @@
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
+import { Markdown } from '../components/ui/Markdown'
 import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, List } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -57,81 +57,6 @@ function TypeBadge({ type }: { type?: string }) {
     <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
-  )
-}
-
-// ── Markdown renderer ─────────────────────────────────────────────────────────
-
-function MemoryMarkdown({ content }: { content: string }) {
-  return (
-    <ReactMarkdown
-      components={{
-        h1: ({ children }) => (
-          <h1 className="text-base font-semibold text-text-primary mt-6 mb-2 first:mt-0">{children}</h1>
-        ),
-        h2: ({ children }) => (
-          <h2 className="text-xs font-semibold text-text-primary mt-5 mb-1.5 pb-1.5 border-b border-border-secondary first:mt-0">{children}</h2>
-        ),
-        h3: ({ children }) => (
-          <h3 className="text-[13px] font-semibold text-accent-blue mt-4 mb-1 first:mt-0">{children}</h3>
-        ),
-        p: ({ children }) => (
-          <p className="text-xs text-text-secondary leading-relaxed mb-3 last:mb-0">{children}</p>
-        ),
-        ul: ({ children }) => (
-          <ul className="mb-3 ml-4 space-y-1 list-none last:mb-0">{children}</ul>
-        ),
-        ol: ({ children }) => (
-          <ol className="mb-3 ml-4 space-y-1 list-decimal last:mb-0">{children}</ol>
-        ),
-        li: ({ children }) => (
-          <li className="text-xs text-text-secondary leading-relaxed flex gap-2">
-            <span className="text-accent-blue/50 mt-1.5 shrink-0 w-1 h-1 rounded-full bg-accent-blue/40 inline-block" />
-            <span>{children}</span>
-          </li>
-        ),
-        strong: ({ children }) => (
-          <strong className="font-semibold text-text-primary">{children}</strong>
-        ),
-        em: ({ children }) => (
-          <em className="italic text-text-secondary">{children}</em>
-        ),
-        a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer"
-             className="text-accent-blue hover:text-accent-blue-hover underline decoration-accent-blue/30 transition-colors">
-            {children}
-          </a>
-        ),
-        blockquote: ({ children }) => (
-          <blockquote className="border-l-2 border-accent-blue/30 pl-4 my-3 text-text-tertiary italic">
-            {children}
-          </blockquote>
-        ),
-        code: ({ children, className }) => {
-          const isBlock = className?.startsWith('language-')
-          if (isBlock) {
-            return (
-              <code className="block text-xs font-mono text-text-secondary leading-relaxed">
-                {children}
-              </code>
-            )
-          }
-          return (
-            <code className="text-[12px] font-mono text-accent-blue bg-accent-blue/8 rounded px-1.5 py-0.5">
-              {children}
-            </code>
-          )
-        },
-        pre: ({ children }) => (
-          <pre className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-4 py-3 overflow-x-auto mb-3 last:mb-0">
-            {children}
-          </pre>
-        ),
-        hr: () => <hr className="border-border-primary my-4" />,
-      }}
-    >
-      {content}
-    </ReactMarkdown>
   )
 }
 
@@ -399,7 +324,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
 
         {/* Content */}
         <div className="overflow-y-auto flex-1 px-6 py-5">
-          <MemoryMarkdown content={memory.content} />
+          <Markdown content={memory.content} />
 
           {memory.tags.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap mt-5 pt-4 border-t border-border-secondary">

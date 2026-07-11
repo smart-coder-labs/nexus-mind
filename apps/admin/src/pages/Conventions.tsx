@@ -1,8 +1,8 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { BookMarked, Plus, X, Pencil, Archive, RotateCcw, Trash2, Download, Upload, Layers } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
 import { createClient } from '../api/client'
+import { Markdown } from '../components/ui/Markdown'
 import type { Convention, CreateConventionRequest } from '../types'
 
 const client = createClient()
@@ -675,36 +675,7 @@ function ConventionCard({
             <p className="text-xs text-text-secondary whitespace-pre-wrap">{conv.content}</p>
           ) : (
             <div className="text-xs text-text-secondary prose-convention">
-              <ReactMarkdown
-                components={{
-                  h1: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
-                  h2: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
-                  h3: ({ children }) => <h3 className="text-xs text-text-primary font-semibold mt-2 mb-1 first:mt-0">{children}</h3>,
-                  p: ({ children }) => <p className="text-xs text-text-secondary mb-2 last:mb-0">{children}</p>,
-                  ul: ({ children }) => <ul className="mb-2 space-y-0.5 list-none last:mb-0">{children}</ul>,
-                  ol: ({ children }) => <ol className="mb-2 ml-4 space-y-0.5 list-decimal last:mb-0">{children}</ol>,
-                  li: ({ children }) => (
-                    <li className="text-xs text-text-secondary ml-3 flex gap-1.5">
-                      <span className="text-text-quaternary shrink-0 mt-1">•</span>
-                      <span>{children}</span>
-                    </li>
-                  ),
-                  strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
-                  em: ({ children }) => <em className="italic text-text-tertiary">{children}</em>,
-                  code: ({ children, className }) => {
-                    const isBlock = className?.startsWith('language-')
-                    if (isBlock) return <code className="block text-[11px] font-mono text-text-secondary leading-relaxed">{children}</code>
-                    return <code className="bg-white/[0.06] rounded px-1 text-accent-blue font-mono text-[11px]">{children}</code>
-                  },
-                  pre: ({ children }) => (
-                    <pre className="bg-white/[0.06] rounded-[8px] p-3 text-[11px] font-mono text-text-secondary overflow-x-auto mb-2 last:mb-0">
-                      {children}
-                    </pre>
-                  ),
-                }}
-              >
-                {conv.content}
-              </ReactMarkdown>
+              <Markdown content={conv.content} />
             </div>
           )}
 
