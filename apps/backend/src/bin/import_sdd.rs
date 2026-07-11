@@ -379,6 +379,18 @@ pub fn import_filesystem(
                 ..Default::default()
             },
         )?;
+
+        // `status` and `archived_at` are two representations of the same fact, and
+        // `list_sdd_changes` filters on `archived_at IS NULL` — not on `status`. Setting
+        // only `status='archived'` would leave every imported archive folder showing up
+        // in the admin's default list forever. Set both, or the two disagree.
+        //
+        // This does NOT withdraw the change: `sdd_change_exists` carries no `archived_at`
+        // predicate, so an archived change stays a valid `link_task_spec` target (A8),
+        // and `get_sdd_change` by id still returns its full artifact inventory.
+        if change.archived {
+            queries::archive_sdd_change(conn, org_id, &stored.id)?;
+        }
     }
 
     Ok(stats)
@@ -956,6 +968,41 @@ mod tests {
             .expect("the archive folder imports under its stripped name");
         assert_eq!(change.status, "archived");
         assert_eq!(change.phase, "archive");
+
+        // `status` and `archived_at` must AGREE. `list_sdd_changes` filters on
+        // `archived_at IS NULL`, not on `status`, so setting only `status` would leave
+        // every imported archive folder in the admin's default list forever — two fields
+        // representing one fact, disagreeing.
+        assert!(
+            change.archived_at.is_some(),
+            "an archived change must have archived_at set, or it still shows in the default list"
+        );
+        let default_list =
+            queries::list_sdd_changes(&conn, &org, &nexusmind::models::types::SddChangeFilters::default())
+                .unwrap();
+        assert!(
+            !default_list.iter().any(|c| c.name == "old-change"),
+            "an archived change must NOT appear in the default list"
+        );
+        let with_archived = queries::list_sdd_changes(
+            &conn,
+            &org,
+            &nexusmind::models::types::SddChangeFilters { include_archived: true, ..Default::default() },
+        )
+        .unwrap();
+        assert!(
+            with_archived.iter().any(|c| c.name == "old-change"),
+            "…but it must appear on request"
+        );
+
+        // A8 — archiving does not withdraw the change: it stays a valid link target and
+        // its artifacts stay retrievable.
+        assert!(
+            queries::sdd_change_exists(&conn, &org, "old-change").unwrap(),
+            "an archived change remains a legitimate link_task_spec target"
+        );
+        let hydrated = queries::get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+        assert_eq!(hydrated.artifacts.len(), 1, "its artifacts survive");
 
         assert!(
             queries::get_sdd_change_by_name(&conn, &org, "nexus-mind", "archive")
