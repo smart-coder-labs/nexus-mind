@@ -80,6 +80,15 @@ import type {
   PatchTaskRequest,
   ListSprintsParams,
   CreateSprintRequest,
+  SddChange,
+  SddArtifact,
+  SddArtifactDetail,
+  SddRevision,
+  SddRevisionMeta,
+  SddSearchHit,
+  ListSddChangesParams,
+  PatchSddChangeRequest,
+  LinkSddChangeMemoryRequest,
 } from '../types'
 
 export class NexusMindClient {
@@ -1045,6 +1054,81 @@ export class NexusMindClient {
 
   createSprint(data: CreateSprintRequest): Promise<Sprint> {
     return this.request<Sprint>('/v1/sprints', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  // ── SDD Artifacts ────────────────────────────────────────────────────────────
+  //
+  // Read-only over artifact CONTENT (design.md A7). There is deliberately no
+  // artifact-save method on this client at all — artifacts are authored by the
+  // harness and by git, never by the admin, so the capability must not exist
+  // here for any code path to reach for. The three writes below touch change
+  // metadata and memory links only — curation, not authorship.
+
+  listSddChanges(params: ListSddChangesParams = {}): Promise<SddChange[]> {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => v != null && qs.set(k, String(v)))
+    const q = qs.toString()
+    return this.request<SddChange[]>(`/v1/sdd/changes${q ? `?${q}` : ''}`)
+  }
+
+  /** Hydrated read: `artifacts[]` + `task_links[]` + `memory_links[]`. */
+  getSddChange(id: string): Promise<SddChange> {
+    return this.request<SddChange>(`/v1/sdd/changes/${encodeURIComponent(id)}`)
+  }
+
+  getSddChangeArtifacts(id: string): Promise<SddArtifact[]> {
+    return this.request<SddArtifact[]>(`/v1/sdd/changes/${encodeURIComponent(id)}/artifacts`)
+  }
+
+  getSddChangeTasks(id: string): Promise<Task[]> {
+    return this.request<Task[]>(`/v1/sdd/changes/${encodeURIComponent(id)}/tasks`)
+  }
+
+  /** Returns the artifact's fields INLINE plus `content` — the response is
+   *  serde-flattened, so there is no `.artifact` wrapper to reach through. */
+  getSddArtifact(id: string): Promise<SddArtifactDetail> {
+    return this.request<SddArtifactDetail>(`/v1/sdd/artifacts/${encodeURIComponent(id)}`)
+  }
+
+  /** Metadata only — the revision list never carries content. */
+  listSddArtifactRevisions(id: string): Promise<SddRevisionMeta[]> {
+    return this.request<SddRevisionMeta[]>(`/v1/sdd/artifacts/${encodeURIComponent(id)}/revisions`)
+  }
+
+  getSddArtifactRevision(id: string, rev: number): Promise<SddRevision> {
+    return this.request<SddRevision>(
+      `/v1/sdd/artifacts/${encodeURIComponent(id)}/revisions/${rev}`,
+    )
+  }
+
+  searchSddArtifacts(q: string, limit = 20): Promise<SddSearchHit[]> {
+    const qs = new URLSearchParams({ q, limit: String(limit) })
+    return this.request<SddSearchHit[]>(`/v1/sdd/search?${qs.toString()}`)
+  }
+
+  /** Curation (A7). Accepts ONLY title/status/phase/sprint_id — the backend
+   *  declares `deny_unknown_fields`, so a stray `project` or `name` is a 422. */
+  patchSddChange(id: string, data: PatchSddChangeRequest): Promise<SddChange> {
+    return this.request<SddChange>(`/v1/sdd/changes/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  /** Curation (A7). Returns the change's full memory link list. */
+  linkSddChangeMemory(id: string, data: LinkSddChangeMemoryRequest): Promise<Memory[]> {
+    return this.request<Memory[]>(`/v1/sdd/changes/${encodeURIComponent(id)}/memories`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  /** Curation (A7). */
+  unlinkSddChangeMemory(id: string, memoryId: string): Promise<void> {
+    return this.request(
+      `/v1/sdd/changes/${encodeURIComponent(id)}/memories/${encodeURIComponent(memoryId)}`,
+      { method: 'DELETE' },
+    )
   }
 }
 

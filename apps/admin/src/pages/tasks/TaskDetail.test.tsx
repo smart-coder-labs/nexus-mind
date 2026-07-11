@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthContext } from '../../auth/AuthContext'
 import { renderWithProviders } from '../../test/render'
 import TaskDetail from './TaskDetail'
-import type { Task, AuthSession } from '../../types'
+import type { Task, AuthSession, SddChange } from '../../types'
 
 // ── Fixture data ──────────────────────────────────────────────────────────────
 
@@ -72,6 +72,7 @@ const {
   listTaskSpecLinksMock,
   linkTaskSpecMock,
   unlinkTaskSpecMock,
+  listSddChangesMock,
 } = vi.hoisted(() => ({
   getTaskMock: vi.fn(),
   updateTaskMock: vi.fn(),
@@ -87,6 +88,7 @@ const {
   listTaskSpecLinksMock: vi.fn(),
   linkTaskSpecMock: vi.fn(),
   unlinkTaskSpecMock: vi.fn(),
+  listSddChangesMock: vi.fn(),
 }))
 
 vi.mock('../../api/client', () => ({
@@ -105,8 +107,20 @@ vi.mock('../../api/client', () => ({
     listTaskSpecLinks: listTaskSpecLinksMock,
     linkTaskSpec: linkTaskSpecMock,
     unlinkTaskSpec: unlinkTaskSpecMock,
+    listSddChanges: listSddChangesMock,
   })),
 }))
+
+/** The SDD change the task's `team-tasks` spec link resolves to. */
+const sddChanges: SddChange[] = [
+  {
+    id: 'c1', org_id: 'org-test-1', project: 'acme-platform', name: 'team-tasks',
+    title: 'Team tasks', status: 'active', phase: 'design', repo_url: null, repo_ref: null,
+    sprint_id: null, created_by: 'user-admin-1', created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-10T00:00:00Z', archived_at: null,
+    artifacts: [], task_links: [], memory_links: [],
+  },
+]
 
 // ── Custom render for permission-scoped scenarios ──────────────────────────────
 
@@ -156,6 +170,7 @@ beforeEach(() => {
   listTaskSpecLinksMock.mockResolvedValue(specLinks)
   linkTaskSpecMock.mockResolvedValue(undefined)
   unlinkTaskSpecMock.mockResolvedValue(undefined)
+  listSddChangesMock.mockResolvedValue(sddChanges)
 })
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -514,5 +529,53 @@ describe('TaskDetail — editable fields form', () => {
     // Save must NOT be inside the edit-fields <form> — it's associated via `form=`.
     expect(saveButton.closest('form')).toBeNull()
     expect(saveButton).toHaveAttribute('form', 'task-edit-form')
+  })
+})
+
+// ── Cross-link into the SDD section (PR-9) ────────────────────────────────────
+
+describe('TaskDetail — linked specs cross-link into /sdd', () => {
+  it('task_detail_linked_specs_are_links_into_the_sdd_section_with_the_change_phase', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('team-tasks')).toBeInTheDocument()
+    })
+
+    const link = await screen.findByRole('link', { name: /team-tasks/i })
+    expect(link).toHaveAttribute('href', '/sdd?change=team-tasks')
+
+    // The change's phase is shown beside the name.
+    const chip = link.closest('span')!
+    expect(within(chip).getByText('design')).toBeInTheDocument()
+  })
+
+  it('task_detail_dangling_spec_link_renders_without_breaking_the_view', async () => {
+    // The change was renamed away — the link name resolves to nothing.
+    listSddChangesMock.mockResolvedValue([])
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('team-tasks')).toBeInTheDocument()
+    })
+
+    // Still displayed, but NOT as a link to a change that does not exist.
+    expect(screen.queryByRole('link', { name: /team-tasks/i })).not.toBeInTheDocument()
+    // …and the rest of the detail still renders.
+    expect(screen.getByText('Looking into it')).toBeInTheDocument()
+    expect(screen.getByText('Reproduce the bug')).toBeInTheDocument()
+  })
+
+  it('does not fetch SDD changes for a user without sdd:read', async () => {
+    renderAsMember(<TaskDetail task={task} onClose={() => undefined} />, ['task:read'])
+
+    await waitFor(() => {
+      expect(screen.getByText('team-tasks')).toBeInTheDocument()
+    })
+
+    // A 403 here would bounce the whole admin to /401 via the client's global
+    // handler — so the lookup must be gated, not merely tolerated.
+    expect(listSddChangesMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('link', { name: /team-tasks/i })).not.toBeInTheDocument()
   })
 })

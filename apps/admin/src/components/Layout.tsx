@@ -28,6 +28,7 @@ import {
   Network,
   Boxes,
   ListTodo,
+  FileStack,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -155,6 +156,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true, requiredPermission: 'convention:read' },
       { label: 'Sessions',    href: '/sessions',    icon: MessageSquare },
       { label: 'Tasks',       href: '/tasks',       icon: ListTodo,      adminOnly: true, requiredPermission: 'task:read' },
+      { label: 'SDD',         href: '/sdd',         icon: FileStack,     adminOnly: true, requiredPermission: 'sdd:read' },
     ],
   },
   {

@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search as SearchIcon, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { createClient } from '../api/client'
-import type { GlobalSearchResult, Memory, UserSummary, Project, Policy, Convention } from '../types'
+import type {
+  GlobalSearchResult, Memory, UserSummary, Project, Policy, Convention, SddChangeSummary,
+} from '../types'
 import { cn } from '@/lib/utils'
 
 const client = createClient()
 
-type Tab = 'all' | 'memories' | 'users' | 'projects' | 'policies' | 'conventions'
+type Tab = 'all' | 'memories' | 'users' | 'projects' | 'policies' | 'conventions' | 'sdd'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'all',         label: 'All' },
@@ -15,6 +18,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'projects',   label: 'Projects' },
   { key: 'policies',   label: 'Policies' },
   { key: 'conventions', label: 'Conventions' },
+  { key: 'sdd',        label: 'SDD' },
 ]
 
 // ── Result cards ──────────────────────────────────────────────────────────────
@@ -125,6 +129,26 @@ function ConventionCard({ convention }: { convention: Convention }) {
   )
 }
 
+function SddChangeCard({ change }: { change: SddChangeSummary }) {
+  return (
+    <Link
+      to={`/sdd?change=${encodeURIComponent(change.name)}`}
+      className="block bg-[#272729] rounded-[11px] border border-border-primary p-4 space-y-1.5 hover:border-accent-blue/40 transition-colors"
+    >
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-semibold text-text-primary flex-1 truncate">{change.name}</p>
+        <span className="text-[10px] font-semibold bg-accent-blue/10 text-accent-blue border border-accent-blue/20 rounded-full px-2 py-0.5 shrink-0">
+          {change.phase}
+        </span>
+      </div>
+      {change.title && (
+        <p className="text-[10px] text-text-secondary line-clamp-2">{change.title}</p>
+      )}
+      <p className="text-[10px] text-text-quaternary">{change.project}</p>
+    </Link>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Search() {
@@ -168,7 +192,11 @@ export default function Search() {
   const projects    = results?.projects    ?? []
   const policies    = results?.policies    ?? []
   const conventions = results?.conventions ?? []
-  const totalCount  = memories.length + users.length + projects.length + policies.length + conventions.length
+  // Additive facet: a backend that predates it omits the key entirely, and a
+  // caller without `sdd:read` gets it back empty (A4). Both must be non-events.
+  const sddChanges  = results?.sdd_changes ?? []
+  const totalCount  = memories.length + users.length + projects.length + policies.length
+    + conventions.length + sddChanges.length
 
   const tabCounts: Record<Tab, number> = {
     all:         totalCount,
@@ -177,6 +205,7 @@ export default function Search() {
     projects:    projects.length,
     policies:    policies.length,
     conventions: conventions.length,
+    sdd:         sddChanges.length,
   }
 
   const hasResults = totalCount > 0
@@ -342,6 +371,20 @@ export default function Search() {
               )}
               {conventions.map(c => (
                 <ConventionCard key={c.id} convention={c} />
+              ))}
+            </section>
+          )}
+
+          {/* SDD — the group is omitted, never rendered empty */}
+          {(activeTab === 'all' || activeTab === 'sdd') && sddChanges.length > 0 && (
+            <section data-testid="sdd-results" className="space-y-3">
+              {activeTab === 'all' && (
+                <p className="text-[11px] font-semibold text-text-quaternary uppercase tracking-wide">
+                  SDD
+                </p>
+              )}
+              {sddChanges.map(c => (
+                <SddChangeCard key={c.id} change={c} />
               ))}
             </section>
           )}

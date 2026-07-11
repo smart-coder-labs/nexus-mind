@@ -283,6 +283,10 @@ export interface GlobalSearchResult {
   projects: Project[]
   policies: Policy[]
   conventions: Convention[]
+  /** Additive facet. Empty — never a 403 — for a caller without `sdd:read`
+   *  (design.md A4). An older backend omits the key entirely, so every read site
+   *  must default it to `[]`. */
+  sdd_changes: SddChangeSummary[]
 }
 
 export interface DailyCount {
@@ -936,4 +940,151 @@ export interface CreateSprintRequest {
   goal?: string
   starts_at?: string
   ends_at?: string
+}
+
+// ── SDD Artifacts ─────────────────────────────────────────────────────────────
+//
+// Hand-written mirrors of `apps/backend/src/models/types.rs`. Three shapes here
+// are load-bearing and easy to get wrong:
+//
+//  1. `SddArtifactDetail` is `#[serde(flatten)]`-ed on the wire — the artifact's
+//     own fields are INLINE alongside `change_name`/`project`/`content`. Modelling
+//     it as `{ artifact: SddArtifact, ... }` compiles and silently yields
+//     `undefined` content at runtime. Hence `extends SddArtifact`.
+//  2. `SddRevisionMeta` has NO `content` field, on purpose — the revision *list*
+//     endpoint physically cannot leak a 36 KB document.
+//  3. `SddArtifact` itself carries no content either; content is fetched by id.
+
+/** Advisory pipeline marker on a change. The artifact inventory — not this — is
+ *  the ground truth for what a change actually has. */
+export type SddPhase =
+  | 'explore' | 'propose' | 'spec' | 'design' | 'tasks' | 'apply' | 'verify' | 'archive'
+
+export type SddStatus = 'active' | 'archived' | 'abandoned'
+
+export type SddArtifactKind =
+  | 'exploration' | 'proposal' | 'spec' | 'design' | 'tasks'
+  | 'apply-progress' | 'verify-report' | 'archive-report' | 'state'
+
+/** One artifact file within a change. Carries NO content. */
+export interface SddArtifact {
+  id: string
+  change_id: string
+  kind: SddArtifactKind
+  /** Empty string for every kind except `spec`. Never null. */
+  capability: string
+  path?: string | null
+  latest_revision: number
+  created_at: string
+  updated_at: string
+}
+
+/** An artifact plus the content of its latest revision. Serde-FLATTENED on the
+ *  wire: the `SddArtifact` fields arrive inline, not nested under `artifact`. */
+export interface SddArtifactDetail extends SddArtifact {
+  change_name: string
+  project: string
+  content?: string | null
+  content_hash?: string | null
+}
+
+/** A full, immutable revision — with content. */
+export interface SddRevision {
+  id: string
+  artifact_id: string
+  revision: number
+  content: string
+  content_hash: string
+  byte_size: number
+  git_commit?: string | null
+  git_path?: string | null
+  source: string
+  created_by: string
+  created_at: string
+}
+
+/** Revision metadata. No `content` field, deliberately. */
+export interface SddRevisionMeta {
+  id: string
+  artifact_id: string
+  revision: number
+  content_hash: string
+  byte_size: number
+  git_commit?: string | null
+  git_path?: string | null
+  source: string
+  created_by: string
+  created_at: string
+}
+
+/** An SDD change — one `openspec/changes/{name}/` folder. */
+export interface SddChange {
+  id: string
+  org_id: string
+  project: string
+  name: string
+  title?: string | null
+  status: SddStatus
+  phase: SddPhase
+  repo_url?: string | null
+  repo_ref?: string | null
+  sprint_id?: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  archived_at?: string | null
+  /** Metadata-only inventory. Hydrated on list AND detail reads. */
+  artifacts: SddArtifact[]
+  /** Hydrated on detail reads only. */
+  task_links: Task[]
+  /** Hydrated on detail reads only. */
+  memory_links: Memory[]
+}
+
+/** Thin projection carried by `GlobalSearchResult` — no content, no inventory. */
+export interface SddChangeSummary {
+  id: string
+  project: string
+  name: string
+  title?: string | null
+  phase: SddPhase
+  status: SddStatus
+}
+
+/** An FTS5 hit — a snippet, never the whole document. */
+export interface SddSearchHit {
+  artifact_id: string
+  change_id: string
+  change_name: string
+  project: string
+  kind: SddArtifactKind
+  capability: string
+  snippet: string
+}
+
+export interface ListSddChangesParams {
+  project?: string
+  status?: SddStatus
+  phase?: SddPhase
+  sprint_id?: string
+  include_archived?: boolean
+}
+
+/** Body for `PATCH /v1/sdd/changes/:id`.
+ *
+ *  The identity tuple `(project, name)` is deliberately absent: the backend
+ *  declares `#[serde(deny_unknown_fields)]`, so sending `project` or `name` is a
+ *  422, not a silent no-op. A rename is a delete-and-recreate. */
+export interface PatchSddChangeRequest {
+  title?: string
+  status?: SddStatus
+  phase?: SddPhase
+  sprint_id?: string | null
+}
+
+/** Body for `POST /v1/sdd/changes/:id/memories`. */
+export interface LinkSddChangeMemoryRequest {
+  memory_id: string
+  /** `produced` (default) or `informed`. */
+  relation?: string
 }
