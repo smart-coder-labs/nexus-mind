@@ -3619,6 +3619,22 @@ pub fn get_role_permissions(
             "harness:download".to_string(),
             "harness:install".to_string(),
             "harness:review_config".to_string(),
+            // These two lists are hard-coded rather than read from `roles`, so every
+            // migration that grants a new domain to the seeded role TEMPLATES (v52 for
+            // task:*, v54 for sdd:*) silently leaves them behind. `require_permission`
+            // bypasses the check for privileged roles, so nothing breaks server-side and
+            // the drift goes unnoticed — but this list is what /v1/admin/auth/me reports,
+            // and the admin UI gates controls on it. An omission here is a lie in the API
+            // response. `no_template_grant_is_missing_from_the_privileged_lists` fails if
+            // a future domain is added without updating this.
+            "task:read".to_string(),
+            "task:write".to_string(),
+            "task:assign".to_string(),
+            "task:delete".to_string(),
+            "task:manage".to_string(),
+            "sdd:read".to_string(),
+            "sdd:write".to_string(),
+            "sdd:delete".to_string(),
         ]);
     } else if role_name == "super_user" {
         return Ok(vec![
@@ -3655,6 +3671,22 @@ pub fn get_role_permissions(
             "harness:download".to_string(),
             "harness:install".to_string(),
             "harness:review_config".to_string(),
+            // These two lists are hard-coded rather than read from `roles`, so every
+            // migration that grants a new domain to the seeded role TEMPLATES (v52 for
+            // task:*, v54 for sdd:*) silently leaves them behind. `require_permission`
+            // bypasses the check for privileged roles, so nothing breaks server-side and
+            // the drift goes unnoticed — but this list is what /v1/admin/auth/me reports,
+            // and the admin UI gates controls on it. An omission here is a lie in the API
+            // response. `no_template_grant_is_missing_from_the_privileged_lists` fails if
+            // a future domain is added without updating this.
+            "task:read".to_string(),
+            "task:write".to_string(),
+            "task:assign".to_string(),
+            "task:delete".to_string(),
+            "task:manage".to_string(),
+            "sdd:read".to_string(),
+            "sdd:write".to_string(),
+            "sdd:delete".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -17514,5 +17546,84 @@ mod sdd_query_tests {
             !sdd_change_exists(&conn, &org_b, "team-tasks").unwrap(),
             "a change in another org must not satisfy the check"
         );
+    }
+}
+
+#[cfg(test)]
+mod privileged_permission_tests {
+    use super::*;
+    use crate::db::connection::connect;
+    use crate::db::migrations;
+
+    fn setup() -> (Connection, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, _user, _key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        (conn, org.id)
+    }
+
+    /// The built-in `admin` and `super_user` permission lists are hard-coded in Rust,
+    /// NOT read from the `roles` table — so every migration that grants a new domain to
+    /// the role *templates* (v52 for `task:*`, v54 for `sdd:*`) silently leaves these two
+    /// behind. `require_permission` bypasses the check for privileged roles, so nothing
+    /// breaks server-side and the drift goes unnoticed.
+    ///
+    /// But the list is what `/v1/admin/auth/me` reports, and the admin UI gates controls
+    /// on it (`isAdmin || permissions.includes('sdd:write')`). A list that omits a domain
+    /// the role can actually use is a **lie in the API response** — and the first UI check
+    /// that forgets its `isAdmin ||` prefix silently hides a control from the very people
+    /// who are allowed to use it.
+    #[test]
+    fn privileged_roles_report_every_domain_they_can_actually_use() {
+        let (conn, org_id) = setup();
+
+        for role in ["admin", "super_user"] {
+            let perms = get_role_permissions(&conn, &org_id, role).unwrap();
+
+            for required in [
+                "task:read",
+                "task:write",
+                "task:assign",
+                "task:delete",
+                "sdd:read",
+                "sdd:write",
+                "sdd:delete",
+            ] {
+                assert!(
+                    perms.iter().any(|p| p == required),
+                    "the hard-coded `{role}` permission list omits `{required}` — \
+                     /v1/admin/auth/me would report a permission set the role does not match"
+                );
+            }
+        }
+    }
+
+    /// Guards the drift itself: every permission string granted to a seeded role template
+    /// must also appear in the privileged lists. A new domain added later fails here.
+    #[test]
+    fn no_template_grant_is_missing_from_the_privileged_lists() {
+        let (conn, org_id) = setup();
+        let admin = get_role_permissions(&conn, &org_id, "admin").unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT permissions FROM roles WHERE id LIKE 'tmpl_%'")
+            .unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        for raw in rows {
+            let granted: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            for perm in granted {
+                assert!(
+                    admin.iter().any(|p| p == &perm),
+                    "`{perm}` is granted to a role template but missing from the hard-coded \
+                     `admin` list — add it there when you add a new permission domain"
+                );
+            }
+        }
     }
 }
