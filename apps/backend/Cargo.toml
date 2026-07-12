@@ -16,6 +16,10 @@ path = "src/bin/seed.rs"
 name = "backfill-embeddings"
 path = "src/bin/backfill_embeddings.rs"
 
+[[bin]]
+name = "import-sdd"
+path = "src/bin/import_sdd.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["json"] }
@@ -40,7 +44,7 @@ fastembed = { version = "4", default-features = false, features = ["ort-download
 dashmap = "5"
 csv = "1"
 ignore = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 async-trait = "0.1"
 tree-sitter = "0.26.10"
 tree-sitter-rust = "0.24.2"

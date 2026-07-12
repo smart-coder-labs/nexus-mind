@@ -37,6 +37,8 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         (StatusCode::UNPROCESSABLE_ENTITY, "invalid_status")
     } else if msg.starts_with("invalid_kind") {
         (StatusCode::UNPROCESSABLE_ENTITY, "invalid_kind")
+    } else if msg.starts_with("invalid_source") {
+        (StatusCode::UNPROCESSABLE_ENTITY, "invalid_source")
     } else if msg.starts_with("memory_not_found") || msg.starts_with("not_found") {
         // The memory does not exist *from this caller's view*. 404, not 403 and not 422 —
         // a 4xx that distinguished "exists but is another org's" would leak existence.
@@ -221,8 +223,21 @@ pub async fn put_artifact_handler(
     SddArtifactKind::from_str(&input.kind)
         .map_err(|_| db_err(anyhow::anyhow!("invalid_kind: {}", input.kind)))?;
 
+    // Provenance, honoured from the body. The importer runs over this endpoint when it
+    // targets a remote backend, and hard-coding `agent` here would stamp every imported
+    // revision as agent-authored — a lie about where the content came from, and one the
+    // DB path does not tell.
+    //
+    // It is descriptive, not authoritative: `source` grants nothing, so there is nothing
+    // to gain by lying about it. An unrecognized value is rejected rather than stored, so
+    // the column stays a closed set.
+    let source = input.source.as_deref().unwrap_or("agent");
+    if !matches!(source, "agent" | "admin" | "import") {
+        return Err(db_err(anyhow::anyhow!("invalid_source: {source}")));
+    }
+
     let (artifact, created_revision) =
-        queries::upsert_sdd_artifact(&conn, &auth.org_id, &auth.user_id, &input, "agent")
+        queries::upsert_sdd_artifact(&conn, &auth.org_id, &auth.user_id, &input, source)
             .map_err(db_err)?;
 
     Ok(Json(serde_json::json!({
@@ -958,6 +973,44 @@ mod tests {
         assert_eq!(count(&store, "sdd_changes"), 0, "a rejected save leaves NO change");
         assert_eq!(count(&store, "sdd_artifacts"), 0);
         assert_eq!(count(&store, "sdd_artifact_revisions"), 0);
+    }
+
+    /// Provenance is honoured from the body, and is a closed set.
+    ///
+    /// The importer runs over this endpoint when it targets a remote backend. Hard-coding
+    /// `agent` here stamped every imported revision as agent-authored — a lie about where
+    /// the content came from, and one the DB path does not tell.
+    #[tokio::test]
+    async fn put_sdd_artifact_honours_the_source_field_and_rejects_unknown_values() {
+        let (store, admin_key, _org) = setup_with_key();
+
+        let saved = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
+            "project": "nexus-mind", "change_name": "c", "kind": "design",
+            "content": "D", "source": "import"
+        })))
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        let id = body_json(saved).await["artifact"]["id"].as_str().unwrap().to_string();
+
+        let revs = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}/revisions"), None).await).await;
+        assert_eq!(revs[0]["source"], "import", "the revision must record where it actually came from");
+
+        // Omitted → the default.
+        save_artifact(&store, &admin_key, "c2", "design", "D2").await;
+        let list = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let c2 = list.as_array().unwrap().iter().find(|c| c["name"] == "c2").unwrap();
+        let artifact_id = c2["artifacts"][0]["id"].as_str().unwrap();
+        let revs2 = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{artifact_id}/revisions"), None).await).await;
+        assert_eq!(revs2[0]["source"], "agent", "an omitted source defaults to agent");
+
+        // A value outside the set is rejected, not stored — the column stays closed.
+        let bad = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
+            "project": "nexus-mind", "change_name": "c3", "kind": "design",
+            "content": "X", "source": "definitely-not-a-source"
+        })))
+        .await;
+        assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body_json(bad).await["code"], "invalid_source");
     }
 
     /// 3.37
