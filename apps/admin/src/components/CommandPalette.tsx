@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Brain, User, FolderOpen, Search, Loader2, ChevronRight, Clock, X } from 'lucide-react'
+import { Brain, User, FolderOpen, FileStack, Search, Loader2, ChevronRight, Clock, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import type { GlobalSearchResult } from '../types'
 
@@ -16,6 +16,7 @@ const EMPTY_RESULT: GlobalSearchResult = {
   projects: [],
   policies: [],
   conventions: [],
+  sdd_changes: [],
 }
 
 function saveToHistory(query: string) {
@@ -35,9 +36,9 @@ interface CommandPaletteProps {
   onClose: () => void
 }
 
-type FlatResult = { path: string; primary: string; secondary: string; icon: 'memory' | 'user' | 'project' }
+type FlatResult = { path: string; primary: string; secondary: string; icon: 'memory' | 'user' | 'project' | 'sdd' }
 
-function flattenResults(results: GlobalSearchResult): FlatResult[] {
+export function flattenResults(results: GlobalSearchResult): FlatResult[] {
   const flat: FlatResult[] = []
   // Membership filtering can omit whole domains, so each array may be missing at
   // runtime even though the type says otherwise — guard every iteration.
@@ -55,6 +56,16 @@ function flattenResults(results: GlobalSearchResult): FlatResult[] {
   for (const p of results.projects ?? []) {
     flat.push({ path: '/projects', primary: p.name, secondary: p.description ?? p.id, icon: 'project' })
   }
+  // Additive facet — absent on an older backend, empty for a caller without
+  // `sdd:read` (A4). Both cases simply contribute nothing.
+  for (const c of results.sdd_changes ?? []) {
+    flat.push({
+      path: `/sdd?change=${encodeURIComponent(c.name)}`,
+      primary: c.name,
+      secondary: c.phase,
+      icon: 'sdd',
+    })
+  }
   return flat
 }
 
@@ -62,6 +73,7 @@ function ResultIcon({ kind }: { kind: FlatResult['icon'] }) {
   const cls = 'w-3.5 h-3.5 text-text-quaternary'
   if (kind === 'memory') return <Brain className={cls} />
   if (kind === 'user') return <User className={cls} />
+  if (kind === 'sdd') return <FileStack className={cls} />
   return <FolderOpen className={cls} />
 }
 
@@ -207,11 +219,13 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const memoriesFlat = flat.filter((r) => r.icon === 'memory')
   const usersFlat = flat.filter((r) => r.icon === 'user')
   const projectsFlat = flat.filter((r) => r.icon === 'project')
+  const sddFlat = flat.filter((r) => r.icon === 'sdd')
 
   // Global index offset helpers
   const memoryOffset = 0
   const userOffset = memoriesFlat.length
   const projectOffset = memoriesFlat.length + usersFlat.length
+  const sddOffset = memoriesFlat.length + usersFlat.length + projectsFlat.length
 
   return (
     <div
@@ -399,6 +413,42 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   >
                     <span className="w-7 h-7 rounded-[8px] bg-[#1d1d1f] flex items-center justify-center shrink-0">
                       <ResultIcon kind="project" />
+                    </span>
+                    <span className="flex flex-col min-w-0 flex-1">
+                      <span className="text-xs text-text-secondary truncate">{r.primary}</span>
+                      {r.secondary && (
+                        <span className="text-[10px] text-text-quaternary truncate">{r.secondary}</span>
+                      )}
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 text-text-quaternary shrink-0 ml-auto" />
+                  </button>
+                )
+              })}
+            </section>
+          )}
+
+          {/* SDD section — omitted, never rendered empty */}
+          {!loading && hasResults && sddFlat.length > 0 && (
+            <section>
+              <p className="text-[10px] text-text-quaternary uppercase tracking-wide font-semibold px-3 pb-1 pt-3">
+                SDD
+              </p>
+              {sddFlat.map((r, i) => {
+                const globalIdx = sddOffset + i
+                const isSelected = selectedIndex === globalIdx
+                return (
+                  <button
+                    key={`sdd-${i}`}
+                    ref={isSelected ? selectedRef : null}
+                    onClick={() => goTo(r.path)}
+                    role="option"
+                    aria-selected={isSelected}
+                    className={`flex items-center gap-2 px-3 py-2 w-full cursor-pointer transition-colors text-left rounded-[8px] group ${
+                      isSelected ? 'bg-white/[0.06]' : 'hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span className="w-7 h-7 rounded-[8px] bg-[#1d1d1f] flex items-center justify-center shrink-0">
+                      <ResultIcon kind="sdd" />
                     </span>
                     <span className="flex flex-col min-w-0 flex-1">
                       <span className="text-xs text-text-secondary truncate">{r.primary}</span>

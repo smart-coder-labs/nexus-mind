@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, UserMinus, Tag } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { createClient } from '../../api/client'
 import { useAuth, isPrivileged } from '../../auth/AuthContext'
 import {
@@ -42,6 +43,10 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const permissions = session?.user.permissions ?? []
   const canWrite = isAdmin || permissions.includes('task:write')
   const canAssign = isAdmin || permissions.includes('task:assign')
+  // The spec-link resolution below hits `GET /v1/sdd/changes`, which requires
+  // `sdd:read`. Un-gated, a caller without it gets a 403 — and the client's global
+  // handler bounces the whole admin to /401. So gate the query, don't just catch it.
+  const canReadSdd = isAdmin || permissions.includes('sdd:read')
 
   const [commentBody, setCommentBody] = useState('')
   const [labelInput, setLabelInput] = useState('')
@@ -90,6 +95,15 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const { data: specLinks = [] } = useQuery({
     queryKey: ['task-spec-links', task.id],
     queryFn: () => client.listTaskSpecLinks(task.id),
+  })
+
+  // Resolve each spec-link name against the SDD store so a live change becomes a
+  // link (with its phase) and a dangling name — a change renamed out from under
+  // the link — degrades to inert text instead of a broken navigation target.
+  const { data: sddChanges = [] } = useQuery({
+    queryKey: ['sdd-changes', {}],
+    queryFn: () => client.listSddChanges({}),
+    enabled: canReadSdd,
   })
 
   const addCommentMut = useMutation({
@@ -446,12 +460,25 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           {specLinks.length === 0 && (
             <span className="text-xs text-text-quaternary">No linked specs</span>
           )}
-          {specLinks.map(name => (
+          {specLinks.map(name => {
+            const change = sddChanges.find(c => c.name === name)
+            return (
             <span
               key={name}
               className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
             >
-              {name}
+              {change ? (
+                <Link
+                  to={`/sdd?change=${encodeURIComponent(name)}`}
+                  className="text-text-secondary hover:text-accent-blue transition-colors"
+                >
+                  {name}
+                </Link>
+              ) : (
+                // Dangling link (e.g. after a rename): shown, but not navigable.
+                name
+              )}
+              {change && <Badge variant="primary" size="sm">{change.phase}</Badge>}
               {canWrite && (
                 <button
                   onClick={() => unlinkSpecMut.mutate(name)}
@@ -463,7 +490,8 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 </button>
               )}
             </span>
-          ))}
+            )
+          })}
         </div>
         {canWrite && (
           <form onSubmit={handleSpecSubmit} className="flex items-center gap-2">
