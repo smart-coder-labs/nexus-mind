@@ -66,6 +66,9 @@ export default function Tasks() {
 
   const [projectFilter, setProjectFilter] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('')
+  /// Holds a user id, or the literal `me`, which the backend resolves from the
+  /// caller's API key (api/tasks.rs). Empty string means "no filter".
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('')
 
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<TaskFormState>(EMPTY_FORM)
@@ -77,8 +80,12 @@ export default function Tasks() {
     () => ({
       project: projectFilter || undefined,
       status: statusFilter ? (statusFilter as TaskStatus) : undefined,
+      // `undefined`, never `''` — the client serializes every non-null value, so an
+      // empty string would go out as `?assignee=` and match no one, rendering an
+      // empty list that reads as "there are no tasks".
+      assignee: assigneeFilter || undefined,
     }),
-    [projectFilter, statusFilter],
+    [projectFilter, statusFilter, assigneeFilter],
   )
 
   const { data: tasks = [], isLoading } = useQuery({
@@ -90,6 +97,15 @@ export default function Tasks() {
   const { data: projects = [] } = useQuery({
     queryKey: ['projects'],
     queryFn: () => client.listProjects(),
+  })
+
+  // Populates the assignee filter. Gated on canRead like the task list itself: a
+  // 403 here would trip the client's global handler and redirect the whole app to
+  // /401, ejecting a user who is merely not allowed to list tasks.
+  const { data: users = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => client.listUsers(),
+    enabled: canRead,
   })
 
   const createMut = useMutation({
@@ -169,6 +185,19 @@ export default function Tasks() {
               <SelectItem value="">All statuses</SelectItem>
               {STATUS_OPTIONS.map(s => (
                 <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+            <SelectTrigger className="w-48" aria-label="Assignee">
+              <SelectValue placeholder="All assignees" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All assignees</SelectItem>
+              <SelectItem value="me">Assigned to me</SelectItem>
+              {users.map(u => (
+                <SelectItem key={u.id} value={u.id}>{u.name || u.email}</SelectItem>
               ))}
             </SelectContent>
           </Select>

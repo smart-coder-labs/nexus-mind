@@ -1028,6 +1028,11 @@ pub struct GlobalSearchResult {
     pub projects: Vec<Project>,
     pub policies: Vec<Policy>,
     pub conventions: Vec<Convention>,
+    /// Additive facet. Empty (never a 403) for a caller without `sdd:read` —
+    /// gating the whole search on a brand-new permission would break global
+    /// search for every existing user (design.md A4).
+    #[serde(default)]
+    pub sdd_changes: Vec<SddChangeSummary>,
 }
 
 /// Result type for the internal (backoffice) search endpoint.
@@ -2015,6 +2020,370 @@ pub fn can_transition(from: TaskStatus, to: TaskStatus) -> bool {
     )
 }
 
+// ── SDD artifacts ───────────────────────────────────────────────────────────
+
+/// The nine SDD artifact kinds, one per file the harness writes
+/// (openspec-convention.md). The string form is the **on-disk filename stem**,
+/// so `apply-progress` is hyphenated, not snake_case — the DB and the
+/// filesystem must agree about the identity of the same artifact.
+///
+/// `Spec` is the only kind that repeats within a change (once per capability,
+/// from `specs/{capability}/spec.md`); every other kind appears at most once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SddArtifactKind {
+    Exploration,
+    Proposal,
+    Spec,
+    Design,
+    Tasks,
+    ApplyProgress,
+    VerifyReport,
+    ArchiveReport,
+    State,
+}
+
+impl FromStr for SddArtifactKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "exploration" => Ok(SddArtifactKind::Exploration),
+            "proposal" => Ok(SddArtifactKind::Proposal),
+            "spec" => Ok(SddArtifactKind::Spec),
+            "design" => Ok(SddArtifactKind::Design),
+            "tasks" => Ok(SddArtifactKind::Tasks),
+            "apply-progress" => Ok(SddArtifactKind::ApplyProgress),
+            "verify-report" => Ok(SddArtifactKind::VerifyReport),
+            "archive-report" => Ok(SddArtifactKind::ArchiveReport),
+            "state" => Ok(SddArtifactKind::State),
+            other => Err(format!("unknown sdd artifact kind: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for SddArtifactKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            SddArtifactKind::Exploration => "exploration",
+            SddArtifactKind::Proposal => "proposal",
+            SddArtifactKind::Spec => "spec",
+            SddArtifactKind::Design => "design",
+            SddArtifactKind::Tasks => "tasks",
+            SddArtifactKind::ApplyProgress => "apply-progress",
+            SddArtifactKind::VerifyReport => "verify-report",
+            SddArtifactKind::ArchiveReport => "archive-report",
+            SddArtifactKind::State => "state",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Position in the SDD DAG. Advisory metadata — the artifact inventory is the
+/// ground truth for what exists. `phase` exists so the admin can render a
+/// pipeline and `/sdd-continue` can resume without reading every artifact; a
+/// save MUST NOT be rejected because it arrives "out of phase".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SddPhase {
+    Explore,
+    Propose,
+    Spec,
+    Design,
+    Tasks,
+    Apply,
+    Verify,
+    Archive,
+}
+
+impl SddPhase {
+    /// DAG order. The importer infers a change's phase as the max rank over the
+    /// artifact kinds actually present on disk.
+    pub fn rank(&self) -> u8 {
+        match self {
+            SddPhase::Explore => 0,
+            SddPhase::Propose => 1,
+            SddPhase::Spec => 2,
+            SddPhase::Design => 3,
+            SddPhase::Tasks => 4,
+            SddPhase::Apply => 5,
+            SddPhase::Verify => 6,
+            SddPhase::Archive => 7,
+        }
+    }
+}
+
+impl FromStr for SddPhase {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "explore" => Ok(SddPhase::Explore),
+            "propose" => Ok(SddPhase::Propose),
+            "spec" => Ok(SddPhase::Spec),
+            "design" => Ok(SddPhase::Design),
+            "tasks" => Ok(SddPhase::Tasks),
+            "apply" => Ok(SddPhase::Apply),
+            "verify" => Ok(SddPhase::Verify),
+            "archive" => Ok(SddPhase::Archive),
+            other => Err(format!("unknown sdd phase: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for SddPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            SddPhase::Explore => "explore",
+            SddPhase::Propose => "propose",
+            SddPhase::Spec => "spec",
+            SddPhase::Design => "design",
+            SddPhase::Tasks => "tasks",
+            SddPhase::Apply => "apply",
+            SddPhase::Verify => "verify",
+            SddPhase::Archive => "archive",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Lifecycle of a change folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SddStatus {
+    Active,
+    Archived,
+    Abandoned,
+}
+
+impl FromStr for SddStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(SddStatus::Active),
+            "archived" => Ok(SddStatus::Archived),
+            "abandoned" => Ok(SddStatus::Abandoned),
+            other => Err(format!("unknown sdd status: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for SddStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            SddStatus::Active => "active",
+            SddStatus::Archived => "archived",
+            SddStatus::Abandoned => "abandoned",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// An SDD change — one `openspec/changes/{name}/` folder. Root entity;
+/// everything (tasks, memories, sprints) links to this.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddChange {
+    pub id: String,
+    pub org_id: String,
+    pub project: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub status: String,
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_id: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// Hydrated on detail reads only. Never carries content — see `SddArtifact`.
+    #[serde(default)]
+    pub artifacts: Vec<SddArtifact>,
+    #[serde(default)]
+    pub task_links: Vec<Task>,
+    #[serde(default)]
+    pub memory_links: Vec<Memory>,
+}
+
+/// Thin projection for `GlobalSearchResult` — additive facet, no content.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddChangeSummary {
+    pub id: String,
+    pub project: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub phase: String,
+    pub status: String,
+}
+
+/// One artifact file within a change. Carries NO content — content lives in
+/// revisions and is fetched explicitly.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddArtifact {
+    pub id: String,
+    pub change_id: String,
+    pub kind: String,
+    /// Empty string for every kind except `spec`. Never NULL — see migrations v53.
+    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub latest_revision: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// An artifact plus the content of its latest revision.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddArtifactDetail {
+    #[serde(flatten)]
+    pub artifact: SddArtifact,
+    pub change_name: String,
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+/// A full, immutable revision — with content.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddRevision {
+    pub id: String,
+    pub artifact_id: String,
+    pub revision: i64,
+    pub content: String,
+    pub content_hash: String,
+    pub byte_size: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_path: Option<String>,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+/// Revision metadata. **Has no `content` field on purpose** — the list endpoint
+/// physically cannot leak a 36 KB document because the type cannot hold one.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddRevisionMeta {
+    pub id: String,
+    pub artifact_id: String,
+    pub revision: i64,
+    pub content_hash: String,
+    pub byte_size: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_path: Option<String>,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+/// An FTS5 hit — a snippet, never the whole document.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSearchHit {
+    pub artifact_id: String,
+    pub change_id: String,
+    pub change_name: String,
+    pub project: String,
+    pub kind: String,
+    pub capability: String,
+    pub snippet: String,
+}
+
+/// Body for `POST /v1/sdd/changes`. Upserts by `(org_id, project, name)`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct UpsertChangeRequest {
+    pub project: String,
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub repo_url: Option<String>,
+    #[serde(default)]
+    pub repo_ref: Option<String>,
+    #[serde(default)]
+    pub sprint_id: Option<String>,
+}
+
+/// Body for `PATCH /v1/sdd/changes/:id`.
+///
+/// **The identity tuple `(project, name)` is deliberately absent.** A change's
+/// identity is not patchable: renaming it would silently orphan every
+/// `task_spec_links.spec_change_name` row that points at the old name, since
+/// tasks join by name, not by FK. Move/rename is a delete-and-recreate.
+///
+/// `deny_unknown_fields` makes that refusal *loud*: a caller who sends
+/// `{"project": "other"}` gets a 422, not a silent no-op that leaves them
+/// believing the rename landed.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PatchChangeRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub sprint_id: Option<String>,
+}
+
+/// Body for `PUT /v1/sdd/artifacts` — the workhorse. Idempotent by content hash:
+/// re-saving identical content creates no revision.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SaveArtifactRequest {
+    pub project: String,
+    pub change_name: String,
+    pub kind: String,
+    /// Omitted for every kind but `spec`; normalized to `""` on write.
+    #[serde(default)]
+    pub capability: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub git_commit: Option<String>,
+    #[serde(default)]
+    pub git_ref: Option<String>,
+    /// `agent` (default), `admin`, or `import`.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Body for `POST /v1/sdd/changes/:id/memories`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LinkChangeMemoryRequest {
+    pub memory_id: String,
+    /// `produced` (default) or `informed`.
+    #[serde(default)]
+    pub relation: Option<String>,
+}
+
+/// Query filters for `GET /v1/sdd/changes`.
+#[derive(Debug, Clone, Default)]
+pub struct SddChangeFilters {
+    pub project: Option<String>,
+    pub status: Option<String>,
+    pub phase: Option<String>,
+    pub sprint_id: Option<String>,
+    pub include_archived: bool,
+}
+
 /// Denormalized assignee display — mirrors `HarnessOwner` exactly (joined from `users`).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TaskAssignee {
@@ -2968,5 +3337,155 @@ mod tests {
         assert!(!can_transition(Cancelled, InProgress), "cancelled can only reopen to backlog");
         assert!(!can_transition(Backlog, InReview), "backlog cannot jump straight to in_review");
         assert!(!can_transition(Backlog, Done), "backlog cannot jump straight to done");
+    }
+
+    // ── SDD artifacts ───────────────────────────────────────────────────────
+
+    /// 1.27 — every kind round-trips to its exact on-disk string.
+    #[test]
+    fn sdd_artifact_kind_round_trips() {
+        let all = [
+            ("exploration", SddArtifactKind::Exploration),
+            ("proposal", SddArtifactKind::Proposal),
+            ("spec", SddArtifactKind::Spec),
+            ("design", SddArtifactKind::Design),
+            ("tasks", SddArtifactKind::Tasks),
+            ("apply-progress", SddArtifactKind::ApplyProgress),
+            ("verify-report", SddArtifactKind::VerifyReport),
+            ("archive-report", SddArtifactKind::ArchiveReport),
+            ("state", SddArtifactKind::State),
+        ];
+        assert_eq!(all.len(), 9, "there are exactly 9 artifact kinds");
+
+        for (s, kind) in all {
+            assert_eq!(
+                SddArtifactKind::from_str(s).unwrap(),
+                kind,
+                "{s} must parse"
+            );
+            assert_eq!(
+                kind.to_string(),
+                s,
+                "{kind:?} must Display back to its on-disk string"
+            );
+        }
+
+        assert!(
+            SddArtifactKind::from_str("blueprint").is_err(),
+            "an unrecognized kind must be rejected"
+        );
+        // The hyphenated kinds are the on-disk filenames — snake_case must NOT be accepted,
+        // or the DB and the filesystem would disagree about the same artifact.
+        assert!(
+            SddArtifactKind::from_str("apply_progress").is_err(),
+            "snake_case must not be accepted"
+        );
+    }
+
+    /// 1.29 — phases round-trip, and rank() orders the DAG (used by the importer to
+    /// infer the furthest phase present from an artifact inventory).
+    #[test]
+    fn sdd_phase_round_trips_and_ranks() {
+        let ordered = [
+            ("explore", SddPhase::Explore),
+            ("propose", SddPhase::Propose),
+            ("spec", SddPhase::Spec),
+            ("design", SddPhase::Design),
+            ("tasks", SddPhase::Tasks),
+            ("apply", SddPhase::Apply),
+            ("verify", SddPhase::Verify),
+            ("archive", SddPhase::Archive),
+        ];
+        assert_eq!(ordered.len(), 8, "there are exactly 8 phases");
+
+        for (s, phase) in ordered {
+            assert_eq!(SddPhase::from_str(s).unwrap(), phase, "{s} must parse");
+            assert_eq!(phase.to_string(), s, "{phase:?} must Display back");
+        }
+        assert!(
+            SddPhase::from_str("refactor").is_err(),
+            "an unknown phase must be rejected"
+        );
+
+        // rank() must be strictly increasing along the DAG.
+        for pair in ordered.windows(2) {
+            let (earlier, later) = (pair[0].1, pair[1].1);
+            assert!(
+                earlier.rank() < later.rank(),
+                "{earlier:?} must rank before {later:?}"
+            );
+        }
+    }
+
+    /// 1.29 — the three change statuses.
+    #[test]
+    fn sdd_status_round_trips() {
+        for (s, status) in [
+            ("active", SddStatus::Active),
+            ("archived", SddStatus::Archived),
+            ("abandoned", SddStatus::Abandoned),
+        ] {
+            assert_eq!(SddStatus::from_str(s).unwrap(), status, "{s} must parse");
+            assert_eq!(status.to_string(), s, "{status:?} must Display back");
+        }
+        assert!(
+            SddStatus::from_str("draft").is_err(),
+            "an unknown status must be rejected"
+        );
+    }
+
+    /// 1.32 / 3.23 — the identity tuple is not patchable, and the refusal is LOUD.
+    ///
+    /// `deny_unknown_fields` turns `{"project": …}` into a deserialization error, which
+    /// `AppJson` surfaces as a 422. Without it the field would be silently dropped and
+    /// the caller would walk away believing a rename had landed when nothing moved.
+    #[test]
+    fn patch_change_request_cannot_touch_identity_fields() {
+        let valid = serde_json::json!({ "title": "New title", "phase": "design" });
+        let patch: PatchChangeRequest = serde_json::from_value(valid).unwrap();
+        assert_eq!(patch.title.as_deref(), Some("New title"));
+        assert_eq!(patch.phase.as_deref(), Some("design"));
+
+        for identity_field in ["project", "name"] {
+            let json = serde_json::json!({ "title": "x", identity_field: "hijacked" });
+            let result: Result<PatchChangeRequest, _> = serde_json::from_value(json);
+            assert!(
+                result.is_err(),
+                "a PATCH body carrying `{identity_field}` must be REJECTED, not silently ignored"
+            );
+        }
+
+        let round_tripped = serde_json::to_value(&patch).unwrap();
+        assert!(
+            round_tripped.get("project").is_none(),
+            "PatchChangeRequest must not carry `project`"
+        );
+        assert!(
+            round_tripped.get("name").is_none(),
+            "PatchChangeRequest must not carry `name`"
+        );
+    }
+
+    /// 1.31 — `SddRevisionMeta` enforces the metadata-only contract in the type system:
+    /// it has no `content` field at all, so a list endpoint physically cannot leak content.
+    #[test]
+    fn revision_meta_carries_no_content() {
+        let meta = SddRevisionMeta {
+            id: "r1".into(),
+            artifact_id: "a1".into(),
+            revision: 1,
+            content_hash: "abc".into(),
+            byte_size: 42,
+            git_commit: None,
+            git_path: None,
+            source: "agent".into(),
+            created_by: "u1".into(),
+            created_at: "2026-07-11T00:00:00Z".into(),
+        };
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(
+            json.get("content").is_none(),
+            "SddRevisionMeta must never serialize a content field"
+        );
     }
 }

@@ -1,2 +1,8 @@
 node_modules
 dist
+# The build must NOT bake an absolute API URL into the bundle: nginx.conf already
+# proxies /v1/ to the backend, so an empty VITE_API_URL yields same-origin relative
+# requests that work from ANY host. Copying .env in hardwires http://localhost:8080
+# and breaks the admin from every origin except localhost — CORS included.
+.env
+.env.*

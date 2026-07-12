@@ -25,6 +25,14 @@ use crate::models::types::{
     PatchSprintRequest, PatchTaskRequest, Sprint, SprintRetrospective, Task, TaskAssignee,
     TaskComment, TaskStatus,
 };
+use crate::models::types::{
+    PatchChangeRequest, SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
+    SddChange, SddChangeFilters, SddChangeSummary, SddPhase, SddRevision, SddRevisionMeta,
+    SddSearchHit, SddStatus,
+    UpsertChangeRequest,
+};
+use anyhow::anyhow;
+use std::str::FromStr;
 
 /// Looks up an API key by its SHA-256 hash.
 /// Returns AuthContext if the key exists, is not revoked, the user is active,
@@ -3611,6 +3619,22 @@ pub fn get_role_permissions(
             "harness:download".to_string(),
             "harness:install".to_string(),
             "harness:review_config".to_string(),
+            // These two lists are hard-coded rather than read from `roles`, so every
+            // migration that grants a new domain to the seeded role TEMPLATES (v52 for
+            // task:*, v54 for sdd:*) silently leaves them behind. `require_permission`
+            // bypasses the check for privileged roles, so nothing breaks server-side and
+            // the drift goes unnoticed — but this list is what /v1/admin/auth/me reports,
+            // and the admin UI gates controls on it. An omission here is a lie in the API
+            // response. `no_template_grant_is_missing_from_the_privileged_lists` fails if
+            // a future domain is added without updating this.
+            "task:read".to_string(),
+            "task:write".to_string(),
+            "task:assign".to_string(),
+            "task:delete".to_string(),
+            "task:manage".to_string(),
+            "sdd:read".to_string(),
+            "sdd:write".to_string(),
+            "sdd:delete".to_string(),
         ]);
     } else if role_name == "super_user" {
         return Ok(vec![
@@ -3647,6 +3671,22 @@ pub fn get_role_permissions(
             "harness:download".to_string(),
             "harness:install".to_string(),
             "harness:review_config".to_string(),
+            // These two lists are hard-coded rather than read from `roles`, so every
+            // migration that grants a new domain to the seeded role TEMPLATES (v52 for
+            // task:*, v54 for sdd:*) silently leaves them behind. `require_permission`
+            // bypasses the check for privileged roles, so nothing breaks server-side and
+            // the drift goes unnoticed — but this list is what /v1/admin/auth/me reports,
+            // and the admin UI gates controls on it. An omission here is a lie in the API
+            // response. `no_template_grant_is_missing_from_the_privileged_lists` fails if
+            // a future domain is added without updating this.
+            "task:read".to_string(),
+            "task:write".to_string(),
+            "task:assign".to_string(),
+            "task:delete".to_string(),
+            "task:manage".to_string(),
+            "sdd:read".to_string(),
+            "sdd:write".to_string(),
+            "sdd:delete".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -7308,6 +7348,774 @@ pub fn list_retrospectives(conn: &Connection, sprint_id: &str) -> Result<Vec<Spr
         out.push(row?);
     }
     Ok(out)
+}
+
+// ── SDD artifacts ───────────────────────────────────────────────────────────
+//
+// Three levels, mirroring `openspec/changes/{name}/` on disk exactly:
+//   sdd_changes  →  sdd_artifacts  →  sdd_artifact_revisions
+//
+// INVARIANT: revisions are immutable and append-only. No statement anywhere in
+// this file may update or delete a row of the revisions table — they are written
+// by `upsert_sdd_artifact`'s INSERT and removed only by ON DELETE CASCADE from
+// the parent change. The test `no_store_function_updates_or_deletes_a_revision`
+// scans this file to keep it that way, which is also why neither this comment
+// nor that test may spell the forbidden statements out literally: the scan reads
+// its own source and would match itself.
+
+/// Max bytes for a single artifact revision. Above this the save is rejected
+/// **atomically** (design.md A2) — no change row, no artifact row, no revision.
+const SDD_MAX_ARTIFACT_BYTES: usize = 1_048_576;
+
+fn sha256_hex(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+const SDD_CHANGE_SELECT: &str = "SELECT id, org_id, project, name, title, status, phase, repo_url, repo_ref, sprint_id, created_by, created_at, updated_at, archived_at FROM sdd_changes";
+
+fn map_sdd_change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SddChange> {
+    Ok(SddChange {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project: row.get(2)?,
+        name: row.get(3)?,
+        title: row.get(4)?,
+        status: row.get(5)?,
+        phase: row.get(6)?,
+        repo_url: row.get(7)?,
+        repo_ref: row.get(8)?,
+        sprint_id: row.get(9)?,
+        created_by: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        archived_at: row.get(13)?,
+        artifacts: Vec::new(),
+        task_links: Vec::new(),
+        memory_links: Vec::new(),
+    })
+}
+
+const SDD_ARTIFACT_SELECT: &str = "SELECT id, change_id, kind, capability, path, latest_revision, created_at, updated_at FROM sdd_artifacts";
+
+fn map_sdd_artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SddArtifact> {
+    Ok(SddArtifact {
+        id: row.get(0)?,
+        change_id: row.get(1)?,
+        kind: row.get(2)?,
+        capability: row.get(3)?,
+        path: row.get(4)?,
+        latest_revision: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+/// Artifact inventory for a change. Metadata only — never content.
+fn list_sdd_artifacts_for_change(conn: &Connection, change_id: &str) -> Result<Vec<SddArtifact>> {
+    let sql = format!("{SDD_ARTIFACT_SELECT} WHERE change_id = ?1 ORDER BY kind, capability");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([change_id], map_sdd_artifact_row)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Upserts by the identity tuple `(org_id, project, name)`. Re-submitting the
+/// same tuple updates the row in place — it never duplicates.
+pub fn upsert_sdd_change(
+    conn: &Connection,
+    org_id: &str,
+    created_by: &str,
+    req: &UpsertChangeRequest,
+) -> Result<SddChange> {
+    if let Some(phase) = &req.phase {
+        SddPhase::from_str(phase).map_err(|_| anyhow!("invalid_phase"))?;
+    }
+    if let Some(status) = &req.status {
+        SddStatus::from_str(status).map_err(|_| anyhow!("invalid_status"))?;
+    }
+
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM sdd_changes WHERE org_id = ?1 AND project = ?2 AND name = ?3",
+            rusqlite::params![org_id, req.project, req.name],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let now = now_iso();
+    let id = match existing {
+        Some(id) => {
+            conn.execute(
+                "UPDATE sdd_changes SET
+                    title      = COALESCE(?1, title),
+                    status     = COALESCE(?2, status),
+                    phase      = COALESCE(?3, phase),
+                    repo_url   = COALESCE(?4, repo_url),
+                    repo_ref   = COALESCE(?5, repo_ref),
+                    sprint_id  = COALESCE(?6, sprint_id),
+                    updated_at = ?7
+                 WHERE id = ?8",
+                rusqlite::params![
+                    req.title,
+                    req.status,
+                    req.phase,
+                    req.repo_url,
+                    req.repo_ref,
+                    req.sprint_id,
+                    now,
+                    id
+                ],
+            )?;
+            id
+        }
+        None => {
+            let id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO sdd_changes (id, org_id, project, name, title, status, phase, repo_url, repo_ref, sprint_id, created_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, 'active'), COALESCE(?7, 'propose'), ?8, ?9, ?10, ?11, ?12, ?12)",
+                rusqlite::params![
+                    id, org_id, req.project, req.name, req.title, req.status, req.phase,
+                    req.repo_url, req.repo_ref, req.sprint_id, created_by, now
+                ],
+            )?;
+            id
+        }
+    };
+
+    get_sdd_change(conn, org_id, &id)?.ok_or_else(|| anyhow!("not_found"))
+}
+
+/// Hydrates the artifact inventory. Not-found and out-of-org both yield `Ok(None)`.
+pub fn get_sdd_change(conn: &Connection, org_id: &str, id: &str) -> Result<Option<SddChange>> {
+    let sql = format!("{SDD_CHANGE_SELECT} WHERE id = ?1 AND org_id = ?2");
+    let found = conn
+        .query_row(&sql, rusqlite::params![id, org_id], map_sdd_change_row)
+        .optional()?;
+    let Some(mut change) = found else {
+        return Ok(None);
+    };
+    change.artifacts = list_sdd_artifacts_for_change(conn, &change.id)?;
+    Ok(Some(change))
+}
+
+pub fn get_sdd_change_by_name(
+    conn: &Connection,
+    org_id: &str,
+    project: &str,
+    name: &str,
+) -> Result<Option<SddChange>> {
+    let sql = format!("{SDD_CHANGE_SELECT} WHERE org_id = ?1 AND project = ?2 AND name = ?3");
+    let found = conn
+        .query_row(&sql, rusqlite::params![org_id, project, name], map_sdd_change_row)
+        .optional()?;
+    let Some(mut change) = found else {
+        return Ok(None);
+    };
+    change.artifacts = list_sdd_artifacts_for_change(conn, &change.id)?;
+    Ok(Some(change))
+}
+
+/// Metadata only — never artifact content.
+pub fn list_sdd_changes(
+    conn: &Connection,
+    org_id: &str,
+    filters: &SddChangeFilters,
+) -> Result<Vec<SddChange>> {
+    let mut sql = format!("{SDD_CHANGE_SELECT} WHERE org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    let mut idx = 2usize;
+
+    if !filters.include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    if let Some(project) = &filters.project {
+        sql.push_str(&format!(" AND project = ?{idx}"));
+        params.push(Box::new(project.clone()));
+        idx += 1;
+    }
+    if let Some(status) = &filters.status {
+        sql.push_str(&format!(" AND status = ?{idx}"));
+        params.push(Box::new(status.clone()));
+        idx += 1;
+    }
+    if let Some(phase) = &filters.phase {
+        sql.push_str(&format!(" AND phase = ?{idx}"));
+        params.push(Box::new(phase.clone()));
+        idx += 1;
+    }
+    if let Some(sprint_id) = &filters.sprint_id {
+        sql.push_str(&format!(" AND sprint_id = ?{idx}"));
+        params.push(Box::new(sprint_id.clone()));
+        idx += 1;
+    }
+    let _ = idx;
+    sql.push_str(" ORDER BY updated_at DESC");
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_sdd_change_row)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let mut change = row?;
+        change.artifacts = list_sdd_artifacts_for_change(conn, &change.id)?;
+        out.push(change);
+    }
+    Ok(out)
+}
+
+/// Patches curation fields only. The identity tuple `(project, name)` is
+/// deliberately unpatchable — `PatchChangeRequest` carries no such field, so
+/// the `UPDATE` below cannot name those columns. Renaming a change would
+/// orphan every `task_spec_links.spec_change_name` row pointing at the old
+/// name, because tasks join by name, not by FK (design.md D3).
+///
+/// Enum fields are validated BEFORE the UPDATE (parse-then-write): a bad phase
+/// rejects the whole patch, leaving every other field untouched (A2/2.21).
+pub fn patch_sdd_change(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    req: &PatchChangeRequest,
+) -> Result<SddChange> {
+    if let Some(phase) = &req.phase {
+        SddPhase::from_str(phase).map_err(|_| anyhow!("invalid_phase"))?;
+    }
+    if let Some(status) = &req.status {
+        SddStatus::from_str(status).map_err(|_| anyhow!("invalid_status"))?;
+    }
+    if get_sdd_change(conn, org_id, id)?.is_none() {
+        return Err(anyhow!("not_found"));
+    }
+
+    conn.execute(
+        "UPDATE sdd_changes SET
+            title      = COALESCE(?1, title),
+            status     = COALESCE(?2, status),
+            phase      = COALESCE(?3, phase),
+            sprint_id  = COALESCE(?4, sprint_id),
+            updated_at = ?5
+         WHERE id = ?6 AND org_id = ?7",
+        rusqlite::params![req.title, req.status, req.phase, req.sprint_id, now_iso(), id, org_id],
+    )?;
+
+    get_sdd_change(conn, org_id, id)?.ok_or_else(|| anyhow!("not_found"))
+}
+
+/// Soft delete. Artifacts and revisions survive and stay retrievable by id.
+pub fn archive_sdd_change(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE sdd_changes SET archived_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND org_id = ?3 AND archived_at IS NULL",
+        rusqlite::params![now_iso(), id, org_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// THE workhorse. Idempotent by content hash: re-saving identical content
+/// creates no revision, touches no index, and does not bump `updated_at`.
+///
+/// Returns `(artifact, created_revision)`.
+///
+/// Never reads, writes, or gates on `sdd_changes.phase`: phase is advisory
+/// metadata and the artifact inventory is the ground truth. A `verify-report`
+/// saved to a change still in `propose` is accepted (2.49).
+pub fn upsert_sdd_artifact(
+    conn: &Connection,
+    org_id: &str,
+    created_by: &str,
+    req: &SaveArtifactRequest,
+    source: &str,
+) -> Result<(SddArtifact, bool)> {
+    // A2 — the size guard is the FIRST statement, before the transaction opens and
+    // before any row is resolved-or-created. A rejected oversized save must leave no
+    // change, no artifact, and no revision behind.
+    if req.content.len() > SDD_MAX_ARTIFACT_BYTES {
+        return Err(anyhow!("artifact_too_large"));
+    }
+    SddArtifactKind::from_str(&req.kind).map_err(|_| anyhow!("invalid_kind"))?;
+
+    let capability = req.capability.as_deref().unwrap_or("");
+    let tx = conn.unchecked_transaction()?;
+    let now = now_iso();
+
+    // 1. Resolve or create the change. org_id scopes the lookup, so an org-B caller
+    //    with the same (project, name) gets its own change and cannot hijack org A's.
+    let change_id: String = match tx
+        .query_row(
+            "SELECT id FROM sdd_changes WHERE org_id = ?1 AND project = ?2 AND name = ?3",
+            rusqlite::params![org_id, req.project, req.change_name],
+            |r| r.get(0),
+        )
+        .optional()?
+    {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO sdd_changes (id, org_id, project, name, created_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                rusqlite::params![id, org_id, req.project, req.change_name, created_by, now],
+            )?;
+            id
+        }
+    };
+
+    // 2. Resolve or create the artifact, keyed on all three of (change, kind, capability).
+    let artifact_id: String = match tx
+        .query_row(
+            "SELECT id FROM sdd_artifacts WHERE change_id = ?1 AND kind = ?2 AND capability = ?3",
+            rusqlite::params![change_id, req.kind, capability],
+            |r| r.get(0),
+        )
+        .optional()?
+    {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO sdd_artifacts (id, change_id, kind, capability, path, latest_revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
+                rusqlite::params![id, change_id, req.kind, capability, req.path, now],
+            )?;
+            id
+        }
+    };
+
+    // 3. A1 — compare the hash against the LATEST revision only, never against the
+    //    full history. Content A → B → A must append revision 3, not resurrect
+    //    revision 1: a revert is an event and must appear in the history.
+    let hash = sha256_hex(&req.content);
+    let latest: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT revision, content_hash FROM sdd_artifact_revisions
+             WHERE artifact_id = ?1 ORDER BY revision DESC LIMIT 1",
+            [&artifact_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+
+    let latest_revision = latest.as_ref().map(|(rev, _)| *rev).unwrap_or(0);
+
+    if let Some((_, latest_hash)) = &latest {
+        if latest_hash == &hash {
+            // Idempotent no-op: no revision, no FTS write, no updated_at bump.
+            let sql = format!("{SDD_ARTIFACT_SELECT} WHERE id = ?1");
+            let artifact = tx.query_row(&sql, [&artifact_id], map_sdd_artifact_row)?;
+            tx.commit()?;
+            return Ok((artifact, false));
+        }
+    }
+
+    // 4. Append the next revision. Immutable: earlier revisions are never touched.
+    let next = latest_revision + 1;
+    tx.execute(
+        "INSERT INTO sdd_artifact_revisions
+            (id, artifact_id, revision, content, content_hash, byte_size, git_commit, git_path, source, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            artifact_id,
+            next,
+            req.content,
+            hash,
+            req.content.len() as i64,
+            req.git_commit,
+            req.path,
+            source,
+            created_by,
+            now
+        ],
+    )?;
+    tx.execute(
+        "UPDATE sdd_artifacts SET latest_revision = ?1, path = COALESCE(?2, path), updated_at = ?3 WHERE id = ?4",
+        rusqlite::params![next, req.path, now, artifact_id],
+    )?;
+
+    // 5. The FTS index tracks the LATEST revision only — delete-then-insert, so an
+    //    artifact contributes exactly one hit no matter how many revisions it has,
+    //    and a term deleted by a newer revision stops matching.
+    tx.execute("DELETE FROM sdd_artifacts_fts WHERE artifact_id = ?1", [&artifact_id])?;
+    tx.execute(
+        "INSERT INTO sdd_artifacts_fts (artifact_id, change_name, kind, capability, content)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![artifact_id, req.change_name, req.kind, capability, req.content],
+    )?;
+
+    let sql = format!("{SDD_ARTIFACT_SELECT} WHERE id = ?1");
+    let artifact = tx.query_row(&sql, [&artifact_id], map_sdd_artifact_row)?;
+    tx.commit()?;
+    Ok((artifact, true))
+}
+
+fn artifact_detail_from(
+    conn: &Connection,
+    artifact: SddArtifact,
+    project: String,
+    change_name: String,
+) -> Result<SddArtifactDetail> {
+    let latest: Option<(String, String)> = conn
+        .query_row(
+            "SELECT content, content_hash FROM sdd_artifact_revisions
+             WHERE artifact_id = ?1 ORDER BY revision DESC LIMIT 1",
+            [&artifact.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (content, content_hash) = match latest {
+        Some((c, h)) => (Some(c), Some(h)),
+        None => (None, None),
+    };
+    Ok(SddArtifactDetail { artifact, change_name, project, content, content_hash })
+}
+
+/// Artifacts carry no `org_id` of their own — it is inherited via `change_id`,
+/// so every read joins through `sdd_changes` for the org predicate.
+pub fn get_sdd_artifact(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<SddArtifactDetail>> {
+    let found = conn
+        .query_row(
+            "SELECT a.id, a.change_id, a.kind, a.capability, a.path, a.latest_revision, a.created_at, a.updated_at,
+                    c.project, c.name
+             FROM sdd_artifacts a JOIN sdd_changes c ON c.id = a.change_id
+             WHERE a.id = ?1 AND c.org_id = ?2",
+            rusqlite::params![id, org_id],
+            |row| {
+                Ok((
+                    map_sdd_artifact_row(row)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((artifact, project, change_name)) = found else {
+        return Ok(None);
+    };
+    Ok(Some(artifact_detail_from(conn, artifact, project, change_name)?))
+}
+
+/// Natural-key lookup behind `GET /v1/sdd/artifacts?project=&change_name=&kind=&capability=`.
+/// A kind with no artifact yields `Ok(None)` — never an artifact with empty content.
+pub fn get_sdd_artifact_by_kind(
+    conn: &Connection,
+    org_id: &str,
+    project: &str,
+    change_name: &str,
+    kind: &str,
+    capability: Option<&str>,
+) -> Result<Option<SddArtifactDetail>> {
+    let cap = capability.unwrap_or("");
+    let found = conn
+        .query_row(
+            "SELECT a.id, a.change_id, a.kind, a.capability, a.path, a.latest_revision, a.created_at, a.updated_at
+             FROM sdd_artifacts a JOIN sdd_changes c ON c.id = a.change_id
+             WHERE c.org_id = ?1 AND c.project = ?2 AND c.name = ?3 AND a.kind = ?4 AND a.capability = ?5",
+            rusqlite::params![org_id, project, change_name, kind, cap],
+            map_sdd_artifact_row,
+        )
+        .optional()?;
+    let Some(artifact) = found else {
+        return Ok(None);
+    };
+    Ok(Some(artifact_detail_from(
+        conn,
+        artifact,
+        project.to_string(),
+        change_name.to_string(),
+    )?))
+}
+
+/// Metadata only — the SELECT never names the `content` column, and
+/// `SddRevisionMeta` has no field to hold one.
+pub fn list_sdd_artifact_revisions(
+    conn: &Connection,
+    org_id: &str,
+    artifact_id: &str,
+) -> Result<Vec<SddRevisionMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.artifact_id, r.revision, r.content_hash, r.byte_size, r.git_commit, r.git_path,
+                r.source, r.created_by, r.created_at
+         FROM sdd_artifact_revisions r
+         JOIN sdd_artifacts a ON a.id = r.artifact_id
+         JOIN sdd_changes c ON c.id = a.change_id
+         WHERE r.artifact_id = ?1 AND c.org_id = ?2
+         ORDER BY r.revision DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![artifact_id, org_id], |row| {
+        Ok(SddRevisionMeta {
+            id: row.get(0)?,
+            artifact_id: row.get(1)?,
+            revision: row.get(2)?,
+            content_hash: row.get(3)?,
+            byte_size: row.get(4)?,
+            git_commit: row.get(5)?,
+            git_path: row.get(6)?,
+            source: row.get(7)?,
+            created_by: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn get_sdd_artifact_revision(
+    conn: &Connection,
+    org_id: &str,
+    artifact_id: &str,
+    revision: i64,
+) -> Result<Option<SddRevision>> {
+    let found = conn
+        .query_row(
+            "SELECT r.id, r.artifact_id, r.revision, r.content, r.content_hash, r.byte_size,
+                    r.git_commit, r.git_path, r.source, r.created_by, r.created_at
+             FROM sdd_artifact_revisions r
+             JOIN sdd_artifacts a ON a.id = r.artifact_id
+             JOIN sdd_changes c ON c.id = a.change_id
+             WHERE r.artifact_id = ?1 AND r.revision = ?2 AND c.org_id = ?3",
+            rusqlite::params![artifact_id, revision, org_id],
+            |row| {
+                Ok(SddRevision {
+                    id: row.get(0)?,
+                    artifact_id: row.get(1)?,
+                    revision: row.get(2)?,
+                    content: row.get(3)?,
+                    content_hash: row.get(4)?,
+                    byte_size: row.get(5)?,
+                    git_commit: row.get(6)?,
+                    git_path: row.get(7)?,
+                    source: row.get(8)?,
+                    created_by: row.get(9)?,
+                    created_at: row.get(10)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(found)
+}
+
+/// FTS5 search over the latest revision of every artifact in the org.
+/// Reuses `sanitize_fts_query` — do not hand-roll a second escaper.
+pub fn search_sdd_artifacts(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddSearchHit>> {
+    let Some(fts_query) = sanitize_fts_query(query) else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT f.artifact_id, a.change_id, c.name, c.project, a.kind, a.capability,
+                snippet(sdd_artifacts_fts, 4, '<b>', '</b>', '…', 24)
+         FROM sdd_artifacts_fts f
+         JOIN sdd_artifacts a ON a.id = f.artifact_id
+         JOIN sdd_changes c ON c.id = a.change_id
+         WHERE sdd_artifacts_fts MATCH ?1 AND c.org_id = ?2
+         ORDER BY rank
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![fts_query, org_id, limit], |row| {
+        Ok(SddSearchHit {
+            artifact_id: row.get(0)?,
+            change_id: row.get(1)?,
+            change_name: row.get(2)?,
+            project: row.get(3)?,
+            kind: row.get(4)?,
+            capability: row.get(5)?,
+            snippet: row.get(6)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// A3 — idempotent, and re-linking with a DIFFERENT relation UPDATES the row.
+/// Deliberately not `INSERT OR IGNORE`, which would silently drop the relation change.
+pub fn link_sdd_change_memory(
+    conn: &Connection,
+    org_id: &str,
+    change_id: &str,
+    memory_id: &str,
+    relation: &str,
+    linked_by: &str,
+) -> Result<()> {
+    if get_sdd_change(conn, org_id, change_id)?.is_none() {
+        return Err(anyhow!("not_found"));
+    }
+    let memory_in_org: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?1 AND org_id = ?2)",
+        rusqlite::params![memory_id, org_id],
+        |r| r.get(0),
+    )?;
+    if !memory_in_org {
+        return Err(anyhow!("memory_not_found"));
+    }
+
+    conn.execute(
+        "INSERT INTO sdd_change_memories (id, change_id, memory_id, relation, linked_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(change_id, memory_id) DO UPDATE SET relation = excluded.relation",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            change_id,
+            memory_id,
+            relation,
+            linked_by,
+            now_iso()
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn unlink_sdd_change_memory(
+    conn: &Connection,
+    org_id: &str,
+    change_id: &str,
+    memory_id: &str,
+) -> Result<bool> {
+    if get_sdd_change(conn, org_id, change_id)?.is_none() {
+        return Err(anyhow!("not_found"));
+    }
+    let n = conn.execute(
+        "DELETE FROM sdd_change_memories WHERE change_id = ?1 AND memory_id = ?2",
+        rusqlite::params![change_id, memory_id],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn list_sdd_change_memories(
+    conn: &Connection,
+    org_id: &str,
+    change_id: &str,
+) -> Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT memory_id FROM sdd_change_memories WHERE change_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map([change_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(memory) = get_memory_by_id_for_org(conn, org_id, &id)? {
+            out.push(memory);
+        }
+    }
+    Ok(out)
+}
+
+/// D3 — the join key is `task_spec_links.spec_change_name`, a plain string.
+/// There is no `change_id` FK on `tasks` and no materialized edge: a link
+/// created before the change existed resolves the moment the change appears.
+///
+/// `viewer` is `None` for a privileged caller; otherwise task visibility is
+/// applied so linked tasks in projects the viewer cannot see are excluded.
+pub fn list_tasks_for_sdd_change(
+    conn: &Connection,
+    org_id: &str,
+    change_name: &str,
+    viewer: Option<&str>,
+) -> Result<Vec<Task>> {
+    let mut sql = String::from(
+        "SELECT t.id, t.org_id, t.project, t.title, t.description, t.status, t.priority, t.due_date,
+                t.parent_id, t.sprint_id, t.created_by, t.created_at, t.updated_at, t.archived_at
+         FROM tasks t
+         JOIN task_spec_links tsl ON tsl.task_id = t.id
+         WHERE t.org_id = ?1 AND tsl.spec_change_name = ?2 AND t.archived_at IS NULL",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(org_id.to_string()), Box::new(change_name.to_string())];
+
+    if let Some(vid) = viewer {
+        sql.push_str(
+            " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = t.org_id AND p.name = t.project)
+                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
+                              WHERE p.org_id = t.org_id AND p.name = t.project AND pm.user_id = ?3))",
+        );
+        params.push(Box::new(vid.to_string()));
+    }
+    sql.push_str(" ORDER BY t.created_at ASC");
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_task_row)?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    hydrate_tasks(conn, &mut tasks)?;
+    Ok(tasks)
+}
+
+/// Keyword search over change names and titles, for the `global_search` facet.
+/// LIKE-based, mirroring `search_conventions_by_query_visible` — `global_search`
+/// is keyword-only, not semantic. Archived changes are excluded.
+pub fn search_sdd_changes_by_query(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddChangeSummary>> {
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, project, name, title, phase, status
+         FROM sdd_changes
+         WHERE org_id = ?1
+           AND archived_at IS NULL
+           AND (name LIKE ?2 OR title LIKE ?2)
+         ORDER BY updated_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+        Ok(SddChangeSummary {
+            id: row.get(0)?,
+            project: row.get(1)?,
+            name: row.get(2)?,
+            title: row.get(3)?,
+            phase: row.get(4)?,
+            status: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Backs the DB-first half of `spec_change_exists` (design.md D5).
+///
+/// A8 — NO `archived_at` predicate: an archived change remains a legitimate
+/// link target, matching the filesystem check that globs the archive tree.
+/// Name-only (project-agnostic), because `task_spec_links.spec_change_name` is.
+pub fn sdd_change_exists(conn: &Connection, org_id: &str, name: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sdd_changes WHERE org_id = ?1 AND name = ?2)",
+        rusqlite::params![org_id, name],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
 }
 
 #[cfg(test)]
@@ -15725,5 +16533,1097 @@ mod task_query_tests {
         let list = list_retrospectives(&conn, &sprint.id).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, retro.id);
+    }
+}
+
+#[cfg(test)]
+mod sdd_query_tests {
+    use super::*;
+    use crate::db::connection::connect;
+    use crate::db::migrations;
+
+    fn setup() -> (Connection, String, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, user, _key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        (conn, org.id, user.id)
+    }
+
+    /// A second org with its own admin — for the isolation tests.
+    fn second_org(conn: &Connection) -> (String, String) {
+        let org_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Beta', 'beta')",
+            [&org_id],
+        )
+        .unwrap();
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status)
+             VALUES (?1, ?2, 'b@beta.com', 'B', 'admin', 'active')",
+            rusqlite::params![user_id, org_id],
+        )
+        .unwrap();
+        (org_id, user_id)
+    }
+
+    fn save_req(project: &str, change: &str, kind: &str, content: &str) -> SaveArtifactRequest {
+        SaveArtifactRequest {
+            project: project.to_string(),
+            change_name: change.to_string(),
+            kind: kind.to_string(),
+            content: content.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn mk_change(conn: &Connection, org: &str, user: &str, project: &str, name: &str) -> SddChange {
+        let req = UpsertChangeRequest {
+            project: project.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        };
+        upsert_sdd_change(conn, org, user, &req).unwrap()
+    }
+
+    fn revision_count(conn: &Connection, artifact_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sdd_artifact_revisions WHERE artifact_id = ?1",
+            [artifact_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn fts_row_count(conn: &Connection, artifact_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sdd_artifacts_fts WHERE artifact_id = ?1",
+            [artifact_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    // ── Changes ──────────────────────────────────────────────────────────
+
+    /// 2.1
+    #[test]
+    fn upsert_sdd_change_creates_row_with_defaults() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
+
+        assert_eq!(change.status, "active");
+        assert_eq!(change.phase, "propose");
+        assert_eq!(change.created_by, user);
+        assert!(!change.created_at.is_empty());
+        assert!(!change.updated_at.is_empty());
+        assert!(change.archived_at.is_none());
+    }
+
+    /// 2.3
+    #[test]
+    fn upsert_sdd_change_is_idempotent_on_org_project_name() {
+        let (conn, org, user) = setup();
+        let first = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
+
+        let req = UpsertChangeRequest {
+            project: "nexus-mind".into(),
+            name: "team-tasks".into(),
+            title: Some("Team Tasks".into()),
+            ..Default::default()
+        };
+        let second = upsert_sdd_change(&conn, &org, &user, &req).unwrap();
+
+        assert_eq!(first.id, second.id, "the same (org, project, name) must upsert, not duplicate");
+        assert_eq!(second.title.as_deref(), Some("Team Tasks"));
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "exactly one row");
+    }
+
+    /// 2.5
+    #[test]
+    fn upsert_sdd_change_same_name_in_two_projects_are_two_changes() {
+        let (conn, org, user) = setup();
+        let a = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
+        let b = mk_change(&conn, &org, &user, "kasymir", "team-tasks");
+
+        assert_ne!(a.id, b.id, "same name in two projects must be two changes");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    /// 2.5 — D4: project is a name string, not an FK. An unregistered name is accepted.
+    #[test]
+    fn upsert_sdd_change_accepts_an_unregistered_project_name() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "never-registered-anywhere", "some-change");
+        assert_eq!(change.project, "never-registered-anywhere");
+
+        let registered: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE name = 'never-registered-anywhere'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(registered, 0, "no projects row was implicitly created");
+    }
+
+    /// 2.7
+    #[test]
+    fn get_sdd_change_hydrates_artifact_inventory() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "proposal", "P"), "agent").unwrap();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
+
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
+        let fetched = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+
+        assert_eq!(fetched.artifacts.len(), 2);
+        // Ordered by kind: design < proposal
+        assert_eq!(fetched.artifacts[0].kind, "design");
+        assert_eq!(fetched.artifacts[1].kind, "proposal");
+    }
+
+    /// 2.9
+    #[test]
+    fn get_sdd_change_org_isolation() {
+        let (conn, org_a, user_a) = setup();
+        let change = mk_change(&conn, &org_a, &user_a, "p", "c");
+        let (org_b, _) = second_org(&conn);
+
+        assert!(
+            get_sdd_change(&conn, &org_b, &change.id).unwrap().is_none(),
+            "org B must not see org A's change"
+        );
+        assert!(get_sdd_change(&conn, &org_a, &change.id).unwrap().is_some());
+    }
+
+    /// 2.11
+    #[test]
+    fn get_sdd_change_by_name_resolves_project_scoped_name() {
+        let (conn, org, user) = setup();
+        let a = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
+        mk_change(&conn, &org, &user, "kasymir", "team-tasks");
+
+        let found = get_sdd_change_by_name(&conn, &org, "nexus-mind", "team-tasks").unwrap().unwrap();
+        assert_eq!(found.id, a.id, "must resolve the change in the requested project only");
+        assert!(get_sdd_change_by_name(&conn, &org, "other", "team-tasks").unwrap().is_none());
+    }
+
+    /// 2.13
+    #[test]
+    fn list_sdd_changes_filters_by_project_status_phase_sprint() {
+        let (conn, org, user) = setup();
+        mk_change(&conn, &org, &user, "nexus-mind", "alpha");
+        mk_change(&conn, &org, &user, "kasymir", "beta");
+        let gamma = mk_change(&conn, &org, &user, "nexus-mind", "gamma");
+
+        patch_sdd_change(
+            &conn,
+            &org,
+            &gamma.id,
+            &PatchChangeRequest { phase: Some("design".into()), ..Default::default() },
+        )
+        .unwrap();
+
+        let sprint_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO sprints (id, org_id, project, name, created_by)
+             VALUES (?1, ?2, 'nexus-mind', 'S1', ?3)",
+            rusqlite::params![sprint_id, org, user],
+        )
+        .unwrap();
+        patch_sdd_change(
+            &conn,
+            &org,
+            &gamma.id,
+            &PatchChangeRequest { sprint_id: Some(sprint_id.clone()), ..Default::default() },
+        )
+        .unwrap();
+
+        let by_project = list_sdd_changes(
+            &conn,
+            &org,
+            &SddChangeFilters { project: Some("nexus-mind".into()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_project.len(), 2);
+
+        let by_phase = list_sdd_changes(
+            &conn,
+            &org,
+            &SddChangeFilters { phase: Some("design".into()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_phase.len(), 1);
+        assert_eq!(by_phase[0].name, "gamma");
+
+        let by_sprint = list_sdd_changes(
+            &conn,
+            &org,
+            &SddChangeFilters { sprint_id: Some(sprint_id), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_sprint.len(), 1, "exactly the changes assigned to that sprint");
+
+        // A change with no sprint is still returned by an unfiltered list.
+        let all = list_sdd_changes(&conn, &org, &SddChangeFilters::default()).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|c| c.name == "alpha" && c.sprint_id.is_none()));
+    }
+
+    /// 2.15
+    #[test]
+    fn list_sdd_changes_excludes_archived_by_default_and_includes_them_on_request() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "archived-one");
+        mk_change(&conn, &org, &user, "p", "active-one");
+        assert!(archive_sdd_change(&conn, &org, &change.id).unwrap());
+
+        let default = list_sdd_changes(&conn, &org, &SddChangeFilters::default()).unwrap();
+        assert_eq!(default.len(), 1);
+        assert_eq!(default[0].name, "active-one");
+
+        let with_archived = list_sdd_changes(
+            &conn,
+            &org,
+            &SddChangeFilters { include_archived: true, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(with_archived.len(), 2);
+    }
+
+    /// 2.17
+    #[test]
+    fn patch_sdd_change_updates_title_status_phase_and_bumps_updated_at() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+
+        let patched = patch_sdd_change(
+            &conn,
+            &org,
+            &change.id,
+            &PatchChangeRequest {
+                title: Some("Renamed".into()),
+                phase: Some("verify".into()),
+                status: Some("archived".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(patched.title.as_deref(), Some("Renamed"));
+        assert_eq!(patched.phase, "verify");
+        assert_eq!(patched.status, "archived");
+    }
+
+    /// 2.19 — the identity tuple is immutable.
+    #[test]
+    fn patch_sdd_change_cannot_alter_project_or_name() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
+
+        patch_sdd_change(
+            &conn,
+            &org,
+            &change.id,
+            &PatchChangeRequest { title: Some("x".into()), ..Default::default() },
+        )
+        .unwrap();
+
+        let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+        assert_eq!(after.project, "nexus-mind", "project is not patchable");
+        assert_eq!(after.name, "team-tasks", "name is not patchable");
+    }
+
+    /// 2.21 — parse-then-write: a bad phase rejects the WHOLE patch.
+    #[test]
+    fn patch_sdd_change_rejects_invalid_phase_atomically() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+
+        let err = patch_sdd_change(
+            &conn,
+            &org,
+            &change.id,
+            &PatchChangeRequest {
+                phase: Some("shipped".into()),
+                title: Some("New title".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid_phase"));
+
+        let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+        assert_eq!(after.phase, "propose", "phase unchanged");
+        assert!(after.title.is_none(), "the title in the same rejected patch must NOT have landed");
+    }
+
+    /// 2.23 — soft delete; artifacts survive.
+    #[test]
+    fn archive_sdd_change_sets_archived_at_and_preserves_artifacts() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
+
+        assert!(archive_sdd_change(&conn, &org, &change.id).unwrap());
+
+        let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+        assert!(after.archived_at.is_some());
+        assert_eq!(after.artifacts.len(), 1, "artifacts survive an archive");
+
+        let revs = list_sdd_artifact_revisions(&conn, &org, &after.artifacts[0].id).unwrap();
+        assert_eq!(revs.len(), 1, "revisions survive an archive");
+    }
+
+    // ── upsert_sdd_artifact ──────────────────────────────────────────────
+
+    /// 2.25
+    #[test]
+    fn upsert_sdd_artifact_creates_change_artifact_and_revision_1() {
+        let (conn, org, user) = setup();
+        let (artifact, created) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("nexus-mind", "brand-new", "design", "hello"),
+            "agent",
+        )
+        .unwrap();
+
+        assert!(created, "first save creates a revision");
+        assert_eq!(artifact.latest_revision, 1);
+        assert_eq!(revision_count(&conn, &artifact.id), 1);
+
+        let change = get_sdd_change_by_name(&conn, &org, "nexus-mind", "brand-new").unwrap();
+        assert!(change.is_some(), "saving to an unknown change creates the change");
+    }
+
+    /// 2.27 — THE de-dup contract (D2).
+    #[test]
+    fn upsert_sdd_artifact_creates_no_revision_when_hash_unchanged() {
+        let (conn, org, user) = setup();
+        let req = save_req("p", "c", "design", "identical content");
+        let (artifact, first) = upsert_sdd_artifact(&conn, &org, &user, &req, "agent").unwrap();
+        assert!(first);
+
+        let updated_at_before = artifact.updated_at.clone();
+
+        let (again, created) = upsert_sdd_artifact(&conn, &org, &user, &req, "agent").unwrap();
+        assert!(!created, "an identical re-save must NOT create a revision");
+        assert_eq!(revision_count(&conn, &artifact.id), 1, "still exactly one revision");
+        assert_eq!(again.latest_revision, 1);
+        assert_eq!(again.updated_at, updated_at_before, "updated_at must NOT be bumped");
+        assert_eq!(fts_row_count(&conn, &artifact.id), 1, "the index must not be disturbed");
+    }
+
+    /// 2.29
+    #[test]
+    fn upsert_sdd_artifact_appends_revision_2_on_changed_content() {
+        let (conn, org, user) = setup();
+        let (artifact, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
+        let (artifact2, created) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+
+        assert!(created);
+        assert_eq!(artifact2.latest_revision, 2);
+        assert_eq!(artifact2.id, artifact.id, "same artifact, new revision");
+
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        assert_eq!(rev1.content, "v1", "revision 1 is immutable");
+        assert_eq!(rev1.byte_size, 2);
+    }
+
+    /// 2.31 — A1: a revert appends, it does not resurrect.
+    #[test]
+    fn upsert_sdd_artifact_revert_to_earlier_content_appends_revision_3() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "A"), "agent").unwrap();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "B"), "agent").unwrap();
+        let (artifact, created) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "A"), "agent").unwrap();
+
+        assert!(created, "reverting to earlier content is a real event and MUST append");
+        assert_eq!(artifact.latest_revision, 3, "revision 3, not a resurrection of revision 1");
+        assert_eq!(revision_count(&conn, &artifact.id), 3);
+
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        let rev3 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 3).unwrap().unwrap();
+        assert_eq!(rev1.content, "A");
+        assert_eq!(rev3.content, "A");
+        assert_ne!(rev1.id, rev3.id, "two distinct revision rows with the same content");
+    }
+
+    /// 2.33
+    #[test]
+    fn upsert_sdd_artifact_revision_numbering_is_monotonic_per_artifact() {
+        let (conn, org, user) = setup();
+        let (design, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d1"), "agent").unwrap();
+        let (proposal, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "proposal", "p1"), "agent").unwrap();
+
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d2"), "agent").unwrap();
+        let (design3, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d3"), "agent").unwrap();
+
+        assert_eq!(design3.latest_revision, 3);
+
+        let proposal_after = get_sdd_artifact(&conn, &org, &proposal.id).unwrap().unwrap();
+        assert_eq!(
+            proposal_after.artifact.latest_revision, 1,
+            "revisions are per-artifact, not a global counter"
+        );
+
+        let revs = list_sdd_artifact_revisions(&conn, &org, &design.id).unwrap();
+        let mut numbers: Vec<i64> = revs.iter().map(|r| r.revision).collect();
+        numbers.sort();
+        assert_eq!(numbers, vec![1, 2, 3], "gapless, no reuse");
+    }
+
+    /// 2.35 — the FTS maintenance contract.
+    #[test]
+    fn upsert_sdd_artifact_replaces_fts_row_on_new_revision() {
+        let (conn, org, user) = setup();
+        let (artifact, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "the ALPHAWORD appears here"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "now only BETAWORD appears"),
+            "agent",
+        )
+        .unwrap();
+
+        let alpha = search_sdd_artifacts(&conn, &org, "ALPHAWORD", 10).unwrap();
+        assert!(alpha.is_empty(), "a term removed by a newer revision must stop matching");
+
+        let beta = search_sdd_artifacts(&conn, &org, "BETAWORD", 10).unwrap();
+        assert_eq!(beta.len(), 1, "the latest revision's term matches");
+
+        assert_eq!(
+            fts_row_count(&conn, &artifact.id),
+            1,
+            "the index must never accumulate rows per revision"
+        );
+    }
+
+    /// 2.37 — A2: the oversized rejection is ATOMIC.
+    #[test]
+    fn upsert_sdd_artifact_rejects_content_over_1mb_atomically() {
+        let (conn, org, user) = setup();
+        let huge = "x".repeat(1_048_577);
+
+        let err = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "oversized", "design", &huge),
+            "agent",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("artifact_too_large"));
+
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_changes WHERE name = 'oversized'", [], |r| r.get(0))
+            .unwrap();
+        let artifacts: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_artifacts", [], |r| r.get(0)).unwrap();
+        let revisions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_artifact_revisions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(changes, 0, "a rejected save must leave NO change row");
+        assert_eq!(artifacts, 0, "…NO artifact row");
+        assert_eq!(revisions, 0, "…and NO revision row");
+
+        // And against a pre-existing artifact: nothing moves.
+        let (existing, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "small"), "agent").unwrap();
+        let before = get_sdd_artifact(&conn, &org, &existing.id).unwrap().unwrap();
+
+        assert!(upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &huge), "agent").is_err());
+
+        let after = get_sdd_artifact(&conn, &org, &existing.id).unwrap().unwrap();
+        assert_eq!(after.artifact.latest_revision, before.artifact.latest_revision);
+        assert_eq!(after.artifact.updated_at, before.artifact.updated_at);
+    }
+
+    /// 2.39
+    #[test]
+    fn upsert_sdd_artifact_accepts_content_just_under_the_cap() {
+        let (conn, org, user) = setup();
+        let big = "y".repeat(1_048_575);
+        let (artifact, created) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &big), "agent").unwrap();
+        assert!(created);
+
+        let rev = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        assert_eq!(rev.byte_size, 1_048_575, "byte_size is bytes, not chars");
+    }
+
+    /// 2.41 — the capability sentinel.
+    #[test]
+    fn upsert_sdd_artifact_defaults_capability_to_empty_string() {
+        let (conn, org, user) = setup();
+        let (a1, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
+        assert_eq!(a1.capability, "", "an omitted capability persists as '' — never NULL");
+
+        // An explicit `None` must converge on the SAME artifact row, not a duplicate.
+        let mut req = save_req("p", "c", "design", "v2");
+        req.capability = None;
+        let (a2, _) = upsert_sdd_artifact(&conn, &org, &user, &req, "agent").unwrap();
+        assert_eq!(a2.id, a1.id);
+
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
+        assert_eq!(change.artifacts.len(), 1, "two saves of the same kind converge on ONE artifact");
+    }
+
+    /// 2.43
+    #[test]
+    fn upsert_sdd_artifact_spec_capabilities_have_independent_revision_histories() {
+        let (conn, org, user) = setup();
+        let mut store = save_req("p", "c", "spec", "store spec v1");
+        store.capability = Some("sdd-artifact-store".into());
+        let mut links = save_req("p", "c", "spec", "links spec v1");
+        links.capability = Some("sdd-artifact-links".into());
+
+        let (store_a, _) = upsert_sdd_artifact(&conn, &org, &user, &store, "agent").unwrap();
+        let (links_a, _) = upsert_sdd_artifact(&conn, &org, &user, &links, "agent").unwrap();
+        assert_ne!(store_a.id, links_a.id, "spec repeats per capability");
+
+        store.content = "store spec v2".into();
+        let (store_b, _) = upsert_sdd_artifact(&conn, &org, &user, &store, "agent").unwrap();
+        assert_eq!(store_b.latest_revision, 2);
+
+        let links_after = get_sdd_artifact(&conn, &org, &links_a.id).unwrap().unwrap();
+        assert_eq!(links_after.artifact.latest_revision, 1, "the other capability is untouched");
+    }
+
+    /// 2.45
+    #[test]
+    fn upsert_sdd_artifact_persists_provenance_without_clobbering_earlier_revisions() {
+        let (conn, org, user) = setup();
+        let mut req = save_req("p", "c", "design", "v1");
+        req.path = Some("openspec/changes/c/design.md".into());
+        req.git_commit = Some("abc123".into());
+        let (artifact, _) = upsert_sdd_artifact(&conn, &org, &user, &req, "import").unwrap();
+
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        assert_eq!(rev1.git_commit.as_deref(), Some("abc123"));
+        assert_eq!(rev1.git_path.as_deref(), Some("openspec/changes/c/design.md"));
+        assert_eq!(rev1.source, "import");
+        assert_eq!(rev1.byte_size, 2);
+
+        // A later revision with NO provenance must not overwrite revision 1's.
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+
+        let rev1_again = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        assert_eq!(rev1_again.git_commit.as_deref(), Some("abc123"), "revisions are immutable");
+        assert_eq!(rev1_again.source, "import");
+    }
+
+    /// 2.47 — source-scan invariant: nothing mutates or deletes a revision.
+    #[test]
+    fn no_store_function_updates_or_deletes_a_revision() {
+        let src = include_str!("queries.rs");
+        // The needles are assembled at runtime on purpose. Spelling them as string
+        // literals would plant them in this very file, and `include_str!` pulls in the
+        // test module too — the scan would match itself and fail against correct code.
+        let table = "sdd_artifact_revisions";
+        for forbidden in [
+            format!("UPDATE {table}"),
+            format!("DELETE FROM {table}"),
+            format!("fn update_{table}"),
+            format!("fn delete_{table}"),
+        ] {
+            assert!(
+                !src.contains(&forbidden),
+                "revisions are immutable and append-only — found `{forbidden}`. They are written \
+                 by upsert_sdd_artifact's INSERT and removed only by ON DELETE CASCADE."
+            );
+        }
+    }
+
+    /// 2.49 — phase is advisory, never a write gate.
+    #[test]
+    fn upsert_sdd_artifact_does_not_mutate_the_changes_phase() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+        patch_sdd_change(
+            &conn,
+            &org,
+            &change.id,
+            &PatchChangeRequest { phase: Some("spec".into()), ..Default::default() },
+        )
+        .unwrap();
+
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
+        let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
+        assert_eq!(after.phase, "spec", "a save must not advance the phase");
+
+        // Out-of-order saves are accepted, not rejected.
+        let early = mk_change(&conn, &org, &user, "p", "early");
+        let result =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "early", "verify-report", "V"), "agent");
+        assert!(result.is_ok(), "a verify-report on a change in `propose` must be accepted");
+        let after_early = get_sdd_change(&conn, &org, &early.id).unwrap().unwrap();
+        assert_eq!(after_early.phase, "propose");
+    }
+
+    /// 2.51
+    #[test]
+    fn upsert_sdd_artifact_org_isolation() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+
+        let (a, _) =
+            upsert_sdd_artifact(&conn, &org_a, &user_a, &save_req("p", "c", "design", "org A"), "agent").unwrap();
+        let (b, _) =
+            upsert_sdd_artifact(&conn, &org_b, &user_b, &save_req("p", "c", "design", "org B"), "agent").unwrap();
+
+        assert_ne!(a.id, b.id, "org B must get its own change and artifact, not hijack org A's");
+
+        let a_detail = get_sdd_artifact(&conn, &org_a, &a.id).unwrap().unwrap();
+        assert_eq!(a_detail.content.as_deref(), Some("org A"), "org A's content is unmodified");
+        assert!(get_sdd_artifact(&conn, &org_b, &a.id).unwrap().is_none());
+    }
+
+    // ── Artifact reads ───────────────────────────────────────────────────
+
+    /// 2.53
+    #[test]
+    fn get_sdd_artifact_returns_latest_revision_content() {
+        let (conn, org, user) = setup();
+        let long = "a very long design document ".repeat(500);
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "old"), "agent").unwrap();
+        let (artifact, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &long), "agent").unwrap();
+
+        let detail = get_sdd_artifact(&conn, &org, &artifact.id).unwrap().unwrap();
+        assert_eq!(detail.content.as_deref(), Some(long.as_str()), "complete and untruncated");
+        assert_eq!(detail.artifact.latest_revision, 2);
+        assert_eq!(detail.change_name, "c");
+        assert_eq!(detail.project, "p");
+        assert!(detail.content_hash.is_some());
+    }
+
+    /// 2.55
+    #[test]
+    fn get_sdd_artifact_by_kind_resolves_spec_by_capability() {
+        let (conn, org, user) = setup();
+        let mut store = save_req("p", "c", "spec", "STORE SPEC");
+        store.capability = Some("sdd-artifact-store".into());
+        let mut links = save_req("p", "c", "spec", "LINKS SPEC");
+        links.capability = Some("sdd-artifact-links".into());
+        upsert_sdd_artifact(&conn, &org, &user, &store, "agent").unwrap();
+        upsert_sdd_artifact(&conn, &org, &user, &links, "agent").unwrap();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "DESIGN"), "agent").unwrap();
+
+        let found =
+            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "spec", Some("sdd-artifact-store")).unwrap().unwrap();
+        assert_eq!(found.content.as_deref(), Some("STORE SPEC"));
+
+        // The '' sentinel resolves a non-spec kind.
+        let design = get_sdd_artifact_by_kind(&conn, &org, "p", "c", "design", None).unwrap().unwrap();
+        assert_eq!(design.content.as_deref(), Some("DESIGN"));
+
+        // A kind with no artifact is not-found — NOT an artifact with empty content.
+        assert!(
+            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "tasks", None).unwrap().is_none(),
+            "a missing artifact must report not-found, not an empty document"
+        );
+    }
+
+    /// 2.57
+    #[test]
+    fn list_sdd_artifact_revisions_returns_metadata_only_newest_first() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
+        let (artifact, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+
+        let revs = list_sdd_artifact_revisions(&conn, &org, &artifact.id).unwrap();
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[0].revision, 2, "newest first");
+        assert_eq!(revs[1].revision, 1);
+        assert_eq!(revs[0].byte_size, 2);
+        assert!(!revs[0].content_hash.is_empty());
+
+        // The type itself cannot hold content — assert the serialized shape too.
+        let json = serde_json::to_value(&revs[0]).unwrap();
+        assert!(json.get("content").is_none(), "revision metadata must never carry content");
+    }
+
+    /// 2.59
+    #[test]
+    fn get_sdd_artifact_revision_returns_full_content_for_a_specific_rev() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "first"), "agent").unwrap();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "second"), "agent").unwrap();
+        let (artifact, _) =
+            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "third"), "agent").unwrap();
+
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        assert_eq!(rev1.content, "first", "byte-for-byte, and not revision 3's content");
+        assert!(get_sdd_artifact_revision(&conn, &org, &artifact.id, 99).unwrap().is_none());
+    }
+
+    // ── Search ───────────────────────────────────────────────────────────
+
+    /// 2.61
+    #[test]
+    fn search_sdd_artifacts_returns_snippets_scoped_to_org() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+
+        upsert_sdd_artifact(
+            &conn,
+            &org_a,
+            &user_a,
+            &save_req("p", "c", "design", "the rate limiter uses a token bucket"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org_b,
+            &user_b,
+            &save_req("p", "secret", "design", "the rate limiter is org B's secret"),
+            "agent",
+        )
+        .unwrap();
+
+        let hits = search_sdd_artifacts(&conn, &org_a, "limiter", 10).unwrap();
+        assert_eq!(hits.len(), 1, "search must never cross the org boundary");
+        assert_eq!(hits[0].change_name, "c");
+        assert_eq!(hits[0].kind, "design");
+        assert!(hits[0].snippet.contains("limiter"), "the snippet must show the match");
+    }
+
+    /// 2.63
+    #[test]
+    fn search_sdd_artifacts_spans_changes_and_honours_the_limit() {
+        let (conn, org, user) = setup();
+        for change in ["alpha", "beta", "gamma"] {
+            upsert_sdd_artifact(
+                &conn,
+                &org,
+                &user,
+                &save_req("p", change, "design", "shared TOKENWORD here"),
+                "agent",
+            )
+            .unwrap();
+        }
+
+        let all = search_sdd_artifacts(&conn, &org, "TOKENWORD", 10).unwrap();
+        assert_eq!(all.len(), 3, "search spans changes, not just one");
+
+        let limited = search_sdd_artifacts(&conn, &org, "TOKENWORD", 2).unwrap();
+        assert_eq!(limited.len(), 2, "the limit is honoured in SQL");
+    }
+
+    /// 2.65
+    #[test]
+    fn search_sdd_artifacts_sanitizes_fts_query_syntax() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "hello world"), "agent").unwrap();
+
+        // FTS5 metacharacters must not blow up the statement.
+        for query in ["foo\"bar", "*", "a AND (b", "^^^", "-- drop"] {
+            let result = search_sdd_artifacts(&conn, &org, query, 10);
+            assert!(result.is_ok(), "query {query:?} must not propagate a SqliteFailure");
+        }
+    }
+
+    // ── Memory links ─────────────────────────────────────────────────────
+
+    fn mk_memory(conn: &Connection, org: &str, user: &str, content: &str) -> String {
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, tool, content) VALUES (?1, ?2, ?3, 'claude-code', ?4)",
+            rusqlite::params![id, org, user, content],
+        )
+        .unwrap();
+        id
+    }
+
+    /// 2.67
+    #[test]
+    fn link_sdd_change_memory_is_idempotent_and_rejects_cross_org_memory() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+        let change = mk_change(&conn, &org_a, &user_a, "p", "c");
+        let memory = mk_memory(&conn, &org_a, &user_a, "a decision");
+        let foreign = mk_memory(&conn, &org_b, &user_b, "org B's memory");
+
+        link_sdd_change_memory(&conn, &org_a, &change.id, &memory, "produced", &user_a).unwrap();
+        link_sdd_change_memory(&conn, &org_a, &change.id, &memory, "produced", &user_a).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_change_memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-linking the same pair creates no duplicate");
+
+        let err = link_sdd_change_memory(&conn, &org_a, &change.id, &foreign, "produced", &user_a).unwrap_err();
+        assert!(err.to_string().contains("memory_not_found"));
+        let count_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_change_memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_after, 1, "the rejected cross-org link created no row");
+    }
+
+    /// 2.69 — A3: a different relation UPDATES the row.
+    #[test]
+    fn link_sdd_change_memory_with_a_different_relation_updates_the_existing_row() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+        let memory = mk_memory(&conn, &org, &user, "m");
+
+        link_sdd_change_memory(&conn, &org, &change.id, &memory, "informed", &user).unwrap();
+        link_sdd_change_memory(&conn, &org, &change.id, &memory, "produced", &user).unwrap();
+
+        let (count, relation): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(relation) FROM sdd_change_memories WHERE change_id = ?1 AND memory_id = ?2",
+                rusqlite::params![change.id, memory],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "still exactly one link row");
+        assert_eq!(relation, "produced", "the relation was UPDATED, not ignored");
+    }
+
+    /// 2.71
+    #[test]
+    fn unlink_sdd_change_memory_removes_the_link_but_not_the_memory() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+        let memory = mk_memory(&conn, &org, &user, "m");
+        link_sdd_change_memory(&conn, &org, &change.id, &memory, "produced", &user).unwrap();
+
+        assert!(unlink_sdd_change_memory(&conn, &org, &change.id, &memory).unwrap());
+        assert!(
+            !unlink_sdd_change_memory(&conn, &org, &change.id, &memory).unwrap(),
+            "a second unlink reports false"
+        );
+
+        let memory_still_there: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE id = ?1", [&memory], |r| r.get(0))
+            .unwrap();
+        assert_eq!(memory_still_there, 1, "unlinking must not delete the memory");
+    }
+
+    /// 2.73
+    #[test]
+    fn list_sdd_change_memories_returns_hydrated_memories() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c");
+        let m1 = mk_memory(&conn, &org, &user, "first decision");
+        let m2 = mk_memory(&conn, &org, &user, "second decision");
+        link_sdd_change_memory(&conn, &org, &change.id, &m1, "produced", &user).unwrap();
+        link_sdd_change_memory(&conn, &org, &change.id, &m2, "informed", &user).unwrap();
+
+        let memories = list_sdd_change_memories(&conn, &org, &change.id).unwrap();
+        assert_eq!(memories.len(), 2);
+        assert!(memories.iter().any(|m| m.content == "first decision"));
+        assert!(memories.iter().any(|m| m.content == "second decision"));
+    }
+
+    // ── Task join ────────────────────────────────────────────────────────
+
+    /// 2.75 — D3: the join key is the NAME.
+    #[test]
+    fn list_tasks_for_sdd_change_joins_task_spec_links_by_name() {
+        let (conn, org, user) = setup();
+        mk_change(&conn, &org, &user, "p", "sdd-artifacts");
+
+        for title in ["PR-1", "PR-2", "PR-3"] {
+            let task = create_task(
+                &conn,
+                &org,
+                &user,
+                &CreateTaskRequest {
+                    project: "p".into(),
+                    title: title.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            link_task_spec(&conn, &task.id, &user, "sdd-artifacts").unwrap();
+        }
+
+        let tasks = list_tasks_for_sdd_change(&conn, &org, "sdd-artifacts", None).unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().any(|t| t.title == "PR-1"));
+
+        // A change with no links returns an empty vec, not an error.
+        let none = list_tasks_for_sdd_change(&conn, &org, "unlinked-change", None).unwrap();
+        assert!(none.is_empty());
+    }
+
+    /// 2.79 — the link resolves even if it was created BEFORE the change existed.
+    #[test]
+    fn a_spec_link_created_before_the_change_existed_resolves_once_the_change_appears() {
+        let (conn, org, user) = setup();
+        let task = create_task(
+            &conn,
+            &org,
+            &user,
+            &CreateTaskRequest { project: "p".into(), title: "Early".into(), ..Default::default() },
+        )
+        .unwrap();
+        // No sdd_changes row of this name exists yet. The link is still recorded.
+        link_task_spec(&conn, &task.id, &user, "not-yet-created").unwrap();
+
+        // The change appears later. The pre-existing link resolves with NO re-linking
+        // and no mutation of task_spec_links — the join is a pure name join that never
+        // reads sdd_changes, which is exactly what makes this work (D3).
+        mk_change(&conn, &org, &user, "p", "not-yet-created");
+
+        let tasks = list_tasks_for_sdd_change(&conn, &org, "not-yet-created", None).unwrap();
+        assert_eq!(tasks.len(), 1, "a pure name join needs no re-linking");
+        assert_eq!(tasks[0].id, task.id);
+
+        let links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_spec_links WHERE spec_change_name = 'not-yet-created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(links, 1, "task_spec_links was never rewritten");
+    }
+
+    /// 2.80 — no duplicate source of truth: `tasks` gained no change_id column.
+    #[test]
+    fn tasks_table_has_no_change_id_column() {
+        let (conn, _org, _user) = setup();
+        let mut stmt = conn.prepare("PRAGMA table_info(tasks)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            !cols.iter().any(|c| c == "change_id" || c == "sdd_change_id"),
+            "tasks must join by NAME (task_spec_links), not by a second FK — D3"
+        );
+    }
+
+    /// 2.81 — A8: archived changes remain valid link targets.
+    #[test]
+    fn sdd_change_exists_matches_by_name_across_projects_and_respects_org() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, _) = second_org(&conn);
+
+        mk_change(&conn, &org_a, &user_a, "nexus-mind", "team-tasks");
+        let archived = mk_change(&conn, &org_a, &user_a, "kasymir", "old-change");
+        archive_sdd_change(&conn, &org_a, &archived.id).unwrap();
+
+        assert!(sdd_change_exists(&conn, &org_a, "team-tasks").unwrap());
+        assert!(
+            sdd_change_exists(&conn, &org_a, "old-change").unwrap(),
+            "an ARCHIVED change is still a legitimate link target (A8)"
+        );
+        assert!(!sdd_change_exists(&conn, &org_a, "never-existed").unwrap());
+        assert!(
+            !sdd_change_exists(&conn, &org_b, "team-tasks").unwrap(),
+            "a change in another org must not satisfy the check"
+        );
+    }
+}
+
+#[cfg(test)]
+mod privileged_permission_tests {
+    use super::*;
+    use crate::db::connection::connect;
+    use crate::db::migrations;
+
+    fn setup() -> (Connection, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, _user, _key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        (conn, org.id)
+    }
+
+    /// The built-in `admin` and `super_user` permission lists are hard-coded in Rust,
+    /// NOT read from the `roles` table — so every migration that grants a new domain to
+    /// the role *templates* (v52 for `task:*`, v54 for `sdd:*`) silently leaves these two
+    /// behind. `require_permission` bypasses the check for privileged roles, so nothing
+    /// breaks server-side and the drift goes unnoticed.
+    ///
+    /// But the list is what `/v1/admin/auth/me` reports, and the admin UI gates controls
+    /// on it (`isAdmin || permissions.includes('sdd:write')`). A list that omits a domain
+    /// the role can actually use is a **lie in the API response** — and the first UI check
+    /// that forgets its `isAdmin ||` prefix silently hides a control from the very people
+    /// who are allowed to use it.
+    #[test]
+    fn privileged_roles_report_every_domain_they_can_actually_use() {
+        let (conn, org_id) = setup();
+
+        for role in ["admin", "super_user"] {
+            let perms = get_role_permissions(&conn, &org_id, role).unwrap();
+
+            for required in [
+                "task:read",
+                "task:write",
+                "task:assign",
+                "task:delete",
+                "sdd:read",
+                "sdd:write",
+                "sdd:delete",
+            ] {
+                assert!(
+                    perms.iter().any(|p| p == required),
+                    "the hard-coded `{role}` permission list omits `{required}` — \
+                     /v1/admin/auth/me would report a permission set the role does not match"
+                );
+            }
+        }
+    }
+
+    /// Guards the drift itself: every permission string granted to a seeded role template
+    /// must also appear in the privileged lists. A new domain added later fails here.
+    #[test]
+    fn no_template_grant_is_missing_from_the_privileged_lists() {
+        let (conn, org_id) = setup();
+        let admin = get_role_permissions(&conn, &org_id, "admin").unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT permissions FROM roles WHERE id LIKE 'tmpl_%'")
+            .unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        for raw in rows {
+            let granted: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            for perm in granted {
+                assert!(
+                    admin.iter().any(|p| p == &perm),
+                    "`{perm}` is granted to a role template but missing from the hard-coded \
+                     `admin` list — add it there when you add a new permission domain"
+                );
+            }
+        }
     }
 }

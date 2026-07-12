@@ -72,7 +72,12 @@ testing:
     quality:
       build: "astro build"
 
-artifact_store: hybrid
+# `nexusmind` (sdd-artifacts PR-10): writes every artifact to BOTH the filesystem
+# and the NexusMind artifact store (versioned, indexed, linkable), and reads full
+# documents back via get_sdd_artifact instead of truncated memory previews.
+# Replaces `hybrid`, whose engram leg upserts by topic_key and therefore OVERWRITES
+# — re-running a phase destroyed the previous artifact.
+artifact_store: nexusmind
 
 phases:
   proposal:  { required_inputs: [],                    outputs: [proposal.md] }
