@@ -1863,12 +1863,51 @@ fn validate_safe_manifest_content(content: &str) -> Result<(), &'static str> {
         || lower.contains("bearer ")
         || lower.contains("nm_live")
         || lower.contains("ghp_")
-        || lower.contains("sk-")
         || lower.contains("/users/")
+        || contains_openai_key(&lower)
     {
         return Err("secret_scan_failed");
     }
     Ok(())
+}
+
+/// An OpenAI key is `sk-` followed by a long opaque token. A bare `contains("sk-")`
+/// is NOT that check: `sk-` is a substring of ordinary English words, and every one
+/// of these is real text from harnesses this scanner refused to publish:
+///
+///   task-specific   ask-on-risk   risk-based   disk-backed   mask-off
+///
+/// The scanner was rejecting documents for containing the word "task-specific".
+/// Refusing a publish is a serious act; it has to be for a secret, not for prose.
+///
+/// So: require the prefix at a token boundary, followed by enough opaque characters
+/// that it cannot be a word. A real key is `sk-` + 20+ of [a-z0-9_-]; "task-specific"
+/// gives 8 before hitting nothing, and every word above dies on the boundary check.
+fn contains_openai_key(lower: &str) -> bool {
+    const PREFIX: &str = "sk-";
+    const MIN_TOKEN_LEN: usize = 20;
+
+    let bytes = lower.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = lower[from..].find(PREFIX) {
+        let start = from + rel;
+
+        // Token boundary: the prefix must not be glued to a preceding word character,
+        // which is exactly what makes "task-", "ask-" and "risk-" false positives.
+        let boundary = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+
+        if boundary {
+            let token: usize = lower[start + PREFIX.len()..]
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+                .count();
+            if token >= MIN_TOKEN_LEN {
+                return true;
+            }
+        }
+        from = start + PREFIX.len();
+    }
+    false
 }
 
 fn json_content_is_object(content: &str) -> bool {
@@ -2941,6 +2980,48 @@ mod tests {
     }
 
     #[test]
+    /// The scanner refused to publish real harnesses because their prose contained the
+    /// words `task-specific` and `ask-on-risk`. Both hold the substring `sk-`, which the
+    /// check looked for unanchored, aiming at OpenAI keys.
+    ///
+    /// Refusing a publish is a serious act. It has to be for a secret, not for English.
+    #[test]
+    fn secret_scan_does_not_reject_ordinary_words_containing_sk() {
+        for prose in [
+            "Read those files before task-specific work.",
+            "delivery strategy: ask-on-risk (default)",
+            "a risk-based forecast of disk-backed storage",
+            "sk- on its own is not a key",
+            "sk-short",
+        ] {
+            assert!(
+                validate_safe_manifest_content(prose).is_ok(),
+                "the scanner must not reject prose: {prose:?}"
+            );
+        }
+    }
+
+    /// …but a real key must still be caught, boundary and all.
+    #[test]
+    fn secret_scan_still_catches_a_real_openai_key() {
+        for secret in [
+            "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789",
+            "use sk-proj-Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0 to authenticate",
+            "sk-0123456789012345678901234567890123456789",
+        ] {
+            assert_eq!(
+                validate_safe_manifest_content(secret),
+                Err("secret_scan_failed"),
+                "a real key must still be refused: {secret:?}"
+            );
+        }
+
+        // The other patterns are unchanged.
+        assert_eq!(validate_safe_manifest_content("ghp_0123456789abcdef"), Err("secret_scan_failed"));
+        assert_eq!(validate_safe_manifest_content("Authorization: Bearer x"), Err("secret_scan_failed"));
+        assert_eq!(validate_safe_manifest_content("/Users/cesar/.ssh/id_rsa"), Err("secret_scan_failed"));
+    }
+
     fn typed_harness_manifest_accepts_all_supported_formats() {
         for manifest in [
             json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
