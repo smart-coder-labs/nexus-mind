@@ -246,6 +246,16 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/sdd/changes/:id/memories/:memory_id",
             delete(sdd::unlink_change_memory_handler),
         )
+        // Which living specifications this change has merged its deltas into.
+        .route("/v1/sdd/changes/:id/specs", get(sdd::list_change_specs_handler))
+        // ── The living specification: openspec/specs/{capability}/spec.md ──
+        // Same ordering rule: the static /v1/sdd/specs collection is registered BEFORE
+        // /v1/sdd/specs/:id, or ":id" would swallow it.
+        .route("/v1/sdd/specs", get(sdd::get_specs_handler).put(sdd::put_spec_handler))
+        .route("/v1/sdd/specs/:id", get(sdd::get_spec_handler))
+        .route("/v1/sdd/specs/:id/revisions", get(sdd::list_spec_revisions_handler))
+        // GET only, deliberately: spec revisions are immutable, so a write here must 405.
+        .route("/v1/sdd/specs/:id/revisions/:rev", get(sdd::get_spec_revision_handler))
         .route(
             "/v1/tasks/resolve-by-spec",
             post(tasks::resolve_by_spec_handler),

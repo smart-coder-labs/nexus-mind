@@ -287,6 +287,10 @@ export interface GlobalSearchResult {
    *  (design.md A4). An older backend omits the key entirely, so every read site
    *  must default it to `[]`. */
   sdd_changes: SddChangeSummary[]
+  /** The living specifications. Gated on exactly the same `sdd:read` as
+   *  `sdd_changes` — empty, never a 403 — and likewise absent from an older
+   *  backend's response, so read sites must default it to `[]`. */
+  sdd_specs: SddSpecSummary[]
 }
 
 export interface DailyCount {
@@ -1087,4 +1091,111 @@ export interface LinkSddChangeMemoryRequest {
   memory_id: string
   /** `produced` (default) or `informed`. */
   relation?: string
+}
+
+// ── SDD Specs — the living specification ──────────────────────────────────────
+//
+// `openspec/specs/{capability}/spec.md`: the SOURCE OF TRUTH, as opposed to the
+// in-flight drafts under `openspec/changes/{name}/`.
+//
+// A spec is NOT an artifact of a change — it belongs to the project and outlives
+// the changes that amend it, so it is its own root entity with its own id, its own
+// revision history and its own routes. `last_merged_from_change_*` /
+// `merged_from_change_*` are what tie the two trees together.
+//
+// The same two traps as above: `SddSpecDetail` and `SddSpecMerge` are serde-FLATTENED
+// (hence `extends SddSpec`), and `SddSpecRevisionMeta` has no `content` field on
+// purpose.
+
+/** One living specification — one `openspec/specs/{capability}/spec.md`. No content. */
+export interface SddSpec {
+  id: string
+  org_id: string
+  project: string
+  capability: string
+  title?: string | null
+  path?: string | null
+  latest_revision: number
+  created_by: string
+  created_at: string
+  updated_at: string
+  archived_at?: string | null
+  /** The change whose deltas produced the LATEST revision. Metadata, so the list
+   *  read carries it too. */
+  last_merged_from_change_id?: string | null
+  last_merged_from_change_name?: string | null
+}
+
+/** A spec plus the content of its latest revision. FLATTENED on the wire. */
+export interface SddSpecDetail extends SddSpec {
+  content?: string | null
+  content_hash?: string | null
+}
+
+/** A spec a change has merged into, and the revision that merge produced.
+ *  FLATTENED on the wire. Backs `GET /v1/sdd/changes/:id/specs`. */
+export interface SddSpecMerge extends SddSpec {
+  merged_revision: number
+}
+
+/** A full, immutable spec revision — with content. */
+export interface SddSpecRevision {
+  id: string
+  spec_id: string
+  revision: number
+  content: string
+  content_hash: string
+  byte_size: number
+  merged_from_change_id?: string | null
+  merged_from_change_name?: string | null
+  git_commit?: string | null
+  git_path?: string | null
+  source: string
+  created_by: string
+  created_at: string
+}
+
+/** Spec revision metadata. No `content` field, deliberately. */
+export interface SddSpecRevisionMeta {
+  id: string
+  spec_id: string
+  revision: number
+  content_hash: string
+  byte_size: number
+  merged_from_change_id?: string | null
+  merged_from_change_name?: string | null
+  git_commit?: string | null
+  git_path?: string | null
+  source: string
+  created_by: string
+  created_at: string
+}
+
+/** Thin projection carried by `GlobalSearchResult`. */
+export interface SddSpecSummary {
+  id: string
+  project: string
+  capability: string
+  title?: string | null
+  latest_revision: number
+}
+
+/** One hit from `GET /v1/sdd/search`, which spans BOTH trees. `hit_type` says which
+ *  one — a spec hit has no `change_id`, an artifact hit has no `spec_id`. */
+export interface SddSearchResult {
+  hit_type: 'spec' | 'artifact'
+  project: string
+  capability: string
+  snippet: string
+  artifact_id?: string | null
+  change_id?: string | null
+  change_name?: string | null
+  kind?: SddArtifactKind | null
+  spec_id?: string | null
+  title?: string | null
+}
+
+export interface ListSddSpecsParams {
+  project?: string
+  include_archived?: boolean
 }

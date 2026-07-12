@@ -58,6 +58,7 @@ pub async fn get_global_search(
             policies: vec![],
             conventions: vec![],
             sdd_changes: vec![],
+            sdd_specs: vec![],
         }));
     }
 
@@ -86,8 +87,18 @@ pub async fn get_global_search(
     // A4 — an EMPTY facet, never a 403. Gating the whole of global search on a
     // brand-new permission would break it for every user who does not have
     // sdd:read yet. Same shape as the `users` facet's is_privileged() gate above.
-    let sdd_changes = if require_permission(&conn, &auth, None, "sdd:read").is_ok() {
+    //
+    // The specs facet is gated on exactly the same grant, and for exactly the same
+    // reason — one permission check, both facets, so they can never disagree about
+    // who may see the SDD trees.
+    let can_read_sdd = require_permission(&conn, &auth, None, "sdd:read").is_ok();
+    let sdd_changes = if can_read_sdd {
         queries::search_sdd_changes_by_query(&conn, &auth.org_id, q, limit).map_err(db_err)?
+    } else {
+        vec![]
+    };
+    let sdd_specs = if can_read_sdd {
+        queries::search_sdd_specs_by_query(&conn, &auth.org_id, q, limit).map_err(db_err)?
     } else {
         vec![]
     };
@@ -99,6 +110,7 @@ pub async fn get_global_search(
         policies,
         conventions,
         sdd_changes,
+        sdd_specs,
     }))
 }
 

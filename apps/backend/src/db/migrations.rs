@@ -57,6 +57,86 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v52(conn)?;
     run_v53(conn)?;
     run_v54(conn)?;
+    run_v55(conn)?;
+    Ok(())
+}
+
+/// Migration v55: creates the LIVING SPECIFICATION — `openspec/specs/{capability}/spec.md`.
+///
+/// `openspec/` has two trees and v53 only modelled one. `openspec/changes/{name}/`
+/// holds the in-flight drafts; `openspec/specs/{capability}/spec.md` holds the
+/// contract those drafts are negotiating over, and `sdd-archive` merges a change's
+/// delta specs into it when the change closes.
+///
+/// A main spec is **not an artifact of a change**. It belongs to the project and it
+/// OUTLIVES the changes that modify it, so it gets its own root entity rather than
+/// hanging off a synthetic change — which would invert the relationship.
+///
+/// `sdd_specs.project` is a project **name** string, exactly like `sdd_changes.project`
+/// (design D4), so unregistered and org-shared project names stay visible.
+///
+/// `sdd_spec_revisions.merged_from_change_id` is the point of the whole table: it
+/// records WHICH change merged its deltas to produce this revision. It is
+/// `ON DELETE SET NULL`, never CASCADE — purging a change must not erase the
+/// specification it shaped. The provenance is lost; the contract is not.
+pub fn run_v55(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 55 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sdd_specs (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            project TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            title TEXT,
+            path TEXT,
+            latest_revision INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            archived_at TEXT,
+            UNIQUE(org_id, project, capability)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_specs_org_project ON sdd_specs(org_id, project);
+         CREATE INDEX IF NOT EXISTS idx_sdd_specs_capability ON sdd_specs(org_id, capability);
+
+         CREATE TABLE IF NOT EXISTS sdd_spec_revisions (
+            id TEXT PRIMARY KEY,
+            spec_id TEXT NOT NULL REFERENCES sdd_specs(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            merged_from_change_id TEXT REFERENCES sdd_changes(id) ON DELETE SET NULL,
+            git_commit TEXT,
+            git_path TEXT,
+            source TEXT NOT NULL DEFAULT 'agent',
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(spec_id, revision)
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdd_spec_revisions_spec
+            ON sdd_spec_revisions(spec_id, revision DESC);
+         CREATE INDEX IF NOT EXISTS idx_sdd_spec_revisions_hash
+            ON sdd_spec_revisions(spec_id, content_hash);
+         CREATE INDEX IF NOT EXISTS idx_sdd_spec_revisions_merged_from
+            ON sdd_spec_revisions(merged_from_change_id);
+
+         -- Standalone FTS5, matching `sdd_artifacts_fts`: many revisions map to one
+         -- indexed document, so the external-content trigger pattern does not apply.
+         -- `upsert_sdd_spec` maintains this table explicitly, delete-then-insert on
+         -- spec_id for every new revision, so a spec contributes exactly one hit.
+         CREATE VIRTUAL TABLE IF NOT EXISTS sdd_specs_fts USING fts5(
+            spec_id UNINDEXED,
+            project,
+            capability,
+            content
+         );
+
+         PRAGMA user_version = 55;",
+    )?;
     Ok(())
 }
 
@@ -2184,7 +2264,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
@@ -2581,7 +2661,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
@@ -2590,7 +2670,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2722,7 +2802,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2749,14 +2829,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
@@ -2874,7 +2954,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2893,14 +2973,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -2977,14 +3057,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -3067,7 +3147,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -3261,14 +3341,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
@@ -3305,14 +3385,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3351,14 +3431,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 54, "user_version must be 54 after run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -3483,7 +3563,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 (run_all already applied v41-v52)");
+        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 (run_all already applied v41-v55)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -3494,8 +3574,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            54,
-            "user_version must be 54 after v41-v54 are included in run_all"
+            55,
+            "user_version must be 55 after v41-v55 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3587,7 +3667,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "version must remain 54 on second run_all");
+        assert_eq!(get_user_version(&conn), 55, "version must remain 55 on second run_all");
     }
 
     #[test]
@@ -3713,7 +3793,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 54, "user_version must reach 54 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 55, "user_version must reach 55 after the backfill migration");
     }
 
     #[test]
@@ -3722,7 +3802,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 54, "user_version must remain 54 on second run_all");
+        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 on second run_all");
     }
 
     // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
@@ -3742,7 +3822,7 @@ mod tests {
         ] {
             assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
         }
-        assert_eq!(get_user_version(&conn), 54, "user_version must reach 54 on a fresh db");
+        assert_eq!(get_user_version(&conn), 55, "user_version must reach 55 on a fresh db");
     }
 
     #[test]
@@ -4580,15 +4660,269 @@ mod tests {
         );
     }
 
-    /// 1.23 — run_all lands on 54.
+    /// 1.23 — run_all lands on 55.
     #[test]
-    fn run_all_sets_user_version_to_54() {
+    fn run_all_sets_user_version_to_55() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            54,
-            "run_all must leave user_version at 54"
+            55,
+            "run_all must leave user_version at 55"
         );
+    }
+
+    // ── v55 migration tests (the living specification) ──────────────────────────
+
+    /// The two spec tables exist with the columns design §2 names.
+    #[test]
+    fn run_v55_creates_spec_tables() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for table in ["sdd_specs", "sdd_spec_revisions"] {
+            assert!(table_exists(&conn, table), "missing table: {table}");
+        }
+
+        for col in [
+            "id",
+            "org_id",
+            "project",
+            "capability",
+            "title",
+            "path",
+            "latest_revision",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "archived_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_specs", col).is_some(),
+                "sdd_specs missing column: {col}"
+            );
+        }
+
+        for col in [
+            "id",
+            "spec_id",
+            "revision",
+            "content",
+            "content_hash",
+            "byte_size",
+            "merged_from_change_id",
+            "git_commit",
+            "git_path",
+            "source",
+            "created_by",
+            "created_at",
+        ] {
+            assert!(
+                column_info(&conn, "sdd_spec_revisions", col).is_some(),
+                "sdd_spec_revisions missing column: {col}"
+            );
+        }
+    }
+
+    /// A capability is unique per (org, project) — one living spec per capability,
+    /// which is what makes it THE contract rather than one draft among many.
+    #[test]
+    fn run_v55_one_spec_per_capability_per_project() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+
+        conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by)
+             VALUES ('s1', 'org1', 'nexus-mind', 'harness-library', 'u1')",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by)
+             VALUES ('s2', 'org1', 'nexus-mind', 'harness-library', 'u1')",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "a second spec for the same capability in the same project MUST violate UNIQUE(org_id, project, capability)"
+        );
+
+        // …but the same capability in a DIFFERENT project is a different contract.
+        conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by)
+             VALUES ('s3', 'org1', 'other-project', 'harness-library', 'u1')",
+            [],
+        )
+        .expect("the same capability in another project must be its own spec");
+    }
+
+    /// `merged_from_change_id` is the payoff — it must be a real FK onto `sdd_changes`,
+    /// and `ON DELETE SET NULL`: purging a change must not take the spec revision it
+    /// produced down with it. The specification outlives the changes that shaped it.
+    #[test]
+    fn run_v55_merged_from_change_id_survives_the_change_it_names() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        seed_sdd_fixtures(&conn);
+        insert_change(&conn, "c1", "nexus-mind", "sdd-specs");
+
+        conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by, latest_revision)
+             VALUES ('s1', 'org1', 'nexus-mind', 'harness-library', 'u1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_spec_revisions
+                (id, spec_id, revision, content, content_hash, byte_size, merged_from_change_id, created_by)
+             VALUES ('r1', 's1', 1, 'the contract', 'hash', 12, 'c1', 'u1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM sdd_changes WHERE id = 'c1'", []).unwrap();
+
+        let (still_there, merged): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(merged_from_change_id) FROM sdd_spec_revisions WHERE id = 'r1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(still_there, 1, "the spec revision must survive the deletion of the change");
+        assert_eq!(
+            merged, None,
+            "merged_from_change_id must be SET NULL, not cascade the revision away"
+        );
+    }
+
+    /// Deleting a SPEC does take its revisions — they are its history, not the project's.
+    #[test]
+    fn run_v55_spec_revisions_cascade_from_the_spec() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        seed_sdd_fixtures(&conn);
+
+        conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by)
+             VALUES ('s1', 'org1', 'nexus-mind', 'cap', 'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_spec_revisions (id, spec_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r1', 's1', 1, 'x', 'h', 1, 'u1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM sdd_specs WHERE id = 's1'", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a spec's revisions must cascade with the spec");
+    }
+
+    /// One revision per number per spec — the append-only history cannot fork.
+    #[test]
+    fn run_v55_revision_numbers_are_unique_per_spec() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+        conn.execute(
+            "INSERT INTO sdd_specs (id, org_id, project, capability, created_by)
+             VALUES ('s1', 'org1', 'nexus-mind', 'cap', 'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sdd_spec_revisions (id, spec_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r1', 's1', 1, 'a', 'h1', 1, 'u1')",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO sdd_spec_revisions (id, spec_id, revision, content, content_hash, byte_size, created_by)
+             VALUES ('r2', 's1', 1, 'b', 'h2', 1, 'u1')",
+            [],
+        );
+        assert!(dup.is_err(), "revision 1 of a spec MUST be unique — UNIQUE(spec_id, revision)");
+    }
+
+    /// `source` defaults to 'agent', matching `sdd_artifact_revisions`.
+    #[test]
+    fn run_v55_source_defaults_to_agent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let (notnull, default) = column_info(&conn, "sdd_spec_revisions", "source")
+            .expect("sdd_spec_revisions.source must exist");
+        assert!(notnull, "source must be NOT NULL");
+        assert_eq!(default.as_deref(), Some("'agent'"), "source must default to 'agent'");
+    }
+
+    /// The FTS5 index exists, indexes content, and leaves `spec_id` UNINDEXED.
+    #[test]
+    fn run_v55_creates_specs_fts_virtual_table() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        assert!(table_exists(&conn, "sdd_specs_fts"), "missing fts table: sdd_specs_fts");
+
+        conn.execute(
+            "INSERT INTO sdd_specs_fts (spec_id, project, capability, content)
+             VALUES ('spec1', 'nexus-mind', 'harness-library', 'the library enforces rate limiting')",
+            [],
+        )
+        .unwrap();
+
+        let hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_specs_fts WHERE sdd_specs_fts MATCH 'rate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "content must be indexed and searchable");
+
+        let id_hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_specs_fts WHERE sdd_specs_fts MATCH 'spec1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(id_hits, 0, "spec_id must be UNINDEXED — it is a payload, not a search term");
+    }
+
+    /// Every index from the design, in the style of v53.
+    #[test]
+    fn run_v55_creates_indexes() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for (table, idx) in [
+            ("sdd_specs", "idx_sdd_specs_org_project"),
+            ("sdd_specs", "idx_sdd_specs_capability"),
+            ("sdd_spec_revisions", "idx_sdd_spec_revisions_spec"),
+            ("sdd_spec_revisions", "idx_sdd_spec_revisions_hash"),
+            ("sdd_spec_revisions", "idx_sdd_spec_revisions_merged_from"),
+        ] {
+            assert!(index_exists(&conn, table, idx), "missing index: {idx} on {table}");
+        }
+    }
+
+    /// Re-running v55 on an already-migrated database is a no-op, not an error.
+    #[test]
+    fn run_v55_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        run_v55(&conn).expect("run_v55 must be idempotent");
+        run_all(&conn).expect("run_all must be idempotent");
+        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55");
     }
 }

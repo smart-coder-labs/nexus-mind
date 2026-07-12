@@ -17,6 +17,7 @@ const EMPTY_RESULT: GlobalSearchResult = {
   policies: [],
   conventions: [],
   sdd_changes: [],
+  sdd_specs: [],
 }
 
 function saveToHistory(query: string) {

@@ -146,6 +146,7 @@ const {
   getSddArtifactMock,
   listSddArtifactRevisionsMock,
   getSddArtifactRevisionMock,
+  getSddChangeSpecsMock,
   patchSddChangeMock,
   linkSddChangeMemoryMock,
   unlinkSddChangeMemoryMock,
@@ -157,6 +158,7 @@ const {
   getSddArtifactMock: vi.fn(),
   listSddArtifactRevisionsMock: vi.fn(),
   getSddArtifactRevisionMock: vi.fn(),
+  getSddChangeSpecsMock: vi.fn(),
   patchSddChangeMock: vi.fn(),
   linkSddChangeMemoryMock: vi.fn(),
   unlinkSddChangeMemoryMock: vi.fn(),
@@ -171,6 +173,7 @@ vi.mock('../../api/client', () => ({
     getSddArtifact: getSddArtifactMock,
     listSddArtifactRevisions: listSddArtifactRevisionsMock,
     getSddArtifactRevision: getSddArtifactRevisionMock,
+    getSddChangeSpecs: getSddChangeSpecsMock,
     patchSddChange: patchSddChangeMock,
     linkSddChangeMemory: linkSddChangeMemoryMock,
     unlinkSddChangeMemory: unlinkSddChangeMemoryMock,
@@ -223,6 +226,7 @@ beforeEach(() => {
     return Promise.resolve(detail(a, ARTIFACT_CONTENT[id] ?? '# Untitled'))
   })
   listSddArtifactRevisionsMock.mockResolvedValue(revisions)
+  getSddChangeSpecsMock.mockResolvedValue([])
   getSddArtifactRevisionMock.mockImplementation((id: string, rev: number) =>
     Promise.resolve({
       id: `r${rev}`, artifact_id: id, revision: rev,

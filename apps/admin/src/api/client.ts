@@ -85,8 +85,14 @@ import type {
   SddArtifactDetail,
   SddRevision,
   SddRevisionMeta,
-  SddSearchHit,
+  SddSearchResult,
+  SddSpec,
+  SddSpecDetail,
+  SddSpecMerge,
+  SddSpecRevision,
+  SddSpecRevisionMeta,
   ListSddChangesParams,
+  ListSddSpecsParams,
   PatchSddChangeRequest,
   LinkSddChangeMemoryRequest,
 } from '../types'
@@ -1101,9 +1107,44 @@ export class NexusMindClient {
     )
   }
 
-  searchSddArtifacts(q: string, limit = 20): Promise<SddSearchHit[]> {
+  /** Spans BOTH openspec trees. Each hit's `hit_type` says whether it came from the
+   *  living specification or from a draft inside a change. */
+  searchSdd(q: string, limit = 20): Promise<SddSearchResult[]> {
     const qs = new URLSearchParams({ q, limit: String(limit) })
-    return this.request<SddSearchHit[]>(`/v1/sdd/search?${qs.toString()}`)
+    return this.request<SddSearchResult[]>(`/v1/sdd/search?${qs.toString()}`)
+  }
+
+  // ── SDD Specs — the living specification ──────────────────────────────────
+  //
+  // `openspec/specs/{capability}/spec.md`. Read-only over CONTENT here, exactly like
+  // artifacts (A7): the contract is authored by the harness and by git, and there is
+  // deliberately no spec-save method on this client for any code path to reach for.
+
+  /** Metadata only — the list never carries a contract's text. */
+  listSddSpecs(params: ListSddSpecsParams = {}): Promise<SddSpec[]> {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => v != null && qs.set(k, String(v)))
+    const q = qs.toString()
+    return this.request<SddSpec[]>(`/v1/sdd/specs${q ? `?${q}` : ''}`)
+  }
+
+  /** The spec's fields INLINE plus `content` — flattened, so there is no wrapper. */
+  getSddSpec(id: string): Promise<SddSpecDetail> {
+    return this.request<SddSpecDetail>(`/v1/sdd/specs/${encodeURIComponent(id)}`)
+  }
+
+  /** Metadata only — the revision list never carries content. */
+  listSddSpecRevisions(id: string): Promise<SddSpecRevisionMeta[]> {
+    return this.request<SddSpecRevisionMeta[]>(`/v1/sdd/specs/${encodeURIComponent(id)}/revisions`)
+  }
+
+  getSddSpecRevision(id: string, rev: number): Promise<SddSpecRevision> {
+    return this.request<SddSpecRevision>(`/v1/sdd/specs/${encodeURIComponent(id)}/revisions/${rev}`)
+  }
+
+  /** Which living specifications this change has merged its deltas into. */
+  getSddChangeSpecs(id: string): Promise<SddSpecMerge[]> {
+    return this.request<SddSpecMerge[]>(`/v1/sdd/changes/${encodeURIComponent(id)}/specs`)
   }
 
   /** Curation (A7). Accepts ONLY title/status/phase/sprint_id — the backend

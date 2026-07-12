@@ -34,6 +34,12 @@
 //!   1. the legacy `sdd/{change}/{artifact}` memories (older) — become revision 1,
 //!   2. the filesystem (newer, reviewable) — becomes revision 2 and therefore wins.
 //!
+//! The filesystem half walks BOTH of openspec's trees:
+//!   * `openspec/changes/*/` — the in-flight changes, as artifacts of a change;
+//!   * `openspec/specs/*/spec.md` — the LIVING SPECIFICATIONS, as `sdd_specs`. These
+//!     are not artifacts of anything: a main spec belongs to the project and outlives
+//!     the changes that amend it. `--skip-specs` leaves that subtree alone.
+//!
 //! The legacy memories are TAGGED `sdd-migrated` and left in place: whether to
 //! retire them is an explicit user decision, made after they can see the imported
 //! artifacts in the admin. The test `importer_never_removes_a_memory` scans this
@@ -48,8 +54,8 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use nexusmind::db::{connection::connect, migrations, queries};
 use nexusmind::models::types::{
-    PatchChangeRequest, SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
-    SddChange, SddPhase,
+    PatchChangeRequest, SaveArtifactRequest, SaveSpecRequest, SddArtifact, SddArtifactDetail,
+    SddArtifactKind, SddChange, SddPhase, SddSpec, SddSpecDetail,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
@@ -98,6 +104,12 @@ struct Args {
     #[arg(long, help = "Do not import the legacy sdd/* memories — walk openspec/ only")]
     skip_memories: bool,
 
+    #[arg(
+        long,
+        help = "Do not walk openspec/specs/ — import the changes tree and the memories only"
+    )]
+    skip_specs: bool,
+
     #[arg(long, help = "Org to import into. Omit to resolve the single org.")]
     org_id: Option<String>,
 
@@ -130,6 +142,10 @@ struct Plan {
     api: Option<ApiTarget>,
     filesystem: bool,
     memories: bool,
+    /// `openspec/specs/*/spec.md` — the living specifications. Part of the filesystem
+    /// half (it needs the same tree and the same sink), so `--skip-filesystem` takes
+    /// it out too; `--skip-specs` takes out only this subtree.
+    specs: bool,
 }
 
 /// Rejects the impossible combinations up front, with a sentence naming the way
@@ -175,7 +191,13 @@ fn plan(args: &Args) -> Result<Plan> {
         (None, _) => None,
     };
 
-    Ok(Plan { db: args.db.clone(), api, filesystem, memories })
+    Ok(Plan {
+        db: args.db.clone(),
+        api,
+        filesystem,
+        memories,
+        specs: filesystem && !args.skip_specs,
+    })
 }
 
 // ── the write sink ──────────────────────────────────────────────────────────
@@ -198,6 +220,14 @@ pub enum Sink<'a> {
 #[derive(Debug, Deserialize)]
 struct SavedArtifact {
     artifact: SddArtifact,
+    created_revision: bool,
+}
+
+/// The body of `PUT /v1/sdd/specs`. Like the artifact endpoint, it answers **200
+/// always** — "created" is `created_revision`, not the status code.
+#[derive(Debug, Deserialize)]
+struct SavedSpec {
+    spec: SddSpec,
     created_revision: bool,
 }
 
@@ -292,6 +322,65 @@ impl<'a> Sink<'a> {
                 // None for every one of them — so this uses the server's own type.
                 let detail: SddArtifactDetail =
                     api_ok(response, "GET /v1/sdd/artifacts")?.json()?;
+                Ok(detail.content_hash)
+            }
+        }
+    }
+
+    /// Saves one living specification. Same story as `save`: idempotency belongs to the
+    /// store on both paths — the DB sink calls `upsert_sdd_spec`, and the API sink calls
+    /// `PUT /v1/sdd/specs`, which calls `upsert_sdd_spec`. Same content hash, same
+    /// de-duplication, so a second run creates zero revisions on either sink.
+    fn save_spec(&self, req: &SaveSpecRequest) -> Result<SaveOutcome> {
+        match self {
+            Sink::Db { conn, org_id, user_id } => {
+                let (spec, created_revision) =
+                    queries::upsert_sdd_spec(conn, org_id, user_id, req, SOURCE)?;
+                Ok(SaveOutcome { created_revision, latest_revision: spec.latest_revision })
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = send_throttled(
+                    client
+                        .put(format!("{base_url}/v1/sdd/specs"))
+                        .bearer_auth(api_key)
+                        .header(reqwest::header::ACCEPT, "application/json")
+                        .json(req),
+                )?;
+                let response =
+                    api_ok(response, &format!("PUT /v1/sdd/specs ({})", req.capability))?;
+                let saved: SavedSpec = response.json()?;
+                Ok(SaveOutcome {
+                    created_revision: saved.created_revision,
+                    latest_revision: saved.spec.latest_revision,
+                })
+            }
+        }
+    }
+
+    /// Content hash of the spec's latest revision, or `None` when there is no such
+    /// spec. This is how `--dry-run` predicts what a real save would decide.
+    fn latest_spec_hash(&self, project: &str, capability: &str) -> Result<Option<String>> {
+        match self {
+            Sink::Db { conn, org_id, .. } => db_latest_spec_hash(conn, org_id, project, capability),
+            Sink::Api { client, base_url, api_key } => {
+                let response = client
+                    .get(format!("{base_url}/v1/sdd/specs"))
+                    .bearer_auth(api_key)
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .query(&[("project", project), ("capability", capability)])
+                    .send()?;
+
+                // A capability with no spec is a 404, and the 404 is the ANSWER —
+                // "nothing saved yet" — not a failure.
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+
+                // `SddSpecDetail` is serde-FLATTENED, exactly like `SddArtifactDetail`: the
+                // spec's own fields sit inline next to content/content_hash. Use the
+                // server's own type rather than a look-alike that would silently parse to
+                // None for every field.
+                let detail: SddSpecDetail = api_ok(response, "GET /v1/sdd/specs")?.json()?;
                 Ok(detail.content_hash)
             }
         }
@@ -437,6 +526,10 @@ fn api_ok(
 pub struct ImportStats {
     pub changes_created: usize,
     pub artifacts_created: usize,
+    /// Living specifications created — `openspec/specs/{capability}/spec.md`.
+    pub specs_created: usize,
+    /// Revisions across BOTH trees: an artifact revision and a spec revision are the
+    /// same kind of event (a document changed) and are counted the same way.
     pub revisions_created: usize,
     pub memories_tagged: usize,
     pub skipped: usize,
@@ -446,6 +539,7 @@ impl ImportStats {
     pub fn merge(&mut self, other: &ImportStats) {
         self.changes_created += other.changes_created;
         self.artifacts_created += other.artifacts_created;
+        self.specs_created += other.specs_created;
         self.revisions_created += other.revisions_created;
         self.memories_tagged += other.memories_tagged;
         self.skipped += other.skipped;
@@ -771,6 +865,167 @@ pub fn import_filesystem(
     Ok(stats)
 }
 
+/// One `openspec/specs/{capability}/spec.md` on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredSpec {
+    pub capability: String,
+    pub abs_path: PathBuf,
+    /// Repo-relative — becomes `git_path` and `sdd_specs.path`.
+    pub rel_path: String,
+}
+
+/// Walks `{root}/openspec/specs/*/spec.md`.
+///
+/// ONLY `spec.md` is a living specification. A capability folder may hold design
+/// notes or scratch files next to it, and they are not the contract — the convention
+/// names exactly one file, so exactly one file is imported. A capability directory
+/// without a `spec.md` yields nothing rather than an empty spec.
+pub fn discover_specs(root: &Path) -> Result<Vec<DiscoveredSpec>> {
+    let specs_root = root.join("openspec").join("specs");
+    if !specs_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&specs_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let capability = entry.file_name().to_string_lossy().to_string();
+        let spec_md = entry.path().join("spec.md");
+        if !spec_md.is_file() {
+            continue;
+        }
+        out.push(DiscoveredSpec {
+            rel_path: format!("openspec/specs/{capability}/spec.md"),
+            capability,
+            abs_path: spec_md,
+        });
+    }
+    out.sort_by(|a, b| a.capability.cmp(&b.capability));
+    Ok(out)
+}
+
+/// The first markdown H1 (`# …`), which is the spec's title by convention. `None`
+/// when the document does not open with one — a missing title is not an error, and
+/// inventing one from the filename would be a worse answer than no answer.
+pub fn spec_title(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.strip_prefix("# ")?;
+        let title = rest.trim();
+        (!title.is_empty()).then(|| title.to_string())
+    })
+}
+
+/// Imports `openspec/specs/*/spec.md` — the LIVING SPECIFICATIONS.
+///
+/// The other tree. `import_filesystem` walks the in-flight changes; this walks the
+/// contract those changes are amending. It runs over the same `Sink`, so it works
+/// database-direct and over HTTP alike, and every write goes through
+/// `upsert_sdd_spec` (directly, or via `PUT /v1/sdd/specs`, which IS that call), so
+/// a second run creates zero revisions on either sink.
+///
+/// `merged_from_change_name` is deliberately NOT set here. The filesystem does not
+/// record which change last merged into a spec — only git history does — and
+/// inventing a provenance would be worse than admitting there is none. The agents
+/// that run `sdd-archive` supply it on the live path, where it is actually known.
+pub fn import_specs(
+    sink: &Sink<'_>,
+    project: &str,
+    root: &Path,
+    dry_run: bool,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats::default();
+    let mut ledger = DryLedger::default();
+    let git_commit = git_head(root);
+
+    for spec in discover_specs(root)? {
+        let content = std::fs::read_to_string(&spec.abs_path)?;
+        let req = SaveSpecRequest {
+            project: project.to_string(),
+            capability: spec.capability.clone(),
+            title: spec_title(&content),
+            content,
+            path: Some(spec.rel_path.clone()),
+            merged_from_change_name: None,
+            git_commit: git_commit.clone(),
+            source: Some(SOURCE.to_string()),
+        };
+        stats.merge(&save_spec(sink, &req, dry_run, &mut ledger)?);
+    }
+
+    Ok(stats)
+}
+
+/// The spec half's write path — whichever sink it is aimed at.
+fn save_spec(
+    sink: &Sink<'_>,
+    req: &SaveSpecRequest,
+    dry_run: bool,
+    ledger: &mut DryLedger,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats::default();
+
+    if dry_run {
+        let latest = sink.latest_spec_hash(&req.project, &req.capability)?;
+        record_dry_spec(latest, req, ledger, &mut stats);
+        return Ok(stats);
+    }
+
+    let outcome = sink.save_spec(req)?;
+    if outcome.created_revision {
+        stats.revisions_created += 1;
+        if outcome.latest_revision == 1 {
+            stats.specs_created += 1;
+        }
+    } else {
+        stats.skipped += 1;
+    }
+    Ok(stats)
+}
+
+/// What a real spec save WOULD do, answered with reads only.
+fn record_dry_spec(
+    latest: Option<String>,
+    req: &SaveSpecRequest,
+    ledger: &mut DryLedger,
+    stats: &mut ImportStats,
+) {
+    let key = format!("{}\u{1}{}", req.project, req.capability);
+    match latest {
+        None if ledger.specs.insert(key) => {
+            stats.specs_created += 1;
+            stats.revisions_created += 1;
+        }
+        None => stats.revisions_created += 1,
+        Some(hash) if hash != sha256_hex(&req.content) => stats.revisions_created += 1,
+        Some(_) => stats.skipped += 1,
+    }
+}
+
+/// Content hash of the latest revision of `(project, capability)`, or `None` when the
+/// spec does not exist yet.
+fn db_latest_spec_hash(
+    conn: &Connection,
+    org_id: &str,
+    project: &str,
+    capability: &str,
+) -> Result<Option<String>> {
+    let hash = conn
+        .query_row(
+            "SELECT r.content_hash
+             FROM sdd_spec_revisions r
+             JOIN sdd_specs s ON s.id = r.spec_id
+             WHERE s.org_id = ?1 AND s.project = ?2 AND s.capability = ?3
+             ORDER BY r.revision DESC LIMIT 1",
+            rusqlite::params![org_id, project, capability],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(hash)
+}
+
 /// `--dry-run` writes nothing, so the DB cannot tell it what it already "created"
 /// earlier in the same pass. This remembers, so two memories of one artifact are
 /// reported as one artifact and two revisions — the same as a real run.
@@ -778,6 +1033,7 @@ pub fn import_filesystem(
 struct DryLedger {
     changes: std::collections::HashSet<String>,
     artifacts: std::collections::HashSet<String>,
+    specs: std::collections::HashSet<String>,
 }
 
 /// Counts a change as created the first time it is seen and does not yet exist.
@@ -1146,13 +1402,23 @@ fn run(args: &Args) -> Result<()> {
             }
         };
         stats.merge(&import_filesystem(&sink, &args.project, &root, args.dry_run)?);
+
+        // The changes tree first, THEN the specs tree. The order is not load-bearing —
+        // a spec is not an artifact of a change and neither half needs the other — but
+        // it keeps the log in the order an operator thinks in: the drafts, then the
+        // contract they amend.
+        if plan.specs {
+            eprintln!("→ Importing the living specifications (openspec/specs/*/spec.md)");
+            stats.merge(&import_specs(&sink, &args.project, &root, args.dry_run)?);
+        }
     }
 
     let verb = if args.dry_run { "would import" } else { "imported" };
     eprintln!(
-        "✓ {verb}: {} changes, {} artifacts, {} revisions, {} memories tagged {MIGRATED_TAG}, {} skipped.",
+        "✓ {verb}: {} changes, {} artifacts, {} specs, {} revisions, {} memories tagged {MIGRATED_TAG}, {} skipped.",
         stats.changes_created,
         stats.artifacts_created,
+        stats.specs_created,
         stats.revisions_created,
         stats.memories_tagged,
         stats.skipped
@@ -1846,6 +2112,172 @@ mod tests {
 
         fs::remove_dir_all(&root).ok();
     }
+    #[test]
+    fn discover_specs_finds_one_spec_per_capability_directory() {
+        let root = temp_root("discover-specs");
+        write_file(&root, "openspec/specs/harness-library/spec.md", "# Harness Library");
+        write_file(&root, "openspec/specs/harness-config-review/spec.md", "# Config Review");
+        // Not a contract: a stray file next to one, and a capability folder without a spec.
+        write_file(&root, "openspec/specs/harness-library/notes.md", "scratch");
+        fs::create_dir_all(root.join("openspec/specs/empty-capability")).unwrap();
+
+        let found = discover_specs(&root).unwrap();
+        assert_eq!(found.len(), 2, "only spec.md counts, and only where it exists");
+        assert_eq!(found[0].capability, "harness-config-review", "sorted by capability");
+        assert_eq!(found[0].rel_path, "openspec/specs/harness-config-review/spec.md");
+        assert_eq!(found[1].capability, "harness-library");
+    }
+
+    #[test]
+    fn discover_specs_tolerates_a_repo_with_no_specs_tree() {
+        let root = temp_root("no-specs");
+        assert!(discover_specs(&root).unwrap().is_empty(), "a missing tree is empty, not an error");
+    }
+
+    #[test]
+    fn spec_title_takes_the_first_h1_and_nothing_else() {
+        assert_eq!(spec_title("# Harness Library\n\n## Purpose"), Some("Harness Library".into()));
+        assert_eq!(spec_title("## Purpose\n\n# Later H1"), Some("Later H1".into()));
+        assert_eq!(spec_title("no heading at all"), None, "a missing title is None, not invented");
+        assert_eq!(spec_title("#no-space-is-not-an-h1"), None);
+    }
+
+    #[test]
+    fn import_specs_creates_a_living_spec_per_capability() {
+        let (conn, org, user) = setup();
+        let root = temp_root("specs");
+        write_file(
+            &root,
+            "openspec/specs/harness-library/spec.md",
+            "# Harness Library\n\n## Requirement: the library MUST be versioned",
+        );
+        write_file(&root, "openspec/specs/policy-engine/spec.md", "# Policy Engine");
+
+        let stats = import_specs(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
+        assert_eq!(stats.specs_created, 2);
+        assert_eq!(stats.revisions_created, 2);
+        assert_eq!(stats.changes_created, 0, "a spec is NOT an artifact of a change");
+
+        let spec = queries::get_sdd_spec_by_capability(&conn, &org, "nexus-mind", "harness-library")
+            .unwrap()
+            .expect("openspec/specs/harness-library/spec.md must become an sdd_specs row");
+        assert_eq!(spec.spec.latest_revision, 1);
+        assert_eq!(spec.spec.title.as_deref(), Some("Harness Library"), "the H1 becomes the title");
+        assert_eq!(spec.spec.path.as_deref(), Some("openspec/specs/harness-library/spec.md"));
+        assert!(spec.content.unwrap().contains("MUST be versioned"), "the full contract is stored");
+
+        // Provenance: source=import, git_path set, and NO invented merged_from_change_id.
+        let rev = queries::get_sdd_spec_revision(&conn, &org, &spec.spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev.source, "import");
+        assert_eq!(rev.git_path.as_deref(), Some("openspec/specs/harness-library/spec.md"));
+        assert_eq!(
+            rev.merged_from_change_id, None,
+            "the filesystem does not know which change last merged — inventing one would be worse"
+        );
+
+        // No change was created as a side effect of importing a contract.
+        let changes: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0)).unwrap();
+        assert_eq!(changes, 0);
+    }
+
+    /// The idempotency contract, on the specs tree: a second run creates ZERO revisions.
+    #[test]
+    fn import_specs_is_idempotent_a_second_run_creates_no_revision() {
+        let (conn, org, user) = setup();
+        let root = temp_root("specs-idem");
+        write_file(&root, "openspec/specs/cap/spec.md", "# Cap\n\nthe contract");
+
+        let sink = Sink::db(&conn, &org, &user);
+        let first = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(first.revisions_created, 1);
+
+        let second = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(second.revisions_created, 0, "a re-import must create NO revision");
+        assert_eq!(second.specs_created, 0);
+        assert_eq!(second.skipped, 1, "…and must say so");
+
+        let revisions: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0)).unwrap();
+        assert_eq!(revisions, 1, "still exactly one revision in the database");
+
+        // An edited contract, however, appends.
+        write_file(&root, "openspec/specs/cap/spec.md", "# Cap\n\nthe contract, amended");
+        let third = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(third.revisions_created, 1);
+        assert_eq!(third.specs_created, 0, "the same spec, a new revision");
+    }
+
+    #[test]
+    fn import_specs_dry_run_predicts_the_real_run_and_writes_nothing() {
+        let (conn, org, user) = setup();
+        let root = temp_root("specs-dry");
+        write_file(&root, "openspec/specs/a/spec.md", "# A");
+        write_file(&root, "openspec/specs/b/spec.md", "# B");
+
+        let sink = Sink::db(&conn, &org, &user);
+        let dry = import_specs(&sink, "nexus-mind", &root, true).unwrap();
+        assert_eq!(dry.specs_created, 2);
+        assert_eq!(dry.revisions_created, 2);
+
+        let specs: i64 = conn.query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0)).unwrap();
+        assert_eq!(specs, 0, "--dry-run must write nothing");
+
+        // …and the numbers it predicted are the numbers the real run produces.
+        let real = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(real.specs_created, dry.specs_created);
+        assert_eq!(real.revisions_created, dry.revisions_created);
+    }
+
+    /// The two trees import independently and do not collide: a change's *delta* spec
+    /// (`openspec/changes/x/specs/cap/spec.md`, an artifact) and the *living* spec
+    /// (`openspec/specs/cap/spec.md`, an sdd_specs row) may name the same capability and
+    /// remain two different documents with two different histories.
+    #[test]
+    fn a_delta_spec_and_the_living_spec_for_one_capability_are_two_documents() {
+        let (conn, org, user) = setup();
+        let root = temp_root("both-trees");
+        write_file(&root, "openspec/changes/demo/specs/cap/spec.md", "## ADDED: a new requirement");
+        write_file(&root, "openspec/specs/cap/spec.md", "# Cap\n\nthe whole contract");
+
+        let sink = Sink::db(&conn, &org, &user);
+        import_filesystem(&sink, "nexus-mind", &root, false).unwrap();
+        import_specs(&sink, "nexus-mind", &root, false).unwrap();
+
+        let delta = queries::get_sdd_artifact_by_kind(&conn, &org, "nexus-mind", "demo", "spec", Some("cap"))
+            .unwrap()
+            .expect("the change's delta spec is an artifact of that change");
+        assert_eq!(delta.content.as_deref(), Some("## ADDED: a new requirement"));
+
+        let living = queries::get_sdd_spec_by_capability(&conn, &org, "nexus-mind", "cap")
+            .unwrap()
+            .expect("the living specification is its own entity");
+        assert_eq!(living.content.as_deref(), Some("# Cap\n\nthe whole contract"));
+
+        assert_eq!(
+            queries::list_sdd_specs(&conn, &org, &Default::default()).unwrap().len(),
+            1,
+            "the delta spec must NOT have leaked into sdd_specs"
+        );
+    }
+
+    /// This repo's own tree, imported for real. `harness-library`, `harness-config-review`
+    /// and `harness-install-approval` exist on disk right now and the platform has never
+    /// seen them — that is the gap this change closes.
+    #[test]
+    fn import_specs_walks_this_repos_own_openspec_specs_tree() {
+        let (conn, org, user) = setup();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        let stats =
+            import_specs(&Sink::db(&conn, &org, &user), "nexus-mind", &root, true).unwrap();
+        assert!(
+            stats.specs_created >= 3,
+            "this repo has at least 3 living specifications on disk, and the importer must \
+             find them — it found {}",
+            stats.specs_created
+        );
+    }
 }
 
 /// The API sink — the half that makes the importer runnable at all.
@@ -1914,6 +2346,12 @@ mod api_sink_tests {
         let db = store.conn();
         let conn = db.lock().unwrap();
         conn.query_row("SELECT COUNT(*) FROM sdd_artifact_revisions", [], |r| r.get(0)).unwrap()
+    }
+
+    fn server_spec_revisions(store: &SqliteStore) -> i64 {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0)).unwrap()
     }
 
     fn server_change(store: &SqliteStore, name: &str) -> Option<nexusmind::models::types::SddChange> {
@@ -2351,5 +2789,101 @@ mod api_sink_tests {
         .unwrap();
         assert!(memories_only.memories && !memories_only.filesystem);
         assert!(memories_only.api.is_none());
+    }
+
+    // ── The living specifications (openspec/specs/*/spec.md) ────────────────
+
+    #[test]
+    fn plan_walks_the_specs_tree_by_default_and_skip_specs_takes_it_out() {
+        let default = plan(&Args {
+            db: Some("/data/nexusmind.db".into()),
+            skip_memories: true,
+            ..Args::default()
+        })
+        .unwrap();
+        assert!(default.specs, "the specs tree is walked by default — it is the source of truth");
+
+        let skipped = plan(&Args {
+            db: Some("/data/nexusmind.db".into()),
+            skip_memories: true,
+            skip_specs: true,
+            ..Args::default()
+        })
+        .unwrap();
+        assert!(!skipped.specs);
+        assert!(skipped.filesystem, "--skip-specs leaves the changes tree alone");
+
+        // The specs tree lives UNDER openspec/, so --skip-filesystem takes it out too.
+        let no_fs = plan(&Args {
+            db: Some("/data/nexusmind.db".into()),
+            skip_filesystem: true,
+            ..Args::default()
+        })
+        .unwrap();
+        assert!(!no_fs.specs, "--skip-filesystem must not leave the specs half walking a tree");
+    }
+
+    /// The specs half runs over the API sink too — against the REAL router — and the
+    /// idempotency is the SERVER's on that path as well. `PUT /v1/sdd/specs` IS
+    /// `upsert_sdd_spec` behind a socket, so a second run creates zero revisions
+    /// without the importer owning any de-duplication of its own.
+    #[test]
+    fn api_import_specs_creates_zero_revisions_on_a_second_identical_run() {
+        let (base_url, api_key, store) = spawn_backend();
+        let root = temp_root("api-specs");
+        write_file(&root, "openspec/specs/harness-library/spec.md", "# Harness Library\n\nthe contract");
+        write_file(&root, "openspec/specs/policy-engine/spec.md", "# Policy Engine");
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+
+        let first = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(first.specs_created, 2);
+        assert_eq!(first.revisions_created, 2);
+        assert_eq!(server_spec_revisions(&store), 2);
+
+        let second = import_specs(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(
+            second.revisions_created, 0,
+            "a second run must create ZERO revisions — the server de-dups by content hash"
+        );
+        assert_eq!(second.specs_created, 0);
+        assert_eq!(second.skipped, 2);
+        assert_eq!(server_spec_revisions(&store), 2, "the revision table is untouched");
+
+        // The provenance the API sink sent is the provenance the server stored: this is
+        // the bug the artifact path had to fix (`source` was hard-coded to `agent`), and
+        // the specs path must not reintroduce it.
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let (source, git_path): (String, Option<String>) = conn
+            .query_row(
+                "SELECT r.source, r.git_path FROM sdd_spec_revisions r
+                 JOIN sdd_specs s ON s.id = r.spec_id
+                 WHERE s.capability = 'harness-library'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "import", "the importer's provenance must survive the trip over HTTP");
+        assert_eq!(git_path.as_deref(), Some("openspec/specs/harness-library/spec.md"));
+
+        drop(conn);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// An oversized contract reaches the operator as the server's own 422, not as a panic.
+    #[test]
+    fn api_import_specs_surfaces_an_oversized_spec_as_the_servers_422() {
+        let (base_url, api_key, _store) = spawn_backend();
+        let root = temp_root("api-specs-big");
+        write_file(&root, "openspec/specs/huge/spec.md", &"x".repeat(1_048_577));
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+        let err = import_specs(&sink, "nexus-mind", &root, false).unwrap_err().to_string();
+
+        assert!(err.contains("422"), "the operator must see the status: {err}");
+        assert!(err.contains("spec_too_large"), "…and the server's own code: {err}");
+
+        fs::remove_dir_all(&root).ok();
     }
 }

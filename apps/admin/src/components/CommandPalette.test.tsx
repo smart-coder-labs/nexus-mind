@@ -22,7 +22,7 @@ const sddChanges: SddChangeSummary[] = [
 ]
 
 const EMPTY: GlobalSearchResult = {
-  memories: [], users: [], projects: [], policies: [], conventions: [], sdd_changes: [],
+  memories: [], users: [], projects: [], policies: [], conventions: [], sdd_changes: [], sdd_specs: [],
 }
 
 const { globalSearchMock, navigateMock } = vi.hoisted(() => ({
