@@ -4,7 +4,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthContext } from '../auth/AuthContext'
 import Sdd from './Sdd'
-import type { AuthSession, SddChange } from '../types'
+import type {
+  AuthSession, SddChange, SddSpec, SddSpecDetail, SddSpecMerge, SddSpecRevisionMeta,
+} from '../types'
 
 // ── Fixture data ──────────────────────────────────────────────────────────────
 
@@ -58,6 +60,61 @@ const secondChange: SddChange = {
 
 const changes: SddChange[] = [staleChange, secondChange]
 
+// ── The OTHER tree: openspec/specs/{capability}/spec.md ───────────────────────
+//
+// The living specifications. Not artifacts of a change — their own entity, with
+// their own revision history and the change that last merged into each of them.
+
+const harnessLibrary: SddSpec = {
+  id: 's1',
+  org_id: 'org-test-1',
+  project: 'acme-platform',
+  capability: 'harness-library',
+  title: 'Harness Library',
+  path: 'openspec/specs/harness-library/spec.md',
+  latest_revision: 3,
+  created_by: 'user-admin-1',
+  created_at: '2026-05-01T00:00:00Z',
+  updated_at: '2026-07-05T00:00:00Z',
+  archived_at: null,
+  last_merged_from_change_id: 'c1',
+  last_merged_from_change_name: 'sdd-artifacts',
+}
+
+/** No provenance: imported from disk, where "which change last merged" is not recorded. */
+const policyEngine: SddSpec = {
+  id: 's2',
+  org_id: 'org-test-1',
+  project: 'acme-platform',
+  capability: 'policy-engine',
+  title: null,
+  path: 'openspec/specs/policy-engine/spec.md',
+  latest_revision: 1,
+  created_by: 'user-admin-1',
+  created_at: '2026-06-01T00:00:00Z',
+  updated_at: '2026-06-01T00:00:00Z',
+  archived_at: null,
+  last_merged_from_change_id: null,
+  last_merged_from_change_name: null,
+}
+
+const specs: SddSpec[] = [harnessLibrary, policyEngine]
+
+const specRevisions: SddSpecRevisionMeta[] = [
+  { id: 'sr3', spec_id: 's1', revision: 3, content_hash: 'h3', byte_size: 300, merged_from_change_id: 'c1', merged_from_change_name: 'sdd-artifacts', git_commit: null, git_path: null, source: 'agent', created_by: 'user-admin-1', created_at: '2026-07-05T00:00:00Z' },
+  { id: 'sr2', spec_id: 's1', revision: 2, content_hash: 'h2', byte_size: 200, merged_from_change_id: null, merged_from_change_name: null, git_commit: null, git_path: null, source: 'import', created_by: 'user-admin-1', created_at: '2026-06-01T00:00:00Z' },
+  { id: 'sr1', spec_id: 's1', revision: 1, content_hash: 'h1', byte_size: 100, merged_from_change_id: null, merged_from_change_name: null, git_commit: null, git_path: null, source: 'import', created_by: 'user-admin-1', created_at: '2026-05-01T00:00:00Z' },
+]
+
+const harnessLibraryDetail: SddSpecDetail = {
+  ...harnessLibrary,
+  content: '# Harness Library\n\nThe library MUST be versioned.',
+  content_hash: 'h3',
+}
+
+/** Which specs the change `sdd-artifacts` has merged into. */
+const mergedSpecs: SddSpecMerge[] = [{ ...harnessLibrary, merged_revision: 3 }]
+
 const projects = [
   { id: 'p1', org_id: 'org-test-1', name: 'acme-platform', description: null, parent_id: null, created_at: '2026-01-01T00:00:00Z' },
   { id: 'p2', org_id: 'org-test-1', name: 'nexusmind-admin', description: null, parent_id: null, created_at: '2026-01-01T00:00:00Z' },
@@ -78,6 +135,11 @@ const {
   listProjectsMock,
   listSprintsMock,
   listMemoriesMock,
+  listSddSpecsMock,
+  getSddSpecMock,
+  listSddSpecRevisionsMock,
+  getSddSpecRevisionMock,
+  getSddChangeSpecsMock,
 } = vi.hoisted(() => ({
   listSddChangesMock: vi.fn(),
   getSddChangeMock: vi.fn(),
@@ -91,6 +153,11 @@ const {
   listProjectsMock: vi.fn(),
   listSprintsMock: vi.fn(),
   listMemoriesMock: vi.fn(),
+  listSddSpecsMock: vi.fn(),
+  getSddSpecMock: vi.fn(),
+  listSddSpecRevisionsMock: vi.fn(),
+  getSddSpecRevisionMock: vi.fn(),
+  getSddChangeSpecsMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -107,6 +174,11 @@ vi.mock('../api/client', () => ({
     listProjects: listProjectsMock,
     listSprints: listSprintsMock,
     listMemories: listMemoriesMock,
+    listSddSpecs: listSddSpecsMock,
+    getSddSpec: getSddSpecMock,
+    listSddSpecRevisions: listSddSpecRevisionsMock,
+    getSddSpecRevision: getSddSpecRevisionMock,
+    getSddChangeSpecs: getSddChangeSpecsMock,
   })),
 }))
 
@@ -157,6 +229,16 @@ beforeEach(() => {
   listProjectsMock.mockResolvedValue(projects)
   listSprintsMock.mockResolvedValue([])
   listMemoriesMock.mockResolvedValue([])
+  listSddSpecsMock.mockResolvedValue(specs)
+  getSddSpecMock.mockResolvedValue(harnessLibraryDetail)
+  listSddSpecRevisionsMock.mockResolvedValue(specRevisions)
+  getSddSpecRevisionMock.mockImplementation((_id: string, rev: number) =>
+    Promise.resolve({
+      ...specRevisions.find(r => r.revision === rev)!,
+      content: `# Revision ${rev}\n\nThe contract as it stood at revision ${rev}.`,
+    }),
+  )
+  getSddChangeSpecsMock.mockResolvedValue(mergedSpecs)
 })
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -356,5 +438,218 @@ describe('Sdd — change detail drawer', () => {
       expect(getSddChangeMock).toHaveBeenCalledWith('c1')
     })
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+})
+
+// ── Specs — the living specification ─────────────────────────────────────────
+//
+// The OTHER openspec tree. These assert the thing that was missing: the platform
+// centralised the drafts but never the contract.
+
+describe('Sdd — specs view', () => {
+  it('sdd_specs_tab_lists_one_row_per_capability_with_its_revision_and_last_merge', async () => {
+    renderAsAdmin()
+
+    await waitFor(() => expect(screen.getByText('sdd-artifacts')).toBeInTheDocument())
+
+    // The Changes view is the default — the specs are not showing yet.
+    expect(screen.queryByText('harness-library')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Specs' }))
+
+    await waitFor(() => expect(screen.getByText('harness-library')).toBeInTheDocument())
+
+    const row = screen.getByText('harness-library').closest('tr')!
+    expect(within(row).getByText('Harness Library')).toBeInTheDocument()
+    expect(within(row).getByText('rev 3')).toBeInTheDocument()
+    // The payoff, on the list: which change last merged into this contract.
+    expect(within(row).getByText('sdd-artifacts')).toBeInTheDocument()
+
+    // A spec with no recorded provenance says so rather than inventing one.
+    const imported = screen.getByText('policy-engine').closest('tr')!
+    expect(within(imported).getByText('rev 1')).toBeInTheDocument()
+    expect(within(imported).getByText('—')).toBeInTheDocument()
+
+    expect(listSddSpecsMock).toHaveBeenCalled()
+  })
+
+  it('sdd_specs_list_never_asks_for_content', async () => {
+    renderAsAdmin()
+    fireEvent.click(screen.getByRole('tab', { name: 'Specs' }))
+    await waitFor(() => expect(screen.getByText('harness-library')).toBeInTheDocument())
+
+    // The list is metadata only: no detail read fires until a row is clicked.
+    expect(getSddSpecMock).not.toHaveBeenCalled()
+  })
+
+  it('sdd_specs_shows_skeleton_while_loading_then_the_table', async () => {
+    let resolve!: (v: SddSpec[]) => void
+    listSddSpecsMock.mockReturnValue(new Promise<SddSpec[]>(r => { resolve = r }))
+
+    const { container } = renderAsAdmin('/sdd?tab=specs')
+
+    expect(container.querySelector('[data-testid="sdd-specs-skeleton"]')).not.toBeNull()
+
+    resolve(specs)
+    await waitFor(() => expect(screen.getByText('harness-library')).toBeInTheDocument())
+    expect(container.querySelector('[data-testid="sdd-specs-skeleton"]')).toBeNull()
+  })
+
+  it('sdd_specs_empty_state_when_the_project_has_no_contract_yet', async () => {
+    listSddSpecsMock.mockResolvedValue([])
+    renderAsAdmin('/sdd?tab=specs')
+
+    expect(await screen.findByText('No specifications found')).toBeInTheDocument()
+  })
+
+  it('sdd_specs_filters_by_project', async () => {
+    renderAsAdmin('/sdd?tab=specs')
+    await waitFor(() => expect(listSddSpecsMock).toHaveBeenCalledWith({ project: undefined }))
+  })
+
+  it('sdd_specs_denied_without_sdd_read_redirects_and_never_calls_the_api', async () => {
+    // An UNGATED 403 trips the client's global handler and redirects the WHOLE app to
+    // /401 — so the query must not fire at all for a caller without the grant.
+    renderAsMember(['task:read'], '/sdd?tab=specs')
+
+    await waitFor(() => {
+      expect(listSddSpecsMock).not.toHaveBeenCalled()
+    })
+    expect(screen.queryByText('harness-library')).not.toBeInTheDocument()
+  })
+
+  it('sdd_specs_readable_with_sdd_read_alone', async () => {
+    renderAsMember(['sdd:read'], '/sdd?tab=specs')
+    await waitFor(() => expect(screen.getByText('harness-library')).toBeInTheDocument())
+  })
+})
+
+describe('Sdd — spec detail drawer', () => {
+  async function openSpecDrawer() {
+    renderAsAdmin('/sdd?tab=specs')
+    await waitFor(() => expect(screen.getByText('harness-library')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('harness-library'))
+    await waitFor(() => expect(getSddSpecMock).toHaveBeenCalledWith('s1'))
+    return screen.findByRole('dialog')
+  }
+
+  it('spec_drawer_renders_the_contract_as_markdown_by_default', async () => {
+    await openSpecDrawer()
+
+    // Preview is the default: the markdown is rendered, the `#` marker is gone.
+    const panel = await screen.findByTestId('spec-panel')
+    await waitFor(() => {
+      expect(within(panel).getByText('Harness Library')).toBeInTheDocument()
+    })
+    expect(within(panel).queryByText('# Harness Library')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('spec-raw')).not.toBeInTheDocument()
+  })
+
+  it('spec_drawer_raw_toggle_shows_the_source_verbatim', async () => {
+    await openSpecDrawer()
+    await screen.findByTestId('spec-panel')
+
+    fireEvent.click(screen.getByText('Raw'))
+
+    const raw = await screen.findByTestId('spec-raw')
+    expect(raw.textContent).toContain('# Harness Library')
+    expect(raw.textContent).toContain('The library MUST be versioned.')
+
+    // …and back.
+    fireEvent.click(screen.getByText('Preview'))
+    await waitFor(() => {
+      expect(screen.queryByTestId('spec-raw')).not.toBeInTheDocument()
+    })
+  })
+
+  it('spec_drawer_revision_selector_fetches_an_older_revision', async () => {
+    await openSpecDrawer()
+
+    await waitFor(() => {
+      expect(listSddSpecRevisionsMock).toHaveBeenCalledWith('s1')
+    })
+
+    // The latest revision arrived inline with the detail read — no extra fetch for it.
+    expect(getSddSpecRevisionMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByLabelText('Revision'))
+    fireEvent.click(await screen.findByText(/rev 1 · import/))
+
+    await waitFor(() => {
+      expect(getSddSpecRevisionMock).toHaveBeenCalledWith('s1', 1)
+    })
+    const panel = await screen.findByTestId('spec-panel')
+    await waitFor(() => {
+      expect(within(panel).getByText(/The contract as it stood at revision 1/)).toBeInTheDocument()
+    })
+  })
+
+  it('spec_drawer_revision_labels_name_the_change_that_merged_each_one', async () => {
+    await openSpecDrawer()
+    await waitFor(() => expect(listSddSpecRevisionsMock).toHaveBeenCalledWith('s1'))
+
+    fireEvent.click(screen.getByLabelText('Revision'))
+
+    // Revision 3 came from a change and says so. (It matches twice — the trigger shows
+    // the selected option's label as well as the list does.)
+    expect(await screen.findAllByText(/rev 3 · agent · .* · ← sdd-artifacts/)).not.toHaveLength(0)
+
+    // Revisions 1 and 2 were imported: they name no change, and none is invented.
+    expect(screen.getByText(/rev 1 · import/)).toBeInTheDocument()
+    expect(screen.queryByText(/rev 1 .* ← /)).not.toBeInTheDocument()
+    expect(screen.queryByText(/rev 2 .* ← /)).not.toBeInTheDocument()
+  })
+
+  it('spec_drawer_shows_the_change_that_last_merged_into_the_contract', async () => {
+    await openSpecDrawer()
+
+    const provenance = await screen.findByTestId('spec-provenance')
+    expect(within(provenance).getByText('sdd-artifacts')).toBeInTheDocument()
+  })
+
+  it('spec_drawer_is_read_only_over_content', async () => {
+    const dialog = await openSpecDrawer()
+    await screen.findByTestId('spec-panel')
+
+    // A7: the contract is authored by the harness and by git. No editor, no save.
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /save/i })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
+  })
+
+  it('opens the spec drawer for a spec arrived at via ?spec=<id>', async () => {
+    renderAsAdmin('/sdd?spec=s1')
+
+    await waitFor(() => expect(getSddSpecMock).toHaveBeenCalledWith('s1'))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+})
+
+describe('Sdd — a change reports the specs it merged into', () => {
+  it('change_drawer_lists_the_specs_this_change_merged_into', async () => {
+    renderAsAdmin()
+    await waitFor(() => expect(screen.getByText('sdd-artifacts')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('sdd-artifacts'))
+    await waitFor(() => expect(getSddChangeSpecsMock).toHaveBeenCalledWith('c1'))
+
+    const merged = await screen.findByTestId('merged-specs')
+    expect(within(merged).getByText('harness-library')).toBeInTheDocument()
+    expect(within(merged).getByText('rev 3')).toBeInTheDocument()
+  })
+
+  it('change_drawer_says_so_when_the_change_has_merged_into_nothing', async () => {
+    getSddChangeSpecsMock.mockResolvedValue([])
+    renderAsAdmin()
+    await waitFor(() => expect(screen.getByText('sdd-artifacts')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('sdd-artifacts'))
+
+    const merged = await screen.findByTestId('merged-specs')
+    await waitFor(() => {
+      expect(
+        within(merged).getByText(/has not been merged into any specification yet/),
+      ).toBeInTheDocument()
+    })
   })
 })

@@ -8,7 +8,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../../components/ui/Select/Select'
 import { Badge } from '../../components/ui/Badge/Badge'
-import { Markdown } from '../../components/ui/Markdown'
+import DocumentView from './DocumentView'
 import { STATUS_BADGE_VARIANT } from '../Tasks'
 import { SDD_PHASE_OPTIONS, SDD_STATUS_OPTIONS } from '../Sdd'
 import type {
@@ -42,10 +42,6 @@ const TAB_KINDS: { kind: SddArtifactKind; label: string }[] = [
 const FOCUS =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
 
-function revisionLabel(rev: { revision: number; source: string; created_at: string }): string {
-  return `rev ${rev.revision} · ${rev.source} · ${new Date(rev.created_at).toLocaleDateString()}`
-}
-
 export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
   const { session } = useAuth()
   const qc = useQueryClient()
@@ -54,10 +50,13 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
   // A7: curation of change metadata and memory links is permitted — it is not
   // artifact authorship. Artifact CONTENT is read-only for everyone, always.
   const canWrite = isAdmin || permissions.includes('sdd:write')
+  // The parent already sends a caller without sdd:read to /401, so this is belt and
+  // braces — but an ungated query that 403s trips the client's global handler and
+  // redirects the WHOLE app, so every SDD read here states its grant.
+  const canRead = isAdmin || permissions.includes('sdd:read')
 
   const [activeKind, setActiveKind] = useState<SddArtifactKind | null>(null)
   const [activeCapability, setActiveCapability] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<'raw' | 'preview'>('preview')
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null)
   const [memoryToLink, setMemoryToLink] = useState('')
 
@@ -69,6 +68,15 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
   const { data: linkedTasks = [] } = useQuery({
     queryKey: ['sdd-change-tasks', changeId],
     queryFn: () => client.getSddChangeTasks(changeId),
+  })
+
+  // Which living specifications this change has merged its deltas into. Gated on
+  // sdd:read like every other SDD query here — an ungated 403 trips the client's
+  // global handler and redirects the whole app to /401.
+  const { data: mergedSpecs = [] } = useQuery({
+    queryKey: ['sdd-change-specs', changeId],
+    queryFn: () => client.getSddChangeSpecs(changeId),
+    enabled: canRead,
   })
 
   const { data: memories = [] } = useQuery({
@@ -285,70 +293,47 @@ export default function ChangeDetail({ changeId, onClose }: ChangeDetailProps) {
         </div>
       )}
 
-      {/* Toolbar: Raw/Preview + revision selector. Deliberately OUTSIDE the
-          artifact panel — the panel holds rendered content and nothing editable. */}
-      {currentArtifact && (
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center w-fit">
-            <button
-              onClick={() => setViewMode('raw')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
-                viewMode === 'raw'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-            >
-              Raw
-            </button>
-            <button
-              onClick={() => setViewMode('preview')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
-                viewMode === 'preview'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-            >
-              Preview
-            </button>
-          </div>
+      {/* Artifact content — READ-ONLY (A7). The toolbar and the panel come from the
+          shared DocumentView, which SpecDetail uses too: both trees hold immutable,
+          revision-addressed markdown, and they must not drift apart in how they show it. */}
+      <DocumentView
+        content={content}
+        hasDocument={!!currentArtifact}
+        emptyMessage="This change has no artifacts yet."
+        revisions={revisions}
+        latestRevision={currentArtifact?.latest_revision ?? 0}
+        selectedRevision={selectedRevision}
+        onSelectRevision={setSelectedRevision}
+      />
 
-          {revisions.length > 0 && (
-            <Select
-              value={String(selectedRevision ?? currentArtifact.latest_revision)}
-              onValueChange={v => setSelectedRevision(Number(v))}
-            >
-              <SelectTrigger className="w-56 h-8 text-xs" aria-label="Revision">
-                <SelectValue placeholder={`rev ${currentArtifact.latest_revision}`} />
-              </SelectTrigger>
-              <SelectContent>
-                {revisions.map(r => (
-                  <SelectItem key={r.id} value={String(r.revision)}>
-                    {revisionLabel(r)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-      )}
-
-      {/* Artifact content — READ-ONLY (A7). No editor, no save, no delete. */}
-      <section
-        data-testid="artifact-panel"
-        role="tabpanel"
-        className="mb-6 rounded-[11px] border border-border-secondary p-4 max-h-[50vh] overflow-y-auto"
-      >
-        {!currentArtifact ? (
-          <p className="text-xs text-text-quaternary">This change has no artifacts yet.</p>
-        ) : viewMode === 'raw' ? (
-          <pre
-            data-testid="artifact-raw"
-            className="text-xs text-text-secondary whitespace-pre-wrap font-mono"
-          >{content}</pre>
+      {/* Specs merged — the OTHER tree. Which living specifications has this change
+          amended? The reverse of SpecDetail's "last merged from", and the reason
+          sdd_spec_revisions.merged_from_change_id exists. */}
+      <section data-testid="merged-specs" className="mb-6">
+        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">
+          Specs Merged
+        </h3>
+        {mergedSpecs.length === 0 ? (
+          <p className="text-xs text-text-quaternary">
+            This change has not been merged into any specification yet.
+          </p>
         ) : (
-          <div className="text-xs text-text-secondary">
-            <Markdown content={content} />
-          </div>
+          <ul className="space-y-1.5">
+            {mergedSpecs.map(s => (
+              <li
+                key={s.id}
+                className="flex items-center justify-between gap-2 rounded-[11px] border border-border-secondary px-3 py-2"
+              >
+                <Link
+                  to={`/sdd?tab=specs&spec=${encodeURIComponent(s.id)}`}
+                  className={`text-xs text-text-primary hover:text-accent-blue transition-colors ${FOCUS}`}
+                >
+                  {s.capability}
+                </Link>
+                <Badge variant="primary" size="sm">rev {s.merged_revision}</Badge>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

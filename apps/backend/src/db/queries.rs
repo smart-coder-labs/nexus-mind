@@ -26,9 +26,10 @@ use crate::models::types::{
     TaskComment, TaskStatus,
 };
 use crate::models::types::{
-    PatchChangeRequest, SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
-    SddChange, SddChangeFilters, SddChangeSummary, SddPhase, SddRevision, SddRevisionMeta,
-    SddSearchHit, SddStatus,
+    PatchChangeRequest, SaveArtifactRequest, SaveSpecRequest, SddArtifact, SddArtifactDetail,
+    SddArtifactKind, SddChange, SddChangeFilters, SddChangeSummary, SddPhase, SddRevision,
+    SddRevisionMeta, SddSearchHit, SddSearchResult, SddSpec, SddSpecDetail, SddSpecFilters,
+    SddSpecMerge, SddSpecRevision, SddSpecRevisionMeta, SddSpecSearchHit, SddSpecSummary, SddStatus,
     UpsertChangeRequest,
 };
 use anyhow::anyhow;
@@ -8116,6 +8117,502 @@ pub fn sdd_change_exists(conn: &Connection, org_id: &str, name: &str) -> Result<
         |r| r.get(0),
     )?;
     Ok(exists)
+}
+
+// ── SDD specs ───────────────────────────────────────────────────────────────
+//
+// The OTHER tree: `openspec/specs/{capability}/spec.md` — the living
+// specification, the source of truth that `sdd-archive` merges a closing change's
+// delta specs into. Two levels, and deliberately NOT hung off a change:
+//   sdd_specs  →  sdd_spec_revisions
+//
+// A main spec belongs to the PROJECT and outlives the changes that modify it.
+// Modelling it as an artifact of a synthetic change would invert that. What ties
+// the two trees together is `sdd_spec_revisions.merged_from_change_id`: from a
+// change you can see which specs it changed, and from a spec you can see which
+// changes shaped each revision.
+//
+// The invariants are the artifact invariants, restated because they are the same
+// invariants: idempotent by content hash against the LATEST revision only, an
+// atomic size cap, delete-then-insert FTS, org in the WHERE, `Ok(None)` for
+// not-found. And, as with `sdd_artifact_revisions`, the revisions here are
+// immutable and append-only: nothing in this file may modify or remove a row of
+// `sdd_spec_revisions` once written — they are produced by `upsert_sdd_spec`'s
+// INSERT and reclaimed only by ON DELETE CASCADE from the parent spec. The test
+// `no_store_function_mutates_a_spec_revision` scans this file to hold that line,
+// and — as with the artifacts scan — neither it nor this comment may spell the
+// prohibited statements out, because `include_str!` reads this very file and the
+// scan would then match itself.
+
+const SDD_SPEC_SELECT: &str = "SELECT id, org_id, project, capability, title, path, latest_revision, created_by, created_at, updated_at, archived_at FROM sdd_specs";
+
+fn map_sdd_spec_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SddSpec> {
+    Ok(SddSpec {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        project: row.get(2)?,
+        capability: row.get(3)?,
+        title: row.get(4)?,
+        path: row.get(5)?,
+        latest_revision: row.get(6)?,
+        created_by: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        archived_at: row.get(10)?,
+        last_merged_from_change_id: None,
+        last_merged_from_change_name: None,
+    })
+}
+
+/// Fills in the change that produced the spec's LATEST revision. Metadata, so the
+/// list read carries it too — "which change last merged into this contract" is the
+/// column an operator scans, not a detail they drill for.
+fn hydrate_spec_provenance(conn: &Connection, spec: &mut SddSpec) -> Result<()> {
+    let found: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT r.merged_from_change_id, c.name
+             FROM sdd_spec_revisions r
+             LEFT JOIN sdd_changes c ON c.id = r.merged_from_change_id
+             WHERE r.spec_id = ?1
+             ORDER BY r.revision DESC LIMIT 1",
+            [&spec.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((change_id, change_name)) = found {
+        spec.last_merged_from_change_id = change_id;
+        spec.last_merged_from_change_name = change_name;
+    }
+    Ok(())
+}
+
+fn spec_detail_from(conn: &Connection, spec: SddSpec) -> Result<SddSpecDetail> {
+    let latest: Option<(String, String)> = conn
+        .query_row(
+            "SELECT content, content_hash FROM sdd_spec_revisions
+             WHERE spec_id = ?1 ORDER BY revision DESC LIMIT 1",
+            [&spec.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (content, content_hash) = match latest {
+        Some((c, h)) => (Some(c), Some(h)),
+        None => (None, None),
+    };
+    Ok(SddSpecDetail { spec, content, content_hash })
+}
+
+/// THE workhorse, and the exact analogue of `upsert_sdd_artifact`. Idempotent by
+/// content hash: re-saving identical content creates no revision, writes no FTS
+/// row, and does not bump `updated_at`.
+///
+/// Returns `(spec, created_revision)`.
+///
+/// `merged_from_change_name` is resolved to a change id here. A name that resolves
+/// to nothing is an error, NOT a silently-NULL provenance — the traceability from a
+/// revision back to the change that shaped it is the reason this column exists, and
+/// quietly dropping it would leave a spec whose history lies by omission.
+pub fn upsert_sdd_spec(
+    conn: &Connection,
+    org_id: &str,
+    created_by: &str,
+    req: &SaveSpecRequest,
+    source: &str,
+) -> Result<(SddSpec, bool)> {
+    // A2 — the size guard is the FIRST statement, before the transaction opens and
+    // before any row is resolved-or-created. A rejected oversized save must leave no
+    // spec and no revision behind.
+    if req.content.len() > SDD_MAX_ARTIFACT_BYTES {
+        return Err(anyhow!("spec_too_large"));
+    }
+    if req.capability.trim().is_empty() {
+        return Err(anyhow!("invalid_capability"));
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    let now = now_iso();
+
+    // Resolve the provenance BEFORE anything is written, so an unknown change name
+    // rejects the save whole rather than half-way through it.
+    let merged_from_change_id: Option<String> = match req.merged_from_change_name.as_deref() {
+        None => None,
+        Some(name) => {
+            let found: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM sdd_changes WHERE org_id = ?1 AND project = ?2 AND name = ?3",
+                    rusqlite::params![org_id, req.project, name],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Some(found.ok_or_else(|| anyhow!("change_not_found"))?)
+        }
+    };
+
+    // 1. Resolve or create the spec. org_id scopes the lookup, so an org-B caller with
+    //    the same (project, capability) gets its own spec and cannot touch org A's.
+    let spec_id: String = match tx
+        .query_row(
+            "SELECT id FROM sdd_specs WHERE org_id = ?1 AND project = ?2 AND capability = ?3",
+            rusqlite::params![org_id, req.project, req.capability],
+            |r| r.get(0),
+        )
+        .optional()?
+    {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO sdd_specs (id, org_id, project, capability, title, path, latest_revision, created_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8)",
+                rusqlite::params![
+                    id, org_id, req.project, req.capability, req.title, req.path, created_by, now
+                ],
+            )?;
+            id
+        }
+    };
+
+    // 2. A1 — compare the hash against the LATEST revision only, never the whole
+    //    history. Content A → B → A appends revision 3: a revert to an earlier text is
+    //    an event in the life of the contract, and the history must show it happening.
+    let hash = sha256_hex(&req.content);
+    let latest: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT revision, content_hash FROM sdd_spec_revisions
+             WHERE spec_id = ?1 ORDER BY revision DESC LIMIT 1",
+            [&spec_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+
+    let latest_revision = latest.as_ref().map(|(rev, _)| *rev).unwrap_or(0);
+
+    if let Some((_, latest_hash)) = &latest {
+        if latest_hash == &hash {
+            // Idempotent no-op: no revision, no FTS write, no updated_at bump.
+            let sql = format!("{SDD_SPEC_SELECT} WHERE id = ?1");
+            let mut spec = tx.query_row(&sql, [&spec_id], map_sdd_spec_row)?;
+            hydrate_spec_provenance(&tx, &mut spec)?;
+            tx.commit()?;
+            return Ok((spec, false));
+        }
+    }
+
+    // 3. Append the next revision. Immutable: earlier revisions are never touched.
+    let next = latest_revision + 1;
+    tx.execute(
+        "INSERT INTO sdd_spec_revisions
+            (id, spec_id, revision, content, content_hash, byte_size, merged_from_change_id, git_commit, git_path, source, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            spec_id,
+            next,
+            req.content,
+            hash,
+            req.content.len() as i64,
+            merged_from_change_id,
+            req.git_commit,
+            req.path,
+            source,
+            created_by,
+            now
+        ],
+    )?;
+    tx.execute(
+        "UPDATE sdd_specs SET
+            latest_revision = ?1,
+            title      = COALESCE(?2, title),
+            path       = COALESCE(?3, path),
+            updated_at = ?4
+         WHERE id = ?5",
+        rusqlite::params![next, req.title, req.path, now, spec_id],
+    )?;
+
+    // 4. The FTS index tracks the LATEST revision only — delete-then-insert, so a spec
+    //    contributes exactly one hit however long its history, and a requirement struck
+    //    from the contract by a newer revision stops matching.
+    tx.execute("DELETE FROM sdd_specs_fts WHERE spec_id = ?1", [&spec_id])?;
+    tx.execute(
+        "INSERT INTO sdd_specs_fts (spec_id, project, capability, content)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![spec_id, req.project, req.capability, req.content],
+    )?;
+
+    let sql = format!("{SDD_SPEC_SELECT} WHERE id = ?1");
+    let mut spec = tx.query_row(&sql, [&spec_id], map_sdd_spec_row)?;
+    hydrate_spec_provenance(&tx, &mut spec)?;
+    tx.commit()?;
+    Ok((spec, true))
+}
+
+/// By id. Not-found and out-of-org both yield `Ok(None)` — the caller turns that
+/// into a 404, so an org-B caller cannot distinguish "no such spec" from "not yours".
+pub fn get_sdd_spec(conn: &Connection, org_id: &str, id: &str) -> Result<Option<SddSpecDetail>> {
+    let sql = format!("{SDD_SPEC_SELECT} WHERE id = ?1 AND org_id = ?2");
+    let found = conn
+        .query_row(&sql, rusqlite::params![id, org_id], map_sdd_spec_row)
+        .optional()?;
+    let Some(mut spec) = found else {
+        return Ok(None);
+    };
+    hydrate_spec_provenance(conn, &mut spec)?;
+    Ok(Some(spec_detail_from(conn, spec)?))
+}
+
+/// Natural-key lookup behind `GET /v1/sdd/specs?project=&capability=`. A capability
+/// with no spec yields `Ok(None)` — never a spec with empty content, because "this
+/// capability has no contract yet" and "its contract is empty" are different facts.
+pub fn get_sdd_spec_by_capability(
+    conn: &Connection,
+    org_id: &str,
+    project: &str,
+    capability: &str,
+) -> Result<Option<SddSpecDetail>> {
+    let sql = format!("{SDD_SPEC_SELECT} WHERE org_id = ?1 AND project = ?2 AND capability = ?3");
+    let found = conn
+        .query_row(&sql, rusqlite::params![org_id, project, capability], map_sdd_spec_row)
+        .optional()?;
+    let Some(mut spec) = found else {
+        return Ok(None);
+    };
+    hydrate_spec_provenance(conn, &mut spec)?;
+    Ok(Some(spec_detail_from(conn, spec)?))
+}
+
+/// Metadata only — never spec content. The SELECT does not name the `content`
+/// column and `SddSpec` has no field to hold one.
+pub fn list_sdd_specs(
+    conn: &Connection,
+    org_id: &str,
+    filters: &SddSpecFilters,
+) -> Result<Vec<SddSpec>> {
+    let mut sql = format!("{SDD_SPEC_SELECT} WHERE org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+
+    if !filters.include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    if let Some(project) = &filters.project {
+        sql.push_str(" AND project = ?2");
+        params.push(Box::new(project.clone()));
+    }
+    sql.push_str(" ORDER BY capability ASC");
+
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(refs.as_slice(), map_sdd_spec_row)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let mut spec = row?;
+        hydrate_spec_provenance(conn, &mut spec)?;
+        out.push(spec);
+    }
+    Ok(out)
+}
+
+/// Metadata only — `SddSpecRevisionMeta` has no `content` field, on purpose.
+pub fn list_sdd_spec_revisions(
+    conn: &Connection,
+    org_id: &str,
+    spec_id: &str,
+) -> Result<Vec<SddSpecRevisionMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.spec_id, r.revision, r.content_hash, r.byte_size, r.merged_from_change_id,
+                c.name, r.git_commit, r.git_path, r.source, r.created_by, r.created_at
+         FROM sdd_spec_revisions r
+         JOIN sdd_specs s ON s.id = r.spec_id
+         LEFT JOIN sdd_changes c ON c.id = r.merged_from_change_id
+         WHERE r.spec_id = ?1 AND s.org_id = ?2
+         ORDER BY r.revision DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![spec_id, org_id], |row| {
+        Ok(SddSpecRevisionMeta {
+            id: row.get(0)?,
+            spec_id: row.get(1)?,
+            revision: row.get(2)?,
+            content_hash: row.get(3)?,
+            byte_size: row.get(4)?,
+            merged_from_change_id: row.get(5)?,
+            merged_from_change_name: row.get(6)?,
+            git_commit: row.get(7)?,
+            git_path: row.get(8)?,
+            source: row.get(9)?,
+            created_by: row.get(10)?,
+            created_at: row.get(11)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn get_sdd_spec_revision(
+    conn: &Connection,
+    org_id: &str,
+    spec_id: &str,
+    revision: i64,
+) -> Result<Option<SddSpecRevision>> {
+    let found = conn
+        .query_row(
+            "SELECT r.id, r.spec_id, r.revision, r.content, r.content_hash, r.byte_size,
+                    r.merged_from_change_id, c.name, r.git_commit, r.git_path, r.source,
+                    r.created_by, r.created_at
+             FROM sdd_spec_revisions r
+             JOIN sdd_specs s ON s.id = r.spec_id
+             LEFT JOIN sdd_changes c ON c.id = r.merged_from_change_id
+             WHERE r.spec_id = ?1 AND r.revision = ?2 AND s.org_id = ?3",
+            rusqlite::params![spec_id, revision, org_id],
+            |row| {
+                Ok(SddSpecRevision {
+                    id: row.get(0)?,
+                    spec_id: row.get(1)?,
+                    revision: row.get(2)?,
+                    content: row.get(3)?,
+                    content_hash: row.get(4)?,
+                    byte_size: row.get(5)?,
+                    merged_from_change_id: row.get(6)?,
+                    merged_from_change_name: row.get(7)?,
+                    git_commit: row.get(8)?,
+                    git_path: row.get(9)?,
+                    source: row.get(10)?,
+                    created_by: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(found)
+}
+
+/// The reverse edge, and the reason `merged_from_change_id` exists: which living
+/// specifications has this change merged into? Metadata only — the answer is a list
+/// of contracts, not their text.
+pub fn list_sdd_specs_for_change(
+    conn: &Connection,
+    org_id: &str,
+    change_id: &str,
+) -> Result<Vec<SddSpecMerge>> {
+    // The same projection as SDD_SPEC_SELECT (so `map_sdd_spec_row` reads it), plus the
+    // aggregate in column 11.
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.org_id, s.project, s.capability, s.title, s.path, s.latest_revision,
+                s.created_by, s.created_at, s.updated_at, s.archived_at, MAX(r.revision)
+         FROM sdd_spec_revisions r
+         JOIN sdd_specs s ON s.id = r.spec_id
+         WHERE r.merged_from_change_id = ?1 AND s.org_id = ?2
+         GROUP BY s.id
+         ORDER BY s.capability ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![change_id, org_id], |row| {
+        Ok((map_sdd_spec_row(row)?, row.get::<_, i64>(11)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (mut spec, merged_revision) = row?;
+        hydrate_spec_provenance(conn, &mut spec)?;
+        out.push(SddSpecMerge { spec, merged_revision });
+    }
+    Ok(out)
+}
+
+/// FTS5 over the latest revision of every living specification in the org.
+/// Reuses `sanitize_fts_query` — do not hand-roll a second escaper.
+pub fn search_sdd_specs(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddSpecSearchHit>> {
+    let Some(fts_query) = sanitize_fts_query(query) else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT f.spec_id, s.project, s.capability, s.title,
+                snippet(sdd_specs_fts, 3, '<b>', '</b>', '…', 24)
+         FROM sdd_specs_fts f
+         JOIN sdd_specs s ON s.id = f.spec_id
+         WHERE sdd_specs_fts MATCH ?1 AND s.org_id = ?2
+         ORDER BY rank
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![fts_query, org_id, limit], |row| {
+        Ok(SddSpecSearchHit {
+            spec_id: row.get(0)?,
+            project: row.get(1)?,
+            capability: row.get(2)?,
+            title: row.get(3)?,
+            snippet: row.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// `GET /v1/sdd/search` over BOTH trees.
+///
+/// Specs are listed first. "Which spec covers rate limiting?" is a question about
+/// the CONTRACT, and answering it with three drafts from an in-flight change before
+/// the specification they are trying to amend gets the priority exactly backwards.
+/// Within each tree the order is FTS `rank`; the two ranks are not comparable across
+/// tables, so they are not interleaved and pretended to be.
+pub fn search_sdd_all(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddSearchResult>> {
+    let specs = search_sdd_specs(conn, org_id, query, limit)?;
+    let artifacts = search_sdd_artifacts(conn, org_id, query, limit)?;
+
+    let mut out: Vec<SddSearchResult> = specs
+        .into_iter()
+        .map(SddSearchResult::from_spec)
+        .chain(artifacts.into_iter().map(SddSearchResult::from_artifact))
+        .collect();
+    out.truncate(limit.max(0) as usize);
+    Ok(out)
+}
+
+/// Keyword search over capability and title, for the `global_search` facet.
+/// LIKE-based, mirroring `search_sdd_changes_by_query` — `global_search` is
+/// keyword-only, not semantic. Archived specs are excluded.
+pub fn search_sdd_specs_by_query(
+    conn: &Connection,
+    org_id: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<SddSpecSummary>> {
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, project, capability, title, latest_revision
+         FROM sdd_specs
+         WHERE org_id = ?1
+           AND archived_at IS NULL
+           AND (capability LIKE ?2 OR title LIKE ?2)
+         ORDER BY updated_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![org_id, pattern, limit], |row| {
+        Ok(SddSpecSummary {
+            id: row.get(0)?,
+            project: row.get(1)?,
+            capability: row.get(2)?,
+            title: row.get(3)?,
+            latest_revision: row.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -17546,6 +18043,597 @@ mod sdd_query_tests {
             !sdd_change_exists(&conn, &org_b, "team-tasks").unwrap(),
             "a change in another org must not satisfy the check"
         );
+    }
+
+    // ── The living specification (sdd_specs) ─────────────────────────────
+    //
+    // Every invariant the artifact store holds, the spec store must hold too —
+    // these tests are deliberately the artifact tests again, on the other tree.
+
+    fn spec_req(project: &str, capability: &str, content: &str) -> SaveSpecRequest {
+        SaveSpecRequest {
+            project: project.to_string(),
+            capability: capability.to_string(),
+            content: content.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn spec_revision_count(conn: &Connection, spec_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sdd_spec_revisions WHERE spec_id = ?1",
+            [spec_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn spec_fts_row_count(conn: &Connection, spec_id: &str) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM sdd_specs_fts WHERE spec_id = ?1", [spec_id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn upsert_sdd_spec_creates_spec_and_revision_1() {
+        let (conn, org, user) = setup();
+        let (spec, created) = upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("nexus-mind", "harness-library", "## Purpose\nThe library."),
+            "agent",
+        )
+        .unwrap();
+
+        assert!(created, "the first save creates a revision");
+        assert_eq!(spec.latest_revision, 1);
+        assert_eq!(spec.capability, "harness-library");
+        assert_eq!(spec_revision_count(&conn, &spec.id), 1);
+        assert_eq!(spec_fts_row_count(&conn, &spec.id), 1);
+    }
+
+    /// A spec is NOT an artifact of a change — saving one creates no change at all.
+    /// This is the modelling decision, asserted.
+    #[test]
+    fn upsert_sdd_spec_does_not_create_a_synthetic_change() {
+        let (conn, org, user) = setup();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "text"), "agent").unwrap();
+
+        let changes: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            changes, 0,
+            "a living specification belongs to the PROJECT — it must not conjure a change to hang off"
+        );
+    }
+
+    /// THE de-dup contract, on the other tree.
+    #[test]
+    fn upsert_sdd_spec_creates_no_revision_when_hash_unchanged() {
+        let (conn, org, user) = setup();
+        let req = spec_req("p", "cap", "identical contract");
+        let (spec, first) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+        assert!(first);
+        let updated_at_before = spec.updated_at.clone();
+
+        let (again, created) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+        assert!(!created, "an identical re-save must NOT create a revision");
+        assert_eq!(spec_revision_count(&conn, &spec.id), 1, "still exactly one revision");
+        assert_eq!(again.latest_revision, 1);
+        assert_eq!(again.updated_at, updated_at_before, "updated_at must NOT be bumped");
+        assert_eq!(spec_fts_row_count(&conn, &spec.id), 1, "the index must not be disturbed");
+    }
+
+    #[test]
+    fn upsert_sdd_spec_appends_revision_2_on_changed_content() {
+        let (conn, org, user) = setup();
+        let (spec, _) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "v1"), "agent").unwrap();
+        let (spec2, created) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "v2"), "agent").unwrap();
+
+        assert!(created);
+        assert_eq!(spec2.latest_revision, 2);
+        assert_eq!(spec2.id, spec.id, "same spec, new revision");
+
+        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev1.content, "v1", "revision 1 is immutable");
+        assert_eq!(rev1.byte_size, 2);
+    }
+
+    /// A1 — the hash is compared against the LATEST revision only. A → B → A appends
+    /// revision 3: reverting the contract is an event, and it must appear as one.
+    #[test]
+    fn upsert_sdd_spec_revert_to_earlier_content_appends_revision_3() {
+        let (conn, org, user) = setup();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "A"), "agent").unwrap();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "B"), "agent").unwrap();
+        let (spec, created) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "A"), "agent").unwrap();
+
+        assert!(created, "reverting to earlier content is a real event and MUST append");
+        assert_eq!(spec.latest_revision, 3, "revision 3, not a resurrection of revision 1");
+        assert_eq!(spec_revision_count(&conn, &spec.id), 3);
+
+        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        let rev3 = get_sdd_spec_revision(&conn, &org, &spec.id, 3).unwrap().unwrap();
+        assert_eq!(rev1.content, "A");
+        assert_eq!(rev3.content, "A");
+        assert_ne!(rev1.id, rev3.id, "two distinct revisions that happen to agree");
+    }
+
+    /// A2 — the 1 MB rejection is ATOMIC: it happens before the transaction opens, so
+    /// there is no spec and no revision to clean up afterwards.
+    #[test]
+    fn upsert_sdd_spec_rejects_content_over_1mb_atomically() {
+        let (conn, org, user) = setup();
+        let huge = "x".repeat(1_048_577);
+
+        let err = upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "oversized", &huge), "agent")
+            .unwrap_err();
+        assert!(err.to_string().contains("spec_too_large"));
+
+        let specs: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0)).unwrap();
+        let revisions: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0)).unwrap();
+        assert_eq!(specs, 0, "a rejected save must leave NO spec row");
+        assert_eq!(revisions, 0, "…and NO revision row");
+
+        // And against a pre-existing spec: nothing moves.
+        let (existing, _) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "small"), "agent").unwrap();
+        let before = get_sdd_spec(&conn, &org, &existing.id).unwrap().unwrap();
+
+        assert!(upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", &huge), "agent").is_err());
+
+        let after = get_sdd_spec(&conn, &org, &existing.id).unwrap().unwrap();
+        assert_eq!(after.spec.latest_revision, before.spec.latest_revision);
+        assert_eq!(after.spec.updated_at, before.spec.updated_at);
+        assert_eq!(after.content.as_deref(), Some("small"), "the contract is untouched");
+    }
+
+    #[test]
+    fn upsert_sdd_spec_accepts_content_just_under_the_cap() {
+        let (conn, org, user) = setup();
+        let big = "y".repeat(1_048_575);
+        let (spec, created) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", &big), "agent").unwrap();
+        assert!(created);
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev.byte_size, 1_048_575);
+    }
+
+    /// The FTS index tracks the LATEST revision only: it is replaced, never appended to,
+    /// so a term struck from the contract stops matching.
+    #[test]
+    fn upsert_sdd_spec_replaces_fts_row_on_new_revision() {
+        let (conn, org, user) = setup();
+        let (spec, _) = upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "cap", "the throttle uses leaky buckets"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "the throttle uses windows"), "agent")
+            .unwrap();
+
+        assert_eq!(
+            spec_fts_row_count(&conn, &spec.id),
+            1,
+            "the index must never accumulate one row per revision"
+        );
+        let stale = search_sdd_specs(&conn, &org, "leaky", 10).unwrap();
+        assert!(stale.is_empty(), "a term deleted by a newer revision must stop matching");
+        let fresh = search_sdd_specs(&conn, &org, "windows", 10).unwrap();
+        assert_eq!(fresh.len(), 1, "the latest revision's text must match");
+    }
+
+    /// Two orgs may hold the same (project, capability) and they are two contracts.
+    #[test]
+    fn upsert_sdd_spec_org_isolation() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+
+        let (spec_a, _) =
+            upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "A's contract"), "agent")
+                .unwrap();
+        let (spec_b, _) =
+            upsert_sdd_spec(&conn, &org_b, &user_b, &spec_req("p", "cap", "B's contract"), "agent")
+                .unwrap();
+
+        assert_ne!(spec_a.id, spec_b.id, "same natural key in two orgs = two specs");
+        assert!(
+            get_sdd_spec(&conn, &org_b, &spec_a.id).unwrap().is_none(),
+            "org B must not see org A's spec by id — Ok(None), which the API turns into a 404"
+        );
+        assert!(
+            get_sdd_spec_by_capability(&conn, &org_b, "p", "cap")
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref()
+                == Some("B's contract"),
+            "the natural key resolves within the caller's org only"
+        );
+    }
+
+    /// The payoff: `merged_from_change_id` ties a revision back to the change that
+    /// produced it, in both directions.
+    #[test]
+    fn upsert_sdd_spec_records_which_change_merged_into_the_contract() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "sdd-specs");
+
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("sdd-specs".to_string()),
+            ..spec_req("p", "cap", "merged text")
+        };
+        let (spec, _) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+
+        // Spec → change.
+        assert_eq!(spec.last_merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(spec.last_merged_from_change_name.as_deref(), Some("sdd-specs"));
+
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev.merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(rev.merged_from_change_name.as_deref(), Some("sdd-specs"));
+
+        // Change → spec.
+        let merged = list_sdd_specs_for_change(&conn, &org, &change.id).unwrap();
+        assert_eq!(merged.len(), 1, "the change must report the spec it merged into");
+        assert_eq!(merged[0].spec.id, spec.id);
+        assert_eq!(merged[0].merged_revision, 1);
+    }
+
+    /// A revision saved outside the change pipeline (import, admin edit) has no
+    /// provenance, and that is a legitimate state — not an error.
+    #[test]
+    fn upsert_sdd_spec_without_a_change_name_has_null_provenance() {
+        let (conn, org, user) = setup();
+        let (spec, _) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "imported"), "import").unwrap();
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev.merged_from_change_id, None);
+        assert_eq!(rev.source, "import");
+        assert_eq!(spec.last_merged_from_change_id, None);
+    }
+
+    /// An unresolvable change name rejects the save WHOLE. Storing the content with a
+    /// silently-NULL provenance would leave a spec whose history lies by omission.
+    #[test]
+    fn upsert_sdd_spec_rejects_an_unknown_change_name_atomically() {
+        let (conn, org, user) = setup();
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("no-such-change".to_string()),
+            ..spec_req("p", "cap", "text")
+        };
+        let err = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap_err();
+        assert!(err.to_string().contains("change_not_found"));
+
+        let specs: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0)).unwrap();
+        assert_eq!(specs, 0, "the rejected save must leave no spec behind");
+    }
+
+    /// A change in ANOTHER org is not a resolvable provenance either.
+    #[test]
+    fn upsert_sdd_spec_will_not_merge_from_another_orgs_change() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+        mk_change(&conn, &org_a, &user_a, "p", "a-change");
+
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("a-change".to_string()),
+            ..spec_req("p", "cap", "text")
+        };
+        let err = upsert_sdd_spec(&conn, &org_b, &user_b, &req, "agent").unwrap_err();
+        assert!(err.to_string().contains("change_not_found"));
+    }
+
+    /// A change may merge into several specs; each spec reports the revision it got.
+    #[test]
+    fn list_sdd_specs_for_change_reports_every_spec_the_change_touched() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "big-change");
+
+        for cap in ["auth", "billing"] {
+            let req = SaveSpecRequest {
+                merged_from_change_name: Some("big-change".to_string()),
+                ..spec_req("p", cap, &format!("{cap} contract"))
+            };
+            upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+        }
+        // A second merge into `auth` — the reported revision must be the newest one.
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("big-change".to_string()),
+            ..spec_req("p", "auth", "auth contract v2")
+        };
+        upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+
+        let merged = list_sdd_specs_for_change(&conn, &org, &change.id).unwrap();
+        assert_eq!(merged.len(), 2, "two specs, not three rows — one per spec");
+        assert_eq!(merged[0].spec.capability, "auth", "ordered by capability");
+        assert_eq!(merged[0].merged_revision, 2, "the newest revision this change produced");
+        assert_eq!(merged[1].spec.capability, "billing");
+        assert_eq!(merged[1].merged_revision, 1);
+    }
+
+    /// A change that merged into nothing reports nothing — not an error.
+    #[test]
+    fn list_sdd_specs_for_change_is_empty_for_a_change_that_merged_nothing() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "drafting");
+        assert!(list_sdd_specs_for_change(&conn, &org, &change.id).unwrap().is_empty());
+    }
+
+    // ── Spec reads ───────────────────────────────────────────────────────
+
+    #[test]
+    fn get_sdd_spec_returns_latest_revision_content() {
+        let (conn, org, user) = setup();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "old"), "agent").unwrap();
+        let (spec, _) =
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "current"), "agent").unwrap();
+
+        let detail = get_sdd_spec(&conn, &org, &spec.id).unwrap().unwrap();
+        assert_eq!(detail.content.as_deref(), Some("current"));
+        assert_eq!(detail.spec.latest_revision, 2);
+        assert!(detail.content_hash.is_some());
+    }
+
+    /// A capability with no spec is `Ok(None)` — never a spec carrying empty content.
+    #[test]
+    fn get_sdd_spec_by_capability_is_none_for_an_unknown_capability() {
+        let (conn, org, user) = setup();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "text"), "agent").unwrap();
+
+        assert!(get_sdd_spec_by_capability(&conn, &org, "p", "nope").unwrap().is_none());
+        assert!(
+            get_sdd_spec_by_capability(&conn, &org, "other-project", "cap").unwrap().is_none(),
+            "the capability is scoped to its project"
+        );
+        let found = get_sdd_spec_by_capability(&conn, &org, "p", "cap").unwrap().unwrap();
+        assert_eq!(found.content.as_deref(), Some("text"));
+    }
+
+    /// The list is METADATA ONLY. `SddSpec` has no content field, so this is enforced by
+    /// the type — the assertion is on the shape of the row set, not the absence of a leak.
+    #[test]
+    fn list_sdd_specs_returns_one_row_per_capability_with_its_provenance() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c1");
+
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "zeta", "z"), "agent").unwrap();
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("c1".to_string()),
+            ..spec_req("p", "alpha", "a")
+        };
+        upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("other", "gamma", "g"), "agent").unwrap();
+
+        let all = list_sdd_specs(&conn, &org, &SddSpecFilters::default()).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let filtered = list_sdd_specs(
+            &conn,
+            &org,
+            &SddSpecFilters { project: Some("p".to_string()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(filtered.len(), 2, "filtered to the project");
+        assert_eq!(filtered[0].capability, "alpha", "ordered by capability");
+        assert_eq!(
+            filtered[0].last_merged_from_change_name.as_deref(),
+            Some("c1"),
+            "the list carries the change that last merged into each contract"
+        );
+        assert_eq!(filtered[0].last_merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(filtered[1].capability, "zeta");
+        assert_eq!(filtered[1].last_merged_from_change_name, None);
+    }
+
+    #[test]
+    fn list_sdd_specs_org_isolation() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+        upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "a-cap", "x"), "agent").unwrap();
+        upsert_sdd_spec(&conn, &org_b, &user_b, &spec_req("p", "b-cap", "y"), "agent").unwrap();
+
+        let a = list_sdd_specs(&conn, &org_a, &SddSpecFilters::default()).unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].capability, "a-cap", "org A must not see org B's contracts");
+    }
+
+    #[test]
+    fn list_sdd_spec_revisions_returns_metadata_only_newest_first() {
+        let (conn, org, user) = setup();
+        let change = mk_change(&conn, &org, &user, "p", "c1");
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "v1"), "import").unwrap();
+        let req = SaveSpecRequest {
+            merged_from_change_name: Some("c1".to_string()),
+            ..spec_req("p", "cap", "v2")
+        };
+        let (spec, _) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+
+        let revs = list_sdd_spec_revisions(&conn, &org, &spec.id).unwrap();
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[0].revision, 2, "newest first");
+        assert_eq!(revs[0].merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(revs[0].merged_from_change_name.as_deref(), Some("c1"));
+        assert_eq!(revs[1].revision, 1);
+        assert_eq!(revs[1].source, "import");
+        assert_eq!(revs[1].merged_from_change_id, None);
+        assert_eq!(revs[1].byte_size, 2);
+    }
+
+    #[test]
+    fn get_sdd_spec_revision_returns_full_content_and_respects_org() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, _user_b) = second_org(&conn);
+        upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "first"), "agent").unwrap();
+        let (spec, _) =
+            upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "second"), "agent").unwrap();
+
+        let rev1 = get_sdd_spec_revision(&conn, &org_a, &spec.id, 1).unwrap().unwrap();
+        assert_eq!(rev1.content, "first", "an older revision is retrievable in full");
+
+        assert!(
+            get_sdd_spec_revision(&conn, &org_b, &spec.id, 1).unwrap().is_none(),
+            "another org's revision is Ok(None), which the API turns into a 404"
+        );
+        assert!(get_sdd_spec_revision(&conn, &org_a, &spec.id, 99).unwrap().is_none());
+    }
+
+    // ── Spec search ──────────────────────────────────────────────────────
+
+    #[test]
+    fn search_sdd_specs_returns_snippets_scoped_to_org() {
+        let (conn, org_a, user_a) = setup();
+        let (org_b, user_b) = second_org(&conn);
+        upsert_sdd_spec(
+            &conn,
+            &org_a,
+            &user_a,
+            &spec_req("p", "throttling", "requests are subject to rate limiting per key"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org_b,
+            &user_b,
+            &spec_req("p", "other", "rate limiting in another org"),
+            "agent",
+        )
+        .unwrap();
+
+        let hits = search_sdd_specs(&conn, &org_a, "rate limiting", 10).unwrap();
+        assert_eq!(hits.len(), 1, "org B's contract must not appear");
+        assert_eq!(hits[0].capability, "throttling");
+        assert!(hits[0].snippet.contains("<b>"), "the snippet must be highlighted");
+    }
+
+    #[test]
+    fn search_sdd_specs_sanitizes_fts_query_syntax() {
+        let (conn, org, user) = setup();
+        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "plain text"), "agent").unwrap();
+        // Raw FTS operators must not blow up the query.
+        assert!(search_sdd_specs(&conn, &org, "\"unbalanced", 10).is_ok());
+        assert!(search_sdd_specs(&conn, &org, "AND OR NOT", 10).is_ok());
+    }
+
+    /// `GET /v1/sdd/search` spans BOTH trees, and every hit says which one it came from.
+    /// "Which spec covers rate limiting?" must find the CONTRACT, not only the drafts.
+    #[test]
+    fn search_sdd_all_covers_specs_and_artifacts_and_labels_each_hit() {
+        let (conn, org, user) = setup();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "throttle-work", "design", "we will add rate limiting to the gateway"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "gateway", "the gateway MUST apply rate limiting per api key"),
+            "agent",
+        )
+        .unwrap();
+
+        let hits = search_sdd_all(&conn, &org, "rate limiting", 10).unwrap();
+        assert_eq!(hits.len(), 2, "both trees are searched");
+
+        let spec_hit = hits.iter().find(|h| h.hit_type == "spec").expect("the contract must be found");
+        assert_eq!(spec_hit.capability, "gateway");
+        assert!(spec_hit.spec_id.is_some());
+        assert!(spec_hit.change_id.is_none(), "a spec hit has no change — it outlives them");
+
+        let art_hit =
+            hits.iter().find(|h| h.hit_type == "artifact").expect("the draft must be found too");
+        assert_eq!(art_hit.change_name.as_deref(), Some("throttle-work"));
+        assert_eq!(art_hit.kind.as_deref(), Some("design"));
+        assert!(art_hit.spec_id.is_none());
+
+        assert_eq!(
+            hits[0].hit_type, "spec",
+            "the contract outranks the drafts — that is the question being asked"
+        );
+    }
+
+    #[test]
+    fn search_sdd_all_honours_the_limit_across_both_trees() {
+        let (conn, org, user) = setup();
+        for i in 0..3 {
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", &format!("cap{i}"), "widget"), "agent")
+                .unwrap();
+            upsert_sdd_artifact(
+                &conn,
+                &org,
+                &user,
+                &save_req("p", &format!("c{i}"), "design", "widget"),
+                "agent",
+            )
+            .unwrap();
+        }
+        let hits = search_sdd_all(&conn, &org, "widget", 4).unwrap();
+        assert_eq!(hits.len(), 4, "the limit caps the MERGED result set, not each tree");
+    }
+
+    #[test]
+    fn search_sdd_specs_by_query_matches_capability_and_title_for_global_search() {
+        let (conn, org, user) = setup();
+        let req = SaveSpecRequest {
+            title: Some("Harness Library".to_string()),
+            ..spec_req("p", "harness-library", "body text mentioning nothing relevant")
+        };
+        upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
+
+        let by_cap = search_sdd_specs_by_query(&conn, &org, "harness", 10).unwrap();
+        assert_eq!(by_cap.len(), 1);
+        assert_eq!(by_cap[0].capability, "harness-library");
+        assert_eq!(by_cap[0].latest_revision, 1);
+
+        let by_title = search_sdd_specs_by_query(&conn, &org, "Library", 10).unwrap();
+        assert_eq!(by_title.len(), 1, "the title matches too");
+
+        assert!(
+            search_sdd_specs_by_query(&conn, &org, "unrelated", 10).unwrap().is_empty(),
+            "global_search is keyword-only over capability/title, not full text"
+        );
+    }
+
+    /// Source-scan invariant: nothing in the store mutates or removes a spec revision.
+    ///
+    /// As with the artifact scan, the needles are assembled at runtime. Spelling them as
+    /// string literals would plant them in this very file, and `include_str!` pulls the
+    /// test module in with everything else — the scan would then match itself and fail
+    /// against perfectly correct code. (This has bitten this codebase before.)
+    #[test]
+    fn no_store_function_mutates_a_spec_revision() {
+        let src = include_str!("queries.rs");
+        let table = "sdd_spec_revisions";
+        for forbidden in [
+            format!("UPDATE {table}"),
+            format!("DELETE FROM {table}"),
+            format!("fn update_{table}"),
+            format!("fn delete_{table}"),
+        ] {
+            assert!(
+                !src.contains(&forbidden),
+                "spec revisions are immutable and append-only — found `{forbidden}`. They are \
+                 written by upsert_sdd_spec's INSERT and reclaimed only by ON DELETE CASCADE \
+                 from the parent spec."
+            );
+        }
     }
 }
 

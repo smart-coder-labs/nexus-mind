@@ -21,8 +21,10 @@ use crate::{
     db::queries,
     models::types::{
         ApiError, AuthContext, LinkChangeMemoryRequest, Memory, PatchChangeRequest,
-        SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind, SddChange,
-        SddChangeFilters, SddRevision, SddRevisionMeta, SddSearchHit, Task, UpsertChangeRequest,
+        SaveArtifactRequest, SaveSpecRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
+        SddChange, SddChangeFilters, SddRevision, SddRevisionMeta, SddSearchResult, SddSpecDetail,
+        SddSpecFilters, SddSpecMerge, SddSpecRevision, SddSpecRevisionMeta, Task,
+        UpsertChangeRequest,
     },
     store::sqlite::SqliteStore,
 };
@@ -31,6 +33,15 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     let msg = e.to_string();
     let (status, code) = if msg.starts_with("artifact_too_large") {
         (StatusCode::UNPROCESSABLE_ENTITY, "artifact_too_large")
+    } else if msg.starts_with("spec_too_large") {
+        (StatusCode::UNPROCESSABLE_ENTITY, "spec_too_large")
+    } else if msg.starts_with("invalid_capability") {
+        (StatusCode::UNPROCESSABLE_ENTITY, "invalid_capability")
+    } else if msg.starts_with("change_not_found") {
+        // The change named in `merged_from_change_name` does not exist from this caller's
+        // view. 404: the provenance is the point, so a name that resolves to nothing
+        // rejects the save rather than storing the contract with its history erased.
+        (StatusCode::NOT_FOUND, "change_not_found")
     } else if msg.starts_with("invalid_phase") {
         (StatusCode::UNPROCESSABLE_ENTITY, "invalid_phase")
     } else if msg.starts_with("invalid_status") {
@@ -327,6 +338,156 @@ pub async fn get_artifact_revision_handler(
         .ok_or_else(not_found)
 }
 
+// ── Specs — the living specification ────────────────────────────────────────
+//
+// `openspec/specs/{capability}/spec.md`: the contract, not the drafts. The same
+// two rules as everything above (404 for not-visible, no content in lists), and the
+// same idempotent-by-content-hash write.
+//
+// A spec is a root entity, so these routes hang off `/v1/sdd/specs`, NOT off a
+// change. The one route that crosses the two trees is
+// `GET /v1/sdd/changes/:id/specs` — "which contracts has this change merged into?"
+
+/// The workhorse. **Always 200, never 201** — same reason as `put_artifact_handler`:
+/// the call is idempotent by content hash, so "created" is a body flag, not a status.
+pub async fn put_spec_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<SaveSpecRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, Some(&input.project), "sdd:write")?;
+
+    let source = input.source.as_deref().unwrap_or("agent");
+    if !matches!(source, "agent" | "admin" | "import") {
+        return Err(db_err(anyhow::anyhow!("invalid_source: {source}")));
+    }
+
+    let (spec, created_revision) =
+        queries::upsert_sdd_spec(&conn, &auth.org_id, &auth.user_id, &input, source)
+            .map_err(db_err)?;
+
+    Ok(Json(serde_json::json!({
+        "spec": spec,
+        "created_revision": created_revision,
+    })))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct SpecKeyParams {
+    pub project: Option<String>,
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+/// One endpoint, two readings, discriminated by `capability`:
+///
+///   * `?project=&capability=` — the natural-key read of ONE contract, with its full
+///     content. A capability with no spec is a 404, never a 200 carrying an empty
+///     document: "this capability has no contract yet" and "its contract is empty"
+///     are different facts and an agent must be able to tell them apart.
+///   * `?project=` (no capability) — the LIST. Metadata only, never content.
+pub async fn get_specs_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<SpecKeyParams>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use axum::response::IntoResponse;
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "sdd:read")?;
+
+    if let Some(capability) = params.capability.as_deref() {
+        let Some(project) = params.project.as_deref() else {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: "capability requires project".to_string(),
+                    code: "invalid_request".to_string(),
+                }),
+            ));
+        };
+        let found = queries::get_sdd_spec_by_capability(&conn, &auth.org_id, project, capability)
+            .map_err(db_err)?;
+        let detail = found.ok_or_else(not_found)?;
+        return Ok(Json(detail).into_response());
+    }
+
+    let filters = SddSpecFilters {
+        project: params.project,
+        include_archived: params.include_archived,
+    };
+    let specs = queries::list_sdd_specs(&conn, &auth.org_id, &filters).map_err(db_err)?;
+    Ok(Json(specs).into_response())
+}
+
+pub async fn get_spec_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<SddSpecDetail>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "sdd:read")?;
+
+    queries::get_sdd_spec(&conn, &auth.org_id, &id)
+        .map_err(db_err)?
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+pub async fn list_spec_revisions_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SddSpecRevisionMeta>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "sdd:read")?;
+
+    if queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
+        return Err(not_found());
+    }
+    let revisions = queries::list_sdd_spec_revisions(&conn, &auth.org_id, &id).map_err(db_err)?;
+    Ok(Json(revisions))
+}
+
+pub async fn get_spec_revision_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path((id, revision)): Path<(String, i64)>,
+) -> Result<Json<SddSpecRevision>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "sdd:read")?;
+
+    queries::get_sdd_spec_revision(&conn, &auth.org_id, &id, revision)
+        .map_err(db_err)?
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+/// The edge that joins the two trees: which living specifications has this change
+/// merged its deltas into?
+pub async fn list_change_specs_handler(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SddSpecMerge>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "sdd:read")?;
+
+    if queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
+        return Err(not_found());
+    }
+    let specs = queries::list_sdd_specs_for_change(&conn, &auth.org_id, &id).map_err(db_err)?;
+    Ok(Json(specs))
+}
+
 // ── Search ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -336,11 +497,14 @@ pub struct SearchParams {
     pub limit: Option<i64>,
 }
 
+/// Spans BOTH trees. Every hit carries a `hit_type` (`"spec"` or `"artifact"`),
+/// because "which spec covers rate limiting?" is a question about the CONTRACT and
+/// an answer made only of in-flight drafts silently answers a different one.
 pub async fn search_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<SearchParams>,
-) -> Result<Json<Vec<SddSearchHit>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<SddSearchResult>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
@@ -349,8 +513,7 @@ pub async fn search_handler(
         return Ok(Json(Vec::new()));
     }
     let limit = params.limit.unwrap_or(20).clamp(1, 50);
-    let hits = queries::search_sdd_artifacts(&conn, &auth.org_id, &params.q, limit)
-        .map_err(db_err)?;
+    let hits = queries::search_sdd_all(&conn, &auth.org_id, &params.q, limit).map_err(db_err)?;
     Ok(Json(hits))
 }
 
@@ -438,6 +601,11 @@ mod tests {
             .route("/v1/sdd/changes/:id/tasks", get(list_change_tasks_handler))
             .route("/v1/sdd/changes/:id/memories", post(link_change_memory_handler))
             .route("/v1/sdd/changes/:id/memories/:memory_id", delete(unlink_change_memory_handler))
+            .route("/v1/sdd/changes/:id/specs", get(list_change_specs_handler))
+            .route("/v1/sdd/specs", get(get_specs_handler).put(put_spec_handler))
+            .route("/v1/sdd/specs/:id", get(get_spec_handler))
+            .route("/v1/sdd/specs/:id/revisions", get(list_spec_revisions_handler))
+            .route("/v1/sdd/specs/:id/revisions/:rev", get(get_spec_revision_handler))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -1299,6 +1467,467 @@ mod tests {
 
         assert_eq!(count(&store, "memories"), 1, "unlinking must not delete the memory");
     }
+
+    // ── Specs — the living specification ─────────────────────────────────
+
+    pub(super) async fn save_spec(
+        store: &SqliteStore,
+        key: &str,
+        capability: &str,
+        content: &str,
+    ) -> serde_json::Value {
+        let resp = req(
+            store,
+            key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind",
+                "capability": capability,
+                "content": content,
+            })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "PUT /v1/sdd/specs must answer 200, never 201");
+        body_json(resp).await
+    }
+
+    #[tokio::test]
+    async fn put_sdd_spec_denied_without_sdd_write() {
+        let (store, _admin, org_id) = setup_with_key();
+        let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
+
+        let resp = req(&store, &key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "cap", "content": "C"
+        })))
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(count(&store, "sdd_specs"), 0, "a denied write creates nothing");
+    }
+
+    #[tokio::test]
+    async fn get_sdd_specs_denied_without_sdd_read() {
+        let (store, _admin, org_id) = setup_with_key();
+        let (key, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
+
+        for uri in ["/v1/sdd/specs", "/v1/sdd/specs?project=nexus-mind&capability=cap"] {
+            let resp = req(&store, &key, "GET", uri, None).await;
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri} must require sdd:read");
+        }
+    }
+
+    /// The permission matrix: sdd:read reads, sdd:write writes, and neither implies
+    /// the other. `sdd:delete` is not needed — there is no spec delete endpoint.
+    #[tokio::test]
+    async fn spec_endpoints_enforce_the_read_write_split() {
+        let (store, admin_key, org_id) = setup_with_key();
+        let saved = save_spec(&store, &admin_key, "cap", "C").await;
+        let spec_id = saved["spec"]["id"].as_str().unwrap().to_string();
+
+        let (reader, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
+        let (writer, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
+
+        for uri in [
+            format!("/v1/sdd/specs/{spec_id}"),
+            format!("/v1/sdd/specs/{spec_id}/revisions"),
+            format!("/v1/sdd/specs/{spec_id}/revisions/1"),
+        ] {
+            assert_eq!(
+                req(&store, &reader, "GET", &uri, None).await.status(),
+                StatusCode::OK,
+                "sdd:read must be enough to read {uri}"
+            );
+            assert_eq!(
+                req(&store, &writer, "GET", &uri, None).await.status(),
+                StatusCode::FORBIDDEN,
+                "sdd:write alone must NOT grant reads on {uri}"
+            );
+        }
+
+        // …and a reader may not write.
+        let denied = req(&store, &reader, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "cap", "content": "new"
+        })))
+        .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn spec_routes_require_authentication() {
+        let (store, _admin, _org) = setup_with_key();
+        for (method, uri) in [
+            ("GET", "/v1/sdd/specs"),
+            ("PUT", "/v1/sdd/specs"),
+            ("GET", "/v1/sdd/specs/abc"),
+            ("GET", "/v1/sdd/specs/abc/revisions"),
+            ("GET", "/v1/sdd/specs/abc/revisions/1"),
+        ] {
+            let resp = req(&store, "nm_not_a_real_key", method, uri, Some(serde_json::json!({}))).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{method} {uri}");
+        }
+    }
+
+    /// 200 ALWAYS, never 201 — "created" is a body flag, not a status code.
+    #[tokio::test]
+    async fn put_sdd_spec_returns_200_and_created_revision_true_on_first_save() {
+        let (store, admin_key, _org) = setup_with_key();
+        let json = save_spec(&store, &admin_key, "harness-library", "## Purpose").await;
+
+        assert_eq!(json["created_revision"], true);
+        assert_eq!(json["spec"]["latest_revision"], 1);
+        assert_eq!(json["spec"]["capability"], "harness-library");
+    }
+
+    #[tokio::test]
+    async fn put_sdd_spec_second_identical_save_returns_created_revision_false() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "cap", "same").await;
+        let second = save_spec(&store, &admin_key, "cap", "same").await;
+
+        assert_eq!(second["created_revision"], false);
+        let spec_id = second["spec"]["id"].as_str().unwrap();
+
+        let revs = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+        )
+        .await;
+        assert_eq!(revs.as_array().unwrap().len(), 1, "still exactly one revision");
+    }
+
+    /// A2 at the HTTP boundary. A 422 from our guard, not a 413 from Axum's body limit —
+    /// and nothing at all left behind.
+    #[tokio::test]
+    async fn put_sdd_spec_over_1mb_returns_422_and_creates_nothing() {
+        let (store, admin_key, _org) = setup_with_key();
+        let huge = "x".repeat(1_048_577);
+
+        let resp = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "oversized", "content": huge
+        })))
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body_json(resp).await["code"], "spec_too_large");
+
+        assert_eq!(count(&store, "sdd_specs"), 0, "a rejected save leaves NO spec");
+        assert_eq!(count(&store, "sdd_spec_revisions"), 0, "…and NO revision");
+    }
+
+    #[tokio::test]
+    async fn put_sdd_spec_honours_the_source_field_and_rejects_unknown_values() {
+        let (store, admin_key, _org) = setup_with_key();
+
+        let ok = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "cap", "content": "C", "source": "import"
+        })))
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let id = body_json(ok).await["spec"]["id"].as_str().unwrap().to_string();
+
+        let revs = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{id}/revisions"), None).await,
+        )
+        .await;
+        assert_eq!(revs[0]["source"], "import", "the importer's provenance must not be overwritten");
+
+        let bad = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "cap2", "content": "C", "source": "wishful"
+        })))
+        .await;
+        assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body_json(bad).await["code"], "invalid_source");
+        assert_eq!(count(&store, "sdd_specs"), 1, "the rejected save created no second spec");
+    }
+
+    /// The payoff, over HTTP: a spec revision names the change that produced it, and the
+    /// change reports the specs it merged into.
+    #[tokio::test]
+    async fn put_sdd_spec_records_merged_from_change_and_the_change_reports_it_back() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_artifact(&store, &admin_key, "sdd-specs", "design", "D").await;
+        let changes = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let change_id = changes[0]["id"].as_str().unwrap().to_string();
+
+        let saved = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "sdd-spec-store",
+            "content": "the contract", "merged_from_change_name": "sdd-specs"
+        })))
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        let spec = body_json(saved).await;
+        assert_eq!(spec["spec"]["last_merged_from_change_name"], "sdd-specs");
+        let spec_id = spec["spec"]["id"].as_str().unwrap().to_string();
+
+        // Spec → change, on the revision.
+        let revs = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+        )
+        .await;
+        assert_eq!(revs[0]["merged_from_change_id"], change_id);
+        assert_eq!(revs[0]["merged_from_change_name"], "sdd-specs");
+
+        // Change → spec.
+        let merged = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/specs"), None).await,
+        )
+        .await;
+        assert_eq!(merged.as_array().unwrap().len(), 1);
+        assert_eq!(merged[0]["id"], spec_id);
+        assert_eq!(merged[0]["capability"], "sdd-spec-store");
+        assert_eq!(merged[0]["merged_revision"], 1);
+    }
+
+    /// A change name that resolves to nothing is a 404 — not a 200 with the provenance
+    /// quietly dropped. Traceability is the reason the column exists.
+    #[tokio::test]
+    async fn put_sdd_spec_with_an_unknown_change_name_returns_404_and_creates_nothing() {
+        let (store, admin_key, _org) = setup_with_key();
+
+        let resp = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+            "project": "nexus-mind", "capability": "cap", "content": "C",
+            "merged_from_change_name": "no-such-change"
+        })))
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_json(resp).await["code"], "change_not_found");
+        assert_eq!(count(&store, "sdd_specs"), 0);
+    }
+
+    /// The natural-key read returns the FULL contract.
+    #[tokio::test]
+    async fn get_sdd_spec_by_natural_key_returns_full_content() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "harness-library", "## Purpose\nThe whole document.").await;
+
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                "/v1/sdd/specs?project=nexus-mind&capability=harness-library",
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(json["content"], "## Purpose\nThe whole document.");
+        assert_eq!(json["capability"], "harness-library");
+        assert_eq!(json["latest_revision"], 1);
+    }
+
+    /// A capability with no spec is a 404 — NEVER a 200 with empty content. "No contract
+    /// yet" and "an empty contract" are different facts.
+    #[tokio::test]
+    async fn get_sdd_spec_by_natural_key_404s_for_an_unknown_capability() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "cap", "C").await;
+
+        let resp = req(
+            &store,
+            &admin_key,
+            "GET",
+            "/v1/sdd/specs?project=nexus-mind&capability=never-specified",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The collection read (no capability) is METADATA ONLY — it must never carry a
+    /// document. A project may hold a 117-line contract per capability.
+    #[tokio::test]
+    async fn list_sdd_specs_returns_metadata_only_never_content() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "alpha", "a very long contract").await;
+        save_spec(&store, &admin_key, "beta", "another one").await;
+
+        let json =
+            body_json(req(&store, &admin_key, "GET", "/v1/sdd/specs?project=nexus-mind", None).await)
+                .await;
+        let specs = json.as_array().expect("the collection read must return a list");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0]["capability"], "alpha", "ordered by capability");
+        assert_no_content_key(&json, "specs");
+    }
+
+    /// Not-found and not-visible are BOTH 404. A 403 would confirm the id exists.
+    #[tokio::test]
+    async fn get_sdd_spec_from_another_org_returns_404_not_403() {
+        let (store, admin_key, _org) = setup_with_key();
+        let saved = save_spec(&store, &admin_key, "cap", "A's contract").await;
+        let spec_id = saved["spec"]["id"].as_str().unwrap().to_string();
+
+        let (other_key, _other_org) = second_org(&store);
+
+        for uri in [
+            format!("/v1/sdd/specs/{spec_id}"),
+            format!("/v1/sdd/specs/{spec_id}/revisions"),
+            format!("/v1/sdd/specs/{spec_id}/revisions/1"),
+        ] {
+            let resp = req(&store, &other_key, "GET", &uri, None).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "{uri} must be a 404 for another org — a 403 would confirm the id exists"
+            );
+        }
+
+        // The natural key is scoped too: same (project, capability), different org, no leak.
+        let resp = req(
+            &store,
+            &other_key,
+            "GET",
+            "/v1/sdd/specs?project=nexus-mind&capability=cap",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        assert_eq!(
+            body_json(req(&store, &other_key, "GET", "/v1/sdd/specs", None).await)
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "the list is org-scoped too"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_unknown_sdd_spec_id_returns_404() {
+        let (store, admin_key, _org) = setup_with_key();
+        let resp = req(&store, &admin_key, "GET", "/v1/sdd/specs/does-not-exist", None).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The revision LIST is metadata-only; the revision READ carries the full text.
+    #[tokio::test]
+    async fn spec_revisions_list_is_metadata_only_and_the_read_is_full_content() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "cap", "revision one text").await;
+        let second = save_spec(&store, &admin_key, "cap", "revision two text").await;
+        let spec_id = second["spec"]["id"].as_str().unwrap().to_string();
+
+        let revs = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+        )
+        .await;
+        assert_eq!(revs.as_array().unwrap().len(), 2);
+        assert_eq!(revs[0]["revision"], 2, "newest first");
+        assert_no_content_key(&revs, "spec-revisions");
+
+        let rev1 = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/1"), None)
+                .await,
+        )
+        .await;
+        assert_eq!(rev1["content"], "revision one text", "an older revision reads in full");
+        assert_eq!(rev1["revision"], 1);
+
+        let missing =
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/99"), None)
+                .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Spec revisions are immutable: the routes to modify one do not exist, so a write
+    /// attempt is a 405. There is no soft "it silently did nothing" path.
+    #[tokio::test]
+    async fn no_endpoint_mutates_or_deletes_a_spec_revision() {
+        let (store, admin_key, _org) = setup_with_key();
+        let saved = save_spec(&store, &admin_key, "cap", "C").await;
+        let spec_id = saved["spec"]["id"].as_str().unwrap().to_string();
+
+        for method in ["PUT", "PATCH", "DELETE"] {
+            let resp = req(
+                &store,
+                &admin_key,
+                method,
+                &format!("/v1/sdd/specs/{spec_id}/revisions/1"),
+                Some(serde_json::json!({"content": "rewritten"})),
+            )
+            .await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} on a spec revision must be a 405 — the history is append-only"
+            );
+        }
+
+        let rev = body_json(
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/1"), None)
+                .await,
+        )
+        .await;
+        assert_eq!(rev["content"], "C", "the revision is untouched");
+    }
+
+    /// The static collection route is registered BEFORE `/v1/sdd/specs/:id`, so it is not
+    /// swallowed by the id parameter. If the ordering regressed, this GET would try to
+    /// look up a spec whose id is the literal string "specs" and 404.
+    #[tokio::test]
+    async fn the_specs_collection_route_is_not_swallowed_by_the_id_route() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "cap", "C").await;
+
+        let resp = req(&store, &admin_key, "GET", "/v1/sdd/specs", None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_json(resp).await.is_array(), "the collection route must return a list");
+    }
+
+    /// The search endpoint spans BOTH trees and says which one each hit came from.
+    #[tokio::test]
+    async fn search_covers_specs_as_well_as_change_artifacts() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_artifact(&store, &admin_key, "throttle-work", "design", "add rate limiting to the gateway")
+            .await;
+        save_spec(&store, &admin_key, "gateway", "the gateway MUST apply rate limiting per key").await;
+
+        let hits = body_json(req(&store, &admin_key, "GET", "/v1/sdd/search?q=rate+limiting", None).await)
+            .await;
+        let hits = hits.as_array().unwrap();
+        assert_eq!(hits.len(), 2, "the search must reach the contract as well as the drafts");
+
+        let spec_hit = hits.iter().find(|h| h["hit_type"] == "spec").expect("the CONTRACT must be found");
+        assert_eq!(spec_hit["capability"], "gateway");
+        assert!(spec_hit["spec_id"].is_string());
+        assert!(spec_hit["change_id"].is_null(), "a spec hit has no change");
+
+        let art_hit = hits.iter().find(|h| h["hit_type"] == "artifact").expect("drafts too");
+        assert_eq!(art_hit["change_name"], "throttle-work");
+        assert_eq!(art_hit["kind"], "design");
+        assert!(art_hit["spec_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn search_denied_without_sdd_read() {
+        let (store, _admin, org_id) = setup_with_key();
+        let (key, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
+        let resp = req(&store, &key, "GET", "/v1/sdd/search?q=x", None).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The cross-tree edge 404s for an unknown or out-of-org change.
+    #[tokio::test]
+    async fn list_change_specs_returns_404_for_an_unknown_change() {
+        let (store, admin_key, _org) = setup_with_key();
+        let resp = req(&store, &admin_key, "GET", "/v1/sdd/changes/nope/specs", None).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A change that has merged nothing reports an empty list — not a 404, and not an error.
+    #[tokio::test]
+    async fn list_change_specs_is_empty_for_a_change_that_merged_nothing() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_artifact(&store, &admin_key, "drafting", "design", "D").await;
+        let changes = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let change_id = changes[0]["id"].as_str().unwrap().to_string();
+
+        let resp =
+            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/specs"), None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await.as_array().unwrap().len(), 0);
+    }
 }
 
 /// PR-4 — the `spec_change_exists` behavior change and the global-search facet.
@@ -1530,6 +2159,39 @@ mod integration_tests {
             json["sdd_changes"].as_array().unwrap().len(),
             0,
             "the facet is empty, not populated, and not an error"
+        );
+    }
+
+    /// The living specifications get their own facet, present for a caller with sdd:read.
+    #[tokio::test]
+    async fn global_search_returns_the_sdd_specs_facet() {
+        let (store, admin_key, _org) = setup_with_key();
+        save_spec(&store, &admin_key, "rate-limiting", "the contract").await;
+
+        let json = body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
+        let hits = json["sdd_specs"].as_array().expect("the sdd_specs facet must exist");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["capability"], "rate-limiting");
+        assert_eq!(hits[0]["latest_revision"], 1);
+    }
+
+    /// A4, again — WITHOUT sdd:read the specs facet is EMPTY and global search still 200s.
+    /// It is gated on exactly the same grant as `sdd_changes`, so the two can never
+    /// disagree about who may see the SDD trees.
+    #[tokio::test]
+    async fn global_search_without_sdd_read_returns_an_empty_specs_facet_not_403() {
+        let (store, admin_key, org_id) = setup_with_key();
+        save_spec(&store, &admin_key, "rate-limiting", "the contract").await;
+
+        let (key, _) = member_with_perms(&store, &org_id, &["memory:search", "memory:read"]);
+
+        let resp = cross_req(&store, &key, "GET", "/v1/search?q=rate", None).await;
+        assert_eq!(resp.status(), StatusCode::OK, "global search must not start 403ing");
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["sdd_specs"].as_array().unwrap().len(),
+            0,
+            "the specs facet is empty, not populated, and not an error"
         );
     }
 }

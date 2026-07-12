@@ -1033,6 +1033,10 @@ pub struct GlobalSearchResult {
     /// search for every existing user (design.md A4).
     #[serde(default)]
     pub sdd_changes: Vec<SddChangeSummary>,
+    /// The living specifications — gated exactly like `sdd_changes`: empty for a
+    /// caller without `sdd:read`, never a 403.
+    #[serde(default)]
+    pub sdd_specs: Vec<SddSpecSummary>,
 }
 
 /// Result type for the internal (backoffice) search endpoint.
@@ -2299,6 +2303,230 @@ pub struct SddSearchHit {
     pub kind: String,
     pub capability: String,
     pub snippet: String,
+}
+
+// ── The living specification ────────────────────────────────────────────────
+//
+// `openspec/specs/{capability}/spec.md` — the SOURCE OF TRUTH, as opposed to the
+// in-flight drafts under `openspec/changes/{name}/`.
+//
+// A main spec is NOT an artifact of a change. It belongs to the PROJECT and it
+// outlives the changes that modify it, so it is a root entity (`SddSpec`), not an
+// `SddArtifact` hanging off a synthetic change — which would invert the
+// relationship. `sdd-archive` merges a closing change's delta specs into it, and
+// `SddSpecRevision::merged_from_change_id` records which change did so.
+
+/// One living specification — one `openspec/specs/{capability}/spec.md`.
+/// Carries NO content: content lives in revisions and is fetched explicitly.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpec {
+    pub id: String,
+    pub org_id: String,
+    pub project: String,
+    /// The `{capability}` directory name. Unique per (org, project) — one contract
+    /// per capability is what makes it the contract.
+    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub latest_revision: i64,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// The change whose deltas produced the LATEST revision. Hydrated from that
+    /// revision — it is what makes a spec's history traceable back to the changes
+    /// that shaped it, and it is metadata, so list reads carry it too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_merged_from_change_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_merged_from_change_name: Option<String>,
+}
+
+/// A spec plus the content of its latest revision.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecDetail {
+    #[serde(flatten)]
+    pub spec: SddSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+/// A spec a given change has merged into, and the revision that merge produced.
+/// Backs `GET /v1/sdd/changes/:id/specs`.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecMerge {
+    #[serde(flatten)]
+    pub spec: SddSpec,
+    /// The revision OF THIS SPEC that the change produced (its most recent, if the
+    /// change merged into the spec more than once).
+    pub merged_revision: i64,
+}
+
+/// A full, immutable spec revision — with content.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecRevision {
+    pub id: String,
+    pub spec_id: String,
+    pub revision: i64,
+    pub content: String,
+    pub content_hash: String,
+    pub byte_size: i64,
+    /// WHICH change merged its deltas to produce this revision. `None` for a
+    /// revision written outside the change pipeline (an import, an admin edit) —
+    /// and for one whose change was later purged (`ON DELETE SET NULL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from_change_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from_change_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_path: Option<String>,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+/// Spec revision metadata. **Has no `content` field on purpose** — same contract as
+/// `SddRevisionMeta`: the list endpoint physically cannot leak a 117-line document.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecRevisionMeta {
+    pub id: String,
+    pub spec_id: String,
+    pub revision: i64,
+    pub content_hash: String,
+    pub byte_size: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from_change_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from_change_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_path: Option<String>,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+/// Thin projection for `GlobalSearchResult` — additive facet, no content.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecSummary {
+    pub id: String,
+    pub project: String,
+    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub latest_revision: i64,
+}
+
+/// An FTS5 hit over the specs tree — a snippet, never the whole contract.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSpecSearchHit {
+    pub spec_id: String,
+    pub project: String,
+    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub snippet: String,
+}
+
+/// One hit from `GET /v1/sdd/search`, which spans BOTH trees.
+///
+/// `hit_type` is the discriminator and is never absent: a caller asking "which spec
+/// covers rate limiting?" must be able to tell the CONTRACT
+/// (`openspec/specs/{capability}/spec.md`) from a draft inside some change, because
+/// those two answers mean very different things. The tree-specific ids are
+/// `Option` for exactly that reason — a spec hit has no `change_id`, and pretending
+/// otherwise would be a lie with a plausible shape.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SddSearchResult {
+    /// `"spec"` or `"artifact"`.
+    pub hit_type: String,
+    pub project: String,
+    pub capability: String,
+    pub snippet: String,
+    /// Artifact hits only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Spec hits only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl SddSearchResult {
+    pub fn from_artifact(hit: SddSearchHit) -> Self {
+        Self {
+            hit_type: "artifact".to_string(),
+            project: hit.project,
+            capability: hit.capability,
+            snippet: hit.snippet,
+            artifact_id: Some(hit.artifact_id),
+            change_id: Some(hit.change_id),
+            change_name: Some(hit.change_name),
+            kind: Some(hit.kind),
+            spec_id: None,
+            title: None,
+        }
+    }
+
+    pub fn from_spec(hit: SddSpecSearchHit) -> Self {
+        Self {
+            hit_type: "spec".to_string(),
+            project: hit.project,
+            capability: hit.capability,
+            snippet: hit.snippet,
+            artifact_id: None,
+            change_id: None,
+            change_name: None,
+            kind: None,
+            spec_id: Some(hit.spec_id),
+            title: hit.title,
+        }
+    }
+}
+
+/// Body for `PUT /v1/sdd/specs` — the workhorse. Idempotent by content hash:
+/// re-saving identical content creates no revision.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SaveSpecRequest {
+    pub project: String,
+    pub capability: String,
+    pub content: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The change whose deltas this revision merges. Resolved to a `change_id`
+    /// against `(org, project, name)`. A name that resolves to nothing is a 404,
+    /// not a silently-NULL provenance: the traceability IS the feature.
+    #[serde(default)]
+    pub merged_from_change_name: Option<String>,
+    #[serde(default)]
+    pub git_commit: Option<String>,
+    /// `agent` (default), `admin`, or `import`.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Query filters for `GET /v1/sdd/specs`.
+#[derive(Debug, Clone, Default)]
+pub struct SddSpecFilters {
+    pub project: Option<String>,
+    pub include_archived: bool,
 }
 
 /// Body for `POST /v1/sdd/changes`. Upserts by `(org_id, project, name)`.
