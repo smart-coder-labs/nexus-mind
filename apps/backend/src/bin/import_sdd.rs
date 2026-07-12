@@ -1,12 +1,34 @@
 //! One-shot, idempotent importer: backfills `openspec/changes/**` and the legacy
 //! `sdd/*` memories into the SDD artifact store (design.md §5).
 //!
-//! Usage:
-//!   cargo run --bin import-sdd -- --db ./data/nexusmind.db --org-id <id> \
-//!       --project nexus-mind --root . [--dry-run]
+//! # Two sources that live in two different places
 //!
-//! Safe to re-run: every write goes through `queries::upsert_sdd_artifact`, which
-//! is idempotent by content hash, so a second run creates ZERO revisions.
+//! The importer READS the `openspec/` tree from disk and WRITES to the artifact
+//! store. Those two halves have never sat on the same machine:
+//!
+//! * a developer's checkout has `openspec/`, and no production database;
+//! * the Fly.io container has the database, and no checkout — it is a slim runtime
+//!   image, there is no tree to walk.
+//!
+//! So the filesystem half must be able to push over HTTP, and the memory half —
+//! whose source rows already live in the production database — must be able to run
+//! DB-direct inside the container. Each half runs where its source is:
+//!
+//! ```text
+//! # from a checkout: the tree is here, the database is not.
+//! import-sdd --api-url https://api.nexusmind.dev --api-key nm_… --skip-memories
+//!
+//! # inside the container (fly ssh console): the database is here, the tree is not.
+//! import-sdd --db /data/nexusmind.db --skip-filesystem
+//!
+//! # all-in-one, for a local dev database.
+//! import-sdd --db ./data/nexusmind.db [--dry-run]
+//! ```
+//!
+//! Safe to re-run: every write goes through `queries::upsert_sdd_artifact` — over
+//! HTTP too, since `PUT /v1/sdd/artifacts` is that same call — which is idempotent
+//! by content hash. A second run creates ZERO revisions, and the importer owns no
+//! idempotency logic of its own.
 //!
 //! Two sources, imported in this order:
 //!   1. the legacy `sdd/{change}/{artifact}` memories (older) — become revision 1,
@@ -26,23 +48,55 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use nexusmind::db::{connection::connect, migrations, queries};
 use nexusmind::models::types::{
-    PatchChangeRequest, SaveArtifactRequest, SddArtifactKind, SddPhase,
+    PatchChangeRequest, SaveArtifactRequest, SddArtifact, SddArtifactDetail, SddArtifactKind,
+    SddChange, SddPhase,
 };
 use rusqlite::{Connection, OptionalExtension};
+use serde::Deserialize;
 
 /// Provenance stamped on every revision this binary writes.
+///
+/// The DB sink stamps it directly. The API sink cannot: `put_artifact_handler`
+/// passes a hard-coded `"agent"` to `upsert_sdd_artifact` and ignores the `source`
+/// the body carries. The field is still sent — it is a real field of
+/// `SaveArtifactRequest`, and the day the handler honours it the importer is
+/// already correct.
 const SOURCE: &str = "import";
 
 /// Tag applied to every legacy memory carried into the artifact store.
 const MIGRATED_TAG: &str = "sdd-migrated";
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 #[command(
     about = "Import openspec/changes/** and legacy sdd/* memories into the SDD artifact store"
 )]
 struct Args {
-    #[arg(long = "db", alias = "db-path", env = "DB_PATH", default_value = "./data/nexusmind.db")]
-    db: String,
+    /// No default: a default would make "neither --db nor --api-url" unrepresentable,
+    /// and that combination is precisely the one that must be refused.
+    #[arg(
+        long = "db",
+        alias = "db-path",
+        env = "DB_PATH",
+        help = "SQLite file to write to. Required for the memory half."
+    )]
+    db: Option<String>,
+
+    #[arg(
+        long,
+        env = "NEXUSMIND_BASE_URL",
+        help = "Backend base url. When set, the FILESYSTEM half pushes over HTTP instead of \
+                touching a database."
+    )]
+    api_url: Option<String>,
+
+    #[arg(long, env = "NEXUSMIND_API_KEY", help = "API key for --api-url")]
+    api_key: Option<String>,
+
+    #[arg(long, help = "Do not walk openspec/ — import the legacy memories only")]
+    skip_filesystem: bool,
+
+    #[arg(long, help = "Do not import the legacy sdd/* memories — walk openspec/ only")]
+    skip_memories: bool,
 
     #[arg(long, help = "Org to import into. Omit to resolve the single org.")]
     org_id: Option<String>,
@@ -55,6 +109,327 @@ struct Args {
 
     #[arg(long, help = "Report what would be imported without writing anything")]
     dry_run: bool,
+}
+
+// ── what this invocation is actually going to do ────────────────────────────
+
+/// Where the filesystem half pushes to, when it pushes over HTTP.
+#[derive(Debug, PartialEq, Eq)]
+struct ApiTarget {
+    base_url: String,
+    api_key: String,
+}
+
+/// The two halves, resolved from the flags — each with its own destination, which
+/// is the whole point: they can no longer be forced to run in the same place.
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    /// Present only when a database is actually needed: for the memory half, or for
+    /// a filesystem half that is not going over HTTP.
+    db: Option<String>,
+    api: Option<ApiTarget>,
+    filesystem: bool,
+    memories: bool,
+}
+
+/// Rejects the impossible combinations up front, with a sentence naming the way
+/// out — never a panic, and never a half-run that dies on its first write.
+fn plan(args: &Args) -> Result<Plan> {
+    let filesystem = !args.skip_filesystem;
+    let memories = !args.skip_memories;
+
+    if !filesystem && !memories {
+        return Err(anyhow!(
+            "--skip-filesystem and --skip-memories together leave nothing to import"
+        ));
+    }
+
+    if args.db.is_none() && args.api_url.is_none() {
+        return Err(anyhow!(
+            "no destination: pass --db to write to a SQLite file, or --api-url (with --api-key) \
+             to push over the HTTP API.\n\
+             The filesystem half needs an openspec/ tree and the database half needs the database; \
+             they are rarely on the same machine, which is why each half can be run on its own."
+        ));
+    }
+
+    if memories && args.db.is_none() {
+        return Err(anyhow!(
+            "the legacy sdd/* memories live IN the database, so importing them needs --db — \
+             there is no API to read them through.\n\
+             Run that half where the database is (fly ssh console, --db /data/nexusmind.db), \
+             or pass --skip-memories."
+        ));
+    }
+
+    let api = match (&args.api_url, &args.api_key) {
+        (Some(url), Some(key)) => Some(ApiTarget {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key: key.clone(),
+        }),
+        (Some(_), None) => {
+            return Err(anyhow!(
+                "--api-url needs a key: pass --api-key, or set NEXUSMIND_API_KEY"
+            ))
+        }
+        (None, _) => None,
+    };
+
+    Ok(Plan { db: args.db.clone(), api, filesystem, memories })
+}
+
+// ── the write sink ──────────────────────────────────────────────────────────
+
+/// Where the filesystem import writes. Discovery (`scan_change_dir`,
+/// `kind_for_path`, `infer_phase`, …) is identical either way — only the
+/// destination moves, which is what lets the half that needs the openspec tree run
+/// on the machine that HAS the openspec tree.
+pub enum Sink<'a> {
+    /// Straight to SQLite. Only runnable where the database file is.
+    Db { conn: &'a Connection, org_id: &'a str, user_id: &'a str },
+    /// Over HTTP. Runnable from a checkout against a remote backend. The server owns
+    /// the org (it comes from the API key), the author, and — crucially — the
+    /// idempotency, so nothing about re-runnability is lost in the move.
+    Api { client: reqwest::blocking::Client, base_url: String, api_key: String },
+}
+
+/// The body of `PUT /v1/sdd/artifacts`. The endpoint answers **200 always, never
+/// 201**: "created" is not a property of the status code but of `created_revision`.
+#[derive(Debug, Deserialize)]
+struct SavedArtifact {
+    artifact: SddArtifact,
+    created_revision: bool,
+}
+
+/// One save, in the terms the importer counts in.
+struct SaveOutcome {
+    created_revision: bool,
+    latest_revision: i64,
+}
+
+impl<'a> Sink<'a> {
+    pub fn db(conn: &'a Connection, org_id: &'a str, user_id: &'a str) -> Self {
+        Sink::Db { conn, org_id, user_id }
+    }
+
+    pub fn api(base_url: &str, api_key: &str) -> Result<Self> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?;
+        Ok(Sink::Api {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+        })
+    }
+
+    /// Saves one artifact. Idempotency belongs to the store on both paths: the DB
+    /// sink calls `upsert_sdd_artifact`, and the API sink calls the endpoint that
+    /// calls `upsert_sdd_artifact`. Same de-duplication, same content hash.
+    fn save(&self, req: &SaveArtifactRequest) -> Result<SaveOutcome> {
+        match self {
+            Sink::Db { conn, org_id, user_id } => {
+                let (artifact, created_revision) =
+                    queries::upsert_sdd_artifact(conn, org_id, user_id, req, SOURCE)?;
+                Ok(SaveOutcome { created_revision, latest_revision: artifact.latest_revision })
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = send_throttled(
+                    client
+                        .put(format!("{base_url}/v1/sdd/artifacts"))
+                        .bearer_auth(api_key)
+                        .header(reqwest::header::ACCEPT, "application/json")
+                        .json(req),
+                )?;
+                let response = api_ok(
+                    response,
+                    &format!("PUT /v1/sdd/artifacts ({}/{})", req.change_name, req.kind),
+                )?;
+                let saved: SavedArtifact = response.json()?;
+                Ok(SaveOutcome {
+                    created_revision: saved.created_revision,
+                    latest_revision: saved.artifact.latest_revision,
+                })
+            }
+        }
+    }
+
+    /// Content hash of the latest revision, or `None` when there is no such artifact.
+    /// This is how `--dry-run` predicts what a real save would decide, without writing.
+    fn latest_hash(
+        &self,
+        project: &str,
+        change_name: &str,
+        kind: &str,
+        capability: &str,
+    ) -> Result<Option<String>> {
+        match self {
+            Sink::Db { conn, org_id, .. } => {
+                db_latest_hash(conn, org_id, project, change_name, kind, capability)
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = client
+                    .get(format!("{base_url}/v1/sdd/artifacts"))
+                    .bearer_auth(api_key)
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .query(&[
+                        ("project", project),
+                        ("change_name", change_name),
+                        ("kind", kind),
+                        ("capability", capability),
+                    ])
+                    .send()?;
+
+                // A kind with no artifact is a 404, and a 404 is the ANSWER here — "nothing
+                // saved yet" — not a failure.
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+
+                // `SddArtifactDetail` is serde-FLATTENED: the artifact's own fields sit
+                // inline next to change_name/content/content_hash. Deserializing into a type
+                // that nests them under an `artifact` key parses fine and silently yields
+                // None for every one of them — so this uses the server's own type.
+                let detail: SddArtifactDetail =
+                    api_ok(response, "GET /v1/sdd/artifacts")?.json()?;
+                Ok(detail.content_hash)
+            }
+        }
+    }
+
+    /// The change, by name. Over HTTP this is a list-and-filter — there is no by-name
+    /// read — and `include_archived` is not optional: an archived change is hidden
+    /// from the default list, and a re-import must still find the one it archived on
+    /// the previous run in order to be a no-op rather than a duplicate.
+    fn find_change(&self, project: &str, name: &str) -> Result<Option<SddChange>> {
+        match self {
+            Sink::Db { conn, org_id, .. } => {
+                Ok(queries::get_sdd_change_by_name(conn, org_id, project, name)?)
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = send_throttled(
+                    client
+                        .get(format!("{base_url}/v1/sdd/changes"))
+                        .bearer_auth(api_key)
+                        .header(reqwest::header::ACCEPT, "application/json")
+                        .query(&[("project", project), ("include_archived", "true")]),
+                )?;
+                let changes: Vec<SddChange> =
+                    api_ok(response, "GET /v1/sdd/changes")?.json()?;
+                Ok(changes.into_iter().find(|c| c.name == name))
+            }
+        }
+    }
+
+    /// Sets status and phase. The body carries ONLY the patchable fields:
+    /// `PatchChangeRequest` is `deny_unknown_fields`, so a body that also named the
+    /// change it is patching (`project`, `name`) would be a 422, not a courtesy.
+    fn patch_change(&self, id: &str, patch: &PatchChangeRequest) -> Result<()> {
+        match self {
+            Sink::Db { conn, org_id, .. } => {
+                queries::patch_sdd_change(conn, org_id, id, patch)?;
+                Ok(())
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = send_throttled(
+                    client
+                        .patch(format!("{base_url}/v1/sdd/changes/{id}"))
+                        .bearer_auth(api_key)
+                        .header(reqwest::header::ACCEPT, "application/json")
+                        .json(patch),
+                )?;
+                api_ok(response, "PATCH /v1/sdd/changes/:id")?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Soft-archives the change: sets `archived_at`, which is what `list_sdd_changes`
+    /// actually filters on. `status = 'archived'` alone would leave every imported
+    /// archive folder in the admin's default list forever — two fields stating one
+    /// fact, disagreeing — so both are always set.
+    ///
+    /// Already-archived is success. The store's UPDATE is guarded on
+    /// `archived_at IS NULL`, so a second attempt matches no row and the HTTP handler
+    /// turns that into a 404; a re-import must survive its own previous run.
+    fn archive_change(&self, id: &str) -> Result<()> {
+        match self {
+            Sink::Db { conn, org_id, .. } => {
+                queries::archive_sdd_change(conn, org_id, id)?;
+                Ok(())
+            }
+            Sink::Api { client, base_url, api_key } => {
+                let response = send_throttled(
+                    client
+                        .delete(format!("{base_url}/v1/sdd/changes/{id}"))
+                        .bearer_auth(api_key)
+                        .header(reqwest::header::ACCEPT, "application/json"),
+                )?;
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(());
+                }
+                api_ok(response, "archive /v1/sdd/changes/:id")?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// How many times a throttled request is re-sent before the 429 is reported as the
+/// failure it then is.
+const MAX_THROTTLE_RETRIES: usize = 8;
+
+/// Sends a request, waiting out the server's rate limiter.
+///
+/// Importing this repo's tree is ~116 requests and the free tier's bucket is 100 per
+/// minute, so a full run WILL be throttled part of the way through — the first real
+/// run against a live backend died at 429 with a partial import behind it. The
+/// server names the number of seconds to wait in `Retry-After`; a one-shot backfill
+/// waits, then finishes the job.
+///
+/// Every request the importer makes is idempotent (`PUT` de-dups by content hash,
+/// the rest are reads, a status patch, and an archive that tolerates being already
+/// archived), so re-sending one is always safe.
+fn send_throttled(request: reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response> {
+    let mut attempt = 0usize;
+    loop {
+        let this_try = request
+            .try_clone()
+            .ok_or_else(|| anyhow!("request cannot be retried (non-replayable body)"))?;
+        let response = this_try.send()?;
+
+        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+            || attempt >= MAX_THROTTLE_RETRIES
+        {
+            // Out of retries: hand the 429 to `api_ok`, which reports it verbatim.
+            return Ok(response);
+        }
+
+        attempt += 1;
+        let wait = retry_after_secs(&response).unwrap_or(1 << attempt.min(6)).clamp(1, 120);
+        eprintln!("… rate limited by the server — waiting {wait}s (retry {attempt})");
+        std::thread::sleep(std::time::Duration::from_secs(wait));
+    }
+}
+
+/// The `Retry-After` the limiter sends with every 429, in seconds.
+fn retry_after_secs(response: &reqwest::blocking::Response) -> Option<u64> {
+    response.headers().get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()
+}
+
+/// Turns any non-2xx into an error carrying the status AND the server's own body.
+/// An artifact over the 1 MiB limit must reach the operator as
+/// `422 … artifact_too_large`, not as a panic and not as a bare "request failed".
+fn api_ok(
+    response: reqwest::blocking::Response,
+    what: &str,
+) -> Result<reqwest::blocking::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().unwrap_or_default();
+    Err(anyhow!("{what} failed: HTTP {} — {}", status.as_u16(), body.trim()))
 }
 
 /// What the importer did — or, under `--dry-run`, would do.
@@ -313,12 +688,12 @@ fn discover_change_dirs(root: &Path) -> Result<Vec<ChangeDir>> {
 /// folders get their date prefix stripped and are forced to
 /// `status='archived' / phase='archive'`.
 ///
-/// Every write goes through `queries::upsert_sdd_artifact`, so a second run is a
-/// no-op: the importer deliberately owns no insert path of its own.
+/// Every write goes through `queries::upsert_sdd_artifact` — directly on a `Sink::Db`,
+/// and via `PUT /v1/sdd/artifacts` (which is that same call) on a `Sink::Api`. So a
+/// second run is a no-op on either sink: the importer deliberately owns no insert
+/// path, and no idempotency logic, of its own.
 pub fn import_filesystem(
-    conn: &Connection,
-    org_id: &str,
-    user_id: &str,
+    sink: &Sink<'_>,
     project: &str,
     root: &Path,
     dry_run: bool,
@@ -334,7 +709,8 @@ pub fn import_filesystem(
             continue;
         }
 
-        count_change(conn, org_id, project, &change.name, &mut ledger, &mut stats)?;
+        let exists = sink.find_change(project, &change.name)?.is_some();
+        count_change(exists, &change.name, &mut ledger, &mut stats);
 
         for artifact in &artifacts {
             let content = std::fs::read_to_string(&artifact.abs_path)?;
@@ -350,7 +726,7 @@ pub fn import_filesystem(
                 git_ref: None,
                 source: Some(SOURCE.to_string()),
             };
-            let outcome = save_artifact(conn, org_id, user_id, &req, dry_run, &mut ledger)?;
+            let outcome = save_artifact(sink, &req, dry_run, &mut ledger)?;
             stats.merge(&outcome);
         }
 
@@ -367,11 +743,10 @@ pub fn import_filesystem(
             let kinds: Vec<SddArtifactKind> = artifacts.iter().map(|a| a.kind).collect();
             ("active".to_string(), infer_phase(&kinds).to_string())
         };
-        let stored = queries::get_sdd_change_by_name(conn, org_id, project, &change.name)?
+        let stored = sink
+            .find_change(project, &change.name)?
             .ok_or_else(|| anyhow!("change {} vanished mid-import", change.name))?;
-        queries::patch_sdd_change(
-            conn,
-            org_id,
+        sink.patch_change(
             &stored.id,
             &PatchChangeRequest {
                 status: Some(status),
@@ -389,7 +764,7 @@ pub fn import_filesystem(
         // predicate, so an archived change stays a valid `link_task_spec` target (A8),
         // and `get_sdd_change` by id still returns its full artifact inventory.
         if change.archived {
-            queries::archive_sdd_change(conn, org_id, &stored.id)?;
+            sink.archive_change(&stored.id)?;
         }
     }
 
@@ -406,28 +781,56 @@ struct DryLedger {
 }
 
 /// Counts a change as created the first time it is seen and does not yet exist.
-fn count_change(
-    conn: &Connection,
-    org_id: &str,
-    project: &str,
-    name: &str,
-    ledger: &mut DryLedger,
-    stats: &mut ImportStats,
-) -> Result<()> {
-    if queries::get_sdd_change_by_name(conn, org_id, project, name)?.is_none()
-        && ledger.changes.insert(name.to_string())
-    {
+/// `exists` is the caller's to answer — a database read on one sink, a list call on
+/// the other.
+fn count_change(exists: bool, name: &str, ledger: &mut DryLedger, stats: &mut ImportStats) {
+    if !exists && ledger.changes.insert(name.to_string()) {
         stats.changes_created += 1;
     }
-    Ok(())
 }
 
-/// The single write path. `--dry-run` answers the same questions with reads only,
-/// so the numbers it reports are the numbers a real run would produce.
+/// 5.18 — idempotency is not the importer's to implement. `upsert_sdd_artifact`
+/// compares the content hash against the latest revision and returns
+/// `created_revision = false` when they match. `PUT /v1/sdd/artifacts` is that same
+/// call behind a socket, so the property is identical on both sinks and a second
+/// run writes nothing on either.
+fn record_save(outcome: &SaveOutcome, stats: &mut ImportStats) {
+    if outcome.created_revision {
+        stats.revisions_created += 1;
+        if outcome.latest_revision == 1 {
+            stats.artifacts_created += 1;
+        }
+    } else {
+        stats.skipped += 1;
+    }
+}
+
+/// What a real save WOULD do, answered with reads only, so the numbers `--dry-run`
+/// reports are the numbers a real run would produce.
+fn record_dry(
+    latest: Option<String>,
+    req: &SaveArtifactRequest,
+    ledger: &mut DryLedger,
+    stats: &mut ImportStats,
+) {
+    let capability = req.capability.as_deref().unwrap_or("");
+    let key = format!("{}\u{1}{}\u{1}{}", req.change_name, req.kind, capability);
+    match latest {
+        None if ledger.artifacts.insert(key) => {
+            stats.artifacts_created += 1;
+            stats.revisions_created += 1;
+        }
+        // Already counted as new earlier in this same dry run — this is a
+        // further revision of it, not a second artifact.
+        None => stats.revisions_created += 1,
+        Some(hash) if hash != sha256_hex(&req.content) => stats.revisions_created += 1,
+        Some(_) => stats.skipped += 1,
+    }
+}
+
+/// The filesystem half's write path — whichever sink it is aimed at.
 fn save_artifact(
-    conn: &Connection,
-    org_id: &str,
-    user_id: &str,
+    sink: &Sink<'_>,
     req: &SaveArtifactRequest,
     dry_run: bool,
     ledger: &mut DryLedger,
@@ -436,42 +839,51 @@ fn save_artifact(
 
     if dry_run {
         let capability = req.capability.as_deref().unwrap_or("");
-        let key = format!("{}\u{1}{}\u{1}{}", req.change_name, req.kind, capability);
-        match latest_hash(conn, org_id, &req.project, &req.change_name, &req.kind, capability)? {
-            None if ledger.artifacts.insert(key) => {
-                stats.artifacts_created += 1;
-                stats.revisions_created += 1;
-            }
-            // Already counted as new earlier in this same dry run — this is a
-            // further revision of it, not a second artifact.
-            None => stats.revisions_created += 1,
-            Some(hash) if hash != sha256_hex(&req.content) => stats.revisions_created += 1,
-            Some(_) => stats.skipped += 1,
-        }
+        let latest =
+            sink.latest_hash(&req.project, &req.change_name, &req.kind, capability)?;
+        record_dry(latest, req, ledger, &mut stats);
         return Ok(stats);
     }
 
-    // 5.18 — idempotency is not the importer's to implement. upsert_sdd_artifact
-    // compares the content hash against the latest revision and returns
-    // `created_revision = false` when they match, which is why the importer owns
-    // no insert path of its own and a second run writes nothing.
-    let (artifact, created_revision) =
-        queries::upsert_sdd_artifact(conn, org_id, user_id, req, SOURCE)?;
-    if created_revision {
-        stats.revisions_created += 1;
-        if artifact.latest_revision == 1 {
-            stats.artifacts_created += 1;
-        }
-    } else {
-        stats.skipped += 1;
+    record_save(&sink.save(req)?, &mut stats);
+    Ok(stats)
+}
+
+/// The memory half's write path. Deliberately NOT a sink: the memories already live
+/// in the production database, so this half needs no openspec tree and can run
+/// inside the container — and `created_by` is the memory's OWN author, which is
+/// better provenance than any operator id an API key could supply.
+fn save_memory_artifact(
+    conn: &Connection,
+    org_id: &str,
+    author: &str,
+    req: &SaveArtifactRequest,
+    dry_run: bool,
+    ledger: &mut DryLedger,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats::default();
+
+    if dry_run {
+        let capability = req.capability.as_deref().unwrap_or("");
+        let latest =
+            db_latest_hash(conn, org_id, &req.project, &req.change_name, &req.kind, capability)?;
+        record_dry(latest, req, ledger, &mut stats);
+        return Ok(stats);
     }
+
+    let (artifact, created_revision) =
+        queries::upsert_sdd_artifact(conn, org_id, author, req, SOURCE)?;
+    record_save(
+        &SaveOutcome { created_revision, latest_revision: artifact.latest_revision },
+        &mut stats,
+    );
     Ok(stats)
 }
 
 /// Content hash of the latest revision of `(change, kind, capability)`, or `None`
 /// when the artifact does not exist yet. Read-only — this is how `--dry-run`
 /// predicts what `upsert_sdd_artifact` would decide.
-fn latest_hash(
+fn db_latest_hash(
     conn: &Connection,
     org_id: &str,
     project: &str,
@@ -569,7 +981,9 @@ pub fn import_legacy_memories(
             continue;
         };
 
-        count_change(conn, org_id, project, &change_name, &mut ledger, &mut stats)?;
+        let exists =
+            queries::get_sdd_change_by_name(conn, org_id, project, &change_name)?.is_some();
+        count_change(exists, &change_name, &mut ledger, &mut stats);
 
         let req = SaveArtifactRequest {
             project: project.to_string(),
@@ -582,7 +996,7 @@ pub fn import_legacy_memories(
             git_ref: None,
             source: Some(SOURCE.to_string()),
         };
-        let outcome = save_artifact(conn, org_id, &author, &req, dry_run, &mut ledger)?;
+        let outcome = save_memory_artifact(conn, org_id, &author, &req, dry_run, &mut ledger)?;
         stats.merge(&outcome);
 
         if tag_memory(conn, &memory_id, &tags, dry_run)? {
@@ -658,7 +1072,7 @@ fn resolve_user(conn: &Connection, org_id: &str) -> Result<String> {
     .ok_or_else(|| anyhow!("org {org_id} has no users — revisions need a created_by"))
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -667,33 +1081,72 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let root = PathBuf::from(&args.root);
-    eprintln!("→ Opening DB at {}", args.db);
-    let conn = connect(&args.db)?;
-    migrations::run_all(&conn)?;
+    // A flag combination that cannot work is a sentence on stderr and a non-zero
+    // exit, never a panic and never a stack trace.
+    if let Err(e) = run(&args) {
+        eprintln!("✗ {e}");
+        std::process::exit(1);
+    }
+}
 
-    let org_id = resolve_org(&conn, args.org_id.as_deref())?;
-    let user_id = resolve_user(&conn, &org_id)?;
-    eprintln!(
-        "→ Importing into org {org_id} as user {user_id}, project {}, root {}",
-        args.project,
-        root.display()
-    );
+fn run(args: &Args) -> Result<()> {
+    let plan = plan(args)?;
+    let root = PathBuf::from(&args.root);
+
     if args.dry_run {
         eprintln!("→ DRY RUN — nothing will be written.");
     }
 
-    // Memories first, so the filesystem (newer, reviewable) lands on top of them
-    // as the latest revision (5.16 / design §5).
-    let mut stats = import_legacy_memories(&conn, &org_id, &args.project, args.dry_run)?;
-    stats.merge(&import_filesystem(
-        &conn,
-        &org_id,
-        &user_id,
-        &args.project,
-        &root,
-        args.dry_run,
-    )?);
+    // The database is opened only when a half actually needs one. `--api-url` with
+    // `--skip-memories` touches no database at all — which is what lets it run from a
+    // checkout, where there is no production database to open.
+    let needs_db = plan.memories || (plan.filesystem && plan.api.is_none());
+    let db = if needs_db {
+        let path = plan
+            .db
+            .as_deref()
+            .ok_or_else(|| anyhow!("--db is required for this combination of flags"))?;
+        eprintln!("→ Opening DB at {path}");
+        let conn = connect(path)?;
+        migrations::run_all(&conn)?;
+        let org_id = resolve_org(&conn, args.org_id.as_deref())?;
+        let user_id = resolve_user(&conn, &org_id)?;
+        eprintln!("→ Org {org_id}, user {user_id}, project {}", args.project);
+        Some((conn, org_id, user_id))
+    } else {
+        None
+    };
+
+    let mut stats = ImportStats::default();
+
+    // Memories first, so the filesystem (newer, reviewable) lands on top of them as
+    // the latest revision (5.16 / design §5). When the two halves are run as two
+    // separate invocations — which is the normal case now — that ordering is the
+    // operator's to keep: run the container half before the checkout half.
+    if plan.memories {
+        let Some((conn, org_id, _)) = db.as_ref() else {
+            return Err(anyhow!("the memory import needs --db"));
+        };
+        eprintln!("→ Importing the legacy sdd/* memories (database-direct)");
+        stats.merge(&import_legacy_memories(conn, org_id, &args.project, args.dry_run)?);
+    }
+
+    if plan.filesystem {
+        let sink = match &plan.api {
+            Some(target) => {
+                eprintln!("→ Importing {} over the API at {}", root.display(), target.base_url);
+                Sink::api(&target.base_url, &target.api_key)?
+            }
+            None => {
+                let Some((conn, org_id, user_id)) = db.as_ref() else {
+                    return Err(anyhow!("the filesystem import needs --db or --api-url"));
+                };
+                eprintln!("→ Importing {} into the database", root.display());
+                Sink::db(conn, org_id, user_id)
+            }
+        };
+        stats.merge(&import_filesystem(&sink, &args.project, &root, args.dry_run)?);
+    }
 
     let verb = if args.dry_run { "would import" } else { "imported" };
     eprintln!(
@@ -735,14 +1188,14 @@ mod tests {
     }
 
     /// A throwaway repo root. Not a git repo — `git_head` must tolerate that.
-    fn temp_root(label: &str) -> PathBuf {
+    pub(super) fn temp_root(label: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("nm-import-sdd-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("openspec/changes")).unwrap();
         root
     }
 
-    fn write_file(root: &Path, rel: &str, content: &str) {
+    pub(super) fn write_file(root: &Path, rel: &str, content: &str) {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
@@ -885,7 +1338,7 @@ mod tests {
         write_file(&root, "openspec/changes/demo/design.md", "# Design");
         write_file(&root, "openspec/changes/demo/specs/cap-a/spec.md", "# Spec A");
 
-        let stats = import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        let stats = import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
         assert_eq!(stats.changes_created, 1);
         assert_eq!(stats.artifacts_created, 3);
         assert_eq!(stats.revisions_created, 3);
@@ -938,7 +1391,7 @@ mod tests {
         write_file(&root, "openspec/changes/demo/proposal.md", "# Proposal");
         write_file(&root, "openspec/changes/demo/MIGRATION_NOTE.md", "not an artifact");
 
-        let stats = import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        let stats = import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
         assert_eq!(stats.artifacts_created, 1);
         assert_eq!(stats.skipped, 1, "the unrecognized file is counted, not imported");
     }
@@ -955,7 +1408,7 @@ mod tests {
             "# Old",
         );
 
-        import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
 
         assert!(
             queries::get_sdd_change_by_name(&conn, &org, "nexus-mind", "2026-05-01-old-change")
@@ -1026,7 +1479,7 @@ mod tests {
         write_file(&root, "openspec/changes/far/tasks.md", "# T");
         write_file(&root, "openspec/changes/far/apply-progress.md", "# A");
 
-        import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
 
         let early = queries::get_sdd_change_by_name(&conn, &org, "nexus-mind", "early")
             .unwrap()
@@ -1070,7 +1523,7 @@ mod tests {
         let head = git_head(&root).expect("git_head must read HEAD of a real repo");
         assert_eq!(head.len(), 40, "a full sha, not an abbreviation: {head}");
 
-        import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
         let commit: Option<String> = conn
             .query_row("SELECT git_commit FROM sdd_artifact_revisions LIMIT 1", [], |r| r.get(0))
             .unwrap();
@@ -1087,7 +1540,7 @@ mod tests {
 
         assert_eq!(git_head(&root), None, "a non-repo yields None, not a panic");
 
-        let stats = import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        let stats = import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
         assert_eq!(stats.revisions_created, 1, "the import still succeeds");
         let commit: Option<String> = conn
             .query_row("SELECT git_commit FROM sdd_artifact_revisions LIMIT 1", [], |r| r.get(0))
@@ -1103,7 +1556,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nm-import-sdd-bare-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
 
-        let stats = import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        let stats = import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
         assert_eq!(stats, ImportStats::default(), "nothing to do, and no error");
         assert_eq!(revision_count(&conn), 0);
 
@@ -1248,7 +1701,7 @@ mod tests {
 
         // The order main() runs them in.
         import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();
-        import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
+        import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
 
         let change = queries::get_sdd_change_by_name(&conn, &org, "nexus-mind", "demo")
             .unwrap()
@@ -1322,7 +1775,7 @@ mod tests {
 
         let first = {
             let mut s = import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();
-            s.merge(&import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap());
+            s.merge(&import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap());
             s
         };
         assert!(first.revisions_created > 0);
@@ -1330,7 +1783,7 @@ mod tests {
 
         let second = {
             let mut s = import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();
-            s.merge(&import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap());
+            s.merge(&import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap());
             s
         };
         assert_eq!(
@@ -1355,7 +1808,7 @@ mod tests {
         seed_memory(&conn, "m1", "sdd/demo/tasks", "legacy tasks", "2026-01-01T00:00:00Z");
 
         let mut dry = import_legacy_memories(&conn, &org, "nexus-mind", true).unwrap();
-        dry.merge(&import_filesystem(&conn, &org, &user, "nexus-mind", &root, true).unwrap());
+        dry.merge(&import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, true).unwrap());
 
         assert_eq!(dry.revisions_created, 3, "it reports what it would write");
         assert_eq!(dry.artifacts_created, 3);
@@ -1372,7 +1825,7 @@ mod tests {
 
         // And a real run afterwards still does the full job.
         let mut wet = import_legacy_memories(&conn, &org, "nexus-mind", false).unwrap();
-        wet.merge(&import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap());
+        wet.merge(&import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap());
         assert_eq!(wet.revisions_created, dry.revisions_created);
 
         fs::remove_dir_all(&root).ok();
@@ -1384,13 +1837,519 @@ mod tests {
         let root = temp_root("dry2");
         write_file(&root, "openspec/changes/demo/proposal.md", "# P");
 
-        import_filesystem(&conn, &org, &user, "nexus-mind", &root, false).unwrap();
-        let dry = import_filesystem(&conn, &org, &user, "nexus-mind", &root, true).unwrap();
+        import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, false).unwrap();
+        let dry = import_filesystem(&Sink::db(&conn, &org, &user), "nexus-mind", &root, true).unwrap();
 
         assert_eq!(dry.revisions_created, 0, "the dry run agrees with the real one");
         assert_eq!(dry.changes_created, 0);
         assert_eq!(dry.skipped, 1, "the unchanged artifact is a no-op");
 
         fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// The API sink — the half that makes the importer runnable at all.
+///
+/// The bug this closes: the importer READ `openspec/` from disk and WROTE straight
+/// to the SQLite file. A developer's checkout has the tree and not the production
+/// database; the Fly.io container has the database and not the tree. The two halves
+/// never coexisted, so the thing could not be run anywhere.
+///
+/// These tests drive the filesystem half over HTTP against the REAL router — the
+/// same one `main.rs` serves — because the properties that matter (idempotency, the
+/// 422, the archive) are the SERVER's, and a hand-written fake would only prove the
+/// fake agrees with itself. The one exception is the wire-format test, which needs
+/// the raw bytes the real router would have already parsed away.
+#[cfg(test)]
+mod api_sink_tests {
+    use super::tests::{temp_root, write_file};
+    use super::*;
+    use nexusmind::config::Config;
+    use nexusmind::db::{connection::connect, migrations, queries};
+    use nexusmind::store::sqlite::SqliteStore;
+    use std::fs;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    // ── a real backend on a real socket ─────────────────────────────────────
+
+    /// The REAL router, bound to an ephemeral port. Returns its base url, an admin
+    /// API key, and a handle on the very store it writes to, so a test can assert
+    /// against the server's own database rather than a mock's memory.
+    fn spawn_backend() -> (String, String, SqliteStore) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+
+        let (router, store) =
+            nexusmind::api::router::build_with_store(conn, Config::parse_from(["import-sdd-test"]));
+
+        let api_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_org, _user, key) =
+                queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            key
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    axum::serve(listener, router.into_make_service()).await.unwrap();
+                });
+        });
+
+        (format!("http://{addr}"), api_key, store)
+    }
+
+    /// Every `sdd_artifact_revisions` row the server holds — the ground truth for
+    /// "a second run created nothing".
+    fn server_revisions(store: &SqliteStore) -> i64 {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM sdd_artifact_revisions", [], |r| r.get(0)).unwrap()
+    }
+
+    fn server_change(store: &SqliteStore, name: &str) -> Option<nexusmind::models::types::SddChange> {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let org: String =
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap();
+        queries::get_sdd_change_by_name(&conn, &org, "nexus-mind", name).unwrap()
+    }
+
+    // ── a recorder, for the bytes the real router would have parsed away ────
+
+    #[derive(Clone, Debug)]
+    struct RawRequest {
+        line: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    impl RawRequest {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        }
+        fn json(&self) -> serde_json::Value {
+            serde_json::from_str(&self.body).expect("the body must be JSON")
+        }
+    }
+
+    /// A stand-in backend that records the RAW request line, headers and body, and
+    /// answers with a canned response. This is the only way to assert the WIRE
+    /// format: the real router parses and normalizes a request before any assertion
+    /// could see it, which is exactly what would hide a wrong body shape.
+    struct Recorder {
+        base_url: String,
+        seen: Arc<Mutex<Vec<RawRequest>>>,
+    }
+
+    impl Recorder {
+        fn start() -> Self {
+            Self::start_throttling(0)
+        }
+
+        /// The first `throttle` **PUT**s are answered `429 Retry-After: 1` — the
+        /// production token bucket in miniature, aimed at the request whose retry
+        /// actually matters. A dropped read loses a lookup; a dropped PUT loses an
+        /// artifact and leaves a partial import behind.
+        fn start_throttling(throttle: usize) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let seen: Arc<Mutex<Vec<RawRequest>>> = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&seen);
+
+            std::thread::spawn(move || {
+                let mut remaining_throttles = throttle;
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let request = read_request(&mut stream);
+
+                    let response = if request.line.starts_with("PUT") && remaining_throttles > 0 {
+                        remaining_throttles -= 1;
+                        throttled_response()
+                    } else {
+                        canned_response(&request.line)
+                    };
+
+                    recorded.lock().unwrap().push(request);
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                }
+            });
+
+            Recorder { base_url, seen }
+        }
+
+        fn requests(&self) -> Vec<RawRequest> {
+            self.seen.lock().unwrap().clone()
+        }
+
+        fn first(&self, method: &str) -> RawRequest {
+            self.requests()
+                .into_iter()
+                .find(|r| r.line.starts_with(method))
+                .unwrap_or_else(|| panic!("the importer never sent a {method}"))
+        }
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> RawRequest {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+
+        let mut headers = Vec::new();
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header.trim().is_empty() {
+                break;
+            }
+            let (name, value) = header.split_once(':').expect("a header must have a colon");
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+        }
+
+        let length: usize = headers
+            .iter()
+            .find(|(k, _)| k == "content-length")
+            .and_then(|(_, v)| v.parse().ok())
+            .unwrap_or(0);
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).unwrap();
+
+        RawRequest {
+            line: line.trim_end().to_string(),
+            headers,
+            body: String::from_utf8(body).unwrap(),
+        }
+    }
+
+    /// What the production limiter actually sends: a 429 and the number of seconds to
+    /// wait. `retry_after_secs` on the free tier's bucket rounds up to 1.
+    fn throttled_response() -> String {
+        let body = serde_json::json!({ "error": "Rate limit exceeded", "code": "rate_limited" })
+            .to_string();
+        format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Just enough of a reply for the importer to make progress. `Connection: close`
+    /// keeps the socket handling to one request per connection.
+    fn canned_response(request_line: &str) -> String {
+        let artifact = serde_json::json!({
+            "id": "a1", "change_id": "c1", "kind": "design", "capability": "",
+            "latest_revision": 1,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let change = serde_json::json!({
+            "id": "c1", "org_id": "org1", "project": "nexus-mind", "name": "demo",
+            "status": "active", "phase": "propose", "created_by": "u1",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        });
+
+        let body = if request_line.starts_with("PUT /v1/sdd/artifacts") {
+            serde_json::json!({ "artifact": artifact, "created_revision": true }).to_string()
+        } else if request_line.starts_with("GET /v1/sdd/changes") {
+            serde_json::json!([change]).to_string()
+        } else if request_line.starts_with("PATCH /v1/sdd/changes") {
+            change.to_string()
+        } else {
+            return "HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .to_string();
+        };
+
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    // ── 5.22 the wire format ────────────────────────────────────────────────
+
+    #[test]
+    fn api_sink_puts_each_artifact_with_the_request_the_server_expects() {
+        let recorder = Recorder::start();
+        let root = temp_root("api-shape");
+        write_file(&root, "openspec/changes/demo/design.md", "# Design");
+
+        let sink = Sink::api(&recorder.base_url, "test-key").unwrap();
+        import_filesystem(&sink, "nexus-mind", &root, false).unwrap();
+
+        let put = recorder.first("PUT");
+        assert_eq!(
+            put.line, "PUT /v1/sdd/artifacts HTTP/1.1",
+            "the collection route, not a by-id route: the server keys the artifact off the body"
+        );
+        assert_eq!(put.header("authorization"), Some("Bearer test-key"));
+        assert_eq!(put.header("content-type"), Some("application/json"));
+
+        let body = put.json();
+        assert_eq!(body["project"], "nexus-mind");
+        assert_eq!(body["change_name"], "demo");
+        assert_eq!(body["kind"], "design");
+        assert_eq!(body["capability"], "");
+        assert_eq!(body["content"], "# Design");
+        assert_eq!(
+            body["path"], "openspec/changes/demo/design.md",
+            "the repo-relative path, so the artifact can be traced back to its file"
+        );
+
+        // The status/phase patch carries ONLY the patchable fields. `PatchChangeRequest`
+        // is `deny_unknown_fields`: a body that also names the change it is patching —
+        // `project`, `name` — is a 422, not a helpful no-op.
+        let patch = recorder.first("PATCH");
+        let patched = patch.json();
+        assert_eq!(patched["status"], "active");
+        assert_eq!(patched["phase"], "design");
+        for forbidden in ["project", "name", "change_name"] {
+            assert!(
+                patched.get(forbidden).is_none(),
+                "PATCH /v1/sdd/changes/:id denies unknown fields — sending `{forbidden}` would 422"
+            );
+        }
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.23 idempotency is the SERVER's, and it holds over HTTP ────────────
+
+    #[test]
+    fn api_import_creates_zero_revisions_on_a_second_identical_run() {
+        let (base_url, api_key, store) = spawn_backend();
+        let root = temp_root("api-idem");
+        write_file(&root, "openspec/changes/demo/proposal.md", "# P");
+        write_file(&root, "openspec/changes/demo/design.md", "# D");
+        write_file(&root, "openspec/changes/demo/specs/cap-a/spec.md", "# S");
+        write_file(&root, "openspec/changes/archive/2026-05-01-gone/proposal.md", "# Old");
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+
+        let first = import_filesystem(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(first.changes_created, 2);
+        assert_eq!(first.artifacts_created, 4);
+        assert_eq!(first.revisions_created, 4);
+        let after_first = server_revisions(&store);
+        assert_eq!(after_first, 4);
+
+        let second = import_filesystem(&sink, "nexus-mind", &root, false).unwrap();
+        assert_eq!(
+            second.revisions_created, 0,
+            "a second run must create ZERO revisions — the SERVER de-dups by content hash, \
+             so idempotency survives the move to HTTP without the importer owning any of it"
+        );
+        assert_eq!(second.changes_created, 0);
+        assert_eq!(second.artifacts_created, 0);
+        assert_eq!(second.skipped, 4, "every artifact is an unchanged no-op");
+        assert_eq!(server_revisions(&store), after_first, "the revision table is untouched");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.24 the archive: status AND archived_at ────────────────────────────
+
+    #[test]
+    fn api_import_archives_an_archive_folder_with_both_status_and_archived_at() {
+        let (base_url, api_key, store) = spawn_backend();
+        let root = temp_root("api-archive");
+        write_file(&root, "openspec/changes/archive/2026-05-01-old-change/proposal.md", "# Old");
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+        import_filesystem(&sink, "nexus-mind", &root, false).unwrap();
+
+        let change = server_change(&store, "old-change")
+            .expect("the archive folder imports under its date-stripped name");
+        assert_eq!(change.status, "archived");
+        assert_eq!(change.phase, "archive");
+
+        // `list_sdd_changes` filters on `archived_at IS NULL`, NOT on `status`. Patching
+        // the status alone would leave every imported archive folder sitting in the
+        // admin's default list forever — so the API sink must patch AND soft-archive.
+        assert!(
+            change.archived_at.is_some(),
+            "archived_at must be set, or the change never leaves the default list"
+        );
+
+        // And a re-import survives it: the store's archive UPDATE is guarded on
+        // `archived_at IS NULL`, so the second attempt reports no row and the handler
+        // answers 404. That is "already archived", not a failure.
+        let second = import_filesystem(&sink, "nexus-mind", &root, false)
+            .expect("re-archiving an already-archived change must not be an error");
+        assert_eq!(second.revisions_created, 0);
+        assert!(server_change(&store, "old-change").unwrap().archived_at.is_some());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.25 the server's 422 arrives as a sentence, not a panic ────────────
+
+    #[test]
+    fn api_import_surfaces_an_oversized_artifact_as_the_servers_422() {
+        let (base_url, api_key, _store) = spawn_backend();
+        let root = temp_root("api-toobig");
+        // SDD_MAX_ARTIFACT_BYTES is 1 MiB, and the guard is the store's, not the
+        // importer's — the importer's job is to relay the refusal legibly.
+        write_file(&root, "openspec/changes/huge/design.md", &"x".repeat(1_048_577));
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+        let err = import_filesystem(&sink, "nexus-mind", &root, false)
+            .expect_err("an oversized artifact must fail the import, not be silently dropped");
+
+        let message = err.to_string();
+        assert!(message.contains("422"), "the status must be in the message: {message}");
+        assert!(
+            message.contains("artifact_too_large"),
+            "the SERVER's own reason must survive to the operator: {message}"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.26 --dry-run over HTTP writes nothing ─────────────────────────────
+
+    #[test]
+    fn api_dry_run_reads_but_never_writes() {
+        let (base_url, api_key, store) = spawn_backend();
+        let root = temp_root("api-dry");
+        write_file(&root, "openspec/changes/demo/proposal.md", "# P");
+        write_file(&root, "openspec/changes/demo/design.md", "# D");
+
+        let sink = Sink::api(&base_url, &api_key).unwrap();
+        let dry = import_filesystem(&sink, "nexus-mind", &root, true).unwrap();
+
+        assert_eq!(dry.artifacts_created, 2, "it reports what a real run would write");
+        assert_eq!(dry.revisions_created, 2);
+        assert_eq!(server_revisions(&store), 0, "--dry-run must not have written a single row");
+        assert!(server_change(&store, "demo").is_none(), "…nor created the change");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.27 the rate limiter, which a real run WILL hit ────────────────────
+
+    /// Found by running the thing: importing this repo's own `openspec/` tree over the
+    /// API is ~116 requests, and the free tier's token bucket holds 100 per minute. The
+    /// real run died at `429` two thirds of the way through, having written a partial
+    /// import — which is the same "unrunnable in production" bug in a new costume.
+    ///
+    /// The server says exactly how long to wait. A one-shot backfill's only sane
+    /// answer to that is to wait, and then finish the job.
+    #[test]
+    fn api_sink_waits_out_a_rate_limit_and_completes_the_import() {
+        // The first PUT is refused with a 429; the second must be the same PUT again.
+        let recorder = Recorder::start_throttling(1);
+        let root = temp_root("api-429");
+        write_file(&root, "openspec/changes/demo/design.md", "# Design");
+
+        let sink = Sink::api(&recorder.base_url, "test-key").unwrap();
+        let stats = import_filesystem(&sink, "nexus-mind", &root, false)
+            .expect("a 429 is a 'wait', not a failure — the import must still complete");
+
+        assert_eq!(stats.revisions_created, 1, "the artifact lands after the throttle lifts");
+
+        let throttled: Vec<_> =
+            recorder.requests().into_iter().filter(|r| r.line.starts_with("PUT")).collect();
+        assert_eq!(
+            throttled.len(),
+            2,
+            "the PUT that was throttled must be RE-SENT, not dropped: {throttled:#?}"
+        );
+        assert_eq!(
+            throttled[0].body, throttled[1].body,
+            "the retry must carry the same body — a retry that mutates the request is not a retry"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    // ── 5.28 the flags: a clear refusal, never a panic ──────────────────────
+
+    #[test]
+    fn plan_refuses_when_neither_a_db_nor_an_api_url_is_given() {
+        let err = plan(&Args::default()).expect_err("with no destination there is nothing to do");
+        let message = err.to_string();
+        assert!(message.contains("--db"), "the message must name the flag: {message}");
+        assert!(message.contains("--api-url"), "…and the alternative: {message}");
+    }
+
+    #[test]
+    fn plan_refuses_the_memory_import_without_a_db() {
+        // The legacy memories live IN the database. Asking to migrate them while
+        // pointing only at an HTTP API is not a thing that can be done.
+        let err = plan(&Args {
+            api_url: Some("https://api.example.com".into()),
+            api_key: Some("k".into()),
+            ..Args::default()
+        })
+        .expect_err("the memory half cannot run without the database it reads from");
+        assert!(
+            err.to_string().contains("--skip-memories") && err.to_string().contains("--db"),
+            "the message must name the way out: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_refuses_an_api_url_with_no_key() {
+        let err = plan(&Args {
+            api_url: Some("https://api.example.com".into()),
+            skip_memories: true,
+            ..Args::default()
+        })
+        .expect_err("an unauthenticated push would 401 on the first artifact");
+        assert!(err.to_string().contains("--api-key"), "{err}");
+    }
+
+    #[test]
+    fn plan_routes_the_filesystem_over_http_and_the_memories_to_the_db() {
+        // The one invocation that does both halves: the memories go where they live
+        // (the DB), the filesystem goes where it can be read from (a checkout, pushed
+        // over the API). This is the whole point of the change.
+        let resolved = plan(&Args {
+            db: Some("/data/nexusmind.db".into()),
+            api_url: Some("https://api.example.com/".into()),
+            api_key: Some("nm_key".into()),
+            ..Args::default()
+        })
+        .unwrap();
+
+        assert!(resolved.memories && resolved.filesystem);
+        assert_eq!(resolved.db.as_deref(), Some("/data/nexusmind.db"));
+        let api = resolved.api.expect("the filesystem half must be routed over HTTP");
+        assert_eq!(api.base_url, "https://api.example.com", "the trailing slash is trimmed");
+        assert_eq!(api.api_key, "nm_key");
+    }
+
+    #[test]
+    fn plan_accepts_each_half_on_its_own() {
+        // Half 1 — from a developer's checkout, which HAS openspec/, against the remote
+        // backend, which HAS the database.
+        let filesystem_only = plan(&Args {
+            api_url: Some("https://api.example.com".into()),
+            api_key: Some("k".into()),
+            skip_memories: true,
+            ..Args::default()
+        })
+        .unwrap();
+        assert!(filesystem_only.filesystem && !filesystem_only.memories);
+        assert!(filesystem_only.db.is_none(), "no database is needed, and none is opened");
+
+        // Half 2 — inside the container, which HAS the database and no checkout.
+        let memories_only = plan(&Args {
+            db: Some("/data/nexusmind.db".into()),
+            skip_filesystem: true,
+            ..Args::default()
+        })
+        .unwrap();
+        assert!(memories_only.memories && !memories_only.filesystem);
+        assert!(memories_only.api.is_none());
     }
 }
