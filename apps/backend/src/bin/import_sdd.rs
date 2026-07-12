@@ -62,11 +62,10 @@ use serde::Deserialize;
 
 /// Provenance stamped on every revision this binary writes.
 ///
-/// The DB sink stamps it directly. The API sink cannot: `put_artifact_handler`
-/// passes a hard-coded `"agent"` to `upsert_sdd_artifact` and ignores the `source`
-/// the body carries. The field is still sent — it is a real field of
-/// `SaveArtifactRequest`, and the day the handler honours it the importer is
-/// already correct.
+/// Both sinks honour it. The DB sink stamps it directly; the API sink sends it in
+/// the body and `put_artifact_handler` records it (an unrecognized value is a 422,
+/// so the column stays a closed set). An imported revision therefore says so on
+/// either path — it is not silently relabelled as agent-authored.
 const SOURCE: &str = "import";
 
 /// Tag applied to every legacy memory carried into the artifact store.
