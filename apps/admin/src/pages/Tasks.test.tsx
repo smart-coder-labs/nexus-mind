@@ -205,6 +205,76 @@ describe('Tasks — list rendering', () => {
       )
     })
   })
+
+  it('filters by assignee — sends the selected user id, not their name', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    listTasksMock.mockClear()
+    listTasksMock.mockResolvedValue([tasks[0]])
+
+    const assigneeFilter = screen.getByRole('button', { name: /assignee/i })
+    fireEvent.click(assigneeFilter)
+    const option = await screen.findByRole('option', { name: new RegExp(users[0].name, 'i') })
+    fireEvent.click(option)
+
+    await waitFor(() => {
+      // The backend keys on the user id. Sending the display name would silently
+      // match nothing and render an empty list that looks like "no tasks".
+      expect(listTasksMock).toHaveBeenCalledWith(
+        expect.objectContaining({ assignee: users[0].id }),
+      )
+    })
+  })
+
+  it('offers an "Assigned to me" shortcut that sends the backend\'s `me` sentinel', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    listTasksMock.mockClear()
+    listTasksMock.mockResolvedValue([tasks[0]])
+
+    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.click(await screen.findByRole('option', { name: /assigned to me/i }))
+
+    await waitFor(() => {
+      // `me` is resolved server-side from the API key (api/tasks.rs) — the client
+      // must not try to resolve it itself.
+      expect(listTasksMock).toHaveBeenCalledWith(
+        expect.objectContaining({ assignee: 'me' }),
+      )
+    })
+  })
+
+  it('clears the assignee filter — omits the param entirely rather than sending an empty string', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.click(await screen.findByRole('option', { name: new RegExp(users[0].name, 'i') }))
+    await waitFor(() => {
+      expect(listTasksMock).toHaveBeenCalledWith(expect.objectContaining({ assignee: users[0].id }))
+    })
+
+    listTasksMock.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: /assignee/i }))
+    fireEvent.click(await screen.findByRole('option', { name: /all assignees/i }))
+
+    await waitFor(() => {
+      const calls = listTasksMock.mock.calls
+      const lastCall = calls[calls.length - 1]?.[0]
+      expect(lastCall?.assignee).toBeUndefined()
+    })
+  })
 })
 
 describe('Tasks — create via modal', () => {
