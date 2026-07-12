@@ -18,6 +18,15 @@ RUN apt-get update && apt-get install -y ca-certificates git && rm -rf /var/lib/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
+# The SDD importer has to ship with the image, or it cannot be run where it is
+# actually needed. It is a one-shot binary, invoked manually:
+#   import-sdd --db /data/nexusmind.db --org-id <id> --root <checkout> [--dry-run]
+# Note it reads the openspec/ tree from --root, so that tree must be reachable
+# (bind-mounted, or a checkout inside the container). See docs/RUNNING.md.
+COPY --from=builder /app/target/release/import-sdd /app/import-sdd
+# Seeder, for bringing a fresh volume up with demo data:
+#   nexusmind-seed /data/nexusmind.db
+COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
 
 RUN mkdir -p /data
 

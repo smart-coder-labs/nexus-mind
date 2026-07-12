@@ -12,6 +12,10 @@ services:
       - ./apps/backend/.env
     volumes:
       - nexusmind_data:/data
+      # The SDD importer reads the openspec/ tree from disk, and the image has no
+      # checkout. Mounting the repo read-only lets `import-sdd --root /repo` run
+      # inside the container against the same DB the backend uses.
+      - ./:/repo:ro
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /v1/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
       interval: 10s
