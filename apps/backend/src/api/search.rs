@@ -57,6 +57,7 @@ pub async fn get_global_search(
             projects: vec![],
             policies: vec![],
             conventions: vec![],
+            sdd_changes: vec![],
         }));
     }
 
@@ -82,12 +83,22 @@ pub async fn get_global_search(
     let conventions = queries::search_conventions_by_query_visible(&conn, &auth.org_id, q, limit, viewer)
         .map_err(db_err)?;
 
+    // A4 — an EMPTY facet, never a 403. Gating the whole of global search on a
+    // brand-new permission would break it for every user who does not have
+    // sdd:read yet. Same shape as the `users` facet's is_privileged() gate above.
+    let sdd_changes = if require_permission(&conn, &auth, None, "sdd:read").is_ok() {
+        queries::search_sdd_changes_by_query(&conn, &auth.org_id, q, limit).map_err(db_err)?
+    } else {
+        vec![]
+    };
+
     Ok(Json(GlobalSearchResult {
         memories,
         users,
         projects,
         policies,
         conventions,
+        sdd_changes,
     }))
 }
 

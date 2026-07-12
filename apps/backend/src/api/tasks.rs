@@ -372,6 +372,44 @@ pub async fn delete_task_comment_handler(
 /// Checks whether `name` matches an active or archived openspec change folder. Advisory:
 /// if the openspec root cannot be read, this returns `true` (cannot confirm, allow) rather
 /// than blocking all linking — resolves design risk R5.
+/// Validates a `spec_change_name` before a task links to it.
+///
+/// The filesystem check alone was decorative in production. The backend runs on
+/// Fly.io, where no `openspec/` directory exists, so `resolve_openspec_root`
+/// never finds a repo tree and `spec_change_exists` falls through to its
+/// "root unreadable → allow" branch. Every string linked, typos included.
+///
+/// **The naive fix does not work.** Simply OR-ing a DB lookup in front of the
+/// existing check changes nothing: the filesystem branch still returns `true`
+/// unconditionally when there is no tree, so it swallows the DB's verdict every
+/// time. A permissive fallback placed after an authoritative check makes the
+/// authoritative check dead code.
+///
+/// So the two worlds are separated by whether an `openspec/` tree exists at all:
+///
+/// - **A tree exists** (a dev running the backend inside a checkout): keep the
+///   filesystem as a fallback, so a change that lives on disk but was never
+///   pushed to NexusMind still links. Nothing that works today stops working.
+/// - **No tree** (production): the DB is the *only* referent, and if it says no,
+///   the answer is no. There is nothing to be permissive about.
+///
+/// DEPLOYMENT ORDER: this makes `link_task_spec` genuinely reject unknown names in
+/// production, so the `sdd_changes` table must be populated FIRST. Ship the
+/// importer (`bin/import_sdd.rs`) before, or with, this change — never after.
+fn spec_change_is_known(conn: &rusqlite::Connection, org_id: &str, name: &str) -> bool {
+    if queries::sdd_change_exists(conn, org_id, name).unwrap_or(false) {
+        return true;
+    }
+
+    let root = repo_root();
+    if !root.join("openspec/changes").is_dir() {
+        // No tree to consult. The DB already said no, and a check that cannot fail
+        // is not a check.
+        return false;
+    }
+    spec_change_exists(&root, name)
+}
+
 pub fn spec_change_exists(root: &std::path::Path, name: &str) -> bool {
     let active = root.join("openspec/changes").join(name);
     if active.is_dir() {
@@ -464,7 +502,7 @@ pub async fn link_task_spec_handler(
     let task = load_visible_task(&conn, &auth, &id)?;
     require_permission(&conn, &auth, Some(&task.project), "task:write")?;
 
-    if !spec_change_exists(&repo_root(), &input.spec_change_name) {
+    if !spec_change_is_known(&conn, &auth.org_id, &input.spec_change_name) {
         return Err(unknown_spec());
     }
 
@@ -1184,13 +1222,21 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// BEHAVIOR CHANGE (sdd-artifacts PR-4). This test used to be named
+    /// `link_task_spec_handler_advisory_passes_when_root_unresolvable` and asserted a
+    /// 201 here — it encoded the bug as intended behavior.
+    ///
+    /// With no `openspec/` tree, the old check fell through to its "root unreadable ->
+    /// allow" branch and accepted ANY string. That is the state of production: the
+    /// backend runs on Fly.io, where no tree exists, so the validation never rejected
+    /// anything. Confirmed live on 2026-07-11 by linking 11 tasks to a change folder
+    /// that existed only on one laptop.
+    ///
+    /// Now `sdd_changes` is the referent. With no tree AND no DB row, the answer is no.
     #[tokio::test]
-    async fn link_task_spec_handler_advisory_passes_when_root_unresolvable() {
+    async fn link_task_spec_handler_rejects_unknown_change_when_no_openspec_tree() {
         let _guard = openspec_root_env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("nm-link-handler-noroot-{}", uuid::Uuid::new_v4()));
-        // Point OPENSPEC_ROOT at an empty dir with no openspec/changes tree at all —
-        // root is "resolvable" as a path but has no changes tree, and there is
-        // nothing above it in this isolated temp location either.
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("OPENSPEC_ROOT", &tmp);
 
@@ -1206,7 +1252,11 @@ mod tests {
             serde_json::json!({ "spec_change_name": "anything-goes" }),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "with no openspec tree and no sdd_changes row, an unknown name must be rejected"
+        );
 
         std::env::remove_var("OPENSPEC_ROOT");
         std::fs::remove_dir_all(&tmp).ok();
