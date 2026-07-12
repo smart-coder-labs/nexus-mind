@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, RotateCcw, Share2, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
+import { Markdown } from './ui/Markdown'
 import ForceGraph3D from 'react-force-graph-3d'
 import {
   mapMemGraphData,
@@ -439,47 +439,7 @@ export default function OrgMemoryGraph({
                     </div>
                     <div>
                       <p className="text-[10px] text-text-quaternary uppercase tracking-wide mb-2">Content</p>
-                      <ReactMarkdown
-                        components={{
-                          p: ({ children }) => (
-                            <p className="text-xs text-text-secondary leading-relaxed mb-2 last:mb-0">{children}</p>
-                          ),
-                          h1: ({ children }) => (
-                            <h1 className="text-sm font-semibold text-text-primary mt-4 mb-1.5 first:mt-0">{children}</h1>
-                          ),
-                          h2: ({ children }) => (
-                            <h2 className="text-xs font-semibold text-text-primary mt-3 mb-1 first:mt-0">{children}</h2>
-                          ),
-                          h3: ({ children }) => (
-                            <h3 className="text-xs font-semibold text-accent-blue mt-2 mb-0.5 first:mt-0">{children}</h3>
-                          ),
-                          ul: ({ children }) => <ul className="mb-2 ml-3 space-y-0.5 last:mb-0">{children}</ul>,
-                          ol: ({ children }) => (
-                            <ol className="mb-2 ml-3 space-y-0.5 list-decimal last:mb-0">{children}</ol>
-                          ),
-                          li: ({ children }) => (
-                            <li className="text-xs text-text-secondary leading-relaxed list-disc">{children}</li>
-                          ),
-                          strong: ({ children }) => (
-                            <strong className="font-semibold text-text-primary">{children}</strong>
-                          ),
-                          em: ({ children }) => (
-                            <em className="italic text-text-secondary">{children}</em>
-                          ),
-                          code: ({ children }) => (
-                            <code className="text-[10px] font-mono text-accent-blue bg-accent-blue/10 rounded px-1 py-0.5">
-                              {children}
-                            </code>
-                          ),
-                          pre: ({ children }) => (
-                            <pre className="bg-[#1d1d1f] border border-border-primary rounded-[8px] px-3 py-2 overflow-x-auto mb-2 text-[10px] font-mono">
-                              {children}
-                            </pre>
-                          ),
-                        }}
-                      >
-                        {memoryDetail.content}
-                      </ReactMarkdown>
+                      <Markdown content={memoryDetail.content} />
                     </div>
                   </div>
                 ) : (
