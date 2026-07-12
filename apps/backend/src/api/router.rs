@@ -10,8 +10,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, backup, code, context, conventions, github_auth, harnesses, health,
-    internal, memory, middleware as api_mw, policy, rate_limit, search, sessions, tasks, users,
-    webhooks,
+    internal, memory, middleware as api_mw, policy, rate_limit, search, sdd, sessions, tasks,
+    users, webhooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -219,6 +219,32 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/harness-config-reviews/:id/comments",
             get(harnesses::list_config_review_comments)
                 .post(harnesses::create_config_review_comment),
+        )
+        // ── SDD artifacts ──
+        // Static paths first: /v1/sdd/search and the /v1/sdd/artifacts collection must be
+        // registered before /v1/sdd/artifacts/:id, or ":id" would swallow them.
+        .route("/v1/sdd/search", get(sdd::search_handler))
+        .route(
+            "/v1/sdd/artifacts",
+            get(sdd::get_artifact_by_key_handler).put(sdd::put_artifact_handler),
+        )
+        .route("/v1/sdd/artifacts/:id", get(sdd::get_artifact_handler))
+        .route("/v1/sdd/artifacts/:id/revisions", get(sdd::list_artifact_revisions_handler))
+        // GET only, deliberately: revisions are immutable, so PUT/PATCH/DELETE here must 405.
+        .route("/v1/sdd/artifacts/:id/revisions/:rev", get(sdd::get_artifact_revision_handler))
+        .route("/v1/sdd/changes", get(sdd::list_changes_handler).post(sdd::create_change_handler))
+        .route(
+            "/v1/sdd/changes/:id",
+            get(sdd::get_change_handler)
+                .patch(sdd::patch_change_handler)
+                .delete(sdd::delete_change_handler),
+        )
+        .route("/v1/sdd/changes/:id/artifacts", get(sdd::list_change_artifacts_handler))
+        .route("/v1/sdd/changes/:id/tasks", get(sdd::list_change_tasks_handler))
+        .route("/v1/sdd/changes/:id/memories", post(sdd::link_change_memory_handler))
+        .route(
+            "/v1/sdd/changes/:id/memories/:memory_id",
+            delete(sdd::unlink_change_memory_handler),
         )
         .route(
             "/v1/tasks/resolve-by-spec",
