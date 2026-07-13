@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, UserMinus, Tag } from 'lucide-react'
+import { X, UserMinus, Tag, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { createClient } from '../../api/client'
 import { useAuth, isPrivileged } from '../../auth/AuthContext'
@@ -43,15 +43,24 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const permissions = session?.user.permissions ?? []
   const canWrite = isAdmin || permissions.includes('task:write')
   const canAssign = isAdmin || permissions.includes('task:assign')
+  const canDelete = isAdmin || permissions.includes('task:delete')
   // The spec-link resolution below hits `GET /v1/sdd/changes`, which requires
   // `sdd:read`. Un-gated, a caller without it gets a 403 — and the client's global
   // handler bounces the whole admin to /401. So gate the query, don't just catch it.
   const canReadSdd = isAdmin || permissions.includes('sdd:read')
 
+  // The two people-listing endpoints — `GET /v1/users` (api/users.rs) and
+  // `GET /v1/projects/:id/members` (api/admin.rs) — both gate on
+  // `auth.role.is_privileged()`, NOT on a permission string. So `task:assign` alone
+  // does not buy you either of them: a plain member holding it still gets a 403, and
+  // the client's global handler turns that 403 into window.location.replace('/401'),
+  // ejecting them from the whole admin for opening a task. The gate is the ROLE.
+  const canListPeople = isAdmin && canAssign
+
   const [commentBody, setCommentBody] = useState('')
   const [labelInput, setLabelInput] = useState('')
   const [subtaskTitle, setSubtaskTitle] = useState('')
-  const [specInput, setSpecInput] = useState('')
+  const [selectedSpec, setSelectedSpec] = useState('')
   const [selectedAssignee, setSelectedAssignee] = useState('')
 
   // The list view (list_tasks) returns tasks with empty assignees/labels to
@@ -76,10 +85,33 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id])
 
-  const { data: users = [] } = useQuery({
+  // `tasks.project` is a NAME, not a project_id — so the members lookup needs a
+  // name → id hop through the project list first. `GET /v1/projects` needs no
+  // permission (it self-scopes to what the caller can see), so it is safe ungated.
+  const { data: projects = [], isSuccess: projectsResolved } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects(),
+  })
+
+  const projectId = projects.find(p => p.name === t.project)?.id ?? null
+
+  const { data: projectMembers = [] } = useQuery({
+    queryKey: ['project-members', projectId],
+    queryFn: () => client.listProjectMembers(projectId as string),
+    enabled: canListPeople && !!projectId,
+  })
+
+  // An unregistered project NAME is legal and deliberate — it is how org-shared and
+  // unregistered projects stay visible (list_tasks' viewer filter admits any task
+  // whose project has no `projects` row). Such a task has no membership to read, and
+  // an empty assignee dropdown on a legitimate task reads as a bug — so the fallback
+  // is every org user, not an empty list. Wait for `projectsResolved` before deciding
+  // the name is unregistered: until the list lands, `projectId` is null merely
+  // because nothing has loaded.
+  const { data: orgUsers = [] } = useQuery({
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
-    enabled: canAssign,
+    enabled: canListPeople && projectsResolved && !projectId,
   })
 
   const { data: comments = [] } = useQuery({
@@ -97,12 +129,17 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     queryFn: () => client.listTaskSpecLinks(task.id),
   })
 
-  // Resolve each spec-link name against the SDD store so a live change becomes a
-  // link (with its phase) and a dangling name — a change renamed out from under
-  // the link — degrades to inert text instead of a broken navigation target.
+  // Doubles as (a) the resolver that turns each spec-link name into a real link with
+  // its phase — a dangling name degrades to inert text rather than a broken nav
+  // target — and (b) the option list for the link picker below.
+  //
+  // `include_archived` is deliberate: an archived change is still a valid link
+  // target. A change is archived AFTER its tasks exist, so if archiving dropped it
+  // from the picker you would lose traceability exactly when the work completes.
+  const sddChangeParams = { project: t.project, include_archived: true }
   const { data: sddChanges = [] } = useQuery({
-    queryKey: ['sdd-changes', {}],
-    queryFn: () => client.listSddChanges({}),
+    queryKey: ['sdd-changes', sddChangeParams],
+    queryFn: () => client.listSddChanges(sddChangeParams),
     enabled: canReadSdd,
   })
 
@@ -145,7 +182,15 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     mutationFn: (specChangeName: string) => client.linkTaskSpec(task.id, specChangeName),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['task-spec-links', task.id] })
-      setSpecInput('')
+      setSelectedSpec('')
+    },
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: () => client.deleteTask(task.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      onClose()
     },
   })
 
@@ -186,9 +231,19 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     },
   })
 
-  const availableAssignees = users.filter(
-    u => !(t.assignees ?? []).some(a => a.id === u.id),
+  // Project members when the project name resolves to a real project; every org user
+  // when it does not. NOTE: a ProjectMember's `id` is the MEMBERSHIP row id — the
+  // user is `user_id`, and that is what assignTask takes.
+  const assigneePool: { id: string; name: string }[] = projectId
+    ? projectMembers.map(m => ({ id: m.user_id, name: m.name || m.email }))
+    : orgUsers.map(u => ({ id: u.id, name: u.name || u.email }))
+
+  const availableAssignees = assigneePool.filter(
+    c => !(t.assignees ?? []).some(a => a.id === c.id),
   )
+
+  // A change already linked to this task is not a link target.
+  const availableSpecs = sddChanges.filter(c => !specLinks.includes(c.name))
 
   const handleCommentSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -210,8 +265,28 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
   const handleSpecSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!specInput.trim()) return
-    linkSpecMut.mutate(specInput.trim())
+    if (!selectedSpec) return
+    linkSpecMut.mutate(selectedSpec)
+  }
+
+  const handleDelete = () => {
+    // The FK `tasks.parent_id` is ON DELETE CASCADE, but that only fires on a hard
+    // DELETE and the API never issues one: soft_delete_task is a plain
+    // `UPDATE tasks SET archived_at = …`. So subtasks are NOT archived with their
+    // parent — the backend asserts exactly this in
+    // `soft_delete_parent_does_not_cascade_to_subtasks`. Say what will actually
+    // happen; promising a cascade that does not occur is how a user ends up with
+    // orphans they never looked for.
+    // `subtask_count` rides along on the task itself, so the warning is correct even
+    // if the subtask list query has not settled when the user hits Delete.
+    const n = subtasks.length > 0 ? subtasks.length : (t.subtask_count ?? 0)
+    const note = n > 0
+      ? ` Its ${n} subtask${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} NOT archived with it — ${n === 1 ? 'it remains' : 'they remain'} in the list.`
+      : ''
+    if (!window.confirm(
+      `Archive task "${t.title}"?${note} It is removed from the list but can be restored by an operator.`,
+    )) return
+    deleteMut.mutate()
   }
 
   const handleEditSubmit = (e: React.FormEvent) => {
@@ -313,6 +388,25 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         )}
       </div>
 
+      {/* Project — READ-ONLY.
+          The backend's PatchTaskRequest (models/types.rs) carries exactly
+          title/description/status/priority/due_date/sprint_id. There is no `project`
+          field and `patch_task` has no branch that would write one, so a project
+          picker here would be a control that silently does nothing. Show the value,
+          say why it is fixed, and do not fake the mutation. */}
+      <section className="mb-6" data-testid="task-detail-project">
+        <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Project</h3>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary">
+            {t.project}
+          </span>
+        </div>
+        <p className="text-[10px] text-text-quaternary mt-1.5">
+          A task cannot be moved between projects from the admin — the API's task
+          patch does not accept a project.
+        </p>
+      </section>
+
       {/* Assignees */}
       <section className="mb-6">
         <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Assignees</h3>
@@ -339,7 +433,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             </span>
           ))}
         </div>
-        {canAssign && (
+        {canAssign && canListPeople && (
           <div className="flex items-center gap-2">
             <Select value={selectedAssignee} onValueChange={setSelectedAssignee}>
               <SelectTrigger className="w-56 h-8 text-xs" aria-label="Assignee">
@@ -361,6 +455,13 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
               Add
             </button>
           </div>
+        )}
+        {canAssign && !canListPeople && (
+          // They may assign, but neither people-listing endpoint will serve them —
+          // both are privileged-only. Say so instead of rendering an empty picker.
+          <p className="text-[10px] text-text-quaternary">
+            Listing people to assign requires an admin role.
+          </p>
         )}
       </section>
 
@@ -493,25 +594,44 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             )
           })}
         </div>
-        {canWrite && (
+        {/* A spec link is a FOREIGN KEY, so it is picked, never typed. It used to be a
+            free-text box, which was survivable only while the backend validated the
+            name against a filesystem that does not exist in production and so accepted
+            anything. It now validates against `sdd_changes` and 422s on an unknown
+            name — a typo is no longer silent, and a blind text field is no longer
+            defensible. Without `sdd:read` we cannot list the changes to choose from,
+            so the picker is withheld rather than shown empty. */}
+        {canWrite && canReadSdd && (
           <form onSubmit={handleSpecSubmit} className="flex items-center gap-2">
-            <input
-              id="task-detail-spec-input"
-              aria-label="Link spec change"
-              type="text"
-              value={specInput}
-              onChange={e => setSpecInput(e.target.value)}
-              placeholder="openspec change name…"
-              className="flex-1 bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60"
-            />
+            <Select value={selectedSpec} onValueChange={setSelectedSpec}>
+              <SelectTrigger className="flex-1 h-8 text-xs" aria-label="Link spec change">
+                <SelectValue placeholder="Choose a change…" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableSpecs.map(c => (
+                  <SelectItem key={c.id} value={c.name}>
+                    <span className="flex items-center gap-1.5">
+                      {c.name}
+                      <Badge variant="primary" size="sm">{c.phase}</Badge>
+                      {c.archived_at && <Badge variant="default" size="sm">archived</Badge>}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <button
               type="submit"
-              disabled={!specInput.trim() || linkSpecMut.isPending}
+              disabled={!selectedSpec || linkSpecMut.isPending}
               className="px-3 py-1.5 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
             >
               Link
             </button>
           </form>
+        )}
+        {canWrite && !canReadSdd && (
+          <p className="text-[10px] text-text-quaternary">
+            Linking a spec change requires the sdd:read permission.
+          </p>
         )}
       </section>
 
@@ -557,16 +677,32 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         )}
       </section>
 
-      {canWrite && (
-        <div className="flex items-center justify-end pt-4 mt-2 border-t border-border-primary">
-          <button
-            type="submit"
-            form="task-edit-form"
-            disabled={updateMut.isPending || !editForm.title.trim()}
-            className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-          >
-            {updateMut.isPending ? 'Saving…' : 'Save'}
-          </button>
+      {(canWrite || canDelete) && (
+        <div className="flex items-center justify-between pt-4 mt-2 border-t border-border-primary">
+          {canDelete ? (
+            <button
+              type="button"
+              onClick={handleDelete}
+              aria-label="Delete task"
+              disabled={deleteMut.isPending}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-full border border-border-primary text-xs font-semibold text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
+            </button>
+          ) : (
+            <span />
+          )}
+          {canWrite && (
+            <button
+              type="submit"
+              form="task-edit-form"
+              disabled={updateMut.isPending || !editForm.title.trim()}
+              className="px-4 py-2 rounded-full bg-accent-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+            >
+              {updateMut.isPending ? 'Saving…' : 'Save'}
+            </button>
+          )}
         </div>
       )}
     </div>

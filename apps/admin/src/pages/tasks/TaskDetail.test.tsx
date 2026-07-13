@@ -32,9 +32,12 @@ const task: Task = {
   subtask_count: 1,
 }
 
+/** Dana is in the ORG but not a member of `acme-platform` — she is the control that
+ *  tells "project members" apart from "every user in the org". */
 const users = [
   { id: 'user-1', org_id: 'org-test-1', email: 'sarah@acme.test', name: 'Sarah Chen', role: 'member', status: 'active' as const, created_at: '2026-01-01T00:00:00Z' },
   { id: 'user-2', org_id: 'org-test-1', email: 'raj@acme.test', name: 'Raj Patel', role: 'member', status: 'active' as const, created_at: '2026-01-01T00:00:00Z' },
+  { id: 'user-3', org_id: 'org-test-1', email: 'dana@acme.test', name: 'Dana Kim', role: 'member', status: 'active' as const, created_at: '2026-01-01T00:00:00Z' },
 ]
 
 const comments = [
@@ -60,7 +63,10 @@ const hydratedTask: Task = {
 const {
   getTaskMock,
   updateTaskMock,
+  deleteTaskMock,
   listUsersMock,
+  listProjectsMock,
+  listProjectMembersMock,
   assignTaskMock,
   unassignTaskMock,
   listTaskCommentsMock,
@@ -76,7 +82,10 @@ const {
 } = vi.hoisted(() => ({
   getTaskMock: vi.fn(),
   updateTaskMock: vi.fn(),
+  deleteTaskMock: vi.fn(),
   listUsersMock: vi.fn(),
+  listProjectsMock: vi.fn(),
+  listProjectMembersMock: vi.fn(),
   assignTaskMock: vi.fn(),
   unassignTaskMock: vi.fn(),
   listTaskCommentsMock: vi.fn(),
@@ -95,7 +104,10 @@ vi.mock('../../api/client', () => ({
   createClient: vi.fn(() => ({
     getTask: getTaskMock,
     updateTask: updateTaskMock,
+    deleteTask: deleteTaskMock,
     listUsers: listUsersMock,
+    listProjects: listProjectsMock,
+    listProjectMembers: listProjectMembersMock,
     assignTask: assignTaskMock,
     unassignTask: unassignTaskMock,
     listTaskComments: listTaskCommentsMock,
@@ -111,7 +123,10 @@ vi.mock('../../api/client', () => ({
   })),
 }))
 
-/** The SDD change the task's `team-tasks` spec link resolves to. */
+/** The SDD change the task's `team-tasks` spec link resolves to, plus two link
+ *  candidates: one live, one archived. Archived changes stay linkable on purpose —
+ *  a change is archived AFTER its tasks exist, so dropping it from the picker
+ *  would lose traceability exactly when the work completes. */
 const sddChanges: SddChange[] = [
   {
     id: 'c1', org_id: 'org-test-1', project: 'acme-platform', name: 'team-tasks',
@@ -120,6 +135,31 @@ const sddChanges: SddChange[] = [
     updated_at: '2026-06-10T00:00:00Z', archived_at: null,
     artifacts: [], task_links: [], memory_links: [],
   },
+  {
+    id: 'c2', org_id: 'org-test-1', project: 'acme-platform', name: 'sso-callback',
+    title: 'SSO callback', status: 'active', phase: 'apply', repo_url: null, repo_ref: null,
+    sprint_id: null, created_by: 'user-admin-1', created_at: '2026-06-02T00:00:00Z',
+    updated_at: '2026-06-11T00:00:00Z', archived_at: null,
+    artifacts: [], task_links: [], memory_links: [],
+  },
+  {
+    id: 'c3', org_id: 'org-test-1', project: 'acme-platform', name: 'legacy-auth',
+    title: 'Legacy auth', status: 'active', phase: 'verify', repo_url: null, repo_ref: null,
+    sprint_id: null, created_by: 'user-admin-1', created_at: '2026-05-01T00:00:00Z',
+    updated_at: '2026-05-20T00:00:00Z', archived_at: '2026-06-01T00:00:00Z',
+    artifacts: [], task_links: [], memory_links: [],
+  },
+]
+
+/** `tasks.project` is a NAME, not an id — the members lookup has to resolve it. */
+const projects = [
+  { id: 'p1', org_id: 'org-test-1', name: 'acme-platform', description: null, parent_id: null, created_at: '2026-01-01T00:00:00Z' },
+]
+
+/** Note `id` is the MEMBERSHIP row id; `user_id` is the user. Assigning must use `user_id`. */
+const projectMembers = [
+  { id: 'pm1', project_id: 'p1', user_id: 'user-1', email: 'sarah@acme.test', name: 'Sarah Chen', role: 'member', created_at: '2026-01-01T00:00:00Z' },
+  { id: 'pm2', project_id: 'p1', user_id: 'user-2', email: 'raj@acme.test', name: 'Raj Patel', role: 'member', created_at: '2026-01-01T00:00:00Z' },
 ]
 
 // ── Custom render for permission-scoped scenarios ──────────────────────────────
@@ -158,7 +198,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   getTaskMock.mockResolvedValue(hydratedTask)
   updateTaskMock.mockResolvedValue(hydratedTask)
+  deleteTaskMock.mockResolvedValue(undefined)
   listUsersMock.mockResolvedValue(users)
+  listProjectsMock.mockResolvedValue(projects)
+  listProjectMembersMock.mockResolvedValue(projectMembers)
   assignTaskMock.mockResolvedValue([{ id: 'user-2', name: 'Raj Patel', email: 'raj@acme.test' }])
   unassignTaskMock.mockResolvedValue(undefined)
   listTaskCommentsMock.mockResolvedValue(comments)
@@ -318,6 +361,8 @@ describe('TaskDetail — subtasks', () => {
 })
 
 describe('TaskDetail — spec links', () => {
+  // Was: type a name into a free-text box and submit. The box is gone — a spec link is
+  // a foreign key, so it is chosen from the project's changes, not typed blind.
   it('calls linkTaskSpec when linking a new spec change', async () => {
     renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
 
@@ -325,12 +370,12 @@ describe('TaskDetail — spec links', () => {
       expect(screen.getByText('team-tasks')).toBeInTheDocument()
     })
 
-    const specInput = screen.getByLabelText(/link spec change/i)
-    fireEvent.change(specInput, { target: { value: 'another-change' } })
-    fireEvent.submit(specInput.closest('form')!)
+    fireEvent.click(screen.getByRole('button', { name: /link spec change/i }))
+    fireEvent.click(await screen.findByRole('option', { name: /sso-callback/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^link$/i }))
 
     await waitFor(() => {
-      expect(linkTaskSpecMock).toHaveBeenCalledWith('t1', 'another-change')
+      expect(linkTaskSpecMock).toHaveBeenCalledWith('t1', 'sso-callback')
     })
   })
 
@@ -577,5 +622,205 @@ describe('TaskDetail — linked specs cross-link into /sdd', () => {
     // handler — so the lookup must be gated, not merely tolerated.
     expect(listSddChangesMock).not.toHaveBeenCalled()
     expect(screen.queryByRole('link', { name: /team-tasks/i })).not.toBeInTheDocument()
+  })
+})
+
+// ── 1. Linked Specs is a selector, not a free-text foreign key ────────────────
+
+describe('TaskDetail — linking a spec is a selector, not free text', () => {
+  it('offers the project\'s SDD changes in a Select instead of a text input', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /link spec change/i })).toBeInTheDocument()
+    })
+
+    // The free-text input — the thing that let a typo become a 422 — must be gone.
+    expect(screen.queryByRole('textbox', { name: /link spec change/i })).not.toBeInTheDocument()
+  })
+
+  it('requests the task\'s project AND archived changes, which stay valid link targets', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(listSddChangesMock).toHaveBeenCalledWith({
+        project: 'acme-platform',
+        include_archived: true,
+      })
+    })
+  })
+
+  it('lists each change with its phase, and excludes changes already linked', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /link spec change/i }))
+
+    // `sso-callback` is unlinked → offered, with its phase alongside.
+    const option = await screen.findByRole('option', { name: /sso-callback/i })
+    expect(within(option).getByText(/apply/i)).toBeInTheDocument()
+
+    // The archived change is still a legitimate target.
+    expect(await screen.findByRole('option', { name: /legacy-auth/i })).toBeInTheDocument()
+
+    // `team-tasks` is ALREADY linked to this task → must not be offered again.
+    expect(screen.queryByRole('option', { name: /team-tasks/i })).not.toBeInTheDocument()
+  })
+
+  it('calls linkTaskSpec with the selected change name', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /link spec change/i }))
+    fireEvent.click(await screen.findByRole('option', { name: /sso-callback/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^link$/i }))
+
+    await waitFor(() => {
+      expect(linkTaskSpecMock).toHaveBeenCalledWith('t1', 'sso-callback')
+    })
+  })
+})
+
+// ── 2. The task's project is shown (read-only — the backend cannot patch it) ──
+
+describe('TaskDetail — project', () => {
+  it('shows the task\'s project', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    const project = await screen.findByTestId('task-detail-project')
+    expect(within(project).getByText('acme-platform')).toBeInTheDocument()
+  })
+
+  it('renders the project read-only — PatchTaskRequest has no `project` field, so an editor would be a lie', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await screen.findByTestId('task-detail-project')
+
+    // No project Select: the backend's PatchTaskRequest (models/types.rs) accepts
+    // title/description/status/priority/due_date/sprint_id — and nothing else. A
+    // project picker here would silently no-op.
+    expect(screen.queryByRole('button', { name: /^project$/i })).not.toBeInTheDocument()
+
+    // And Save must never claim to send one.
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(updateTaskMock).toHaveBeenCalled())
+    expect(updateTaskMock.mock.calls[0][1]).not.toHaveProperty('project')
+  })
+})
+
+// ── 3. Assignees are the project's members, not the whole org ────────────────
+
+describe('TaskDetail — assignee candidates come from the project, not the org', () => {
+  it('resolves the project NAME to an id and lists that project\'s members', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(listProjectMembersMock).toHaveBeenCalledWith('p1')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /^assignee$/i }))
+
+    // Raj is a project member and unassigned → offered.
+    expect(await screen.findByRole('option', { name: /raj patel/i })).toBeInTheDocument()
+    // Dana is in the org but NOT a member of acme-platform → must not appear.
+    expect(screen.queryByRole('option', { name: /dana kim/i })).not.toBeInTheDocument()
+
+    // The whole-org list must not even be fetched when the project resolves.
+    expect(listUsersMock).not.toHaveBeenCalled()
+  })
+
+  it('assigns by user_id, not by the membership row id', async () => {
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^assignee$/i }))
+    fireEvent.click(await screen.findByRole('option', { name: /raj patel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^add assignee$/i }))
+
+    await waitFor(() => {
+      // 'user-2', never 'pm2'.
+      expect(assignTaskMock).toHaveBeenCalledWith('t1', ['user-2'])
+    })
+  })
+
+  it('falls back to all org users when the task\'s project name is not a registered project', async () => {
+    // An unregistered project name is LEGAL (org-shared/unregistered projects stay
+    // visible). There is no membership to read, and an empty assignee dropdown for a
+    // legitimate task would read as a bug — so the fallback is every org user.
+    listProjectsMock.mockResolvedValue([
+      { id: 'p9', org_id: 'org-test-1', name: 'some-other-project', description: null, parent_id: null, created_at: '2026-01-01T00:00:00Z' },
+    ])
+
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(listUsersMock).toHaveBeenCalled()
+    })
+    expect(listProjectMembersMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /^assignee$/i }))
+    expect(await screen.findByRole('option', { name: /dana kim/i })).toBeInTheDocument()
+  })
+
+  it('does not fetch members or org users for a non-privileged user — both endpoints are privileged-only', async () => {
+    // GET /v1/users (api/users.rs) and GET /v1/projects/:id/members (api/admin.rs)
+    // BOTH gate on `auth.role.is_privileged()`, not on a permission string. Firing
+    // either as a plain member is a 403 → window.location.replace('/401').
+    renderAsMember(<TaskDetail task={task} onClose={() => undefined} />, ['task:read', 'task:assign'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
+    })
+
+    expect(listUsersMock).not.toHaveBeenCalled()
+    expect(listProjectMembersMock).not.toHaveBeenCalled()
+  })
+})
+
+// ── 4. Delete from the detail drawer ─────────────────────────────────────────
+
+describe('TaskDetail — delete', () => {
+  it('deletes the task and closes the drawer', async () => {
+    const onClose = vi.fn()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(<TaskDetail task={task} onClose={onClose} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete task/i }))
+
+    await waitFor(() => {
+      expect(deleteTaskMock).toHaveBeenCalledWith('t1')
+    })
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('does not delete when the confirmation is dismissed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete task/i }))
+
+    expect(deleteTaskMock).not.toHaveBeenCalled()
+  })
+
+  it('warns that subtasks are LEFT BEHIND — the soft delete does not cascade', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(<TaskDetail task={task} onClose={() => undefined} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /delete task/i }))
+
+    // The task has 1 subtask. soft_delete_task is a plain UPDATE of archived_at, so
+    // the FK `ON DELETE CASCADE` never fires (backend asserts this in
+    // soft_delete_parent_does_not_cascade_to_subtasks). Telling the user the subtask
+    // is deleted too would be false.
+    const message = confirmSpy.mock.calls[0][0] as string
+    expect(message).toMatch(/1 subtask/i)
+    expect(message).toMatch(/not archived|left|remain/i)
+  })
+
+  it('hides delete without task:delete', async () => {
+    renderAsMember(<TaskDetail task={task} onClose={() => undefined} />, ['task:read', 'task:write'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByRole('button', { name: /delete task/i })).not.toBeInTheDocument()
   })
 })

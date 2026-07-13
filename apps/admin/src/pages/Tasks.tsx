@@ -69,12 +69,14 @@ export default function Tasks() {
   /// Holds a user id, or the literal `me`, which the backend resolves from the
   /// caller's API key (api/tasks.rs). Empty string means "no filter".
   const [assigneeFilter, setAssigneeFilter] = useState<string>('')
+  const [showArchived, setShowArchived] = useState(false)
 
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<TaskFormState>(EMPTY_FORM)
 
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [view, setView] = useState<TasksView>('list')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const filters = useMemo(
     () => ({
@@ -84,8 +86,10 @@ export default function Tasks() {
       // empty string would go out as `?assignee=` and match no one, rendering an
       // empty list that reads as "there are no tasks".
       assignee: assigneeFilter || undefined,
+      // Same reasoning: `undefined` when off, so the param is omitted entirely.
+      include_archived: showArchived || undefined,
     }),
-    [projectFilter, statusFilter, assigneeFilter],
+    [projectFilter, statusFilter, assigneeFilter, showArchived],
   )
 
   const { data: tasks = [], isLoading } = useQuery({
@@ -130,18 +134,75 @@ export default function Tasks() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   })
 
+  const bulkDeleteMut = useMutation({
+    mutationFn: (ids: string[]) => Promise.all(ids.map(id => client.deleteTask(id))),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      setSelectedIds(new Set())
+    },
+  })
+
+  // Archiving what is already archived is a no-op (soft_delete_task only matches rows
+  // with `archived_at IS NULL`), so archived rows are not selectable.
+  const selectableTasks = useMemo(() => tasks.filter(t => !t.archived_at), [tasks])
+  const selectedTasks = useMemo(
+    () => selectableTasks.filter(t => selectedIds.has(t.id)),
+    [selectableTasks, selectedIds],
+  )
+  const allSelected = selectableTasks.length > 0 && selectedTasks.length === selectableTasks.length
+
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!createForm.title.trim()) return
     createMut.mutate()
   }
 
+  const toggleOne = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    setSelectedIds(prev =>
+      prev.size === selectableTasks.length ? new Set() : new Set(selectableTasks.map(t => t.id)),
+    )
+  }
+
+  /** The FK `tasks.parent_id` is ON DELETE CASCADE, but that only fires on a hard
+   *  DELETE and the API never issues one — `soft_delete_task` is a plain
+   *  `UPDATE tasks SET archived_at = …`. So subtasks are NOT archived along with their
+   *  parent; they survive, still pointing at an archived task. The backend pins this
+   *  down in `soft_delete_parent_does_not_cascade_to_subtasks`. Warn about what will
+   *  really happen rather than promising a cascade that does not occur. */
+  const subtaskNote = (list: Task[]): string => {
+    const n = list.reduce((sum, t) => sum + (t.subtask_count ?? 0), 0)
+    if (n === 0) return ''
+    return ` ${n} subtask${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} NOT archived with ${list.length === 1 ? 'it' : 'them'} — ${n === 1 ? 'it remains' : 'they remain'} in the list.`
+  }
+
   const handleDelete = (task: Task) => {
     // Was: "This cannot be undone." It is a SOFT delete — the backend sets archived_at
     // and the row survives. Telling a user an action is irreversible when it is not
     // teaches them to distrust every other warning you give them.
-    if (!window.confirm(`Archive task "${task.title}"? It is removed from the list but can be restored.`)) return
+    if (!window.confirm(
+      `Archive task "${task.title}"?${subtaskNote([task])} It is removed from the list but can be restored.`,
+    )) return
     deleteMut.mutate(task.id)
+  }
+
+  const handleBulkDelete = () => {
+    const count = selectedTasks.length
+    if (count === 0) return
+    // ONE confirmation for the batch, naming the count. ~950 tasks behind a blocking
+    // window.confirm() each is not a feature.
+    if (!window.confirm(
+      `Archive ${count} task${count === 1 ? '' : 's'}?${subtaskNote(selectedTasks)} They are removed from the list but the rows survive.`,
+    )) return
+    bulkDeleteMut.mutate(selectedTasks.map(t => t.id))
   }
 
   if (!canRead) return <Navigate to="/401" replace />
@@ -206,7 +267,19 @@ export default function Tasks() {
           </Select>
         </div>
 
-        <div className="flex items-center gap-1 rounded-full border border-border-primary p-0.5">
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+            <input
+              type="checkbox"
+              aria-label="Show archived"
+              checked={showArchived}
+              onChange={e => { setShowArchived(e.target.checked); setSelectedIds(new Set()) }}
+              className="accent-accent-blue"
+            />
+            Show archived
+          </label>
+
+          <div className="flex items-center gap-1 rounded-full border border-border-primary p-0.5">
           <button
             onClick={() => setView('list')}
             aria-label="List view"
@@ -225,8 +298,48 @@ export default function Tasks() {
           >
             <LayoutGrid className="w-3.5 h-3.5" />
           </button>
+          </div>
         </div>
       </div>
+
+      {/* Bulk action bar — one confirmation for the whole batch. */}
+      {canDelete && selectedTasks.length > 0 && (
+        <div className="flex items-center justify-between gap-3 mb-3 rounded-[14px] border border-border-primary bg-background-tertiary/40 px-4 py-2">
+          <span className="text-xs text-text-secondary">
+            {selectedTasks.length} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-1.5 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Clear
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleteMut.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-status-error text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {bulkDeleteMut.isPending
+                ? 'Deleting…'
+                : `Delete ${selectedTasks.length} selected`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showArchived && (
+        // There is no restore endpoint for tasks: the router exposes /restore for
+        // memories, projects, conventions, code projects and backups — but not tasks —
+        // and PatchTaskRequest has no `archived_at` field. So this toggle is a
+        // read-only window onto archived rows. Say that plainly instead of shipping a
+        // Restore button that cannot work.
+        <p className="text-[10px] text-text-quaternary mb-3">
+          Archived tasks are shown for reference. The API exposes no task-restore
+          endpoint, so they cannot be restored from the admin.
+        </p>
+      )}
 
       {/* Task list/board */}
       {isLoading ? (
@@ -252,7 +365,19 @@ export default function Tasks() {
                 which is how it was reported. */}
             <thead className="bg-[#272729]/40 border-b border-border-secondary">
               <tr>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[40%]">Title</th>
+                {canDelete && (
+                  <th className="px-4 py-3 w-[5%]">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all tasks"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      disabled={selectableTasks.length === 0}
+                      className="accent-accent-blue"
+                    />
+                  </th>
+                )}
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[35%]">Title</th>
                 <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[12%]">Status</th>
                 <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[10%]">Priority</th>
                 <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[18%]">Assignees</th>
@@ -267,10 +392,28 @@ export default function Tasks() {
                   onClick={() => setDetailTask(task)}
                   className="border-b border-border-secondary last:border-b-0 cursor-pointer hover:bg-background-tertiary/40 transition-colors"
                 >
+                  {canDelete && (
+                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                      {/* Archived rows are not selectable — archiving them again is a
+                          no-op the backend would silently swallow. */}
+                      {!task.archived_at && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select task ${task.title}`}
+                          checked={selectedIds.has(task.id)}
+                          onChange={() => toggleOne(task.id)}
+                          className="accent-accent-blue"
+                        />
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-xs text-text-primary font-semibold max-w-0">
                     {/* `title` gives the native tooltip with the full text on hover — the
                         truncation must never be the only place the text exists. */}
-                    <span className="block truncate" title={task.title}>{task.title}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="block truncate" title={task.title}>{task.title}</span>
+                      {task.archived_at && <Badge variant="default" size="sm">Archived</Badge>}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={STATUS_BADGE_VARIANT[task.status]} size="sm">{task.status}</Badge>
@@ -298,7 +441,7 @@ export default function Tasks() {
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {canDelete && (
+                      {canDelete && !task.archived_at && (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDelete(task) }}
                           aria-label={`Delete ${task.title}`}
