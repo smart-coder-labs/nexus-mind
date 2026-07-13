@@ -103,13 +103,18 @@ export default function Tasks() {
     queryFn: () => client.listProjects(),
   })
 
-  // Populates the assignee filter. Gated on canRead like the task list itself: a
-  // 403 here would trip the client's global handler and redirect the whole app to
-  // /401, ejecting a user who is merely not allowed to list tasks.
+  // Populates the assignee filter. Gated on the ROLE, not on task:read — because
+  // `GET /v1/users` (api/users.rs) gates on `auth.role.is_privileged()` and not on any
+  // permission string. Gated on canRead, as it was, a plain member holding task:read
+  // fired this, took a 403, and the client's global handler ran
+  // window.location.replace('/401') — ejecting them from the entire admin for opening
+  // the Tasks page. The filter degrades gracefully without it: "All assignees" and
+  // "Assigned to me" both still work, the latter because the backend resolves the `me`
+  // sentinel from the caller's API key rather than from this list.
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
     queryFn: () => client.listUsers(),
-    enabled: canRead,
+    enabled: isAdmin,
   })
 
   const createMut = useMutation({
@@ -184,12 +189,15 @@ export default function Tasks() {
     return ` ${n} subtask${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} NOT archived with ${list.length === 1 ? 'it' : 'them'} — ${n === 1 ? 'it remains' : 'they remain'} in the list.`
   }
 
+  /** It is a SOFT delete — the backend sets `archived_at` and the row survives — so
+   *  "this cannot be undone" would be a lie. But the API also exposes no task-restore
+   *  endpoint, so "can be restored" is a promise the admin cannot keep. Both halves of
+   *  the truth, or the user learns to distrust every warning you give them. */
+  const survivesNote = ' The row survives and stays visible under "Show archived", but the API has no restore endpoint.'
+
   const handleDelete = (task: Task) => {
-    // Was: "This cannot be undone." It is a SOFT delete — the backend sets archived_at
-    // and the row survives. Telling a user an action is irreversible when it is not
-    // teaches them to distrust every other warning you give them.
     if (!window.confirm(
-      `Archive task "${task.title}"?${subtaskNote([task])} It is removed from the list but can be restored.`,
+      `Archive task "${task.title}"?${subtaskNote([task])} It is removed from the list.${survivesNote}`,
     )) return
     deleteMut.mutate(task.id)
   }
@@ -200,7 +208,7 @@ export default function Tasks() {
     // ONE confirmation for the batch, naming the count. ~950 tasks behind a blocking
     // window.confirm() each is not a feature.
     if (!window.confirm(
-      `Archive ${count} task${count === 1 ? '' : 's'}?${subtaskNote(selectedTasks)} They are removed from the list but the rows survive.`,
+      `Archive ${count} task${count === 1 ? '' : 's'}?${subtaskNote(selectedTasks)} They are removed from the list.${survivesNote}`,
     )) return
     bulkDeleteMut.mutate(selectedTasks.map(t => t.id))
   }

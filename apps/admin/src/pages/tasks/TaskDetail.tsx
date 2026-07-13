@@ -283,8 +283,11 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     const note = n > 0
       ? ` Its ${n} subtask${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} NOT archived with it — ${n === 1 ? 'it remains' : 'they remain'} in the list.`
       : ''
+    // Soft delete: the row survives with `archived_at` set. But the API exposes no
+    // task-restore endpoint, so "can be restored" would be a promise the admin cannot
+    // keep — say what is true instead. ("Show archived" on the list makes it visible.)
     if (!window.confirm(
-      `Archive task "${t.title}"?${note} It is removed from the list but can be restored by an operator.`,
+      `Archive task "${t.title}"?${note} It is removed from the list. The row survives and stays visible under "Show archived", but the API has no restore endpoint.`,
     )) return
     deleteMut.mutate()
   }

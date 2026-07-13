@@ -638,3 +638,33 @@ describe('Tasks — show archived', () => {
     expect(within(row).queryByRole('checkbox')).not.toBeInTheDocument()
   })
 })
+
+// ── The assignee filter's user list is privileged-only ───────────────────────
+
+describe('Tasks — the assignee filter does not eject a plain member', () => {
+  it('does not call listUsers for a non-privileged user', async () => {
+    // GET /v1/users (api/users.rs) gates on `auth.role.is_privileged()` — NOT on a
+    // permission string. It was gated here on task:read, so a member holding only
+    // task:read fired it, took a 403, and the client's global handler ran
+    // window.location.replace('/401') — ejecting them from the admin for the crime of
+    // opening the Tasks page.
+    renderAsMember(<Tasks />, ['task:read'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    expect(listUsersMock).not.toHaveBeenCalled()
+    // The list itself still renders, and "Assigned to me" still works — it needs no
+    // user list, the backend resolves `me` from the API key.
+    expect(screen.getByRole('button', { name: /assignee/i })).toBeInTheDocument()
+  })
+
+  it('still calls listUsers for an admin', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(listUsersMock).toHaveBeenCalled()
+    })
+  })
+})
