@@ -206,6 +206,22 @@ describe('Tasks — list rendering', () => {
     })
   })
 
+  it('a very long title is truncated but keeps its full text reachable on hover', async () => {
+    // The bug was reported as "you cannot delete tasks". The delete button was there —
+    // a 200-character title stretched the Title column until Actions was pushed out of
+    // the viewport. table-fixed + truncate keeps the columns; the native `title`
+    // attribute keeps the text, because the truncation must never be the only place the
+    // full string exists.
+    const long = 'x'.repeat(200)
+    listTasksMock.mockResolvedValue([{ ...tasks[0], title: long }])
+
+    renderWithProviders(<Tasks />)
+
+    const cell = await screen.findByTitle(long)
+    expect(cell).toHaveTextContent(long)
+    expect(cell.className).toMatch(/truncate/)
+  })
+
   it('filters by assignee — sends the selected user id, not their name', async () => {
     renderWithProviders(<Tasks />)
 

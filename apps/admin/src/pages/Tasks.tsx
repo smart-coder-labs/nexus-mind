@@ -137,7 +137,10 @@ export default function Tasks() {
   }
 
   const handleDelete = (task: Task) => {
-    if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
+    // Was: "This cannot be undone." It is a SOFT delete — the backend sets archived_at
+    // and the row survives. Telling a user an action is irreversible when it is not
+    // teaches them to distrust every other warning you give them.
+    if (!window.confirm(`Archive task "${task.title}"? It is removed from the list but can be restored.`)) return
     deleteMut.mutate(task.id)
   }
 
@@ -242,15 +245,19 @@ export default function Tasks() {
         <TasksBoard tasks={tasks} onTaskClick={setDetailTask} />
       ) : (
         <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#272729]">
-          <table className="w-full border-collapse text-left">
+          <table className="w-full table-fixed border-collapse text-left">
+            {/* table-fixed: without it a long title stretches the Title column until the
+                later columns — Actions among them — are pushed out of the viewport, and the
+                delete button becomes unreachable. The bug reads as "you cannot delete tasks",
+                which is how it was reported. */}
             <thead className="bg-[#272729]/40 border-b border-border-secondary">
               <tr>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Title</th>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Status</th>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Priority</th>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Assignees</th>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Due date</th>
-                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Actions</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[40%]">Title</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[12%]">Status</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[10%]">Priority</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[18%]">Assignees</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[12%]">Due date</th>
+                <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide w-[8%]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -260,7 +267,11 @@ export default function Tasks() {
                   onClick={() => setDetailTask(task)}
                   className="border-b border-border-secondary last:border-b-0 cursor-pointer hover:bg-background-tertiary/40 transition-colors"
                 >
-                  <td className="px-4 py-3 text-xs text-text-primary font-semibold">{task.title}</td>
+                  <td className="px-4 py-3 text-xs text-text-primary font-semibold max-w-0">
+                    {/* `title` gives the native tooltip with the full text on hover — the
+                        truncation must never be the only place the text exists. */}
+                    <span className="block truncate" title={task.title}>{task.title}</span>
+                  </td>
                   <td className="px-4 py-3">
                     <Badge variant={STATUS_BADGE_VARIANT[task.status]} size="sm">{task.status}</Badge>
                   </td>

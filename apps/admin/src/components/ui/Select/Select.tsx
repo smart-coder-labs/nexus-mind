@@ -205,25 +205,59 @@ const SelectContent = React.forwardRef<HTMLDivElement, SelectContentProps>(({ cl
         if (typeof ref === "function") ref(node);
         else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
     };
-    const [position, setPosition] = React.useState({ top: 0, left: 0, width: 0 });
+    const [position, setPosition] = React.useState({ top: 0, left: 0, width: 0, maxHeight: 0 });
 
     const updatePosition = React.useCallback(() => {
         const trigger = triggerRef.current;
         const content = contentRef.current;
         if (!trigger || !content) return;
+
         const rect = trigger.getBoundingClientRect();
-        const width = rect.width;
-        let left = rect.left;
-        let top = rect.bottom + 4;
         const contentRect = content.getBoundingClientRect();
+        const width = rect.width;
+
+        let left = rect.left;
         if (left + contentRect.width > window.innerWidth - 8) {
             left = window.innerWidth - contentRect.width - 8;
         }
         if (left < 8) left = 8;
-        if (top + contentRect.height > window.innerHeight - 8) {
-            top = rect.top - contentRect.height - 4;
+
+        // The old logic flipped upward whenever the menu did not fit below — WITHOUT
+        // checking whether it fit above. A tall menu on a trigger low in the viewport
+        // fits neither, so it flipped anyway, `top` went negative, and the list ran off
+        // the top of the window: clipped, unscrollable, first options unreachable.
+        //
+        // Pick the side by how much room there actually is, and cap the height to that
+        // room so the menu SCROLLS instead of being cut. Below stays the default — that
+        // is where a dropdown is expected — and above is used only when it genuinely has
+        // more space.
+        const GAP = 4;
+        const MARGIN = 8;
+        const spaceBelow = window.innerHeight - rect.bottom - GAP - MARGIN;
+        const spaceAbove = rect.top - GAP - MARGIN;
+
+        let top: number;
+        let maxHeight: number;
+
+        if (contentRect.height <= spaceBelow) {
+            top = rect.bottom + GAP;
+            maxHeight = spaceBelow;
+        } else if (contentRect.height <= spaceAbove) {
+            top = rect.top - contentRect.height - GAP;
+            maxHeight = spaceAbove;
+        } else if (spaceBelow >= spaceAbove) {
+            // Fits in neither. Take the roomier side and scroll within it.
+            top = rect.bottom + GAP;
+            maxHeight = spaceBelow;
+        } else {
+            top = MARGIN;
+            maxHeight = spaceAbove;
         }
-        setPosition({ top, left, width });
+
+        // Belt and braces: never let the menu start above the viewport.
+        if (top < MARGIN) top = MARGIN;
+
+        setPosition({ top, left, width, maxHeight: Math.max(maxHeight, 96) });
     }, [triggerRef]);
 
     React.useLayoutEffect(() => {
@@ -286,10 +320,18 @@ const SelectContent = React.forwardRef<HTMLDivElement, SelectContentProps>(({ cl
             role="listbox"
             aria-activedescendant={highlightedValue ? `select-item-${highlightedValue}` : undefined}
             className={cn(
-                "relative z-50 min-w-[8rem] overflow-hidden rounded-[18px] border border-border-primary bg-surface-glass backdrop-blur-xl text-text-primary p-1",
+                // overflow-y-auto, not overflow-hidden: paired with the computed maxHeight,
+                // a menu taller than the space available now SCROLLS instead of being clipped.
+                "relative z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-[18px] border border-border-primary bg-surface-glass backdrop-blur-xl text-text-primary p-1",
                 className
             )}
-            style={{ position: "fixed", top: position.top, left: position.left, minWidth: position.width }}
+            style={{
+                position: "fixed",
+                top: position.top,
+                left: position.left,
+                minWidth: position.width,
+                maxHeight: position.maxHeight || undefined,
+            }}
             data-state={open ? "open" : "closed"}
         >
             {children}
