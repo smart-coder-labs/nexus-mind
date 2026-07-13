@@ -94,7 +94,21 @@ struct Args {
     )]
     api_url: Option<String>,
 
-    #[arg(long, env = "NEXUSMIND_API_KEY", help = "API key for --api-url")]
+    // `hide_env_values` is load-bearing, not cosmetic. Without it clap prints the
+    // RESOLVED VALUE of the env var in `--help`:
+    //
+    //     --api-key <API_KEY>   [env: NEXUSMIND_API_KEY=nm_445e…]
+    //
+    // So merely asking the tool for help displays a live credential — on a shared
+    // terminal, in a CI log, in a screen recording, in a pasted transcript. Asking for
+    // help must never be a way to read a secret. (A `//` comment, not `///`: a doc
+    // comment would become the help text and print this explanation to every user.)
+    #[arg(
+        long,
+        env = "NEXUSMIND_API_KEY",
+        hide_env_values = true,
+        help = "API key for --api-url"
+    )]
     api_key: Option<String>,
 
     #[arg(long, help = "Do not walk openspec/ — import the legacy memories only")]
@@ -1423,6 +1437,35 @@ fn run(args: &Args) -> Result<()> {
         stats.skipped
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod help_leak_tests {
+    use super::Args;
+    use clap::CommandFactory;
+
+    /// Asking a tool for help must never be a way to read a secret.
+    ///
+    /// clap prints the RESOLVED VALUE of an env var in `--help` unless told not to.
+    /// With `NEXUSMIND_API_KEY` exported — which this repo's own CLAUDE.md instructs
+    /// developers to do — `import-sdd --help` printed the live key to the terminal.
+    #[test]
+    fn help_never_prints_the_value_of_the_api_key_env_var() {
+        let secret = "nm_thisisnotarealkey_0123456789abcdef";
+        std::env::set_var("NEXUSMIND_API_KEY", secret);
+
+        let help = Args::command().render_long_help().to_string();
+
+        std::env::remove_var("NEXUSMIND_API_KEY");
+
+        assert!(
+            !help.contains(secret),
+            "--help leaked the API key. `hide_env_values = true` is missing from the \
+             api_key arg.\n\n{help}"
+        );
+        // The variable NAME is still shown — that is useful and carries nothing secret.
+        assert!(help.contains("NEXUSMIND_API_KEY"), "the env var name should still be documented");
+    }
 }
 
 #[cfg(test)]
