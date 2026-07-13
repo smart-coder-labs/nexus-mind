@@ -6389,6 +6389,44 @@ pub fn update_project_event_overrides(
 
 // ── Tasks (team-tasks) ──────────────────────────────────────────────────────
 
+/// How many levels of task nesting are allowed. `epic -> PR -> item` needs three;
+/// the cap leaves room without letting a tree grow unbounded.
+pub const MAX_TASK_DEPTH: usize = 5;
+
+/// Number of ancestors above `task_id` (0 for a root task).
+///
+/// The loop is bounded by `MAX_TASK_DEPTH + 1` rather than by trusting the data to be
+/// acyclic. It cannot cycle today — parents are set only at creation, and a task being
+/// created has no children — but a walk that trusts its input is a hang waiting for a
+/// corrupt row, and this one runs inside a write path.
+fn task_ancestor_depth(conn: &Connection, org_id: &str, task_id: &str) -> Result<usize> {
+    let mut depth = 0usize;
+    let mut current = Some(task_id.to_string());
+
+    while let Some(id) = current {
+        if depth > MAX_TASK_DEPTH {
+            return Err(anyhow!("task ancestry is cyclic or deeper than the cap"));
+        }
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM tasks WHERE id = ?1 AND org_id = ?2",
+                rusqlite::params![id, org_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        match parent {
+            Some(p) => {
+                depth += 1;
+                current = Some(p);
+            }
+            None => break,
+        }
+    }
+    Ok(depth)
+}
+
+
 /// Optional equality/membership filters for [`list_tasks`]/[`count_tasks`].
 #[derive(Debug, Clone, Default)]
 pub struct TaskListFilters {
@@ -6451,11 +6489,28 @@ pub fn create_task(
     if let Some(parent_id) = &req.parent_id {
         let parent = get_task(conn, org_id, parent_id)?
             .ok_or_else(|| anyhow::anyhow!("parent task not found"))?;
-        if parent.parent_id.is_some() {
-            return Err(anyhow::anyhow!("cannot nest a subtask under a subtask"));
-        }
         if parent.project != req.project {
             return Err(anyhow::anyhow!("parent task belongs to a different project"));
+        }
+        // The old rule here was `cannot nest a subtask under a subtask` — two levels,
+        // hard-stop. The schema never required it: `tasks.parent_id` is a self-referencing
+        // FK and has always supported an arbitrary tree. The restriction lived only in
+        // this validation, and it does not match how work is actually shaped:
+        //
+        //     change / epic  ->  PR / work unit  ->  checklist item
+        //
+        // which is exactly what SDD produces (a tasks.md has sections, each with items).
+        // Flattening it costs you either the grouping or the items.
+        //
+        // Depth is bounded instead. A cycle cannot form here — the task being created has
+        // no children yet, and `patch_task` cannot re-parent — but the walk is bounded
+        // anyway rather than trusting that, because a loop that trusts its data is a
+        // hang waiting for corrupt data.
+        let depth = task_ancestor_depth(conn, org_id, parent_id)?;
+        if depth + 1 >= MAX_TASK_DEPTH {
+            return Err(anyhow::anyhow!(
+                "task nesting too deep (max {MAX_TASK_DEPTH} levels)"
+            ));
         }
     }
 
@@ -6749,9 +6804,31 @@ fn hydrate_tasks(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
         }
     }
 
+    // subtask_count was hydrated only by `get_task`, so every LIST response reported 0
+    // for tasks that in fact had children. The API was telling the admin that a task with
+    // six subtasks had none — a lie in the payload, and one you only notice by opening the
+    // task. Batched like the two above: one query, not one per task.
+    let mut subtasks_by_task: HashMap<String, i64> = HashMap::new();
+    {
+        let sql = format!(
+            "SELECT parent_id, COUNT(*) FROM tasks
+             WHERE parent_id IN ({placeholders}) AND archived_at IS NULL
+             GROUP BY parent_id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(id_refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (parent_id, count) = row?;
+            subtasks_by_task.insert(parent_id, count);
+        }
+    }
+
     for task in tasks.iter_mut() {
         task.assignees = assignees_by_task.remove(&task.id).unwrap_or_default();
         task.labels = labels_by_task.remove(&task.id).unwrap_or_default();
+        task.subtask_count = subtasks_by_task.remove(&task.id).unwrap_or(0);
     }
 
     Ok(())
@@ -16699,29 +16776,6 @@ mod task_query_tests {
         assert_eq!(children[0].id, child.id);
     }
 
-    #[test]
-    fn create_task_rejects_nesting_under_a_subtask() {
-        let (conn, org, user) = setup();
-        let parent = mk_task(&conn, &org, &user, "proj", "Parent");
-        let child_req = CreateTaskRequest {
-            project: "proj".to_string(),
-            title: "Child".to_string(),
-            parent_id: Some(parent.id.clone()),
-            ..Default::default()
-        };
-        let child = create_task(&conn, &org, &user, &child_req).unwrap();
-
-        let grandchild_req = CreateTaskRequest {
-            project: "proj".to_string(),
-            title: "Grandchild".to_string(),
-            parent_id: Some(child.id.clone()),
-            ..Default::default()
-        };
-        let result = create_task(&conn, &org, &user, &grandchild_req);
-        assert!(result.is_err());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Grandchild'", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 0);
-    }
 
     #[test]
     fn create_task_rejects_cross_project_parent() {
@@ -17030,6 +17084,118 @@ mod task_query_tests {
         let list = list_retrospectives(&conn, &sprint.id).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, retro.id);
+    }
+}
+
+#[cfg(test)]
+mod task_nesting_tests {
+    use super::*;
+    use crate::db::connection::connect;
+    use crate::db::migrations;
+
+    fn setup() -> (Connection, String, String) {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, user, _k) = bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        (conn, org.id, user.id)
+    }
+
+    fn mk(conn: &Connection, org: &str, user: &str, title: &str, parent: Option<&str>) -> Result<Task> {
+        create_task(conn, org, user, &CreateTaskRequest {
+            project: "p".into(),
+            title: title.into(),
+            parent_id: parent.map(str::to_string),
+            ..Default::default()
+        })
+    }
+
+    /// The shape of real work is three levels deep, and the old rule forbade it:
+    ///
+    ///     change / epic  ->  PR / work unit  ->  checklist item
+    ///
+    /// SDD produces exactly that (a tasks.md has sections, each with items). Flattening
+    /// it costs you either the grouping or the items.
+    #[test]
+    fn a_subtask_can_have_subtasks() {
+        let (conn, org, user) = setup();
+        let epic = mk(&conn, &org, &user, "epic", None).unwrap();
+        let pr = mk(&conn, &org, &user, "PR-1", Some(&epic.id)).unwrap();
+        let item = mk(&conn, &org, &user, "1.1 RED: write the failing test", Some(&pr.id))
+            .expect("three levels must be allowed — this used to fail with `cannot nest a subtask under a subtask`");
+
+        assert_eq!(item.parent_id.as_deref(), Some(pr.id.as_str()));
+        assert_eq!(pr.parent_id.as_deref(), Some(epic.id.as_str()));
+    }
+
+    /// Unbounded depth is not the goal — a bounded tree is.
+    #[test]
+    fn nesting_deeper_than_the_cap_is_refused() {
+        let (conn, org, user) = setup();
+        let mut parent = mk(&conn, &org, &user, "root", None).unwrap();
+        // MAX_TASK_DEPTH levels are reachable...
+        for i in 1..MAX_TASK_DEPTH {
+            parent = mk(&conn, &org, &user, &format!("level {i}"), Some(&parent.id))
+                .unwrap_or_else(|e| panic!("level {i} must be allowed (cap is {MAX_TASK_DEPTH}): {e}"));
+        }
+        // ...and the one past it is not.
+        let err = mk(&conn, &org, &user, "too deep", Some(&parent.id)).unwrap_err();
+        assert!(
+            err.to_string().contains("too deep"),
+            "past the cap must be refused, got: {err}"
+        );
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks WHERE title = 'too deep'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused create must write no row");
+    }
+
+    /// `subtask_count` was hydrated only by `get_task`. Every LIST response reported 0 for
+    /// tasks that had children — the API told the admin a task with six subtasks had none.
+    #[test]
+    fn list_tasks_reports_the_real_subtask_count() {
+        let (conn, org, user) = setup();
+        let parent = mk(&conn, &org, &user, "section", None).unwrap();
+        for i in 0..3 {
+            mk(&conn, &org, &user, &format!("item {i}"), Some(&parent.id)).unwrap();
+        }
+        let lonely = mk(&conn, &org, &user, "no children", None).unwrap();
+
+        let listed = list_tasks(&conn, &org, None, &TaskListFilters::default(), 100, 0).unwrap();
+
+        let p = listed.iter().find(|t| t.id == parent.id).unwrap();
+        assert_eq!(p.subtask_count, 3, "the list must report the real count, not 0");
+
+        let l = listed.iter().find(|t| t.id == lonely.id).unwrap();
+        assert_eq!(l.subtask_count, 0);
+    }
+
+    /// The parent must still belong to the same project — that rule was never the problem.
+    #[test]
+    fn a_parent_in_another_project_is_still_refused() {
+        let (conn, org, user) = setup();
+        let other = create_task(&conn, &org, &user, &CreateTaskRequest {
+            project: "other-project".into(), title: "elsewhere".into(), ..Default::default()
+        }).unwrap();
+
+        let err = mk(&conn, &org, &user, "child", Some(&other.id)).unwrap_err();
+        assert!(err.to_string().contains("different project"));
+    }
+
+    /// The ancestry walk is bounded rather than trusting the data to be acyclic: it runs
+    /// inside a write path, and a loop that trusts its input is a hang waiting for a
+    /// corrupt row.
+    #[test]
+    fn a_cyclic_ancestry_is_reported_not_hung_on() {
+        let (conn, org, user) = setup();
+        let a = mk(&conn, &org, &user, "a", None).unwrap();
+        let b = mk(&conn, &org, &user, "b", Some(&a.id)).unwrap();
+        // Forge a cycle behind create_task's back — only corruption could do this.
+        conn.execute("UPDATE tasks SET parent_id = ?1 WHERE id = ?2", rusqlite::params![b.id, a.id])
+            .unwrap();
+
+        let err = task_ancestor_depth(&conn, &org, &b.id).unwrap_err();
+        assert!(err.to_string().contains("cyclic"), "got: {err}");
     }
 }
 

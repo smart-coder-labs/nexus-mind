@@ -333,21 +333,35 @@ mod tests {
         };
         let app = app_with_rate_limit(store);
 
-        // Drain the free-tier bucket (100) via a non-exempt path.
-        for _ in 0..100 {
-            let _ = app.clone().oneshot(
+        // Drain the non-exempt path until it actually throttles — do NOT assume that
+        // exactly `capacity` requests is enough.
+        //
+        // The bucket refills continuously (free tier: 100/60 = ~1.67 tokens/sec). The old
+        // version fired exactly 100 requests and asserted the 101st was rejected, which
+        // holds only if those 100 complete in under ~0.6s. Under load — the rest of the
+        // suite running in parallel, a build competing for CPU — they do not, the bucket
+        // refills mid-drain, and the 101st is allowed. The test failed intermittently on
+        // main for reasons that had nothing to do with the code under test.
+        //
+        // So: observe the throttle instead of computing it. The cap is a safety net, not
+        // the assertion.
+        let mut throttled = None;
+        for _ in 0..500 {
+            let resp = app.clone().oneshot(
                 Request::builder().uri("/v1/test")
                     .header("Authorization", format!("Bearer {api_key}"))
                     .body(Body::empty()).unwrap(),
             ).await.unwrap();
+            if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+                throttled = Some(resp);
+                break;
+            }
         }
-        // Non-exempt path is now throttled.
-        let throttled = app.clone().oneshot(
-            Request::builder().uri("/v1/test")
-                .header("Authorization", format!("Bearer {api_key}"))
-                .body(Body::empty()).unwrap(),
-        ).await.unwrap();
-        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS, "non-exempt path must be throttled once drained");
+        let throttled = throttled.expect(
+            "the non-exempt path must throttle eventually — 500 requests against a 100-token \
+             bucket refilling at ~1.67/sec cannot all pass",
+        );
+        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
 
         // The auth bootstrap path must STILL succeed — no logout.
         let me = app.clone().oneshot(

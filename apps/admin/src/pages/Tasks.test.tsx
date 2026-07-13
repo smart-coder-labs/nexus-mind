@@ -206,6 +206,22 @@ describe('Tasks — list rendering', () => {
     })
   })
 
+  it('a very long title is truncated but keeps its full text reachable on hover', async () => {
+    // The bug was reported as "you cannot delete tasks". The delete button was there —
+    // a 200-character title stretched the Title column until Actions was pushed out of
+    // the viewport. table-fixed + truncate keeps the columns; the native `title`
+    // attribute keeps the text, because the truncation must never be the only place the
+    // full string exists.
+    const long = 'x'.repeat(200)
+    listTasksMock.mockResolvedValue([{ ...tasks[0], title: long }])
+
+    renderWithProviders(<Tasks />)
+
+    const cell = await screen.findByTitle(long)
+    expect(cell).toHaveTextContent(long)
+    expect(cell.className).toMatch(/truncate/)
+  })
+
   it('filters by assignee — sends the selected user id, not their name', async () => {
     renderWithProviders(<Tasks />)
 
@@ -463,5 +479,192 @@ describe('Tasks — delete requires confirmation', () => {
 
     const row = screen.getByText('Fix login redirect bug').closest('tr')!
     expect(within(row).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
+  })
+})
+
+// ── Bulk delete ───────────────────────────────────────────────────────────────
+//
+// ~950 tasks in the project and no multi-select: deleting them one at a time
+// through a blocking window.confirm() each is not a feature.
+
+describe('Tasks — bulk delete', () => {
+  it('selects rows individually and deletes them behind ONE confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /select task fix login redirect bug/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /select task write onboarding docs/i }))
+
+    fireEvent.click(screen.getByRole('button', { name: /delete 2 selected/i }))
+
+    await waitFor(() => {
+      expect(deleteTaskMock).toHaveBeenCalledTimes(2)
+    })
+    expect(deleteTaskMock).toHaveBeenCalledWith('t1')
+    expect(deleteTaskMock).toHaveBeenCalledWith('t2')
+    // ONE confirmation for the batch — not one per task.
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(confirmSpy.mock.calls[0][0]).toMatch(/2 tasks/i)
+  })
+
+  it('select-all in the header selects every visible task', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /select all tasks/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete 2 selected/i }))
+
+    await waitFor(() => {
+      expect(deleteTaskMock).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('select-all toggles back off, clearing the selection', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    const selectAll = screen.getByRole('checkbox', { name: /select all tasks/i })
+    fireEvent.click(selectAll)
+    expect(screen.getByRole('button', { name: /delete 2 selected/i })).toBeInTheDocument()
+
+    fireEvent.click(selectAll)
+    expect(screen.queryByRole('button', { name: /delete 2 selected/i })).not.toBeInTheDocument()
+  })
+
+  it('does not delete anything when the single confirmation is dismissed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /select all tasks/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete 2 selected/i }))
+
+    expect(deleteTaskMock).not.toHaveBeenCalled()
+  })
+
+  it('the confirmation names the subtasks, which the soft delete does NOT cascade to', async () => {
+    // tasks.parent_id is ON DELETE CASCADE, but the API never hard-deletes:
+    // soft_delete_task is an UPDATE of archived_at, so the FK cascade never fires.
+    // The subtasks survive, orphaned under an archived parent — say that, don't
+    // claim a deletion that will not happen.
+    listTasksMock.mockResolvedValue([
+      { ...tasks[0], subtask_count: 3 },
+      tasks[1],
+    ])
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /select all tasks/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete 2 selected/i }))
+
+    const message = confirmSpy.mock.calls[0][0] as string
+    expect(message).toMatch(/3 subtask/i)
+    expect(message).toMatch(/not archived|left|remain/i)
+  })
+
+  it('hides bulk selection entirely without task:delete', async () => {
+    renderAsMember(<Tasks />, ['task:read', 'task:write'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByRole('checkbox', { name: /select all tasks/i })).not.toBeInTheDocument()
+  })
+})
+
+// ── Archived tasks ────────────────────────────────────────────────────────────
+
+describe('Tasks — show archived', () => {
+  it('does not request archived tasks by default', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(listTasksMock).toHaveBeenCalled()
+    })
+    expect(listTasksMock.mock.calls[0][0]).not.toMatchObject({ include_archived: true })
+  })
+
+  it('re-queries with include_archived when the toggle is switched on', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    listTasksMock.mockClear()
+    fireEvent.click(screen.getByRole('checkbox', { name: /show archived/i }))
+
+    await waitFor(() => {
+      expect(listTasksMock).toHaveBeenCalledWith(
+        expect.objectContaining({ include_archived: true }),
+      )
+    })
+  })
+
+  it('marks an archived task and offers no delete for it — it is already archived', async () => {
+    listTasksMock.mockResolvedValue([
+      { ...tasks[0], archived_at: '2026-07-05T00:00:00Z' },
+      tasks[1],
+    ])
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Fix login redirect bug').closest('tr')!
+    expect(within(row).getByText(/archived/i)).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
+    // Not selectable for bulk delete either — deleting an archived task is a no-op.
+    expect(within(row).queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+})
+
+// ── The assignee filter's user list is privileged-only ───────────────────────
+
+describe('Tasks — the assignee filter does not eject a plain member', () => {
+  it('does not call listUsers for a non-privileged user', async () => {
+    // GET /v1/users (api/users.rs) gates on `auth.role.is_privileged()` — NOT on a
+    // permission string. It was gated here on task:read, so a member holding only
+    // task:read fired it, took a 403, and the client's global handler ran
+    // window.location.replace('/401') — ejecting them from the admin for the crime of
+    // opening the Tasks page.
+    renderAsMember(<Tasks />, ['task:read'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix login redirect bug')).toBeInTheDocument()
+    })
+
+    expect(listUsersMock).not.toHaveBeenCalled()
+    // The list itself still renders, and "Assigned to me" still works — it needs no
+    // user list, the backend resolves `me` from the API key.
+    expect(screen.getByRole('button', { name: /assignee/i })).toBeInTheDocument()
+  })
+
+  it('still calls listUsers for an admin', async () => {
+    renderWithProviders(<Tasks />)
+
+    await waitFor(() => {
+      expect(listUsersMock).toHaveBeenCalled()
+    })
   })
 })
