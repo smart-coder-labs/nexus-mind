@@ -665,6 +665,11 @@ pub async fn create_project_api(
                 db_err(e)
             }
         })?;
+    // Register the creator as a project member so the project is visible via
+    // list_projects_visible (and accessible via get_project_api, which also
+    // requires membership). Without this, a privileged-but-not-super_user
+    // creator gets a 201 but an empty listing.
+    queries::upsert_project_member(&conn, &project.id, &auth.user_id, "admin").map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(project)))
 }
 
