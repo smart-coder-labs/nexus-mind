@@ -1,5 +1,4 @@
-import { Badge } from '../../components/ui/Badge/Badge'
-import { PRIORITY_BADGE_VARIANT } from '../Tasks'
+import { PriorityPill } from '../Tasks'
 import type { Task, TaskStatus } from '../../types'
 
 const BOARD_COLUMNS: { status: TaskStatus; label: string }[] = [
@@ -25,7 +24,7 @@ export default function TasksBoard({ tasks, onTaskClick }: TasksBoardProps) {
           <div
             key={col.status}
             data-testid={`board-column-${col.status}`}
-            className="rounded-[18px] bg-[#272729] border border-border-primary p-3 min-h-[240px]"
+            className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] p-3 min-h-[240px]"
           >
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide">{col.label}</h3>
@@ -39,11 +38,11 @@ export default function TasksBoard({ tasks, onTaskClick }: TasksBoardProps) {
                   <button
                     key={task.id}
                     onClick={() => onTaskClick(task)}
-                    className="w-full text-left rounded-[11px] border border-border-secondary bg-background-tertiary/40 p-2.5 hover:border-accent-blue/40 transition-colors"
+                    className="w-full text-left rounded-[11px] border border-white/[0.07] bg-white/[0.04] p-2.5 hover:border-accent-blue/40 transition-colors"
                   >
                     <p className="text-xs text-text-primary font-medium mb-1.5">{task.title}</p>
                     <div className="flex items-center justify-between">
-                      <Badge variant={PRIORITY_BADGE_VARIANT[task.priority]} size="sm">{task.priority}</Badge>
+                      <PriorityPill priority={task.priority} />
                       {task.assignees.length > 0 && (
                         <span className="text-[10px] text-text-quaternary">
                           {task.assignees[0].name}{task.assignees.length > 1 ? ` +${task.assignees.length - 1}` : ''}

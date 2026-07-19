@@ -1,0 +1,36 @@
+/* ========================================
+   KPI MARQUEE — seamless horizontal scroll for stat-tile strips
+   ======================================== */
+
+.kpi-marquee-wrapper {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+}
+
+.kpi-marquee-track {
+  display: flex;
+  gap: 12px;
+  width: max-content;
+  animation: kpi-marquee 36s linear infinite;
+}
+
+/* Pause on hover so the numbers can actually be read. */
+.kpi-marquee-wrapper:hover .kpi-marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes kpi-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kpi-marquee-track {
+    animation-play-state: paused;
+  }
+}

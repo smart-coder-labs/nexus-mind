@@ -41,12 +41,32 @@ vi.mock('../lib/download', () => ({
 const listMemoriesMock = vi.fn().mockResolvedValue([])
 const searchMemoriesMock = vi.fn().mockResolvedValue([])
 
+// react-force-graph-3d needs WebGL — stub it so the lazily-loaded
+// MemoryBackgroundGraph (rendered as a fixed background layer behind the
+// page, see Memories.tsx) never touches a real canvas in jsdom. Same
+// convention as Graph.test.tsx / OrgMemoryGraph.test.tsx / GraphTab.test.tsx.
+vi.mock('react-force-graph-3d', () => ({
+  default: () => <div data-testid="force-graph" />,
+}))
+
 vi.mock('../api/client', () => ({
   createClient: vi.fn(() => ({
     listMemories: listMemoriesMock,
     searchMemories: searchMemoriesMock,
     listUsers: vi.fn().mockResolvedValue([]),
     deleteMemory: vi.fn().mockResolvedValue(undefined),
+    // Stat tiles (design delta 1) + duplicates badge (design delta 3) —
+    // admin-only queries added alongside the stat tiles/graph feature.
+    getMemoryHealth: vi.fn().mockResolvedValue({
+      total_memories: 0, duplicate_count: 0, stale_count: 0, untagged_count: 0,
+    }),
+    getMemoryTrends: vi.fn().mockResolvedValue({
+      daily_counts: [], by_type: [], by_project: [], total: 0, this_week: 0, this_month: 0,
+    }),
+    getDuplicates: vi.fn().mockResolvedValue([]),
+    // Ambient background graph (design delta 2) — no projects means it never
+    // fetches graph data or mounts <ForceGraph3D> with real nodes.
+    listProjects: vi.fn().mockResolvedValue([]),
   })),
 }))
 
@@ -131,10 +151,14 @@ describe('Memories — client-side export', () => {
       },
     ]
 
-    // First call (initial render, limit 50) returns [], second call (export, limit 5000) returns fixture
-    listMemoriesMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(fixture)
+    // Route by the call's own shape rather than invocation order — the page
+    // now fires several `listMemories` calls concurrently (paginated list,
+    // the admin pinned-count scan at `limit: VIEW_ALL_LIMIT`), so a plain
+    // FIFO `mockResolvedValueOnce` chain is no longer reliable. Only the
+    // export path (limit: 5000) should see the fixture.
+    listMemoriesMock.mockImplementation((params?: { limit?: number }) =>
+      Promise.resolve(params?.limit === 5000 ? fixture : []),
+    )
 
     // Capture the Blob passed to createObjectURL
     let capturedBlob: Blob | undefined

@@ -48,10 +48,14 @@ describe('Graph page', () => {
     mockGetMemoryGraphForFamily.mockImplementation((id: string) => Promise.resolve(familyResponse(id)))
   })
 
-  it('shows the empty state when no project is selected', async () => {
-    // Persisted selection starts empty → empty state is shown.
+  it('auto-selects a project and renders the graph instead of a blank prompt', async () => {
+    // The redesigned page always resolves to a selected project (there is no
+    // deselect affordance), so with no persisted selection it auto-selects the
+    // first project and renders the graph rather than a "pick a project" state.
     renderWithProviders(<Graph />)
-    expect(await screen.findByText(/Choose a project from the dropdown/i)).toBeInTheDocument()
+    const select = (await screen.findByLabelText('Select project')) as HTMLSelectElement
+    await waitFor(() => expect(select.value).toBe('p1'))
+    expect(await screen.findByTestId('force-graph')).toBeInTheDocument()
   })
 
   it('auto-selects the first non-archived project on first load', async () => {
@@ -72,15 +76,13 @@ describe('Graph page', () => {
     expect(optionTexts.some(t => t.includes('beta'))).toBe(true)
   })
 
-  it('renders the legend swatches for the resolved family after a project is selected', async () => {
+  it('renders the family legend chips for the resolved family after a project is selected', async () => {
     localStorage.setItem('nexusmind-graph-page-project', JSON.stringify({ __v: 1, value: 'p1' }))
     renderWithProviders(<Graph />)
 
-    // The legend's "Project family: alpha + 1 descendant" label confirms the
-    // BFS walk resolved to {alpha, beta}.
-    expect(await screen.findByText(/Project family: alpha \+ 1 descendant/i)).toBeInTheDocument()
-    // The list of swatches is exposed via role="list" with aria-label "Project legend".
-    const list = await screen.findByRole('list', { name: 'Project legend' })
+    // The family legend exposes one clickable chip per project in the resolved
+    // BFS family ({alpha, beta}), via role="list" aria-label "Project family legend".
+    const list = await screen.findByRole('list', { name: 'Project family legend' })
     expect(list.textContent).toContain('alpha')
     expect(list.textContent).toContain('beta')
   })

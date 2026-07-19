@@ -2,8 +2,17 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { Shield, Trash2, Plus, Users, X, UserMinus, Search } from 'lucide-react'
+import { Shield, Trash2, Plus, Users, X, UserMinus, Search, KeyRound, Sparkles } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type { CustomRole } from '../types'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { cn } from '../lib/utils'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Roles page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   admin: 'Full access to all settings and data',
@@ -63,6 +72,54 @@ export default function Roles() {
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
   })
+
+  // Stat tiles derived strictly from the already-fetched `roles` array (no invented numbers).
+  const roleStats = useMemo(() => {
+    if (!roles) return null
+    const systemCount = roles.filter(r => r.is_template).length
+    const customCount = roles.length - systemCount
+    // Per-role member counts come from an untyped `user_count` field some API responses include
+    // (see `userCount` below); only roll it into a total tile when every role has it.
+    const memberCountsKnown = roles.every(r => typeof (r as any).user_count === 'number')
+    const totalMembers = memberCountsKnown
+      ? roles.reduce((sum, r) => sum + (r as any).user_count, 0)
+      : null
+
+    const tiles: { label: string; value: string; sub: string; icon: LucideIcon }[] = [
+      {
+        label: 'Total Roles',
+        value: String(roles.length),
+        sub: `${systemCount} system · ${customCount} custom`,
+        icon: Shield,
+      },
+      {
+        // AVAILABLE_PERMISSIONS is the full permission catalog already defined in this file
+        // (used to render the create/edit checklists) — a real app constant, not a fabricated figure.
+        label: 'Permissions',
+        value: String(AVAILABLE_PERMISSIONS.length),
+        sub: 'fine-grained catalog',
+        icon: KeyRound,
+      },
+      {
+        label: 'Custom Roles',
+        value: String(customCount),
+        sub: 'team-defined roles',
+        icon: Sparkles,
+      },
+    ]
+    if (totalMembers !== null) {
+      tiles.push({
+        label: 'Assigned Members',
+        value: String(totalMembers),
+        sub: 'across all roles',
+        icon: Users,
+      })
+    }
+    // A per-system-role breakdown (Admins / Members / Viewers, as in the mockup) is omitted:
+    // it would require per-role display data (e.g. an admin's name) that this page only fetches
+    // once "Manage members" is opened for that specific role.
+    return tiles
+  }, [roles])
 
   // Manage members modal state
   const [managingRole, setManagingRole] = useState<CustomRole | null>(null)
@@ -165,16 +222,31 @@ export default function Roles() {
   return (
     <>
     <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-base font-semibold text-text-primary">Roles & Permissions</h1>
-        <p className="text-xs text-text-quaternary mt-0.5">Define custom roles and manage fine-grained permissions.</p>
+      <div className="flex items-center gap-3">
+        <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+          <Shield className="w-5 h-5 text-accent-blue" />
+        </div>
+        <div>
+          <h1 className="text-base font-semibold text-text-primary">Roles & Permissions</h1>
+          <p className="text-xs text-text-quaternary mt-0.5">Define custom roles and manage fine-grained permissions.</p>
+        </div>
       </div>
+
+      {roleStats && (
+        <KpiMarquee role="list" aria-label="Role statistics">
+          {roleStats.map((t, i) => (
+            <div key={t.label} className="w-[232px] flex-none">
+              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
+            </div>
+          ))}
+        </KpiMarquee>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Roles List */}
         <div className="lg:col-span-2 space-y-4">
           <div className="space-y-3">
-            <span className="text-xs font-semibold text-text-secondary">Active Roles</span>
+            <span className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Active Roles</span>
             {deleteErrorMsg && (
               <div className="p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
                 {deleteErrorMsg}
@@ -182,18 +254,18 @@ export default function Roles() {
             )}
             {isLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="bg-[#272729] rounded-[18px] p-5 border border-border-primary space-y-2 animate-pulse">
-                  <div className="h-3.5 rounded-[5px] bg-[#1d1d1f] w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] w-2/3" />
+                <div key={i} className={`rounded-[18px] p-5 space-y-2 animate-pulse ${GLASS_PANEL}`}>
+                  <div className="h-3.5 rounded-[5px] bg-white/[0.06] w-1/3" />
+                  <div className="h-2.5 rounded-[5px] bg-white/[0.06] w-2/3" />
                   <div className="flex gap-1">
                     {Array.from({ length: 3 }).map((_, j) => (
-                      <div key={j} className="h-4 w-16 rounded-[5px] bg-[#1d1d1f]" />
+                      <div key={j} className="h-4 w-16 rounded-full bg-white/[0.06]" />
                     ))}
                   </div>
                 </div>
               ))
             ) : roles?.length === 0 ? (
-              <div className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex flex-col items-center gap-2 py-12 text-center">
+              <div className={`rounded-[18px] px-5 py-12 flex flex-col items-center gap-2 text-center ${GLASS_PANEL}`}>
                 <Shield className="w-6 h-6 text-text-quaternary/50" />
                 <p className="text-xs font-semibold text-text-secondary">No custom roles yet</p>
                 <p className="text-xs text-text-quaternary max-w-xs">Create a custom role on the right to define fine-grained permission sets for your team.</p>
@@ -203,38 +275,66 @@ export default function Roles() {
                 const roleDescription = role.description || ROLE_DESCRIPTIONS[role.name] || null
                 const userCount = (role as any).user_count
                 return (
-                  <div key={role.id} className="bg-[#272729] rounded-[18px] p-5 border border-border-primary flex items-start justify-between gap-4">
-                    <div className="space-y-1 flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-semibold text-text-primary">{role.display_name}</span>
-                        <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
-                        {role.is_template ? (
-                          <span className="text-[10px] bg-white/[0.06] text-text-quaternary px-1.5 py-0.5 rounded-[5px]">
-                            System
-                          </span>
-                        ) : (
-                          <span className="text-[10px] bg-status-success/15 text-status-success px-1.5 py-0.5 rounded-[5px] font-semibold">
-                            Custom
-                          </span>
+                  <div key={role.id} className={`rounded-[18px] p-5 flex items-start justify-between gap-4 ${GLASS_PANEL}`}>
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <div
+                        className={cn(
+                          'w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0',
+                          role.is_template ? 'bg-accent-blue/12' : 'bg-status-success/12'
                         )}
-                        {/* Member count badge */}
-                        <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary flex items-center gap-1">
-                          <Users className="w-3 h-3" />
-                          {userCount != null ? userCount : '—'}
-                        </span>
+                      >
+                        <Shield className={cn('w-4 h-4', role.is_template ? 'text-accent-blue' : 'text-status-success')} />
                       </div>
-                      {roleDescription && (
-                        <p className="text-[10px] text-text-quaternary">{roleDescription}</p>
-                      )}
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {role.permissions.map(p => (
-                          <span
-                            key={p}
-                            className="text-[10px] border border-border-secondary bg-[#272729] text-text-secondary px-1.5 py-0.5 rounded-[5px]"
-                          >
-                            {p}
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-semibold text-text-primary">{role.display_name}</span>
+                          <span className="text-xs text-text-tertiary font-mono">({role.name})</span>
+                          {role.is_template ? (
+                            <span className="text-[10px] font-semibold bg-white/[0.06] text-text-quaternary px-2 py-0.5 rounded-full">
+                              System
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold bg-status-success/15 text-status-success px-2 py-0.5 rounded-full">
+                              Custom
+                            </span>
+                          )}
+                          {/* Member count badge */}
+                          <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-secondary flex items-center gap-1">
+                            <Users className="w-3 h-3" />
+                            {userCount != null ? userCount : '—'}
                           </span>
-                        ))}
+                        </div>
+                        {roleDescription && (
+                          <p className="text-[10px] text-text-quaternary">{roleDescription}</p>
+                        )}
+                        <div className="space-y-1.5 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
+                              Permissions
+                            </span>
+                            <span className="text-[10px] font-semibold text-accent-blue">
+                              {role.permissions.length}/{AVAILABLE_PERMISSIONS.length}
+                            </span>
+                          </div>
+                          <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-accent-blue"
+                              style={{
+                                width: `${Math.min(100, Math.round((role.permissions.length / AVAILABLE_PERMISSIONS.length) * 100))}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {role.permissions.map(p => (
+                              <span
+                                key={p}
+                                className="text-[10px] font-mono border border-white/[0.08] bg-white/[0.02] text-text-tertiary px-2 py-0.5 rounded-full"
+                              >
+                                {p}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -272,7 +372,7 @@ export default function Roles() {
                           }}
                           aria-label={`Delete role ${role.display_name}`}
                           disabled={deleteMut.isPending}
-                          className="p-1.5 rounded-[8px] text-text-tertiary hover:text-status-error hover:bg-[#272729]/60 transition-colors disabled:opacity-40"
+                          className="p-1.5 rounded-[8px] text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -287,7 +387,7 @@ export default function Roles() {
 
         {/* Create Role Form */}
         <div className="space-y-4">
-          <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
+          <div className={`rounded-[18px] p-5 space-y-4 ${GLASS_PANEL}`}>
             <div>
               <h3 className="text-xs font-semibold text-text-primary flex items-center gap-2">
                 <Shield className="w-4 h-4 text-accent-blue" />
@@ -347,9 +447,9 @@ export default function Roles() {
                 <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] block">
                   Permissions
                 </label>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto border border-border-secondary p-2 rounded-[11px] bg-[#272729]/20">
+                <div className="space-y-1.5 max-h-48 overflow-y-auto border border-border-secondary p-2 rounded-[11px] bg-white/[0.02]">
                   {AVAILABLE_PERMISSIONS.map(perm => (
-                    <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-[8px] hover:bg-[#272729]/40 cursor-pointer">
+                    <label key={perm.key} className="flex items-start gap-2 p-1.5 rounded-[8px] hover:bg-white/[0.04] cursor-pointer">
                       <input
                         type="checkbox"
                         checked={selectedPermissions.includes(perm.key)}
@@ -382,7 +482,7 @@ export default function Roles() {
       {/* Manage members modal */}
       {managingRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+          <div className="bg-background-secondary border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
             {/* Header */}
             <div className="flex items-center justify-between p-5 border-b border-border-primary">
               <h2 className="text-xs font-semibold text-text-primary">
@@ -399,7 +499,7 @@ export default function Roles() {
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               {/* Current members */}
               <div className="space-y-2">
-                <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <p className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
                   Current members
                 </p>
                 {/* Search members */}
@@ -460,7 +560,7 @@ export default function Roles() {
 
               {/* Add user */}
               <div className="space-y-2">
-                <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
+                <p className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
                   Add user
                 </p>
                 <div className="relative">
@@ -527,7 +627,7 @@ export default function Roles() {
 
       {editingRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
+          <div className="bg-background-secondary border border-border-primary rounded-[18px] w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]">
             <div className="flex items-center justify-between p-5 border-b border-border-primary">
               <h2 className="text-xs font-semibold text-text-primary">
                 Edit permissions — {editingRole.display_name}

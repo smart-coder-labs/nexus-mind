@@ -1,11 +1,52 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Trash2, Check, X, GitMerge } from 'lucide-react'
+import { Pencil, Trash2, Check, X, GitMerge, Hash, Layers, TrendingUp } from 'lucide-react'
 import { createClient } from '../api/client'
 import { cn } from '@/lib/utils'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import type { NameCount } from '../types'
 
 const client = createClient()
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Tags page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
+interface StatTileProps {
+  label: string
+  value: string
+  sub?: string
+  icon: typeof Hash
+}
+
+// Local stat tile matching the mockup's KPI row — kept local to this page.
+function StatTile({ label, value, sub, icon: Icon }: StatTileProps) {
+  return (
+    <div className={`relative flex flex-col gap-2 rounded-[16px] p-4 overflow-hidden ${GLASS_PANEL}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10.5px] font-semibold tracking-[0.06em] uppercase text-text-tertiary truncate">
+          {label}
+        </span>
+        <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
+      </div>
+      <span className="text-lg font-bold tracking-[-0.02em] text-text-primary leading-none tabular-nums truncate">
+        {value}
+      </span>
+      {sub && <span className="text-[11.5px] text-text-tertiary truncate">{sub}</span>}
+    </div>
+  )
+}
+
+// Word-cloud size/weight/color scaled by usage relative to the top tag —
+// mirrors the mockup's "Vocabulary" cloud using only real counts.
+function cloudStyle(count: number, max: number) {
+  const k = max > 0 ? count / max : 0
+  const size = Math.round(11 + k * 13) // 11px..24px
+  const weight = k > 0.5 ? 800 : k > 0.2 ? 700 : 500
+  const color =
+    k > 0.6 ? 'text-accent-blue' : k > 0.3 ? 'text-text-secondary' : k > 0.12 ? 'text-text-tertiary' : 'text-text-quaternary'
+  return { size, weight, color }
+}
 
 export default function Tags() {
   const queryClient = useQueryClient()
@@ -83,51 +124,94 @@ export default function Tags() {
     ? tags.filter((t) => t.name === selectedTag)
     : tags
 
+  // Stat tiles + word-cloud sizing derived purely from getTagStats() —
+  // "last used" and "merge candidates" from the mockup have no backing
+  // field/heuristic in NameCount, so they're omitted rather than fabricated.
+  const maxCount = useMemo(() => tags.reduce((m, t) => Math.max(m, t.count), 0), [tags])
+  const totalTaggings = useMemo(() => tags.reduce((s, t) => s + t.count, 0), [tags])
+  const topTag = useMemo(
+    () => (tags.length ? tags.reduce((a, b) => (b.count > a.count ? b : a)) : null),
+    [tags],
+  )
+
   if (isLoading) {
     return (
       <div className="flex-1 p-8">
-        <div className="animate-pulse h-8 bg-[#272729] rounded-[11px] w-48 mb-4" />
-        <div className="animate-pulse h-40 bg-[#272729] rounded-[18px] w-full" />
+        <div className="animate-pulse h-8 bg-white/[0.04] rounded-[11px] w-48 mb-4" />
+        <div className={`animate-pulse h-40 rounded-[18px] w-full ${GLASS_PANEL}`} />
       </div>
     )
   }
 
   return (
-    <div className="flex-1 p-8 max-w-4xl">
+    <div className="flex-1 p-8 max-w-5xl">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-base font-semibold text-text-primary">Tags</h1>
-        <p className="text-xs text-text-quaternary mt-0.5">
-          Manage memory tags across your organization
-        </p>
+      <div className="flex items-center gap-3.5 mb-6">
+        <div className="w-11 h-11 rounded-[13px] bg-status-success/10 flex items-center justify-center flex-shrink-0">
+          <Hash className="w-[22px] h-[22px] text-status-success" />
+        </div>
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-text-primary">Tags</h1>
+          <p className="text-[13px] text-text-tertiary mt-0.5">
+            Manage memory tags across your organization
+          </p>
+        </div>
       </div>
 
-      {/* Tag cloud */}
-      <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5 mb-4">
+      {/* Stat tiles — derived from getTagStats(), no fabricated numbers */}
+      {tags.length > 0 && (
+        <div className="mb-4">
+          <KpiMarquee>
+            <div key="tags" className="w-[232px] flex-none">
+              <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} />
+            </div>
+            <div key="taggings" className="w-[232px] flex-none">
+              <StatTile label="Taggings" value={totalTaggings.toLocaleString()} sub="total applications" icon={Layers} />
+            </div>
+            <div key="top-tag" className="w-[232px] flex-none">
+              <StatTile
+                label="Top tag"
+                value={topTag ? topTag.name : '—'}
+                sub={topTag ? `${topTag.count.toLocaleString()} uses` : undefined}
+                icon={TrendingUp}
+              />
+            </div>
+          </KpiMarquee>
+        </div>
+      )}
+
+      {/* Tag cloud — size/weight/color scaled by relative usage */}
+      <div className={`rounded-[18px] p-5 mb-4 ${GLASS_PANEL}`}>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-[13px] font-semibold text-text-primary">Vocabulary</h2>
+          <span className="text-[11px] text-text-quaternary">size = usage · click to filter</span>
+        </div>
         {tags.length === 0 ? (
           <p className="text-xs text-text-quaternary">No tags found.</p>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            {tags.map((t) => (
-              <button
-                key={t.name}
-                onClick={() => setSelectedTag(selectedTag === t.name ? null : t.name)}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs border border-border-primary bg-white/[0.06] hover:bg-white/[0.08] cursor-pointer transition-colors text-text-secondary',
-                  selectedTag === t.name &&
-                    'ring-1 ring-accent-blue/60 bg-accent-blue/[0.08] text-accent-blue',
-                )}
-              >
-                {t.name}
-                <span className="text-[10px] text-text-quaternary">{t.count}</span>
-              </button>
-            ))}
+          <div className="flex flex-wrap items-baseline gap-x-3.5 gap-y-2">
+            {tags.map((t) => {
+              const { size, weight, color } = cloudStyle(t.count, maxCount)
+              return (
+                <button
+                  key={t.name}
+                  onClick={() => setSelectedTag(selectedTag === t.name ? null : t.name)}
+                  style={{ fontSize: `${size}px`, fontWeight: weight }}
+                  className={cn(
+                    'leading-tight transition-colors hover:text-accent-blue cursor-pointer',
+                    selectedTag === t.name ? 'text-accent-blue' : color,
+                  )}
+                >
+                  #{t.name}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
 
       {/* Tag table */}
-      <div className="bg-[#272729] rounded-[18px] border border-border-primary overflow-hidden">
+      <div className={`rounded-[18px] overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
         <table className="w-full">
           <thead>
             <tr className="border-b border-border-primary">
@@ -137,13 +221,16 @@ export default function Tags() {
               <th className="text-left px-5 py-3 text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">
                 Memories
               </th>
+              <th className="text-left px-5 py-3 text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">
+                Distribution
+              </th>
               <th className="px-5 py-3 w-20" />
             </tr>
           </thead>
           <tbody>
             {filteredTags.length === 0 && (
               <tr>
-                <td colSpan={3} className="px-5 py-8 text-center text-xs text-text-quaternary">
+                <td colSpan={4} className="px-5 py-8 text-center text-xs text-text-quaternary">
                   {selectedTag ? `No tag matching "${selectedTag}"` : 'No tags found.'}
                 </td>
               </tr>
@@ -151,7 +238,7 @@ export default function Tags() {
             {filteredTags.map((t) => (
               <tr
                 key={t.name}
-                className="border-b border-border-secondary/20 last:border-b-0 group hover:bg-white/[0.02] transition-colors"
+                className="border-b border-border-secondary/20 last:border-b-0 group hover:bg-accent-blue/[0.05] transition-colors"
               >
                 <td className="px-5 py-3">
                   {renamingTag === t.name ? (
@@ -179,13 +266,21 @@ export default function Tags() {
                       </button>
                     </div>
                   ) : (
-                    <span className="text-xs font-semibold text-text-primary">{t.name}</span>
+                    <span className="text-xs font-semibold text-text-primary font-mono">#{t.name}</span>
                   )}
                 </td>
                 <td className="px-5 py-3">
-                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-quaternary">
+                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-text-quaternary tabular-nums">
                     {t.count}
                   </span>
+                </td>
+                <td className="px-5 py-3">
+                  <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden max-w-[140px]">
+                    <div
+                      className="h-full rounded-full bg-status-success"
+                      style={{ width: `${maxCount > 0 ? Math.max(2, Math.round((t.count / maxCount) * 100)) : 0}%` }}
+                    />
+                  </div>
                 </td>
                 <td className="px-5 py-3">
                   <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity justify-end">

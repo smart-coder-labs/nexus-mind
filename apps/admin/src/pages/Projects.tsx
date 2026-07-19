@@ -6,7 +6,7 @@ import { useAuth, isPrivileged } from '../auth/AuthContext'
 import {
   FolderGit, Plus, Users, UserPlus, UserMinus,
   FolderOpen, ChevronRight, ChevronDown, Brain, GitBranch, Loader2,
-  Archive, RotateCcw, BookMarked, Settings, X,
+  Archive, RotateCcw, BookMarked, Settings, X, Search,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -15,7 +15,14 @@ import {
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/Select/Select'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import type { ProjectMember, ProjectEventOverrides, User as UserType, Convention } from '../types'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Projects page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 
 // ─── Three-way toggle: null (inherit) | true (on) | false (off) ──────────────
 
@@ -517,6 +524,12 @@ export default function Projects() {
   // Archived toggle
   const [showArchived, setShowArchived] = useState(false)
 
+  // Create Project modal (header trigger, matches mockup)
+  const [createOpen, setCreateOpen] = useState(false)
+
+  // Client-side name filter for the projects tree (mockup search field)
+  const [filterQuery, setFilterQuery] = useState('')
+
   // Project settings modal
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [settingsDescription, setSettingsDescription] = useState('')
@@ -583,6 +596,25 @@ export default function Projects() {
     })
     return { rootProjects: roots, childrenMap: map }
   }, [projects])
+
+  // Names of projects that have children — derived from already-fetched `projects`,
+  // used only for the "With children" stat tile sub-caption (never fabricated).
+  const parentsWithChildrenNames = useMemo(() => {
+    const idToName = new Map((projects ?? []).map(p => [p.id, p.name]))
+    return Object.keys(childrenMap).map(id => idToName.get(id)).filter((n): n is string => !!n)
+  }, [projects, childrenMap])
+
+  // Client-side name filter over the tree — a project matches if its own name
+  // matches, or if any of its descendants match (so the ancestor stays visible).
+  const filteredRootProjects = useMemo(() => {
+    const q = filterQuery.trim().toLowerCase()
+    if (!q) return rootProjects
+    const matches = (p: NonNullable<typeof projects>[number]): boolean => {
+      if (p.name.toLowerCase().includes(q)) return true
+      return (childrenMap[p.id] ?? []).some(matches)
+    }
+    return rootProjects.filter(matches)
+  }, [rootProjects, childrenMap, filterQuery])
 
   const parentOptions = useMemo(
     () => (projects ?? []).filter(p => p.id !== selectedProjectId),
@@ -676,6 +708,7 @@ export default function Projects() {
       setParentId('')
       setErrorMsg('')
       setProjectCreated(true)
+      setCreateOpen(false)
       setTimeout(() => setProjectCreated(false), 2000)
     },
     onError: (err: any) => setErrorMsg(err.message || 'Failed to create project'),
@@ -804,7 +837,7 @@ export default function Projects() {
         {/* Row */}
         <div
           className={`group p-4 flex items-start justify-between gap-4 transition-colors ${
-            isExpanded ? 'bg-[#272729]' : 'hover:bg-[#272729]/20'
+            isExpanded ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
           } ${depth > 0 ? `${depthPad(depth)} border-l-2 border-border-secondary ml-4` : ''} ${
             isArchived ? 'opacity-60' : ''
           }`}
@@ -967,137 +1000,207 @@ export default function Projects() {
     )
   }
 
+  const statTiles = [
+    {
+      label: 'Projects',
+      value: String(projects?.length ?? 0),
+      sub: showArchived ? 'including archived' : 'active',
+      icon: FolderOpen,
+    },
+    {
+      label: 'With children',
+      value: String(Object.keys(childrenMap).length),
+      sub: parentsWithChildrenNames.length ? parentsWithChildrenNames.slice(0, 2).join(' · ') : undefined,
+      icon: GitBranch,
+    },
+    {
+      label: 'Archived',
+      value: String((projects ?? []).filter(p => p.archived_at).length),
+      sub: 'in current view',
+      icon: Archive,
+    },
+    // "Total memories" / "Most active" tiles from the mockup would require an
+    // org-wide memory aggregate this page doesn't fetch — omitted rather than
+    // fabricated. Per-project memory counts are still available in each row's
+    // members panel.
+  ]
+
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-base font-semibold text-text-primary">Projects & Scopes</h1>
-        <p className="text-xs text-text-quaternary mt-0.5">
-          Manage organization projects and configure dynamic per-project user role overrides.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Project List */}
-        <div className="lg:col-span-2">
-          <div className="border border-border-primary rounded-[18px] overflow-hidden bg-[#272729]">
-            <div className="px-4 py-3 border-b border-border-secondary bg-[#272729]/40 flex items-center justify-between">
-              <span className="text-xs font-semibold text-text-secondary">Projects</span>
-              <button
-                onClick={() => setShowArchived(v => !v)}
-                className={cn(
-                  'text-[11px] px-2.5 py-1 rounded-full border transition-colors',
-                  showArchived
-                    ? 'bg-accent-blue/10 border-accent-blue/30 text-accent-blue font-semibold'
-                    : 'border-border-secondary text-text-quaternary hover:text-text-tertiary',
-                )}
-              >
-                {showArchived ? 'Showing archived' : 'Show archived'}
-              </button>
-            </div>
-            {deleteProjectMut.isError && (
-              <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
-                {(deleteProjectMut.error as Error)?.message ?? 'Failed to delete project'}
-              </div>
-            )}
-            <div className="divide-y divide-border-secondary">
-              {projectsLoading ? (
-                Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="p-4 flex items-center gap-3">
-                    <div className="w-4 h-4 rounded-[5px] bg-[#1d1d1f] animate-pulse flex-shrink-0" />
-                    <div className="flex-1 space-y-2">
-                      <div className="h-3.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-1/3" />
-                      <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-2/3" />
-                    </div>
-                  </div>
-                ))
-              ) : !projects?.length ? (
-                <div className="flex flex-col items-center gap-2 py-12 text-center">
-                  <FolderOpen className="w-6 h-6 text-text-quaternary/50" />
-                  <p className="text-xs font-semibold text-text-secondary">No projects yet</p>
-                  <p className="text-xs text-text-quaternary max-w-xs">Create your first project using the form on the right to organize memories by workspace scope.</p>
-                </div>
-              ) : (
-                rootProjects.map(root => renderProjectRow(root))
-              )}
-            </div>
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+            <FolderGit className="w-5 h-5 text-accent-blue" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-text-primary">Projects & Scopes</h1>
+            <p className="text-xs text-text-quaternary mt-0.5">
+              Manage organization projects and configure dynamic per-project user role overrides.
+            </p>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowArchived(v => !v)}
+            className={cn(
+              'flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+              showArchived
+                ? 'bg-accent-blue/10 border-accent-blue/30 text-accent-blue font-semibold'
+                : 'border-border-primary text-text-quaternary hover:text-text-tertiary',
+            )}
+          >
+            <Archive className="w-3 h-3" />
+            {showArchived ? 'Showing archived' : 'Show archived'}
+          </button>
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-1.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white px-3.5 py-1.5 text-xs font-semibold transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New Project
+          </button>
+        </div>
+      </div>
 
-        {/* Create Project Form */}
-        <div>
-          <div className="border border-border-primary rounded-[18px] p-5 bg-[#272729] space-y-4">
-            <div>
-              <h3 className="text-xs font-semibold text-text-primary flex items-center gap-2">
-                <FolderGit className="w-4 h-4 text-accent-blue" />
-                Create Project
-              </h3>
-              <p className="text-[10px] text-text-quaternary mt-0.5">
-                Register a new workspace scope inside the organization.
-              </p>
+      <KpiMarquee role="list" aria-label="Project statistics">
+        {statTiles.map((tile, i) => (
+          <div key={tile.label} className="w-[232px] flex-none">
+            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+          </div>
+        ))}
+      </KpiMarquee>
+
+      {/* Project List (full width, matches mockup) */}
+      <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
+        <div className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-sm font-semibold text-text-primary">Projects</span>
+          <div className="flex items-center gap-2 h-8 w-60 px-3 rounded-[10px] border border-border-primary bg-white/[0.02]">
+            <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
+            <input
+              type="text"
+              value={filterQuery}
+              onChange={e => setFilterQuery(e.target.value)}
+              placeholder="Filter projects…"
+              aria-label="Filter projects"
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs text-text-primary placeholder:text-text-quaternary"
+            />
+          </div>
+        </div>
+        {deleteProjectMut.isError && (
+          <div className="mx-4 mt-3 p-2 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[8px]">
+            {(deleteProjectMut.error as Error)?.message ?? 'Failed to delete project'}
+          </div>
+        )}
+        <div className="divide-y divide-border-secondary">
+          {projectsLoading ? (
+            Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="p-4 flex items-center gap-3">
+                <div className="w-4 h-4 rounded-[5px] bg-[#1d1d1f] animate-pulse flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-2/3" />
+                </div>
+              </div>
+            ))
+          ) : !projects?.length ? (
+            <div className="flex flex-col items-center gap-2 py-12 text-center">
+              <FolderOpen className="w-6 h-6 text-text-quaternary/50" />
+              <p className="text-xs font-semibold text-text-secondary">No projects yet</p>
+              <p className="text-xs text-text-quaternary max-w-xs">Create your first project using the "New Project" button above to organize memories by workspace scope.</p>
+            </div>
+          ) : !filteredRootProjects.length ? (
+            <div className="flex flex-col items-center gap-2 py-12 text-center">
+              <Search className="w-6 h-6 text-text-quaternary/50" />
+              <p className="text-xs font-semibold text-text-secondary">No projects match "{filterQuery}"</p>
+            </div>
+          ) : (
+            filteredRootProjects.map(root => renderProjectRow(root))
+          )}
+        </div>
+      </div>
+
+      {/* Create Project Modal (mockup: header "New Project" trigger) */}
+      <Modal open={createOpen} onOpenChange={setCreateOpen}>
+        <ModalCloseButton />
+        <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
+          <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
+            <FolderGit className="w-4 h-4 text-accent-blue" />
+            Create Project
+          </h2>
+          <p className="text-[10px] text-text-quaternary mb-5">
+            Register a new workspace scope inside the organization.
+          </p>
+
+          {errorMsg && (
+            <div className="mb-4 p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
+              {errorMsg}
+            </div>
+          )}
+
+          <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+                Project Name (slug)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. core-payments"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
+                required
+              />
             </div>
 
-            {errorMsg && (
-              <div className="p-3 text-xs bg-status-error/10 border border-status-error/20 text-status-error rounded-[11px]">
-                {errorMsg}
-              </div>
-            )}
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+                Description
+              </label>
+              <textarea
+                placeholder="What is this scope about?"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
+              />
+            </div>
 
-            <form onSubmit={handleCreateProject} className="space-y-4 text-xs">
-              <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                  Project Name (slug)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. core-payments"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60"
-                  required
-                />
-              </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+                Parent Project
+              </label>
+              <Select value={parentId} onValueChange={setParentId}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="— None (root) —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">— None (root) —</SelectItem>
+                  {(projects ?? []).map(p => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                  Description
-                </label>
-                <textarea
-                  placeholder="What is this scope about?"
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 h-20 resize-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
-                  Parent Project
-                </label>
-                <Select value={parentId} onValueChange={setParentId}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="— None (root) —" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">— None (root) —</SelectItem>
-                    {(projects ?? []).map(p => (
-                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                className="px-4 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Cancel
+              </button>
               <button
                 type="submit"
                 disabled={createProjectMut.isPending}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-semibold transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white font-semibold transition-colors disabled:opacity-50"
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-3.5 h-3.5" />
                 {createProjectMut.isPending ? 'Creating…' : projectCreated ? 'Created!' : 'Create Project'}
               </button>
-            </form>
-          </div>
+            </div>
+          </form>
         </div>
-      </div>
+      </Modal>
 
       {/* Project Settings Modal */}
       <Modal open={!!editingProjectId} onOpenChange={(open) => { if (!open) setEditingProjectId(null) }}>

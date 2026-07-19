@@ -170,7 +170,9 @@ describe('Tasks — list rendering', () => {
     })
 
     expect(screen.getByText('Write onboarding docs')).toBeInTheDocument()
-    expect(screen.getByText(/in_progress/i)).toBeInTheDocument()
+    // Status pills render the design copy ("in progress"), not the raw enum.
+    // The distribution legend shows the same label, so assert at-least-one.
+    expect(screen.getAllByText(/in progress/i).length).toBeGreaterThan(0)
     expect(screen.getByText(/high/i)).toBeInTheDocument()
     expect(screen.getByText('Sarah Chen')).toBeInTheDocument()
   })

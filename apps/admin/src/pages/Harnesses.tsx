@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Archive, CheckCircle2, Download, Eye, FileJson, PackagePlus, ShieldCheck, X } from 'lucide-react'
+import { AlertCircle, ArrowUp, Archive, Box, CheckCircle2, Download, Eye, FileJson, GitBranch, PackagePlus, ShieldCheck, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import type { Harness, HarnessConfigReview, HarnessFormat, HarnessManifest, HarnessManifestEntry } from '../types'
 import { sha256Hex } from '../lib/sha256'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Harnesses page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 const MAX_INLINE_UPLOAD_BYTES = 64 * 1024
 const FORMAT_OPTIONS: Array<{ value: HarnessFormat; label: string; path: string; kind: 'file' | 'folder' | 'plugin_marketplace' | 'theme_json'; mediaType: string; content: string; executable?: boolean }> = [
   { value: 'agent', label: 'Agent Markdown', path: 'agents/example.md', kind: 'file', mediaType: 'text/markdown', content: '# Example Agent' },
@@ -625,7 +631,7 @@ function ConfigReviewForm({ onFlash }: { onFlash: (flash: Flash) => void }) {
   }
 
   return (
-    <section className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
+    <section className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
       <div className="mb-4 flex items-center gap-2">
         <FileJson className="h-4 w-4 text-accent-blue" />
         <div>
@@ -762,7 +768,7 @@ function ConfigReviewList() {
   })
 
   return (
-    <section className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
+    <section className={`rounded-[18px] p-5 ${GLASS_PANEL}`}>
       <div className="mb-4 flex items-center gap-2">
         <FileJson className="h-4 w-4 text-accent-blue" />
         <div>
@@ -778,6 +784,20 @@ function ConfigReviewList() {
       </div>
     </section>
   )
+}
+
+// Tint the status pill by the harness lifecycle state. `status` is a plain
+// string from the backend (no literal union), so unrecognized values fall
+// back to the neutral "draft-like" treatment instead of guessing a color.
+function statusPillClass(status: string): string {
+  switch (status) {
+    case 'published':
+      return 'bg-status-success/15 text-status-success'
+    case 'archived':
+      return 'bg-status-error/10 text-status-error'
+    default:
+      return 'bg-status-warning/10 text-status-warning'
+  }
 }
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -910,18 +930,47 @@ export default function Harnesses() {
     queryFn: () => client.listHarnesses({ target: target || undefined, owner_user_id: ownerUserId || undefined }),
   })
 
+  // Stat tiles are derived strictly from the already-fetched `harnesses` list
+  // (no extra requests). Downloads/versions-published/config-review counts
+  // from the mockup aren't available on this array, so they're omitted here.
+  const stats = useMemo(() => {
+    const total = harnesses.length
+    const published = harnesses.filter(h => h.status === 'published').length
+    const withVersion = harnesses.filter(h => !!h.latest_version).length
+    return [
+      { label: 'Harnesses', value: String(total), sub: total === 1 ? '1 in the library' : `${total} in the library`, icon: Box },
+      { label: 'Published', value: String(published), sub: `of ${total} harnesses`, icon: CheckCircle2 },
+      { label: 'With version', value: String(withVersion), sub: 'have a published version', icon: GitBranch },
+    ]
+  }, [harnesses])
+
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-base font-semibold text-text-primary">Harness Library</h1>
-          <p className="mt-1 max-w-2xl text-xs text-text-tertiary">Publish reusable AI tooling harnesses. Downloads require explicit approval and never mutate local configuration from the backend.</p>
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+            <Box className="w-5 h-5 text-accent-blue" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-text-primary">Harness Library</h1>
+            <p className="mt-1 max-w-2xl text-xs text-text-tertiary">Publish reusable AI tooling harnesses. Downloads require explicit approval and never mutate local configuration from the backend.</p>
+          </div>
         </div>
         <button onClick={() => setShowCreate(true)} className={`flex items-center gap-2 rounded-full bg-accent-blue px-4 py-2 text-[13px] font-semibold text-white hover:bg-accent-blue-hover ${FOCUS}`}>
           <PackagePlus className="h-4 w-4" />
           New harness
         </button>
       </div>
+
+      {!isLoading && (
+        <KpiMarquee role="list" aria-label="Harness stats">
+          {stats.map((tile, i) => (
+            <div key={tile.label} className="w-[232px] flex-none">
+              <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+            </div>
+          ))}
+        </KpiMarquee>
+      )}
 
       {flash && (
         <div role="status" className={`flex items-start gap-2 rounded-[11px] border px-4 py-3 text-xs ${flash.kind === 'success' ? 'border-status-success/30 bg-status-success/5 text-status-success' : 'border-status-error/30 bg-status-error/5 text-status-error'}`}>
@@ -931,16 +980,16 @@ export default function Harnesses() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-3 rounded-[18px] border border-border-primary bg-[#272729] p-4">
-        <label className="text-[10px] text-text-quaternary" htmlFor="target-filter">Target filter</label>
-        <select id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="rounded-[8px] border border-border-primary bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
+      <div className={`flex flex-wrap items-center gap-3 rounded-[18px] p-4 ${GLASS_PANEL}`}>
+        <label className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary" htmlFor="target-filter">Target filter</label>
+        <select id="target-filter" value={target} onChange={e => setTarget(e.target.value)} className="rounded-[9px] border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
           <option value="">All targets</option>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
           <option value="cursor">Cursor</option>
         </select>
-        <label className="text-[10px] text-text-quaternary" htmlFor="owner-filter">Owner filter</label>
-        <select id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="rounded-[8px] border border-border-primary bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
+        <label className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary" htmlFor="owner-filter">Owner filter</label>
+        <select id="owner-filter" value={ownerUserId} onChange={e => setOwnerUserId(e.target.value)} className="rounded-[9px] border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60">
           <option value="">All owners</option>
           {Array.from(new Map(harnesses.filter(h => h.owner).map(h => [h.owner_user_id, h.owner!]))).map(([id, owner]) => <option key={id} value={id}>{owner.name}</option>)}
         </select>
@@ -949,36 +998,51 @@ export default function Harnesses() {
       {error && <div className="rounded-[11px] border border-status-error/30 bg-status-error/5 px-4 py-3 text-xs text-status-error">{error instanceof Error ? error.message : 'Failed to load harnesses'}</div>}
 
       <div className="grid gap-4">
-        {isLoading && [1, 2, 3].map(i => <div key={i} className="h-28 animate-pulse rounded-[18px] border border-border-primary bg-[#272729]" />)}
-        {!isLoading && harnesses.length === 0 && <div className="rounded-[18px] border border-border-primary bg-[#272729] p-10 text-center text-xs text-text-quaternary">No harnesses found.</div>}
-        {harnesses.map(harness => (
-          <article key={harness.id} className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
-                  <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">{harness.status}</span>
-                  <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">{harness.visibility}</span>
-                </div>
-                <p className="text-xs text-text-quaternary">{harness.description ?? 'No description'}</p>
-                <p className="text-[11px] text-text-secondary">Owner: {harness.owner?.name ?? harness.owner_user_id}</p>
-                {harness.latest_version && (
-                  <div className="flex flex-wrap gap-2 text-[11px] text-text-secondary">
-                    <span>Version {harness.latest_version.version}</span>
-                    <span className="font-mono">{harness.latest_version.manifest_hash}</span>
-                    {harness.latest_version.targets.map(t => <span key={t} className="rounded-[5px] border border-border-secondary px-1.5 py-0.5">{t}</span>)}
+        {isLoading && [1, 2, 3].map(i => <div key={i} className={`h-28 animate-pulse rounded-[18px] ${GLASS_PANEL}`} />)}
+        {!isLoading && harnesses.length === 0 && <div className={`rounded-[18px] p-10 text-center text-xs text-text-quaternary ${GLASS_PANEL}`}>No harnesses found.</div>}
+        {harnesses.map((harness, index) => {
+          const accent = accentFor(index)
+          return (
+            <article key={harness.id} className={`relative overflow-hidden rounded-[18px] p-5 transition-colors hover:border-white/[0.16] ${GLASS_PANEL}`}>
+              <div aria-hidden="true" className="absolute -top-12 -right-10 w-32 h-32 rounded-full pointer-events-none" style={{ background: accent, opacity: 0.12, filter: 'blur(34px)' }} />
+              <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 flex-1 space-y-2.5">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0" style={{ backgroundColor: `color-mix(in srgb, ${accent} 16%, transparent)` }}>
+                      <Box className="w-4 h-4" style={{ color: accent }} />
+                    </div>
+                    <div className="min-w-0 space-y-1.5">
+                      <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`rounded-[9px] px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(harness.status)}`}>{harness.status}</span>
+                        <span className="rounded-[9px] bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-text-tertiary">{harness.visibility}</span>
+                        {harness.latest_version?.targets.map(t => <span key={t} className="rounded-[9px] bg-accent-blue/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent-blue">{t}</span>)}
+                      </div>
+                    </div>
                   </div>
-                )}
+                  <p className="text-xs text-text-quaternary">{harness.description ?? 'No description'}</p>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-text-tertiary">
+                    <span>Owner: {harness.owner?.name ?? harness.owner_user_id}</span>
+                    {harness.latest_version && (
+                      <>
+                        <span className="opacity-50">·</span>
+                        <span>v{harness.latest_version.version}</span>
+                        <span className="opacity-50">·</span>
+                        <span className="truncate font-mono">{harness.latest_version.manifest_hash}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 border-t border-white/[0.05] pt-3 lg:border-t-0 lg:pt-0">
+                  <button onClick={() => setDetailTarget(harness)} aria-label={`View ${harness.name} details`} className={`flex items-center gap-1.5 rounded-[9px] border border-white/[0.09] px-3 h-[30px] text-xs font-semibold text-text-secondary hover:border-white/[0.25] hover:text-text-primary ${FOCUS}`}><Eye className="h-3.5 w-3.5" />Details</button>
+                  <button onClick={() => setPublishTarget(harness)} aria-label={`Publish version for ${harness.name}`} className={`flex items-center gap-1.5 rounded-[9px] border border-white/[0.09] px-3 h-[30px] text-xs font-semibold text-text-secondary hover:border-white/[0.25] hover:text-text-primary ${FOCUS}`}><ArrowUp className="h-3.5 w-3.5" />Publish</button>
+                  <button onClick={() => setApprovalTarget(harness)} disabled={!harness.latest_version} aria-label={`Download ${harness.name}`} className={`flex items-center gap-1.5 rounded-[9px] bg-accent-blue px-3 h-[30px] text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}><Download className="h-3.5 w-3.5" />Download</button>
+                  <button onClick={() => archiveMut.mutate(harness)} disabled={archiveMut.isPending || harness.status === 'archived'} aria-label={`Archive ${harness.name}`} title="Archive" className={`flex items-center justify-center w-[30px] h-[30px] rounded-[9px] text-text-quaternary hover:bg-status-error/10 hover:text-status-error disabled:opacity-50 ${FOCUS}`}><Archive className="h-3.5 w-3.5" /></button>
+                </div>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <button onClick={() => setDetailTarget(harness)} aria-label={`View ${harness.name} details`} className={`flex items-center gap-1.5 rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}><Eye className="h-3.5 w-3.5" />Details</button>
-                <button onClick={() => setPublishTarget(harness)} aria-label={`Publish version for ${harness.name}`} className={`rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] ${FOCUS}`}>Publish version</button>
-                <button onClick={() => setApprovalTarget(harness)} disabled={!harness.latest_version} aria-label={`Download ${harness.name}`} className={`flex items-center gap-1.5 rounded-full bg-accent-blue px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-blue-hover disabled:opacity-50 ${FOCUS}`}><Download className="h-3.5 w-3.5" />Download</button>
-                <button onClick={() => archiveMut.mutate(harness)} disabled={archiveMut.isPending || harness.status === 'archived'} aria-label={`Archive ${harness.name}`} className={`flex items-center gap-1.5 rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:bg-white/[0.04] disabled:opacity-50 ${FOCUS}`}><Archive className="h-3.5 w-3.5" />Archive</button>
-              </div>
-            </div>
-          </article>
-        ))}
+            </article>
+          )
+        })}
       </div>
 
       <ConfigReviewForm onFlash={setFlash} />

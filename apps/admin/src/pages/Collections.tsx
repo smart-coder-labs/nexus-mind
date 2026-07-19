@@ -3,9 +3,64 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { Collection, Memory } from '../types'
-import { FolderOpen, Pencil, Trash2, X, Plus, Search } from 'lucide-react'
+import { FolderOpen, Pencil, Trash2, X, Plus, Search, Layers, TrendingUp, Clock } from 'lucide-react'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Collections page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
+// Fixed-order accent cycle reusing the app's existing token set (no new
+// colors introduced) so each collection card gets a stable tinted initial
+// avatar + glow, matching the mockup's per-card palette.
+const CARD_ACCENTS = [
+  { bg: 'bg-status-warning/10', text: 'text-status-warning', glow: 'bg-status-warning/10' },
+  { bg: 'bg-accent-blue/10', text: 'text-accent-blue', glow: 'bg-accent-blue/10' },
+  { bg: 'bg-status-success/10', text: 'text-status-success', glow: 'bg-status-success/10' },
+  { bg: 'bg-accent-purple/10', text: 'text-accent-purple', glow: 'bg-accent-purple/10' },
+  { bg: 'bg-status-error/10', text: 'text-status-error', glow: 'bg-status-error/10' },
+] as const
+
+function accentFor(index: number) {
+  return CARD_ACCENTS[index % CARD_ACCENTS.length]
+}
+
+function relativeDate(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diff / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return '1 day ago'
+  if (days < 30) return `${days} days ago`
+  return new Date(iso).toLocaleDateString()
+}
+
+interface StatTileProps {
+  label: string
+  value: string
+  sub?: string
+  icon: typeof FolderOpen
+}
+
+// Lightweight stat tile matching the mockup's KPI row — kept local to this
+// page (not imported from the dashboard, which is out of scope here).
+function StatTile({ label, value, sub, icon: Icon }: StatTileProps) {
+  return (
+    <div className={`relative flex flex-col gap-2 rounded-[16px] p-4 overflow-hidden ${GLASS_PANEL}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10.5px] font-semibold tracking-[0.06em] uppercase text-text-tertiary truncate">
+          {label}
+        </span>
+        <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
+      </div>
+      <span className="text-lg font-bold tracking-[-0.02em] text-text-primary leading-none tabular-nums truncate">
+        {value}
+      </span>
+      {sub && <span className="text-[11.5px] text-text-tertiary truncate">{sub}</span>}
+    </div>
+  )
+}
 
 function CollectionIcon() {
   return (
@@ -316,25 +371,44 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
 
 interface CollectionCardProps {
   collection: Collection
+  accentIndex: number
   onDeleted: () => void
   onRenamed: () => void
 }
 
-function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProps) {
+function CollectionCard({ collection, accentIndex, onDeleted, onRenamed }: CollectionCardProps) {
   const [showRename, setShowRename] = useState(false)
   const [showMemories, setShowMemories] = useState(false)
+  const accent = accentFor(accentIndex)
+  const initial = collection.name.trim().charAt(0).toUpperCase() || '#'
 
   return (
     <>
       <div
         onClick={() => setShowMemories(true)}
-        className="group bg-[#272729] rounded-[18px] border border-border-primary p-5 cursor-pointer hover:border-accent-blue/20 transition-colors"
+        className="group relative flex flex-col gap-3 rounded-[16px] border border-border-primary bg-white/[0.03] p-5 overflow-hidden cursor-pointer transition-colors hover:border-accent-blue/30"
       >
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <FolderOpen className="w-4 h-4 text-text-quaternary flex-shrink-0 group-hover:text-accent-blue transition-colors" />
-            <span className="text-xs font-semibold text-text-primary truncate">{collection.name}</span>
+        {/* Decorative glow blob, tinted by the card's accent — purely visual */}
+        <div
+          aria-hidden="true"
+          className={`absolute -top-12 -right-10 w-32 h-32 rounded-full pointer-events-none ${accent.glow}`}
+        />
+
+        <div className="flex items-start gap-3 relative">
+          <div className={`w-9 h-9 rounded-[11px] flex items-center justify-center flex-shrink-0 text-sm font-bold ${accent.bg} ${accent.text}`}>
+            {initial}
           </div>
+          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+            <span className="text-[13.5px] font-semibold text-text-primary truncate">{collection.name}</span>
+            {/* Owner/contributor is not tracked on Collection — omitted rather
+                than fabricated. Only the creation date is real data. */}
+            <span className="text-[11px] text-text-quaternary">{relativeDate(collection.created_at)}</span>
+          </div>
+          {collection.memory_count != null && (
+            <span className="flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-0.5 rounded-full bg-accent-blue/10 text-accent-blue">
+              {collection.memory_count}
+            </span>
+          )}
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
             <button
               onClick={e => { e.stopPropagation(); setShowRename(true) }}
@@ -353,17 +427,11 @@ function CollectionCard({ collection, onDeleted, onRenamed }: CollectionCardProp
           </div>
         </div>
 
-        {collection.memory_count != null && (
-          <div className="mt-2">
-            <span className="rounded-[5px] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-text-secondary">
-              {collection.memory_count} {collection.memory_count === 1 ? 'memory' : 'memories'}
-            </span>
-          </div>
-        )}
-
         {collection.description && (
-          <p className="text-xs text-text-quaternary mt-2 line-clamp-2">{collection.description}</p>
+          <p className="text-xs text-text-quaternary line-clamp-2 min-h-[32px] relative">{collection.description}</p>
         )}
+        {/* Per-project chip row from the mockup isn't rendered: Collection
+            has no linked-projects field in the API — nothing real to show. */}
       </div>
 
       {showRename && (
@@ -405,14 +473,35 @@ export default function Collections() {
     deleteMut.mutate(collection.id)
   }
 
+  // Stat tiles derived entirely from the already-fetched collections list —
+  // no extra queries, no fabricated numbers. "Contributors" from the
+  // mockup is omitted: Collection has no owner/contributor field in the API.
+  const stats = useMemo(() => {
+    if (!collections || collections.length === 0) return null
+    const withCounts = collections.filter((c): c is Collection & { memory_count: number } => c.memory_count != null)
+    const totalMemories = withCounts.reduce((sum, c) => sum + c.memory_count, 0)
+    const largest = withCounts.length
+      ? withCounts.reduce((a, b) => (b.memory_count > a.memory_count ? b : a))
+      : null
+    const newest = [...collections].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0]
+    return { total: collections.length, totalMemories, hasCounts: withCounts.length > 0, largest, newest }
+  }, [collections])
+
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-base font-semibold text-text-primary">Collections</h1>
-          <p className="mt-1 text-xs text-text-tertiary">
-            Group memories into named collections for easier organization and filtering.
-          </p>
+    <div className="p-8 max-w-6xl mx-auto space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-status-warning/10 flex items-center justify-center flex-shrink-0">
+            <FolderOpen className="w-[22px] h-[22px] text-status-warning" />
+          </div>
+          <div>
+            <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-text-primary">Collections</h1>
+            <p className="mt-0.5 text-[13px] text-text-tertiary">
+              Group memories into named collections for easier organization and filtering.
+            </p>
+          </div>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -423,10 +512,42 @@ export default function Collections() {
         </button>
       </div>
 
+      {stats && (
+        <KpiMarquee>
+          <div key="collections" className="w-[232px] flex-none">
+            <StatTile label="Collections" value={String(stats.total)} icon={FolderOpen} />
+          </div>
+          <div key="memories-curated" className="w-[232px] flex-none">
+            <StatTile
+              label="Memories curated"
+              value={stats.hasCounts ? stats.totalMemories.toLocaleString() : '—'}
+              sub={stats.hasCounts ? 'across all collections' : undefined}
+              icon={Layers}
+            />
+          </div>
+          <div key="largest" className="w-[232px] flex-none">
+            <StatTile
+              label="Largest"
+              value={stats.largest ? stats.largest.name : '—'}
+              sub={stats.largest ? `${stats.largest.memory_count} memories` : undefined}
+              icon={TrendingUp}
+            />
+          </div>
+          <div key="newest" className="w-[232px] flex-none">
+            <StatTile
+              label="Newest"
+              value={stats.newest ? stats.newest.name : '—'}
+              sub={stats.newest ? relativeDate(stats.newest.created_at) : undefined}
+              icon={Clock}
+            />
+          </div>
+        </KpiMarquee>
+      )}
+
       {isLoading && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3, 4, 5, 6].map(i => (
-            <div key={i} className="animate-pulse bg-[#272729] rounded-[18px] border border-border-primary p-5 h-28" />
+            <div key={i} className={`animate-pulse rounded-[18px] p-5 h-28 ${GLASS_PANEL}`} />
           ))}
         </div>
       )}
@@ -450,11 +571,12 @@ export default function Collections() {
       )}
 
       {collections && collections.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {collections.map(collection => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {collections.map((collection, i) => (
             <CollectionCard
               key={collection.id}
               collection={collection}
+              accentIndex={i}
               onDeleted={() => handleDelete(collection)}
               onRenamed={() => qc.invalidateQueries({ queryKey: ['collections'] })}
             />

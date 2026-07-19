@@ -12,6 +12,7 @@ import { Badge } from '../components/ui/Badge/Badge'
 import { EmptyState } from '../components/ui/EmptyState/EmptyState'
 import ChangeDetail from './sdd/ChangeDetail'
 import SpecDetail from './sdd/SpecDetail'
+import SddStats from './sdd/SddStats'
 import type {
   SddArtifact, SddArtifactKind, SddChange, SddPhase, SddSpec, SddStatus,
 } from '../types'
@@ -20,6 +21,15 @@ const client = createClient()
 
 const TAB_FOCUS =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
+/** True glassmorphic panel — a translucent near-black tint with a blurred
+ *  backdrop, matching the target mockup (and the same recipe Layout.tsx's
+ *  sidebar and OrgMemoryGraph's panels already use: `#0d0f14` alpha-blended
+ *  + backdrop-blur). Deliberately NOT the flat opaque `bg-[#272729]` surface
+ *  token used elsewhere in the admin — that reads as a plain gray card, not
+ *  glass. */
+export const GLASS_PANEL =
+  'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 
 export const SDD_PHASE_OPTIONS: SddPhase[] = [
   'explore', 'propose', 'spec', 'design', 'tasks', 'apply', 'verify', 'archive',
@@ -64,16 +74,18 @@ export function PhasePipeline({ artifacts }: { artifacts: SddArtifact[] }) {
             key={step}
             data-testid={`phase-step-${step}`}
             data-present={present ? 'true' : 'false'}
-            className="flex items-center gap-1"
+            className="flex items-center gap-0.5"
           >
-            {i > 0 && <span aria-hidden="true" className="text-text-quaternary text-[10px]">→</span>}
-            <Badge
-              variant={present ? 'primary' : 'default'}
-              size="sm"
-              className={present ? undefined : 'opacity-40'}
+            {i > 0 && <span aria-hidden="true" className="text-text-quaternary text-[9px] mx-0.5">→</span>}
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                present
+                  ? 'border-accent-blue/30 bg-accent-blue/10 text-accent-blue'
+                  : 'border-border-primary text-text-quaternary/60'
+              }`}
             >
               {step}
-            </Badge>
+            </span>
           </span>
         )
       })}
@@ -188,15 +200,30 @@ export default function Sdd() {
     <div className="p-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-base font-semibold text-text-primary">SDD</h1>
-          <p className="text-xs text-text-quaternary mt-0.5">
-            {tab === 'changes'
-              ? `${changes.length} changes`
-              : `${specs.length} specifications`}
-          </p>
+        <div className="flex items-center gap-3">
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-[13px] bg-accent-purple/10 flex items-center justify-center shrink-0"
+          >
+            <FileStack className="w-5 h-5 text-accent-purple" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-text-primary">SDD</h1>
+            <p className="text-xs text-text-quaternary mt-0.5">
+              {tab === 'changes'
+                ? `${changes.length} changes`
+                : `${specs.length} specifications`}
+              {' — spec-driven development'}
+            </p>
+          </div>
         </div>
       </div>
+
+      {/* Stat tiles + pipeline summary — derived from the already-fetched,
+          filter-scoped changes list (same data backing "N changes" above). No
+          separate endpoint, no fabricated numbers. Change-lifecycle stats only,
+          so they sit above the Changes view and not the Specs one. */}
+      {tab === 'changes' && <SddStats changes={changes} />}
 
       {/* The two trees */}
       <div role="tablist" aria-label="SDD" className="flex items-center gap-1 border-b border-border-secondary mb-4">
@@ -269,7 +296,7 @@ export default function Sdd() {
         isLoading ? (
           <div data-testid="sdd-skeleton" className="space-y-2">
             {[...Array(4)].map((_, i) => (
-              <div key={i} className="rounded-[18px] bg-[#272729] border border-border-primary h-14 animate-pulse" />
+              <div key={i} className={`rounded-[16px] h-14 animate-pulse ${GLASS_PANEL}`} />
             ))}
           </div>
         ) : changes.length === 0 ? (
@@ -279,9 +306,9 @@ export default function Sdd() {
             description="No SDD changes match the current filters. Changes are written by the harness and by git — the admin reads them."
           />
         ) : (
-          <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#272729]">
+          <div className={`overflow-hidden rounded-[16px] ${GLASS_PANEL}`}>
             <table className="w-full border-collapse text-left">
-              <thead className="bg-[#272729]/40 border-b border-border-secondary">
+              <thead className="border-b border-white/[0.06]">
                 <tr>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Change</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Project</th>
@@ -297,7 +324,7 @@ export default function Sdd() {
                     aria-selected={change.id === selectedId}
                     onClick={() => { setDismissedDeepLink(true); setOpenChangeId(change.id) }}
                     className={`border-b border-border-secondary last:border-b-0 cursor-pointer transition-colors ${
-                      change.id === selectedId ? 'bg-background-tertiary/60' : 'hover:bg-background-tertiary/40'
+                      change.id === selectedId ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
                     }`}
                   >
                     <td className="px-4 py-3">
@@ -331,7 +358,7 @@ export default function Sdd() {
         specsLoading ? (
           <div data-testid="sdd-specs-skeleton" className="space-y-2">
             {[...Array(3)].map((_, i) => (
-              <div key={i} className="rounded-[18px] bg-[#272729] border border-border-primary h-14 animate-pulse" />
+              <div key={i} className={`rounded-[16px] h-14 animate-pulse ${GLASS_PANEL}`} />
             ))}
           </div>
         ) : specs.length === 0 ? (
@@ -341,9 +368,9 @@ export default function Sdd() {
             description="No living specifications for this project yet. They live at openspec/specs/{capability}/spec.md and are written by the harness and by git — the admin reads them."
           />
         ) : (
-          <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#272729]">
+          <div className={`overflow-hidden rounded-[16px] ${GLASS_PANEL}`}>
             <table className="w-full border-collapse text-left">
-              <thead className="bg-[#272729]/40 border-b border-border-secondary">
+              <thead className="border-b border-white/[0.06]">
                 <tr>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Capability</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide">Project</th>
@@ -359,7 +386,7 @@ export default function Sdd() {
                     aria-selected={spec.id === selectedSpecId}
                     onClick={() => { setDismissedDeepLink(true); setOpenSpecId(spec.id) }}
                     className={`border-b border-border-secondary last:border-b-0 cursor-pointer transition-colors ${
-                      spec.id === selectedSpecId ? 'bg-background-tertiary/60' : 'hover:bg-background-tertiary/40'
+                      spec.id === selectedSpecId ? 'bg-accent-blue/10' : 'hover:bg-accent-blue/[0.05]'
                     }`}
                   >
                     <td className="px-4 py-3">

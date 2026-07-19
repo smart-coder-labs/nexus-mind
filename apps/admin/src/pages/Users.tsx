@@ -6,13 +6,23 @@ import type { User, AuditEntry } from '../types'
 import { InviteUserModal } from '../components/InviteUserModal'
 import { InviteLinkModal } from '../components/InviteLinkModal'
 import { ConfirmModal } from '../components/ConfirmModal'
-import { UserPlus, Link, X, FileText } from 'lucide-react'
+import {
+  UserPlus, Link, X, FileText,
+  Users as UsersIcon, UserCheck, Ban, UserMinus, RotateCw, RefreshCcw,
+} from 'lucide-react'
 import { Badge } from '../components/ui/Badge/Badge'
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '../components/ui/Select'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 
 // Keyboard focus indicator (design direction §6): 2px --color-focus-ring outline,
 // 2px offset. Uses outline (not ring) so it isn't clipped by overflow-hidden ancestors.
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Users page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 
 // Server timestamps from SQLite datetime('now') are naive UTC (no zone). Parse
 // them as UTC so past events don't render in the future. No-op for zoned or
@@ -171,12 +181,36 @@ export default function Users() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // Stat tiles are derived strictly from the already-fetched `users` array.
+  // The mockup's "API keys" tile (rotation count) needs audit-log data this
+  // page doesn't fetch, so it's intentionally omitted rather than fabricated.
+  const userList = users ?? []
+  const activeCount = userList.filter(u => !u.disabled_at && u.status === 'active').length
+  const suspendedCount = userList.filter(u => !u.disabled_at && u.status === 'suspended').length
+  const disabledCount = userList.filter(u => u.disabled_at).length
+  const activeTodayCount = userList.filter(u => {
+    if (u.disabled_at || u.status !== 'active' || !u.last_active) return false
+    return Date.now() - toDate(u.last_active).getTime() < 24 * 60 * 60 * 1000
+  }).length
+
+  const statTiles = [
+    { label: 'Total users', value: String(userList.length), icon: UsersIcon },
+    { label: 'Active', value: String(activeCount), sub: activeTodayCount > 0 ? `${activeTodayCount} active today` : undefined, icon: UserCheck },
+    { label: 'Suspended', value: String(suspendedCount), icon: Ban },
+    { label: 'Disabled', value: String(disabledCount), icon: UserMinus },
+  ]
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Users</h1>
-          <p className="text-[13px] text-text-secondary mt-1">Manage team members and API keys</p>
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+            <UsersIcon className="w-5 h-5 text-accent-blue" />
+          </div>
+          <div>
+            <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Users</h1>
+            <p className="text-[13px] text-text-secondary mt-1">Manage team members and API keys</p>
+          </div>
         </div>
         {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
           <div className="flex items-center gap-2">
@@ -198,7 +232,17 @@ export default function Users() {
         )}
       </div>
 
-      <div className="border border-border-primary rounded-[18px] overflow-hidden overflow-x-auto">
+      {users && (
+        <KpiMarquee role="list" aria-label="User statistics">
+          {statTiles.map((t, i) => (
+            <div key={t.label} className="w-[232px] flex-none">
+              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
+            </div>
+          ))}
+        </KpiMarquee>
+      )}
+
+      <div className={`rounded-[18px] overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
         <table className="w-full text-[13px] min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
@@ -215,11 +259,11 @@ export default function Users() {
                   />
                 </th>
               )}
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-text-tertiary">User</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-text-tertiary">Role</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-text-tertiary">Status</th>
-              <th className="text-left px-4 py-3 text-[12px] font-medium text-text-tertiary">Last active</th>
-              <th className="text-right px-4 py-3 text-[12px] font-medium text-text-tertiary">Actions</th>
+              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">User</th>
+              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Role</th>
+              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Status</th>
+              <th className="text-left px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Last active</th>
+              <th className="text-right px-4 py-3 text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-secondary">
@@ -238,10 +282,10 @@ export default function Users() {
                   ))}
                 </tr>
               ))
-              : users?.map(user => (
+              : users?.map((user, index) => (
                 <tr
                   key={user.id}
-                  className={`hover:bg-white/[0.02] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
+                  className={`hover:bg-accent-blue/[0.05] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
                   onClick={() => setSelectedUser(user)}
                 >
                   {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
@@ -261,7 +305,14 @@ export default function Users() {
                   )}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-accent-blue/15 border border-accent-blue/20 flex items-center justify-center text-xs font-semibold text-accent-blue">
+                      <div
+                        className="w-8 h-8 rounded-full border flex items-center justify-center text-[13px] font-semibold shrink-0"
+                        style={{
+                          backgroundColor: `color-mix(in srgb, ${accentFor(index)} 15%, transparent)`,
+                          borderColor: `color-mix(in srgb, ${accentFor(index)} 30%, transparent)`,
+                          color: accentFor(index),
+                        }}
+                      >
                         {user.name[0].toUpperCase()}
                       </div>
                       <div>
@@ -313,7 +364,7 @@ export default function Users() {
                           <button
                             onClick={() => enableMut.mutate(user.id)}
                             disabled={enableMut.isPending && enableMut.variables === user.id}
-                            className={`text-[13px] px-2 py-1 rounded-[8px] text-text-secondary hover:text-status-success hover:bg-white/[0.04] transition-colors disabled:opacity-40 ${FOCUS}`}
+                            className={`h-[26px] px-2.5 rounded-[8px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-success hover:border-status-success/30 transition-colors disabled:opacity-40 ${FOCUS}`}
                           >
                             Enable
                           </button>
@@ -321,7 +372,7 @@ export default function Users() {
                           <button
                             onClick={() => disableMut.mutate(user.id)}
                             disabled={disableMut.isPending && disableMut.variables === user.id}
-                            className={`text-[13px] px-2 py-1 rounded-[8px] text-text-secondary hover:text-status-error hover:bg-status-error/10 transition-colors disabled:opacity-40 ${FOCUS}`}
+                            className={`h-[26px] px-2.5 rounded-[8px] border border-border-primary text-[12px] font-semibold text-text-secondary hover:text-status-error hover:border-status-error/30 transition-colors disabled:opacity-40 ${FOCUS}`}
                           >
                             Disable
                           </button>
@@ -331,26 +382,32 @@ export default function Users() {
                       {((session?.user.role === 'admin' || session?.user.role === 'super_user') || user.id === session?.user.id) && (
                         <button
                           onClick={() => setRotateTarget(user)}
-                          className={`text-[13px] px-2 py-1 rounded-[8px] text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors ${FOCUS}`}
+                          aria-label="Rotate key"
+                          title="Rotate key"
+                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] transition-colors ${FOCUS}`}
                         >
-                          Rotate key
+                          <RotateCw className="w-3.5 h-3.5" />
                         </button>
                       )}
                       {/* Reset key: admin-only endpoint — useful when a key is compromised */}
                       {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                         <button
                           onClick={() => setResetTarget(user)}
-                          className={`text-[13px] px-2 py-1 rounded-[8px] text-status-error/80 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
+                          aria-label="Reset key"
+                          title="Reset key"
+                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-status-warning/70 hover:text-status-warning hover:bg-status-warning/10 transition-colors ${FOCUS}`}
                         >
-                          Reset key
+                          <RefreshCcw className="w-3.5 h-3.5" />
                         </button>
                       )}
                       {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
                         <button
                           onClick={() => setRevokeTarget(user)}
-                          className={`text-[13px] px-2 py-1 rounded-[8px] text-status-error/80 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
+                          aria-label="Revoke"
+                          title="Revoke access"
+                          className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-status-error/70 hover:text-status-error hover:bg-status-error/10 transition-colors ${FOCUS}`}
                         >
-                          Revoke
+                          <Ban className="w-3.5 h-3.5" />
                         </button>
                       )}
                     </div>

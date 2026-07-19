@@ -1,13 +1,58 @@
-import { useState, useRef } from 'react'
+import { useMemo, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { BookMarked, Plus, X, Pencil, Archive, RotateCcw, Trash2, Download, Upload, Layers } from 'lucide-react'
+import { BookMarked, Plus, X, Pencil, Archive, RotateCcw, Trash2, Download, Upload, Layers, LayoutGrid, Zap, Clock } from 'lucide-react'
 import { createClient } from '../api/client'
 import { Markdown } from '../components/ui/Markdown'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import type { Convention, CreateConventionRequest } from '../types'
 
 const client = createClient()
 
 const FOCUS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Conventions page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
+// Fixed-order color cycle for category dots/badges, reusing the app's
+// existing token set only (no new colors invented).
+const CATEGORY_COLORS = [
+  'text-accent-blue',
+  'text-status-warning',
+  'text-status-success',
+  'text-accent-purple',
+  'text-status-error',
+] as const
+
+function categoryColor(category: string): string {
+  const idx = CATEGORIES.findIndex(c => c.value === category)
+  return CATEGORY_COLORS[(idx < 0 ? 0 : idx) % CATEGORY_COLORS.length]
+}
+
+interface StatTileProps {
+  label: string
+  value: string
+  sub?: string
+  icon: typeof BookMarked
+}
+
+// Local stat tile matching the mockup's KPI row — kept local to this page.
+function StatTile({ label, value, sub, icon: Icon }: StatTileProps) {
+  return (
+    <div className={`relative flex flex-col gap-2 rounded-[16px] p-4 overflow-hidden ${GLASS_PANEL}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10.5px] font-semibold tracking-[0.06em] uppercase text-text-tertiary truncate">
+          {label}
+        </span>
+        <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
+      </div>
+      <span className="text-lg font-bold tracking-[-0.02em] text-text-primary leading-none tabular-nums truncate">
+        {value}
+      </span>
+      {sub && <span className="text-[11.5px] text-text-tertiary truncate">{sub}</span>}
+    </div>
+  )
+}
 
 const CONVENTION_TEMPLATES = [
   {
@@ -505,7 +550,7 @@ function ConventionCard({
 
   return (
     <div
-      className={`bg-background-tertiary rounded-[18px] border border-border-primary p-5 group ${isArchived ? 'opacity-60' : ''}`}
+      className={`rounded-[18px] p-5 group ${GLASS_PANEL} ${isArchived ? 'opacity-60' : ''}`}
       onKeyDown={handleKeyDown}
     >
       <div className="flex items-start justify-between mb-2 gap-3">
@@ -519,8 +564,9 @@ function ConventionCard({
           />
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
+            <span className={`w-[7px] h-[7px] rounded-full shrink-0 ${categoryColor(conv.category).replace('text-', 'bg-')}`} aria-hidden="true" />
             <span className="text-xs text-text-primary font-semibold">{conv.title}</span>
-            <span className="text-[10px] bg-white/[0.06] text-text-secondary rounded-[5px] px-1.5 py-0.5 capitalize">
+            <span className={`text-[10px] bg-white/[0.06] rounded-[5px] px-1.5 py-0.5 capitalize font-semibold ${categoryColor(conv.category)}`}>
               {conv.category}
             </span>
             {editingWeight !== null ? (
@@ -814,15 +860,41 @@ export default function Conventions() {
     }
   }
 
+  // Stat tiles derived from the already-fetched conventions list. "Autores"
+  // from the mockup is omitted: Convention has no author field in the API.
+  const activeConventions = useMemo(() => conventions.filter(c => !c.archived_at), [conventions])
+  const stats = useMemo(() => {
+    if (activeConventions.length === 0) return null
+    const byCategory = new Map<string, number>()
+    for (const c of activeConventions) {
+      byCategory.set(c.category, (byCategory.get(c.category) ?? 0) + 1)
+    }
+    const topCategory = [...byCategory.entries()].sort((a, b) => b[1] - a[1])[0]
+    const lastUpdated = [...activeConventions].sort(
+      (a, b) => new Date(b.updated_at ?? b.created_at).getTime() - new Date(a.updated_at ?? a.created_at).getTime()
+    )[0]
+    return {
+      total: activeConventions.length,
+      topCategory: topCategory ? { name: CATEGORIES.find(c => c.value === topCategory[0])?.label ?? topCategory[0], count: topCategory[1] } : null,
+      lastUpdated,
+    }
+  }, [activeConventions])
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header — §4 page skeleton: title+subtitle left, primary action right */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Conventions</h1>
-          <p className="mt-1 text-[13px] text-text-secondary truncate max-w-sm">
-            Team-wide rules that agents must follow
-          </p>
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-accent-purple/10 flex items-center justify-center flex-shrink-0">
+            <BookMarked className="w-[22px] h-[22px] text-accent-purple" />
+          </div>
+          <div>
+            <h1 className="text-[22px] font-semibold leading-[1.2] tracking-[-0.3px] text-text-primary">Conventions</h1>
+            <p className="mt-1 text-[13px] text-text-secondary truncate max-w-sm">
+              Team rules injected into every agent's context
+              {stats ? ` — ${stats.total} active convention${stats.total === 1 ? '' : 's'}.` : ''}
+            </p>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -875,33 +947,66 @@ export default function Conventions() {
         </div>
       </div>
 
-      <div className="flex gap-5">
-        {/* Category sidebar */}
-        <div className="w-44 flex-shrink-0">
-          <div className="flex flex-col gap-0.5">
-            {CATEGORIES.map(cat => (
-              <button
-                key={cat.value}
-                onClick={() => setSelectedCategory(cat.value)}
-                className={`text-left px-3 py-2 rounded-[8px] text-[13px] transition-colors ${FOCUS} ${
-                  selectedCategory === cat.value
-                    ? 'bg-accent-blue/10 text-accent-blue font-semibold'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04]'
-                }`}
-              >
-                {cat.label}
-                <span className="ml-1.5 text-[10px] text-text-quaternary font-normal">
-                  {cat.value === 'all'
-                    ? conventions.length || ''
-                    : conventions.filter(c => c.category === cat.value && (showArchived || !c.archived_at)).length || ''}
-                </span>
-              </button>
-            ))}
-          </div>
+      {/* Stat tiles — derived from the already-fetched conventions list */}
+      {stats && (
+        <div className="mb-5">
+          <KpiMarquee>
+            <div key="conventions" className="w-[232px] flex-none">
+              <StatTile label="Conventions" value={String(stats.total)} sub="active rules" icon={BookMarked} />
+            </div>
+            <div key="top-category" className="w-[232px] flex-none">
+              <StatTile
+                label="Top category"
+                value={stats.topCategory ? stats.topCategory.name : '—'}
+                sub={stats.topCategory ? `${stats.topCategory.count} rule${stats.topCategory.count === 1 ? '' : 's'}` : undefined}
+                icon={LayoutGrid}
+              />
+            </div>
+            <div key="injected" className="w-[232px] flex-none">
+              <StatTile label="Injected" value={String(stats.total)} sub="into every agent context" icon={Zap} />
+            </div>
+            <div key="last-updated" className="w-[232px] flex-none">
+              <StatTile
+                label="Last updated"
+                value={stats.lastUpdated ? new Date(stats.lastUpdated.updated_at ?? stats.lastUpdated.created_at).toLocaleDateString() : '—'}
+                sub={stats.lastUpdated?.title}
+                icon={Clock}
+              />
+            </div>
+          </KpiMarquee>
         </div>
+      )}
 
-        {/* Convention list */}
-        <div className="flex-1 flex flex-col gap-3">
+      {/* Category filter chips — replaces a plain list with colored dots +
+          counts per category, matching the mockup's horizontal filter row */}
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        {CATEGORIES.map(cat => {
+          const count = cat.value === 'all'
+            ? conventions.length
+            : conventions.filter(c => c.category === cat.value && (showArchived || !c.archived_at)).length
+          const active = selectedCategory === cat.value
+          return (
+            <button
+              key={cat.value}
+              onClick={() => setSelectedCategory(cat.value)}
+              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full border text-[12px] font-semibold transition-colors ${FOCUS} ${
+                active
+                  ? 'border-white/20 bg-white/[0.07] text-text-primary'
+                  : 'border-border-primary text-text-secondary hover:text-text-primary hover:border-white/20'
+              }`}
+            >
+              {cat.value !== 'all' && (
+                <span className={`w-[7px] h-[7px] rounded-full ${categoryColor(cat.value).replace('text-', 'bg-')}`} />
+              )}
+              {cat.label}
+              <span className="text-[10.5px] text-text-quaternary font-normal">{count || ''}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Convention list */}
+      <div className="flex flex-col gap-3">
           {/* Search + Sort */}
           <div className="flex items-center gap-2 mb-1">
             <input
@@ -930,10 +1035,10 @@ export default function Conventions() {
             </div>
           </div>
           {isLoading && (
-            <div className="animate-pulse h-24 bg-[#272729] rounded-[18px]" />
+            <div className={`animate-pulse h-24 rounded-[18px] ${GLASS_PANEL}`} />
           )}
           {!isLoading && filtered.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-center bg-background-tertiary rounded-[18px] border border-border-primary px-6">
+            <div className={`flex flex-col items-center justify-center py-16 text-center rounded-[18px] px-6 ${GLASS_PANEL}`}>
               <BookMarked className="w-8 h-8 text-text-quaternary mb-3" />
               <p className="text-[15px] font-semibold text-text-secondary">No conventions yet</p>
               <p className="text-[13px] text-text-quaternary mt-1 max-w-xs">
@@ -958,7 +1063,6 @@ export default function Conventions() {
               onSaved={() => qc.invalidateQueries({ queryKey: ['conventions'] })}
             />
           ))}
-        </div>
       </div>
 
       <ConventionModal

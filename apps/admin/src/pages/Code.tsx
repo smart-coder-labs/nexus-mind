@@ -1,9 +1,12 @@
 import { useMemo, useState, useCallback, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff, Code2, GitBranch } from 'lucide-react'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject, CodeSearchResult } from '../types'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
+import { KpiMarquee } from '@/components/ui/KpiMarquee'
 
 // Lazy-load the graph tab to avoid bundling react-force-graph-2d (~400 KB)
 // into the initial admin chunk.
@@ -42,6 +45,10 @@ function downloadBlob(data: object, filename: string) {
 
 const INPUT_CLS =
   'w-full bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to avoid pulling the SDD page module graph into the Code page.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
 
 // ── Private-repo detection ─────────────────────────────────────────────────────
 
@@ -123,7 +130,7 @@ function StatusChip({ project }: { project: CodeProject }) {
 
 function SkeletonRow() {
   return (
-    <div className="border border-border-primary rounded-[18px] p-5 animate-pulse">
+    <div className="px-5 py-4 animate-pulse">
       <div className="h-4 bg-[#272729] rounded-[5px] w-1/3 mb-2" />
       <div className="h-3 bg-[#272729] rounded-[5px] w-1/2 mb-2" />
       <div className="h-3 bg-[#272729] rounded-[5px] w-2/3" />
@@ -205,7 +212,7 @@ function SearchResultRow({ result, searchQuery }: { result: CodeSearchResult; se
   const [expanded, setExpanded] = useState(false)
 
   return (
-    <div className="bg-[#272729] border border-border-primary rounded-[18px] overflow-hidden">
+    <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
@@ -1045,15 +1052,23 @@ function RepositoriesTab({
         </div>
       )}
 
-      {/* Projects list */}
-      {isLoading ? (
-        <div className="space-y-3">
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
+      {/* Projects list — established card+divider-row idiom (matches Projects.tsx) */}
+      <div className={`rounded-[18px] overflow-hidden ${GLASS_PANEL}`}>
+        <div className="px-5 py-4 border-b border-border-secondary flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-sm font-semibold text-text-primary">Indexed repositories</span>
+          <span className="text-[11px] font-semibold tracking-[0.06em] uppercase text-text-tertiary">
+            {(projects ?? []).length} repo{(projects ?? []).length === 1 ? '' : 's'}
+          </span>
         </div>
+        <div className="divide-y divide-border-secondary">
+      {isLoading ? (
+        <>
+          <SkeletonRow />
+          <SkeletonRow />
+          <SkeletonRow />
+        </>
       ) : !projects || projects.length === 0 ? (
-        <div className="border border-border-primary rounded-[18px] p-10 text-center space-y-2">
+        <div className="p-10 text-center space-y-2">
           <p className="text-xs font-semibold text-text-primary">No repositories indexed yet.</p>
           <p className="text-xs text-text-quaternary">
             Add a repository to enable semantic code search and context retrieval.
@@ -1068,16 +1083,17 @@ function RepositoriesTab({
           )}
         </div>
       ) : (
-        <div className="space-y-3">
+        <>
           {projects.map(p => {
             const isReindexing = reindexMut.isPending && reindexMut.variables?.id === p.id
             return (
               <div key={p.id}>
               <div
-                className="group bg-[#272729] border border-border-primary rounded-[18px] p-5 flex items-start justify-between gap-4"
+                className="group px-5 py-4 hover:bg-accent-blue/[0.04] transition-colors flex items-start justify-between gap-4"
               >
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
+                    <GitBranch className="w-3.5 h-3.5 text-text-quaternary shrink-0" aria-hidden="true" />
                     <span className="text-xs font-semibold text-text-primary">{p.name}</span>
                     <StatusChip project={p} />
                     {p.archived_at && (
@@ -1219,7 +1235,7 @@ function RepositoriesTab({
                 </div>
               </div>
               {expandedFiles === p.id && (
-                <div className="mt-2 rounded-[11px] border border-border-primary bg-white/[0.02] p-3">
+                <div className="mx-5 mb-3 rounded-[11px] border border-border-primary bg-white/[0.02] p-3">
                   {filesLoading ? (
                     <p className="text-[10px] text-text-quaternary text-center py-2">Loading…</p>
                   ) : (
@@ -1239,8 +1255,10 @@ function RepositoriesTab({
               </div>
             )
           })}
-        </div>
+        </>
       )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1252,6 +1270,7 @@ type Tab = 'repositories' | 'search' | 'graph'
 export default function Code() {
   const { session } = useAuth()
   const client = useMemo(() => createClient(), [session])
+  const qc = useQueryClient()
   const isAdmin = isPrivileged(session?.user.role)
   const [activeTab, setActiveTab] = useState<Tab>('repositories')
   const [showArchived, setShowArchived] = useState(false)
@@ -1264,6 +1283,56 @@ export default function Code() {
       (query.state.data as CodeProject[] | undefined)?.some(p => p.index_status === 'indexing') ? 5000 : false,
   })
 
+  // Reindexes every active (non-archived) repository by looping the existing
+  // per-project reindex call — there is no bulk endpoint, so this reuses
+  // client.reindexCodeProject rather than fabricating a new API.
+  const reindexAllMut = useMutation({
+    mutationFn: async () => {
+      const active = (projects ?? []).filter(p => !p.archived_at)
+      await Promise.allSettled(active.map(p => client.reindexCodeProject(p.id)))
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['code-projects'] }),
+  })
+
+  const activeProjects = useMemo(() => (projects ?? []).filter(p => !p.archived_at), [projects])
+  const totalFiles = useMemo(() => activeProjects.reduce((sum, p) => sum + (p.file_count ?? 0), 0), [activeProjects])
+  const indexingCount = useMemo(() => activeProjects.filter(p => p.index_status === 'indexing').length, [activeProjects])
+  const mostRecentIndexed = useMemo(
+    () =>
+      activeProjects.reduce<CodeProject | null>((latest, p) => {
+        if (!p.last_indexed) return latest
+        if (!latest || !latest.last_indexed) return p
+        return new Date(p.last_indexed) > new Date(latest.last_indexed) ? p : latest
+      }, null),
+    [activeProjects],
+  )
+
+  const statTiles = [
+    {
+      label: 'Repos indexed',
+      value: String(activeProjects.length),
+      sub: indexingCount > 0 ? `${indexingCount} indexing now` : activeProjects.length > 0 ? 'all synced' : undefined,
+      icon: GitBranch,
+    },
+    {
+      label: 'Files',
+      value: totalFiles.toLocaleString(),
+      sub: 'across repos',
+      icon: FileText,
+    },
+    {
+      label: 'Last index',
+      value: mostRecentIndexed?.last_indexed ? relativeTime(mostRecentIndexed.last_indexed) : '—',
+      sub: mostRecentIndexed?.name,
+      icon: Clock,
+    },
+    // "Symbols" and "Searches (7d)" tiles from the mockup would need a
+    // symbol-count aggregate and a search-history aggregate this page
+    // doesn't fetch (CodeProject carries no symbol count; CodeSearchResult
+    // results aren't persisted across searches) — omitted rather than
+    // fabricated.
+  ]
+
   const TABS: { id: Tab; label: string; icon?: React.ReactNode }[] = [
     { id: 'repositories', label: 'Repositories' },
     { id: 'search', label: 'Search', icon: <Search className="w-3 h-3" /> },
@@ -1273,14 +1342,42 @@ export default function Code() {
   return (
     <div className="p-8 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-base font-semibold text-text-primary">
-          Code Repositories
-        </h1>
-        <p className="text-xs text-text-quaternary mt-0.5">
-          Connect and index codebases for AI-assisted search and context retrieval.
-        </p>
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-[13px] bg-accent-blue/12 flex items-center justify-center shrink-0">
+            <Code2 className="w-5 h-5 text-accent-blue" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-text-primary">
+              Code Repositories
+            </h1>
+            <p className="text-xs text-text-quaternary mt-0.5">
+              Connect and index codebases for AI-assisted search and context retrieval.
+            </p>
+          </div>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => reindexAllMut.mutate()}
+            disabled={reindexAllMut.isPending || activeProjects.length === 0}
+            className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-3.5 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 shrink-0"
+          >
+            {reindexAllMut.isPending
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <RefreshCw className="w-3.5 h-3.5" />}
+            {reindexAllMut.isPending ? 'Reindexing…' : 'Reindex all'}
+          </button>
+        )}
       </div>
+
+      {/* Stats */}
+      <KpiMarquee role="list" aria-label="Code repository statistics">
+        {statTiles.map((tile, i) => (
+          <div key={tile.label} className="w-[232px] flex-none">
+            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+          </div>
+        ))}
+      </KpiMarquee>
 
       {/* Tab bar */}
       <div className="flex items-center bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 gap-0.5 w-fit">

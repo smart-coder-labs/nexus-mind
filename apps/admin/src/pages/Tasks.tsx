@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid } from 'lucide-react'
+import { Plus, Pencil, Trash2, ListTodo, List, LayoutGrid, ChartGantt, ListChecks } from 'lucide-react'
 import { Navigate } from 'react-router-dom'
 import { createClient } from '../api/client'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -12,9 +12,11 @@ import { Badge } from '../components/ui/Badge/Badge'
 import { EmptyState } from '../components/ui/EmptyState/EmptyState'
 import TaskDetail from './tasks/TaskDetail'
 import TasksBoard from './tasks/TasksBoard'
+import TasksTimeline from './tasks/TasksTimeline'
+import TasksStats from './tasks/TasksStats'
 import type { Task, TaskStatus, TaskPriority } from '../types'
 
-type TasksView = 'list' | 'board'
+type TasksView = 'list' | 'board' | 'timeline'
 
 export const STATUS_OPTIONS: TaskStatus[] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']
 export const PRIORITY_OPTIONS: TaskPriority[] = ['low', 'medium', 'high', 'urgent']
@@ -33,6 +35,61 @@ export const PRIORITY_BADGE_VARIANT: Record<TaskPriority, 'default' | 'primary' 
   medium: 'primary',
   high: 'warning',
   urgent: 'error',
+}
+
+// Exact hex accents used by the target mockup's status/priority chips and the
+// distribution bar (delta 3/5). Kept separate from STATUS_BADGE_VARIANT /
+// PRIORITY_BADGE_VARIANT above — those still back the Badge component used by
+// TaskDetail.tsx and sdd/ChangeDetail.tsx, which this change does not touch.
+export const STATUS_COLORS: Record<TaskStatus, string> = {
+  backlog: '#94a3b8',
+  todo: '#64748b',
+  in_progress: '#a78bfa',
+  in_review: '#facc15',
+  done: '#34d399',
+  cancelled: '#f87171',
+}
+
+export const PRIORITY_COLORS: Record<TaskPriority, string> = {
+  low: '#94a3b8',
+  medium: '#60a5fa',
+  high: '#facc15',
+  urgent: '#f87171',
+}
+
+/** Subtle status chip: tinted background at ~14% of the status color. */
+export function StatusPill({ status }: { status: TaskStatus }) {
+  const color = STATUS_COLORS[status]
+  return (
+    <span
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold whitespace-nowrap"
+      style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
+    >
+      {status.replace(/_/g, ' ')}
+    </span>
+  )
+}
+
+/** Colored priority chip — urgent red-ish, high yellow, medium blue, low gray. */
+export function PriorityPill({ priority }: { priority: TaskPriority }) {
+  const color = PRIORITY_COLORS[priority]
+  return (
+    <span
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold whitespace-nowrap"
+      style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
+    >
+      {priority}
+    </span>
+  )
+}
+
+/** Parses a `YYYY-MM-DD` date-only string (e.g. `task.due_date`) as a LOCAL
+ *  date rather than UTC midnight — `new Date('2026-07-15')` shifts a day
+ *  backward in any timezone west of UTC, which would misfile a task into the
+ *  wrong timeline group. */
+export function parseDateOnly(dateStr: string): Date {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Date(y, (m ?? 1) - 1, d ?? 1)
 }
 
 interface TaskFormState {
@@ -219,9 +276,17 @@ export default function Tasks() {
     <div className="p-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-base font-semibold text-text-primary">Tasks</h1>
-          <p className="text-xs text-text-quaternary mt-0.5">{tasks.length} tasks</p>
+        <div className="flex items-center gap-3">
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-[13px] bg-status-success/10 flex items-center justify-center shrink-0"
+          >
+            <ListChecks className="w-5 h-5 text-status-success" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-text-primary">Tasks</h1>
+            <p className="text-xs text-text-quaternary mt-0.5">{tasks.length} tasks</p>
+          </div>
         </div>
         {canWrite && (
           <button
@@ -233,6 +298,11 @@ export default function Tasks() {
           </button>
         )}
       </div>
+
+      {/* Stat tiles + status distribution — derived from the already-fetched,
+          filter-scoped task list (same data backing "N tasks" above). No
+          separate endpoint, no fabricated numbers. */}
+      <TasksStats tasks={tasks} />
 
       {/* Filters */}
       <div className="flex items-center justify-between gap-3 mb-4">
@@ -306,13 +376,22 @@ export default function Tasks() {
           >
             <LayoutGrid className="w-3.5 h-3.5" />
           </button>
+          <button
+            onClick={() => setView('timeline')}
+            aria-label="Timeline view"
+            aria-pressed={view === 'timeline'}
+            title="Timeline view"
+            className={`p-1.5 rounded-full transition-colors ${view === 'timeline' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
+          >
+            <ChartGantt className="w-3.5 h-3.5" />
+          </button>
           </div>
         </div>
       </div>
 
       {/* Bulk action bar — one confirmation for the whole batch. */}
       {canDelete && selectedTasks.length > 0 && (
-        <div className="flex items-center justify-between gap-3 mb-3 rounded-[14px] border border-border-primary bg-background-tertiary/40 px-4 py-2">
+        <div className="flex items-center justify-between gap-3 mb-3 rounded-[14px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] px-4 py-2">
           <span className="text-xs text-text-secondary">
             {selectedTasks.length} selected
           </span>
@@ -353,7 +432,7 @@ export default function Tasks() {
       {isLoading ? (
         <div className="space-y-2">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="rounded-[18px] bg-[#272729] border border-border-primary h-14 animate-pulse" />
+            <div key={i} className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] h-14 animate-pulse" />
           ))}
         </div>
       ) : tasks.length === 0 ? (
@@ -364,14 +443,16 @@ export default function Tasks() {
         />
       ) : view === 'board' ? (
         <TasksBoard tasks={tasks} onTaskClick={setDetailTask} />
+      ) : view === 'timeline' ? (
+        <TasksTimeline tasks={tasks} onTaskClick={setDetailTask} />
       ) : (
-        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-[#272729]">
+        <div className="overflow-hidden rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]">
           <table className="w-full table-fixed border-collapse text-left">
             {/* table-fixed: without it a long title stretches the Title column until the
                 later columns — Actions among them — are pushed out of the viewport, and the
                 delete button becomes unreachable. The bug reads as "you cannot delete tasks",
                 which is how it was reported. */}
-            <thead className="bg-[#272729]/40 border-b border-border-secondary">
+            <thead className="bg-white/[0.03] border-b border-white/[0.06]">
               <tr>
                 {canDelete && (
                   <th className="px-4 py-3 w-[5%]">
@@ -398,7 +479,7 @@ export default function Tasks() {
                 <tr
                   key={task.id}
                   onClick={() => setDetailTask(task)}
-                  className="border-b border-border-secondary last:border-b-0 cursor-pointer hover:bg-background-tertiary/40 transition-colors"
+                  className="border-b border-white/[0.05] last:border-b-0 cursor-pointer hover:bg-accent-blue/[0.05] transition-colors"
                 >
                   {canDelete && (
                     <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
@@ -424,10 +505,10 @@ export default function Tasks() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={STATUS_BADGE_VARIANT[task.status]} size="sm">{task.status}</Badge>
+                    <StatusPill status={task.status} />
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={PRIORITY_BADGE_VARIANT[task.priority]} size="sm">{task.priority}</Badge>
+                    <PriorityPill priority={task.priority} />
                   </td>
                   <td className="px-4 py-3 text-xs text-text-secondary">
                     {task.assignees.length === 0

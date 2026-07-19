@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import React, { useMemo, useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -7,8 +7,14 @@ import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
 import { Markdown } from '../components/ui/Markdown'
-import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, List } from 'lucide-react'
+import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, List, ArrowDownWideNarrow } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { MemoryStatTiles } from './memories/MemoryStatTiles'
+
+// Lazy — pulls in react-force-graph-3d (WebGL/three.js), same pattern as
+// Graph.tsx's lazy `OrgMemoryGraph` import, so it never blocks the initial
+// Memories page render/bundle and stays out of environments without WebGL.
+const MemoryBackgroundGraph = lazy(() => import('./memories/MemoryBackgroundGraph'))
 
 const FAV_KEY = 'nexusmind-memory-favorites'
 function loadFavorites(): Set<string> {
@@ -55,6 +61,21 @@ function TypeBadge({ type }: { type?: string }) {
   const cls = meta?.cls ?? 'text-text-tertiary bg-[#272729] border-border-primary'
   return (
     <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
+      {meta?.label ?? type}
+    </span>
+  )
+}
+
+// Pill-shaped type chip used only in the Memories table's TYPE column — same
+// TYPE_META color mapping as TypeBadge, just a larger rounded-full shape to
+// match the mockup's table chip (TypeBadge stays untouched since it's also
+// used by the detail modal/slide-over, out of this redesign's scope).
+function TypeChip({ type }: { type?: string }) {
+  if (!type) return null
+  const meta = TYPE_META[type]
+  const cls = meta?.cls ?? 'text-text-tertiary bg-[#272729] border-border-primary'
+  return (
+    <span className={`text-[11.5px] font-semibold border rounded-full px-2.5 py-0.5 ${cls}`}>
       {meta?.label ?? type}
     </span>
   )
@@ -373,11 +394,11 @@ function FacetSelect({
   options: { value: string; count: number }[]
 }) {
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="appearance-none bg-transparent border border-border-secondary/40 rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+        className="appearance-none h-9 rounded-[11px] border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
       >
         <option value="">{label}</option>
         {options.map(o => (
@@ -387,7 +408,7 @@ function FacetSelect({
         ))}
       </select>
       <svg
-        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary"
+        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary"
         fill="none"
         viewBox="0 0 24 24"
         stroke="currentColor"
@@ -987,6 +1008,9 @@ export default function Memories() {
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'memories' | 'sessions' | 'tags' | 'duplicates' | 'collections'>('memories')
   const [createMemoryOpen, setCreateMemoryOpen] = useState(false)
+  // Ambient background memory graph — Focus mode toggle (design delta 2).
+  const [graphFocused, setGraphFocused] = useState(false)
+  const toggleGraphFocus = useCallback(() => setGraphFocused(f => !f), [])
 
   // Open create modal when navigated here with ?new=1 (e.g. via Cmd+N from Layout)
   useEffect(() => {
@@ -1089,11 +1113,60 @@ export default function Memories() {
     enabled: isAdmin,
   })
 
+  // ── Stat tiles (design delta 1) ───────────────────────────────────────────
+  // Every number below is sourced from an endpoint the app already calls
+  // elsewhere (Dashboard.tsx uses the same two) — see MemoryStatTiles.tsx
+  // for how each prop maps onto a tile.
+  const { data: memoryHealth } = useQuery({
+    queryKey: ['memory-health'],
+    queryFn: () => client.getMemoryHealth(),
+    staleTime: 60_000,
+    enabled: isAdmin,
+  })
+
+  const { data: memoryTrends } = useQuery({
+    queryKey: ['memory-trends', 7],
+    queryFn: () => client.getMemoryTrends(7),
+    staleTime: 60_000,
+    enabled: isAdmin,
+  })
+
+  const weekSparkline = useMemo(
+    () => (memoryTrends?.daily_counts ?? []).slice(-7).map(d => d.count),
+    [memoryTrends],
+  )
+  const weekAvgPerDay = memoryTrends ? Math.round((memoryTrends.this_week / 7) * 10) / 10 : undefined
+  const untaggedPct = memoryHealth && memoryHealth.total_memories > 0
+    ? Math.round((memoryHealth.untagged_count / memoryHealth.total_memories) * 100)
+    : undefined
+
   const isSearching = debouncedQuery.trim().length > 0
 
   // VIEW_ALL_LIMIT must match `EXPORT_HARD_CAP` in the backend (apps/backend/src/api/memory.rs)
   // so the page never asks for more than the server is willing to return in one shot.
   const VIEW_ALL_LIMIT = 10_000
+
+  // Pinned total has no backend aggregate — unlike total/duplicates/stale/
+  // untagged (GET /v1/admin/memories/health) there is no endpoint or facet
+  // that returns "how many memories are pinned org-wide". The only way to
+  // get a real, non-fabricated number is a bounded client-side scan, so this
+  // reuses the same `listMemories({ limit: VIEW_ALL_LIMIT })` "fetch
+  // everything" shape as the "View all" feature above, gated to admins and
+  // cached for 10 minutes since it's a full corpus fetch that only feeds a
+  // decorative stat tile.
+  const { data: pinnedScan } = useQuery({
+    queryKey: ['memories', 'pinned-scan'],
+    queryFn: () => client.listMemories({ limit: VIEW_ALL_LIMIT, offset: 0 }),
+    staleTime: 10 * 60_000,
+    enabled: isAdmin,
+  })
+  const pinnedCount = useMemo(
+    () => (pinnedScan ? pinnedScan.filter(m => (m as unknown as { pinned?: boolean }).pinned).length : undefined),
+    [pinnedScan],
+  )
+  const pinnedPct = memoryHealth && pinnedCount != null && memoryHealth.total_memories > 0
+    ? Math.round((pinnedCount / memoryHealth.total_memories) * 100)
+    : undefined
 
   const { data: listData, isLoading: listLoading } = useQuery({
     queryKey: ['memories', 'list', filterType, filterScope, filterProject, showArchived, fromDate, toDate, filterCollection, sessionIdFilter, page],
@@ -1167,10 +1240,17 @@ export default function Memories() {
     staleTime: 60_000,
   })
 
+  // GET /v1/admin/stats/duplicates is privileged-only server-side (403s for
+  // non-admins). Previously this only ran once the Duplicates tab was
+  // clicked, gated by `activeTab` rather than role — the stat tile and the
+  // tab badge (design deltas 1 & 3) both need this count up front, so it's
+  // now gated by `isAdmin` like the other admin stat queries above. This
+  // also fixes a latent bug where a non-admin clicking the tab would 403 and
+  // get redirected to /401 by the client's global 403 handler.
   const { data: duplicateGroups, isLoading: duplicatesLoading } = useQuery({
     queryKey: ['memory-duplicates'],
     queryFn: () => client.getDuplicates(),
-    enabled: activeTab === 'duplicates',
+    enabled: isAdmin,
   })
 
   const { data: collections, isLoading: collectionsLoading } = useQuery({
@@ -1680,12 +1760,28 @@ export default function Memories() {
   }, [isAdmin, parseAndStageFile])
 
   return (
-    <div
-      className="p-8 max-w-5xl mx-auto space-y-6"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+    // Ambient background memory graph + Focus mode (design delta 2). The
+    // outer wrapper establishes its own stacking context (`relative` +
+    // numeric z-index) so that while focused, it can jump above the app's
+    // floating glass sidebar (z-30 in Layout.tsx) — without this, the
+    // sidebar's stacking context would cap the focus overlay's z-index no
+    // matter how high the graph's own fixed elements set theirs. See
+    // src/pages/Graph.tsx (`graphFocused ? 'z-[100]' : 'z-10'`) for the
+    // same pattern applied to the full Graph page.
+    <div className={cn('relative', graphFocused ? 'z-[100]' : 'z-10')}>
+      <Suspense fallback={null}>
+        <MemoryBackgroundGraph focused={graphFocused} onToggleFocus={toggleGraphFocus} />
+      </Suspense>
+
+      <div
+        className={cn(
+          'relative z-10 p-8 max-w-5xl mx-auto space-y-6 transition-opacity duration-300',
+          graphFocused && 'opacity-0 pointer-events-none',
+        )}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
       {/* Drag-and-drop overlay */}
       {isDragOver && (
         <div className="fixed inset-0 bg-accent-blue/5 border-2 border-dashed border-accent-blue/40 z-20 flex items-center justify-center pointer-events-none">
@@ -2002,6 +2098,24 @@ export default function Memories() {
         </div>
       )}
 
+      {/* Stat tiles (design delta 1) — admin-only, same as the other org-wide
+          aggregates on this page (facets, collections, memory-health). */}
+      {isAdmin && (
+        <MemoryStatTiles
+          weekCount={memoryTrends?.this_week}
+          weekAvgPerDay={weekAvgPerDay}
+          weekSparkline={weekSparkline}
+          pinnedCount={pinnedCount}
+          pinnedPctOfTotal={pinnedPct}
+          duplicateCount={memoryHealth?.duplicate_count}
+          duplicateGroupCount={duplicateGroups?.length}
+          untaggedCount={memoryHealth?.untagged_count}
+          untaggedPctOfTotal={untaggedPct}
+          totalCount={memoryHealth?.total_memories}
+          totalThisWeek={memoryTrends?.this_week}
+        />
+      )}
+
       {/* Tabs */}
       <div className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 flex w-fit overflow-x-auto">
         {(['memories', 'sessions', 'tags', 'duplicates', 'collections'] as const).map(tab => (
@@ -2083,7 +2197,8 @@ export default function Memories() {
         </div>
       </div>
 
-      {/* Facet filters — admin only, only when facets loaded */}
+      {/* Facet filters — admin only, only when facets loaded. One coherent
+          row of glass pills (matches the mockup); wraps on narrow screens. */}
       {isAdmin && facets && (facets.types.length > 0 || facets.projects.length > 0) && (
         <div className="flex items-center gap-2 flex-wrap">
           <SlidersHorizontal className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
@@ -2111,27 +2226,12 @@ export default function Memories() {
               options={facets.projects}
             />
           )}
-          <input
-            type="date"
-            value={fromDate}
-            onChange={e => setFromDate(e.target.value)}
-            className="bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 [color-scheme:dark]"
-            aria-label="From date"
-          />
-          <span className="text-xs text-text-quaternary">–</span>
-          <input
-            type="date"
-            value={toDate}
-            onChange={e => setToDate(e.target.value)}
-            className="bg-transparent border border-border-primary rounded-[11px] px-3 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 [color-scheme:dark]"
-            aria-label="To date"
-          />
           {collections && collections.length > 0 && (
-            <div className="relative">
+            <div className="relative shrink-0">
               <select
                 value={filterCollection}
                 onChange={e => setFilterCollection(e.target.value)}
-                className="appearance-none bg-transparent border border-border-secondary/40 rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+                className="appearance-none h-9 rounded-[11px] border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
                 aria-label="Filter by collection"
               >
                 <option value="">All collections</option>
@@ -2139,66 +2239,72 @@ export default function Memories() {
                   <option key={col.id} value={col.id}>{col.name}</option>
                 ))}
               </select>
-              <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
               </svg>
             </div>
           )}
+
+          {/* Date range — single glass pill housing both native date inputs,
+              "dd/mm/yyyy → dd/mm/yyyy" per the mockup. */}
+          <div className="flex items-center gap-1.5 h-9 shrink-0 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-3 text-[12.5px] text-text-quaternary">
+            <input
+              type="date"
+              value={fromDate}
+              onChange={e => setFromDate(e.target.value)}
+              className="bg-transparent border-none outline-none text-[12.5px] text-text-secondary [color-scheme:dark] w-[108px]"
+              aria-label="From date"
+            />
+            <span aria-hidden="true" className="text-text-quaternary">→</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={e => setToDate(e.target.value)}
+              className="bg-transparent border-none outline-none text-[12.5px] text-text-secondary [color-scheme:dark] w-[108px]"
+              aria-label="To date"
+            />
+          </div>
+
           {/* Pinned only toggle */}
           <button
             onClick={() => setPinnedOnly(v => !v)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+            aria-pressed={pinnedOnly}
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
               pinnedOnly
                 ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/40'
-                : 'border-border-primary text-text-quaternary hover:text-text-secondary'
+                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
             }`}
           >
             <Pin className="w-3 h-3" />
             Pinned
           </button>
 
-          {/* Sort dropdown */}
-          <div className="relative">
+          {/* Sort — rendered as a chip-styled select, matching the "Newest
+              first" pill in the mockup's filter-chip cluster. */}
+          <div className="relative shrink-0">
+            <ArrowDownWideNarrow className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" />
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value as SortBy)}
-              className="appearance-none bg-white/[0.04] border border-border-primary rounded-[8px] pl-3 pr-7 py-1.5 text-xs text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
+              className="appearance-none h-9 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-8 pr-7 text-[12.5px] text-text-tertiary hover:border-white/20 hover:text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors cursor-pointer"
               aria-label="Sort memories"
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
               <option value="most-used">Most revised</option>
             </select>
-            <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
           </div>
 
-          {/* Active filter badge + clear all */}
-          {activeFilterCount > 0 && (
-            <button
-              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false); setQuery('') }}
-              className="rounded-full border border-border-primary px-3 py-1.5 text-[10px] text-accent-blue hover:text-accent-blue/80 transition-colors flex items-center gap-1.5"
-            >
-              <span className="bg-accent-blue/10 text-accent-blue rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{activeFilterCount}</span>
-              filters active · clear all
-            </button>
-          )}
-
-          {hasFilters && !activeFilterCount && (
-            <button
-              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false) }}
-              className="text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors flex items-center gap-1"
-            >
-              <X className="w-3 h-3" /> Clear filters
-            </button>
-          )}
           <button
             onClick={() => setShowArchived(a => !a)}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-semibold transition-colors ${
+            aria-pressed={showArchived}
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
               showArchived
-                ? 'bg-status-warning/10 text-status-warning border border-status-warning/30'
-                : 'border border-border-primary text-text-quaternary hover:text-text-secondary'
+                ? 'bg-status-warning/10 text-status-warning border-status-warning/30'
+                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
             }`}
           >
             {showArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
@@ -2206,10 +2312,12 @@ export default function Memories() {
           </button>
           <button
             onClick={() => setShowFavoritesOnly(v => !v)}
-            className={showFavoritesOnly
-              ? "bg-[#272729] text-text-primary rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5"
-              : "text-text-quaternary hover:text-text-secondary rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5 transition-colors"
-            }
+            aria-pressed={showFavoritesOnly}
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors ${
+              showFavoritesOnly
+                ? 'bg-status-warning/10 text-status-warning border-status-warning/30'
+                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
+            }`}
           >
             <Star className="w-3 h-3" />
             Favorites
@@ -2221,10 +2329,10 @@ export default function Memories() {
             disabled={isLoading}
             aria-pressed={viewAll}
             aria-label={viewAll ? 'Back to paginated view' : 'View all memories'}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+            className={`inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border px-3.5 text-[12.5px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               viewAll
-                ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30'
-                : 'border border-border-primary text-text-quaternary hover:text-text-secondary'
+                ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/30'
+                : 'border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] text-text-tertiary hover:border-white/20 hover:text-text-secondary'
             }`}
           >
             {isLoading && viewAll
@@ -2233,6 +2341,26 @@ export default function Memories() {
             }
             {viewAll ? 'Paginated view' : 'View all'}
           </button>
+
+          {/* Active filter badge + clear all */}
+          {activeFilterCount > 0 && (
+            <button
+              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false); setQuery('') }}
+              className="inline-flex items-center gap-1.5 h-9 shrink-0 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] px-3.5 text-[11px] text-accent-blue hover:text-accent-blue/80 transition-colors"
+            >
+              <span className="bg-accent-blue/10 text-accent-blue rounded-full px-1.5 py-0.5 text-[10px] font-semibold">{activeFilterCount}</span>
+              filters active · clear all
+            </button>
+          )}
+
+          {hasFilters && !activeFilterCount && (
+            <button
+              onClick={() => { setFilterType(''); setFilterScope(''); setFilterProject(''); setFromDate(''); setToDate(''); setFilterCollection(''); setPinnedOnly(false) }}
+              className="inline-flex items-center gap-1 h-9 shrink-0 text-[11px] text-text-quaternary hover:text-text-tertiary transition-colors"
+            >
+              <X className="w-3 h-3" /> Clear filters
+            </button>
+          )}
         </div>
       )}
 
@@ -2250,11 +2378,11 @@ export default function Memories() {
         <p className="text-xs text-status-success mt-1">Tags updated</p>
       )}
 
-      {/* Table */}
-      <div className="border border-border-primary rounded-[18px] overflow-hidden">
+      {/* Table — glass panel wrapper, matches the mockup's rounded/blurred surface */}
+      <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[16px] overflow-hidden">
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-[#272729] border-b border-border-primary">
+            <tr className="border-b border-white/[0.06]">
               {/* Select-all checkbox — admin only, select mode only */}
               <th className="w-10 px-4 py-3">
                 {isAdmin && selectMode && memories && memories.length > 0 && (
@@ -2273,8 +2401,8 @@ export default function Memories() {
                   />
                 )}
               </th>
-              {['Date', 'User', 'Type', 'Memory', '', '', '', '', '', '', ''].map((h, i) => (
-                <th key={`h-${i}`} className="text-left px-4 py-3 text-[11px] font-semibold text-text-tertiary tracking-[-0.12px]">
+              {['Date', 'User', 'Type', 'Memory', ''].map((h, i) => (
+                <th key={`h-${i}`} className="text-left px-4 py-3 text-[10.5px] font-bold uppercase tracking-wider text-[#5b6373]">
                   {h}
                 </th>
               ))}
@@ -2314,7 +2442,7 @@ export default function Memories() {
                   role="button"
                   tabIndex={0}
                   aria-label={`View memory: ${mem.title ?? 'untitled'}`}
-                  className={`border-t border-border-secondary transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.04]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
+                  className={`border-t border-white/[0.05] transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.05]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
                 >
                   {/* Row checkbox — only shown in selectMode */}
                   <td className="w-10 px-4 py-3.5" onClick={e => e.stopPropagation()}>
@@ -2328,27 +2456,27 @@ export default function Memories() {
                       />
                     )}
                   </td>
-                  <td className="px-4 py-3.5 whitespace-nowrap">
-                    <p className="text-xs font-semibold text-text-secondary">
+                  <td className="px-4 py-3.5 whitespace-nowrap align-top">
+                    <p className="text-[13px] text-text-secondary">
                       {new Date(mem.created_at).toLocaleDateString()}
                     </p>
-                    <p className="text-[11px] text-text-quaternary mt-0.5">
+                    <p className="text-[11.5px] text-text-quaternary mt-0.5">
                       {new Date(mem.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </td>
-                  <td className="px-4 py-3.5">
-                    <div className="space-y-1">
-                      <p className="text-xs text-text-secondary font-semibold">
+                  <td className="px-4 py-3.5 align-top">
+                    <div className="space-y-1.5">
+                      <p className="text-[13px] text-text-secondary">
                         {userMap.get(mem.user_id) ?? '—'}
                       </p>
-                      <span className="text-[10px] border border-border-primary rounded-[5px] px-1.5 py-0.5 text-text-quaternary bg-[#272729]/50 inline-block">
+                      <span className="text-[10.5px] border border-border-primary rounded-[6px] px-1.5 py-0.5 text-text-quaternary bg-[#272729]/50 inline-block font-mono">
                         {mem.tool}
                       </span>
                     </div>
                   </td>
-                  <td className="px-4 py-3.5">
+                  <td className="px-4 py-3.5 align-top">
                     <div className="space-y-1.5">
-                      <TypeBadge type={mem.type} />
+                      <TypeChip type={mem.type} />
                       {mem.revision_count != null && mem.revision_count > 1 && (
                         <p className="text-[10px] text-text-quaternary">rev {mem.revision_count}</p>
                       )}
@@ -2400,9 +2528,9 @@ export default function Memories() {
                       </div>
                     ) : (
                       <>
-                        <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
                           {mem.title && (
-                            <p className="text-xs font-semibold text-text-primary truncate group-hover:text-accent-blue transition-colors">
+                            <p className="text-sm font-semibold text-text-primary truncate group-hover:text-accent-blue transition-colors">
                               {mem.title}
                             </p>
                           )}
@@ -2412,15 +2540,15 @@ export default function Memories() {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-text-tertiary line-clamp-2 leading-relaxed">
+                        <p className="text-[13px] text-text-tertiary line-clamp-2 leading-relaxed">
                           {isSearching && debouncedQuery.length >= 2
                             ? highlightMatch((mem.content ?? '').replace(/#+\s/g, '').replace(/\*\*/g, ''), debouncedQuery)
                             : (mem.content ?? '').replace(/#+\s/g, '').replace(/\*\*/g, '')}
                         </p>
                         {mem.tags.length > 0 && (
-                          <div className="flex gap-1 flex-wrap mt-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
                             {mem.tags.slice(0, 3).map(tag => (
-                              <span key={tag} className="text-[10px] bg-[#272729] text-text-quaternary rounded-[5px] px-1.5 py-0.5">
+                              <span key={tag} className="text-[11px] bg-white/[0.05] text-text-quaternary rounded-full px-2.5 py-0.5">
                                 {tag}
                               </span>
                             ))}
@@ -2495,7 +2623,7 @@ export default function Memories() {
                             ) : (
                               <button
                                 onClick={() => { setEditingNoteId(mem.id); setNoteInput('') }}
-                                className="text-[10px] text-text-quaternary hover:text-text-secondary transition-colors"
+                                className="text-[11.5px] text-text-quaternary hover:text-accent-blue transition-colors"
                               >
                                 + Add note
                               </button>
@@ -2505,72 +2633,81 @@ export default function Memories() {
                       </>
                     )}
                   </td>
-                  {/* Assign-to-collection action cell */}
-                  <td className="px-4 py-3.5 w-8 relative" onClick={e => e.stopPropagation()}>
-                    {isAdmin && (
-                      <div className="relative">
-                        <button
-                          onClick={() => setAssigningMemory(assigningMemory === mem.id ? null : mem.id)}
-                          aria-label={`Assign memory ${mem.id} to collection`}
-                          className={`p-1 rounded-[5px] transition-all ${mem.collection_id ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-accent-blue hover:bg-accent-blue/10'}`}
-                        >
-                          <Folder className="w-3 h-3" />
-                        </button>
-                        {assigningMemory === mem.id && (
-                          <div className="absolute right-0 top-6 z-20 bg-[#272729] border border-border-primary rounded-[11px] py-1 min-w-[160px] shadow-xl">
-                            <button
-                              className="w-full text-left px-3 py-2 text-xs text-text-quaternary hover:bg-white/[0.04] transition-colors"
-                              onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: null })}
-                            >
-                              None
-                            </button>
-                            {collections?.map(col => (
+                  {/* Row action cluster — a single flex row of small ghost
+                      icon buttons (collection, pin, favorite, edit, history,
+                      schedule delete, archive/restore, delete), all fading
+                      in on row hover, matching the mockup's action column.
+                      Icons/order kept as before; each popover keeps its own
+                      relative anchor so it opens beneath its trigger. */}
+                  <td className="px-3 py-3.5 align-top" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-end gap-0.5 flex-wrap">
+                      {/* Add to collection */}
+                      {isAdmin && (
+                        <div className="relative">
+                          <button
+                            onClick={() => setAssigningMemory(assigningMemory === mem.id ? null : mem.id)}
+                            aria-label={`Assign memory ${mem.id} to collection`}
+                            className={cn(
+                              'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
+                              mem.collection_id ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
+                            )}
+                          >
+                            <Folder className="w-3.5 h-3.5" />
+                          </button>
+                          {assigningMemory === mem.id && (
+                            <div className="absolute right-0 top-7 z-20 bg-[#272729] border border-border-primary rounded-[11px] py-1 min-w-[160px] shadow-xl">
                               <button
-                                key={col.id}
-                                className={`w-full text-left px-3 py-2 text-xs transition-colors ${mem.collection_id === col.id ? 'text-accent-blue bg-accent-blue/10' : 'text-text-secondary hover:bg-white/[0.04]'}`}
-                                onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: col.id })}
+                                className="w-full text-left px-3 py-2 text-xs text-text-quaternary hover:bg-white/[0.04] transition-colors"
+                                onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: null })}
                               >
-                                {col.name}
+                                None
                               </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  {/* Pin action cell */}
-                  <td className="px-4 py-3.5 w-8" onClick={e => e.stopPropagation()}>
-                    {isAdmin && (
+                              {collections?.map(col => (
+                                <button
+                                  key={col.id}
+                                  className={`w-full text-left px-3 py-2 text-xs transition-colors ${mem.collection_id === col.id ? 'text-accent-blue bg-accent-blue/10' : 'text-text-secondary hover:bg-white/[0.04]'}`}
+                                  onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: col.id })}
+                                >
+                                  {col.name}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Pin */}
+                      {isAdmin && (
+                        <button
+                          onClick={() => mem.pinned ? unpinMut.mutate(mem.id) : pinMut.mutate(mem.id)}
+                          disabled={(pinMut.isPending && pinMut.variables === mem.id) || (unpinMut.isPending && unpinMut.variables === mem.id)}
+                          aria-label={mem.pinned ? `Unpin memory ${mem.id}` : `Pin memory ${mem.id}`}
+                          className={cn(
+                            'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
+                            mem.pinned ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
+                          )}
+                        >
+                          <Pin className={`w-3.5 h-3.5 ${mem.pinned ? 'fill-current' : ''}`} />
+                        </button>
+                      )}
+
+                      {/* Favorite */}
                       <button
-                        onClick={() => mem.pinned ? unpinMut.mutate(mem.id) : pinMut.mutate(mem.id)}
-                        disabled={(pinMut.isPending && pinMut.variables === mem.id) || (unpinMut.isPending && unpinMut.variables === mem.id)}
-                        aria-label={mem.pinned ? `Unpin memory ${mem.id}` : `Pin memory ${mem.id}`}
-                        className={`p-1 rounded-[5px] transition-all ${mem.pinned ? 'text-accent-blue' : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-accent-blue hover:bg-accent-blue/10'}`}
+                        onClick={() => toggleFavorite(mem.id)}
+                        aria-label="Toggle favorite"
+                        className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all"
                       >
-                        <Pin className={`w-3 h-3 ${mem.pinned ? 'fill-current' : ''}`} />
+                        <Star
+                          className={favorites.has(mem.id)
+                            ? "text-status-warning fill-current w-3.5 h-3.5"
+                            : "opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-warning w-3.5 h-3.5"
+                          }
+                        />
                       </button>
-                    )}
-                  </td>
-                  {/* Favorite action cell */}
-                  <td className="px-4 py-3.5 w-8" onClick={e => e.stopPropagation()}>
-                    <button
-                      onClick={() => toggleFavorite(mem.id)}
-                      aria-label="Toggle favorite"
-                      className="p-1 rounded-[5px] transition-colors"
-                    >
-                      <Star
-                        className={favorites.has(mem.id)
-                          ? "text-status-warning fill-current w-3.5 h-3.5"
-                          : "opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-status-warning w-3.5 h-3.5"
-                        }
-                      />
-                    </button>
-                  </td>
-                  {/* Edit + History action cell */}
-                  <td className="px-4 py-3.5 w-8 relative" onClick={e => e.stopPropagation()}>
-                    <div className="flex items-center gap-1">
+
+                      {/* Edit */}
                       {didSave ? (
-                        <span className="flex items-center gap-1 text-[10px] text-status-success animate-pulse">
+                        <span className="flex items-center gap-1 text-[10px] text-status-success animate-pulse px-1">
                           <History className="w-3 h-3" />
                           Edited
                         </span>
@@ -2578,107 +2715,108 @@ export default function Memories() {
                         <button
                           onClick={() => { setEditingId(mem.id); setEditContent(mem.content) }}
                           aria-label={`Edit memory ${mem.id}`}
-                          className="p-1 rounded-[7px] text-text-quaternary hover:text-accent-blue hover:bg-accent-blue/10 opacity-0 group-hover:opacity-100 transition-all"
+                          className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] opacity-0 group-hover:opacity-100 transition-all"
                         >
-                          <Pencil className="w-3 h-3" />
+                          <Pencil className="w-3.5 h-3.5" />
                         </button>
                       ))}
+
+                      {/* History */}
                       {isAdmin && !isEditing && (
-                        <button
-                          onClick={() => setHistoryMemoryId(historyMemoryId === mem.id ? null : mem.id)}
-                          aria-label={`View edit history for memory ${mem.id}`}
-                          className="p-1 rounded-[7px] text-text-quaternary hover:text-text-primary hover:bg-[#272729] opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <History className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                    {historyMemoryId === mem.id && (
-                      <HistoryPanel
-                        memoryId={mem.id}
-                        client={client}
-                        onClose={() => setHistoryMemoryId(null)}
-                      />
-                    )}
-                  </td>
-                  {/* Schedule delete action cell */}
-                  <td className="px-4 py-3.5 w-8 relative" onClick={e => e.stopPropagation()}>
-                    {isAdmin && (
-                      <div className="relative">
-                        <button
-                          onClick={() => setSchedulePopoverId(schedulePopoverId === mem.id ? null : mem.id)}
-                          aria-label={`Schedule deletion for memory ${mem.id}`}
-                          className={cn(
-                            'p-1 rounded-[5px] transition-all',
-                            mem.delete_after
-                              ? 'text-status-warning'
-                              : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-status-warning/10',
-                          )}
-                        >
-                          <CalendarClock className="w-3.5 h-3.5" />
-                        </button>
-                        {schedulePopoverId === mem.id && (
-                          <div className="bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl absolute right-0 top-6 z-50 min-w-[200px]" onClick={e => e.stopPropagation()}>
-                            <p className="text-[10px] text-text-tertiary mb-2 font-semibold">Schedule deletion</p>
-                            <input
-                              type="date"
-                              defaultValue={mem.delete_after ?? ''}
-                              min={new Date().toISOString().slice(0, 10)}
-                              onChange={e => {
-                                const val = e.target.value || null
-                                scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: val })
-                              }}
-                              className="w-full rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark]"
+                        <div className="relative">
+                          <button
+                            onClick={() => setHistoryMemoryId(historyMemoryId === mem.id ? null : mem.id)}
+                            aria-label={`View edit history for memory ${mem.id}`}
+                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary hover:text-text-primary hover:bg-white/[0.07] opacity-0 group-hover:opacity-100 transition-all"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                          </button>
+                          {historyMemoryId === mem.id && (
+                            <HistoryPanel
+                              memoryId={mem.id}
+                              client={client}
+                              onClose={() => setHistoryMemoryId(null)}
                             />
-                            {mem.delete_after && (
-                              <button
-                                onClick={() => scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: null })}
-                                className="mt-2 text-[10px] text-status-error hover:underline w-full text-left"
-                              >
-                                Clear scheduled deletion
-                              </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Schedule delete */}
+                      {isAdmin && (
+                        <div className="relative">
+                          <button
+                            onClick={() => setSchedulePopoverId(schedulePopoverId === mem.id ? null : mem.id)}
+                            aria-label={`Schedule deletion for memory ${mem.id}`}
+                            className={cn(
+                              'w-[26px] h-[26px] rounded-[8px] flex items-center justify-center transition-all',
+                              mem.delete_after
+                                ? 'text-status-warning'
+                                : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07]',
                             )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  {/* Archive / Restore + Delete action cell */}
-                  <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
-                    {isAdmin && (
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                        {mem.archived_at ? (
+                          >
+                            <CalendarClock className="w-3.5 h-3.5" />
+                          </button>
+                          {schedulePopoverId === mem.id && (
+                            <div className="bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl absolute right-0 top-7 z-50 min-w-[200px]" onClick={e => e.stopPropagation()}>
+                              <p className="text-[10px] text-text-tertiary mb-2 font-semibold">Schedule deletion</p>
+                              <input
+                                type="date"
+                                defaultValue={mem.delete_after ?? ''}
+                                min={new Date().toISOString().slice(0, 10)}
+                                onChange={e => {
+                                  const val = e.target.value || null
+                                  scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: val })
+                                }}
+                                className="w-full rounded-[8px] bg-white/[0.04] border border-border-primary text-xs text-text-primary px-2 py-1.5 focus:border-accent-blue/60 focus:outline-none [color-scheme:dark]"
+                              />
+                              {mem.delete_after && (
+                                <button
+                                  onClick={() => scheduleDeleteMut.mutate({ id: mem.id, deleteAfter: null })}
+                                  className="mt-2 text-[10px] text-status-error hover:underline w-full text-left"
+                                >
+                                  Clear scheduled deletion
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Archive / Restore */}
+                      {isAdmin && (
+                        mem.archived_at ? (
                           <button
                             onClick={() => restoreMut.mutate(mem.id)}
                             disabled={restoreMut.isPending && restoreMut.variables === mem.id}
                             aria-label={`Restore memory ${mem.id}`}
-                            className="flex items-center gap-1 text-[11px] rounded-[7px] px-2 py-1 text-text-quaternary hover:text-accent-blue hover:bg-accent-blue/10 transition-colors"
+                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-accent-blue hover:bg-white/[0.07] transition-all"
                           >
-                            <RotateCcw className="w-3 h-3" />
-                            Restore
+                            <RotateCcw className="w-3.5 h-3.5" />
                           </button>
                         ) : (
                           <button
                             onClick={() => archiveMut.mutate(mem.id)}
                             disabled={archiveMut.isPending && archiveMut.variables === mem.id}
                             aria-label={`Archive memory ${mem.id}`}
-                            className="flex items-center gap-1 text-[11px] rounded-[7px] px-2 py-1 text-text-quaternary hover:text-text-secondary hover:bg-[#272729] transition-colors"
+                            className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-white/[0.07] transition-all"
                           >
-                            <Archive className="w-3 h-3" />
-                            Archive
+                            <Archive className="w-3.5 h-3.5" />
                           </button>
-                        )}
+                        )
+                      )}
+
+                      {/* Delete */}
+                      {isAdmin && (
                         <button
                           onClick={() => deleteMut.mutate(mem.id)}
                           disabled={deleteMut.isPending && deleteMut.variables === mem.id}
                           aria-label={`Delete memory ${mem.id}`}
-                          className="flex items-center gap-1 text-[11px] rounded-[7px] px-2 py-1 text-text-quaternary hover:text-status-error hover:bg-status-error/10 transition-colors"
+                          className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center text-text-quaternary opacity-0 group-hover:opacity-100 hover:text-status-error hover:bg-status-error/10 transition-all"
                         >
-                          <Trash2 className="w-3 h-3" />
-                          Delete
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </td>
                 </tr>
                 )
@@ -3347,6 +3485,7 @@ export default function Memories() {
         onClose={() => setCreateMemoryOpen(false)}
         onCreated={() => qc.invalidateQueries({ queryKey: ['memories'] })}
       />
+      </div>
     </div>
   )
 }
