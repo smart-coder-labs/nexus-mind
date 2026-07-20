@@ -53,7 +53,10 @@ describe('Graph page', () => {
     // deselect affordance), so with no persisted selection it auto-selects the
     // first project and renders the graph rather than a "pick a project" state.
     renderWithProviders(<Graph />)
-    const select = (await screen.findByLabelText('Select project')) as HTMLSelectElement
+    // First test in the file pays the lazy-chunk cold-load cost (OrgMemoryGraph
+    // is React.lazy) — under full-suite load that can exceed findBy's 1s
+    // default, so give only this initial lookup a longer timeout.
+    const select = (await screen.findByLabelText('Select project', {}, { timeout: 5000 })) as HTMLSelectElement
     await waitFor(() => expect(select.value).toBe('p1'))
     expect(await screen.findByTestId('force-graph')).toBeInTheDocument()
   })
