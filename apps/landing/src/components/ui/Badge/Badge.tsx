@@ -3,56 +3,17 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 
-import type { BadgeProps, BadgeVariant, BadgeSize } from './Badge.types';
+import type { BadgeProps } from './Badge.types';
+import {
+  badgeBaseStyles as baseStyles,
+  badgeVariantStyles as variantStyles,
+  badgeSizeStyles as sizeStyles,
+  badgeDotSizeStyles as dotSizeMap,
+  badgeDotColorStyles as dotColorMap,
+} from './Badge.styles';
 
-/* ========================================
-   STYLES
-   ======================================== */
-
-const baseStyles = `
-  inline-flex items-center justify-center gap-1.5
-  font-medium
-  rounded-full
-  transition-apple
-`;
-
-const variantStyles: Record<BadgeVariant, string> = {
-  default: `
-    bg-surface-secondary
-    text-text-primary
-    border border-border-primary
-  `,
-  primary: `
-    bg-accent-blue
-    text-white
-  `,
-  success: `
-    bg-status-success/10
-    text-status-success
-    border border-status-success/20
-  `,
-  warning: `
-    bg-status-warning/10
-    text-status-warning
-    border border-status-warning/20
-  `,
-  error: `
-    bg-status-error/10
-    text-status-error
-    border border-status-error/20
-  `,
-  info: `
-    bg-status-info/10
-    text-status-info
-    border border-status-info/20
-  `,
-};
-
-const sizeStyles: Record<BadgeSize, string> = {
-  sm: 'h-5 px-2 text-xs',
-  md: 'h-6 px-2.5 text-sm',
-  lg: 'h-7 px-3 text-base',
-};
+/* Styles now live in Badge.styles.ts (previously duplicated inline here and
+   never imported — see Button.tsx for the same fix and rationale). */
 
 /* ========================================
    COMPONENT
@@ -76,21 +37,6 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
       ${sizeStyles[size]}
       ${className}
     `.trim().replace(/\s+/g, ' ');
-
-    const dotSizeMap = {
-      sm: 'w-1.5 h-1.5',
-      md: 'w-2 h-2',
-      lg: 'w-2.5 h-2.5',
-    };
-
-    const dotColorMap: Record<BadgeVariant, string> = {
-      default: 'bg-text-primary',
-      primary: 'bg-white',
-      success: 'bg-status-success',
-      warning: 'bg-status-warning',
-      error: 'bg-status-error',
-      info: 'bg-status-info',
-    };
 
     return (
       <motion.span

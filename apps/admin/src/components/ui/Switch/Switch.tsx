@@ -13,6 +13,7 @@ export interface SwitchProps {
     description?: string;
     size?: 'sm' | 'md' | 'lg';
     className?: string;
+    'aria-label'?: string;
 }
 
 /* ========================================
@@ -20,14 +21,12 @@ export interface SwitchProps {
    ======================================== */
 
 const sizeStyles = {
+    // Matches the NexusMind UI Kit pill toggle exactly: 38x22 track, 16x16 knob,
+    // knob resting 3px from each edge (left: 3px, right: 38-16-3=19px → translateX 16).
     sm: {
-        root: 'w-9 h-5',
+        root: 'w-[38px] h-[22px]',
         thumb: 'w-4 h-4',
-        translate: 'translate-x-[18px]', // 36px (w-9) - 2px padding - 16px (w-4) = 18px? No, w-9 is 2.25rem=36px. h-5 is 1.25rem=20px. 
-        // Let's stick to simple padding calculations or relative translation.
-        // Radix implementation had specific pixel values. Let's try to match them or use calc.
-        // sm: root w-9 (36px), thumb w-4 (16px). Padding ~2px. Translate = 36 - 16 - 4 (padding x2) = 16px.
-        translateX: 16, 
+        translateX: 16,
     },
     md: {
         root: 'w-11 h-6',
@@ -55,6 +54,7 @@ export const Switch: React.FC<SwitchProps> = ({
     description,
     size = 'md',
     className = '',
+    'aria-label': ariaLabel,
 }) => {
     const sizes = sizeStyles[size];
 
@@ -76,6 +76,7 @@ export const Switch: React.FC<SwitchProps> = ({
             type="button"
             role="switch"
             aria-checked={checked}
+            aria-label={ariaLabel}
             disabled={disabled}
             onClick={handleClick}
             onKeyDown={handleKeyDown}
@@ -84,7 +85,7 @@ export const Switch: React.FC<SwitchProps> = ({
                 inline-flex shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors
                 focus-visible:outline-none focus-visible:border-accent-blue/60
                 disabled:cursor-not-allowed disabled:opacity-50
-                ${checked ? 'bg-accent-blue' : 'bg-[#272729]'}
+                ${checked ? 'bg-accent-blue' : 'bg-white/[0.12]'}
                 ${className}
             `}
         >

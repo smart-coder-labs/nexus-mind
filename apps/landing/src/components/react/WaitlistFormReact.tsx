@@ -66,12 +66,8 @@ export default function WaitlistFormReact() {
         <div className="relative">
           <select
             name="size"
-            className="w-full rounded-xl px-4 py-3 text-sm border focus:outline-none appearance-none cursor-pointer"
-            style={{
-              background: 'var(--color-bg-secondary)',
-              borderColor: 'var(--color-border-primary)',
-              color: 'var(--color-text-primary)',
-            }}
+            className="w-full rounded-xl px-4 py-3 text-sm border border-white/10 bg-white/[0.04] focus:outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20 appearance-none cursor-pointer"
+            style={{ color: 'var(--color-text-primary)' }}
           >
             <option value="1-10">1-10 personas</option>
             <option value="11-50">11-50 personas</option>
@@ -114,13 +110,9 @@ export default function WaitlistFormReact() {
         <textarea
           name="message"
           rows={3}
-          className="w-full rounded-xl px-4 py-3 text-sm border focus:outline-none resize-none"
+          className="w-full rounded-xl px-4 py-3 text-sm border border-white/10 bg-white/[0.04] focus:outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20 resize-none"
           placeholder="Cuéntanos sobre tu stack actual..."
-          style={{
-            background: 'var(--color-bg-secondary)',
-            borderColor: 'var(--color-border-primary)',
-            color: 'var(--color-text-primary)',
-          }}
+          style={{ color: 'var(--color-text-primary)' }}
         />
       </div>
       <Button type="submit" variant="primary" size="lg" fullWidth loading={loading}>

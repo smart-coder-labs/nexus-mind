@@ -122,12 +122,12 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
     return (
         <div
             className={cn(
-                'flex w-full items-center justify-between gap-4 rounded-[18px] border border-border-primary bg-[#272729]/80 px-4 py-3 backdrop-blur-sm',
+                'flex w-full items-center justify-between gap-4 rounded-[18px] border border-white/[0.09] bg-white/[0.06] px-4 py-3 backdrop-blur-sm',
                 className
             )}
         >
             <div className="flex items-center gap-3">
-                <div className="relative flex h-11 w-11 items-center justify-center rounded-[11px] border border-border-secondary bg-[#272729] text-accent-blue">
+                <div className="relative flex h-11 w-11 items-center justify-center rounded-[11px] border border-white/[0.09] bg-white/[0.06] text-accent-blue">
                     <AnimatePresence mode="wait" initial={false}>
                         <motion.span
                             key={theme}
@@ -154,7 +154,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
                         onClick={handleAuto}
                         className={cn(
                             'group inline-flex items-center gap-1.5 rounded-full border border-border-secondary px-3 py-1 text-xs font-normal text-text-secondary transition-apple hover:border-border-primary hover:text-text-primary',
-                            mode === 'system' && 'bg-[#1d1d1f] text-text-primary'
+                            mode === 'system' && 'bg-white/[0.06] text-text-primary'
                         )}
                     >
                         <Monitor className="h-3.5 w-3.5" />

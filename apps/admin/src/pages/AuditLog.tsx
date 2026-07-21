@@ -249,7 +249,7 @@ export default function AuditLog() {
 
       {/* Timeline (same design as the dashboard Recent Activity) */}
       {!entriesError && (
-        <div className="bg-[#272729] border border-white/[0.06] rounded-[18px] p-5">
+        <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5">
           <ActivityTimeline
             entries={entries}
             userMap={userMap}

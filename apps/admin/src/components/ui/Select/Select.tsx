@@ -166,7 +166,9 @@ const SelectTrigger = React.forwardRef<HTMLElement, SelectTriggerProps>(
                 aria-disabled={mergedDisabled || undefined}
                 disabled={mergedDisabled}
                 className={cn(
-                    "group flex h-9 w-full items-center justify-between rounded-[11px] border border-border-primary bg-white/[0.04] px-3 py-2 text-[13px] placeholder:text-text-quaternary disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:bg-background-tertiary/50 transition-colors",
+                    // Glass trigger recipe matches the NexusMind UI Kit Select exactly:
+                    // rgba(13,15,20,0.72) background ≈ bg-[#0d0f14]/60 + blur, 11px radius.
+                    "group flex h-9 w-full items-center justify-between rounded-[11px] border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] px-3 py-2 text-[13px] placeholder:text-text-quaternary disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 hover:border-white/20 transition-colors",
                     FOCUS_RING,
                     className
                 )}
@@ -322,7 +324,7 @@ const SelectContent = React.forwardRef<HTMLDivElement, SelectContentProps>(({ cl
             className={cn(
                 // overflow-y-auto, not overflow-hidden: paired with the computed maxHeight,
                 // a menu taller than the space available now SCROLLS instead of being clipped.
-                "relative z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-[18px] border border-border-primary bg-surface-glass backdrop-blur-xl text-text-primary p-1",
+                "relative z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-[18px] border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] text-text-primary p-1",
                 className
             )}
             style={{
@@ -393,7 +395,7 @@ const SelectItem = React.forwardRef<HTMLButtonElement, SelectItemProps>(
                     isSelected
                         ? "bg-accent-blue text-white"
                         : isHighlighted
-                            ? "bg-background-tertiary text-text-primary"
+                            ? "bg-white/[0.06] text-text-primary"
                             : "text-text-primary",
                     disabled && "pointer-events-none opacity-50",
                     className
@@ -501,7 +503,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                     FOCUS_RING,
                     activeLabel
                         ? "bg-accent-blue/10 border-accent-blue/30 text-accent-blue"
-                        : "bg-background-tertiary border-border-primary text-text-primary hover:bg-background-secondary"
+                        : "bg-white/[0.06] border-white/[0.09] text-text-primary hover:bg-white/[0.10]"
                 )}
             >
                 {icon || <ChevronDown className="w-4 h-4" />}
@@ -520,7 +522,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                         className="fixed inset-0 z-10"
                         onClick={() => setIsOpen(false)}
                     />
-                    <div className="absolute top-full left-0 mt-2 w-64 bg-background-secondary border border-border-primary rounded-[18px] z-20 overflow-hidden">
+                    <div className="absolute top-full left-0 mt-2 w-64 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[18px] z-20 overflow-hidden">
                         <div className="max-h-80 overflow-y-auto p-2">
                             {options.map((option) => {
                                 const isActive = isOptionActive(option.value);
@@ -535,7 +537,7 @@ export const FilterSelect: React.FC<FilterSelectProps> = ({
                                             FOCUS_RING,
                                             isActive
                                                 ? "bg-accent-blue/10 text-accent-blue"
-                                                : "text-text-primary hover:bg-background-tertiary"
+                                                : "text-text-primary hover:bg-white/[0.05]"
                                         )}
                                     >
                                         <div className="flex items-center gap-2">

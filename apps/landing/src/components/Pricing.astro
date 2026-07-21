@@ -5,20 +5,21 @@
 <section id="pricing" class="py-20 px-4" style="background: var(--color-bg-secondary);">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14" data-reveal>
-      <span class="text-xs font-semibold tracking-widest text-accent uppercase">Precios</span>
-      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Planes simples. Sin costos de LLM.</h2>
+      <span class="tile-label text-accent">Precios</span>
+      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-text-primary">Planes simples. Sin costos de LLM.</h2>
       <p class="mt-2 text-sm" style="color: var(--color-text-secondary);">BYOM — tú traes tus keys de OpenAI, Anthropic o Google. Nosotros gobernamos.</p>
     </div>
 
     <div class="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
       <!-- Free -->
-      <div class="ds-surface p-7 flex flex-col" data-reveal>
-        <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--color-text-secondary);">Free</span>
-        <div class="mt-3">
-          <span class="text-3xl font-extrabold text-white">$0</span>
+      <div class="ds-surface p-7 flex flex-col relative overflow-hidden" data-reveal>
+        <span class="tile-glow" style="background: var(--color-text-tertiary);" aria-hidden="true"></span>
+        <span class="tile-label relative" style="color: var(--color-text-secondary);">Free</span>
+        <div class="mt-3 relative">
+          <span class="text-3xl font-extrabold text-text-primary">$0</span>
         </div>
-        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Para developers que quieren probar el control plane sin costo.</p>
-        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+        <p class="text-sm mt-2 relative" style="color: var(--color-text-secondary);">Para developers que quieren probar el control plane sin costo.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1 relative" style="color: var(--color-text-primary);">
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Memory API (100MB/proyecto)</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Policy engine (hasta 3 políticas)</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Audit trail local</li>
@@ -26,19 +27,20 @@
           <li class="flex items-center gap-2" style="color: var(--color-text-tertiary);"><span style="color: var(--color-text-tertiary);">✕</span> Sin admin console</li>
           <li class="flex items-center gap-2" style="color: var(--color-text-tertiary);"><span style="color: var(--color-text-tertiary);">✕</span> Sin soporte oficial</li>
         </ul>
-        <a href="#waitlist" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">Empezar gratis</a>
+        <a href="#waitlist" class="btn-pill btn-pill-glass mt-6 w-full py-2.5 text-sm relative">Empezar gratis</a>
       </div>
 
       <!-- Team (featured) -->
-      <div class="ds-surface-elevated p-7 flex flex-col relative" style="border-color: rgba(10,132,255,0.2);" data-reveal data-reveal-delay="150">
+      <div class="ds-surface-elevated p-7 flex flex-col relative overflow-hidden" style="border-color: var(--color-accent-blue-tint);" data-reveal data-reveal-delay="150">
+        <span class="tile-glow" style="background: var(--color-accent-blue); opacity: 0.28;" aria-hidden="true"></span>
         <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-[10px] font-semibold px-3 py-1 rounded-full">Más popular</div>
-        <span class="text-xs font-semibold text-blue-300 uppercase tracking-wider">Team</span>
-        <div class="mt-3">
-          <span class="text-3xl font-extrabold text-white">$49</span>
+        <span class="tile-label relative" style="color: var(--color-accent-blue-hover);">Team</span>
+        <div class="mt-3 relative">
+          <span class="text-3xl font-extrabold text-text-primary">$49</span>
           <span class="text-sm" style="color: var(--color-text-tertiary);">/mes</span>
         </div>
-        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Para equipos que usan múltiples herramientas AI y necesitan control.</p>
-        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+        <p class="text-sm mt-2 relative" style="color: var(--color-text-secondary);">Para equipos que usan múltiples herramientas AI y necesitan control.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1 relative" style="color: var(--color-text-primary);">
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Todo Open Source +</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Memoria cross-tool ilimitada</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Policy engine completo (políticas ilimitadas)</li>
@@ -46,17 +48,18 @@
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Plugins: Claude Code, Cursor, Copilot, OpenCode</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SSO (Google, GitHub, Microsoft)</li>
         </ul>
-        <a href="#waitlist" class="mt-6 block w-full bg-accent hover:bg-blue-500 text-white text-center py-2.5 rounded-full text-sm font-semibold transition-all duration-300 shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 active:scale-[0.98]">Unirme a la lista</a>
+        <a href="#waitlist" class="btn-pill btn-pill-primary mt-6 w-full py-2.5 text-sm relative">Unirme a la lista</a>
       </div>
 
       <!-- Enterprise -->
-      <div class="ds-surface p-7 flex flex-col" data-reveal data-reveal-delay="300">
-        <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--color-text-secondary);">Enterprise</span>
-        <div class="mt-3">
-          <span class="text-3xl font-extrabold text-white">Custom</span>
+      <div class="ds-surface p-7 flex flex-col relative overflow-hidden" data-reveal data-reveal-delay="300">
+        <span class="tile-glow" style="background: var(--color-status-info);" aria-hidden="true"></span>
+        <span class="tile-label relative" style="color: var(--color-text-secondary);">Enterprise</span>
+        <div class="mt-3 relative">
+          <span class="text-3xl font-extrabold text-text-primary">Custom</span>
         </div>
-        <p class="text-sm mt-2" style="color: var(--color-text-secondary);">Self-hosted. Tus datos nunca salen de tu infraestructura. Precio a medida.</p>
-        <ul class="mt-5 space-y-2 text-sm flex-1" style="color: var(--color-text-primary);">
+        <p class="text-sm mt-2 relative" style="color: var(--color-text-secondary);">Self-hosted. Tus datos nunca salen de tu infraestructura. Precio a medida.</p>
+        <ul class="mt-5 space-y-2 text-sm flex-1 relative" style="color: var(--color-text-primary);">
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Todo Team +</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Self-hosted (single binary / K8s)</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SOC2 + audit trails inmutables</li>
@@ -64,7 +67,7 @@
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> SLA 99.99% + soporte dedicado</li>
           <li class="flex items-center gap-2"><span style="color: var(--color-status-success);">✓</span> Onboarding asistido 48h</li>
         </ul>
-        <a href="#waitlist" onclick="document.getElementById('waitlist')?.scrollIntoView({behavior:'smooth'});return false;" class="mt-6 block w-full border border-slate-600 hover:border-accent text-center py-2.5 rounded-full text-sm font-medium transition-all duration-300 hover:bg-white/5 active:scale-[0.98]">Hablar con ventas</a>
+        <a href="#waitlist" onclick="document.getElementById('waitlist')?.scrollIntoView({behavior:'smooth'});return false;" class="btn-pill btn-pill-glass mt-6 w-full py-2.5 text-sm relative">Hablar con ventas</a>
       </div>
     </div>
   </div>

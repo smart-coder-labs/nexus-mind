@@ -4,6 +4,8 @@ import { Pencil, Trash2, Check, X, GitMerge, Hash, Layers, TrendingUp } from 'lu
 import { createClient } from '../api/client'
 import { cn } from '@/lib/utils'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
 import type { NameCount } from '../types'
 
 const client = createClient()
@@ -11,31 +13,6 @@ const client = createClient()
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Tags page.
 const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
-
-interface StatTileProps {
-  label: string
-  value: string
-  sub?: string
-  icon: typeof Hash
-}
-
-// Local stat tile matching the mockup's KPI row — kept local to this page.
-function StatTile({ label, value, sub, icon: Icon }: StatTileProps) {
-  return (
-    <div className={`relative flex flex-col gap-2 rounded-[16px] p-4 overflow-hidden ${GLASS_PANEL}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10.5px] font-semibold tracking-[0.06em] uppercase text-text-tertiary truncate">
-          {label}
-        </span>
-        <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
-      </div>
-      <span className="text-lg font-bold tracking-[-0.02em] text-text-primary leading-none tabular-nums truncate">
-        {value}
-      </span>
-      {sub && <span className="text-[11.5px] text-text-tertiary truncate">{sub}</span>}
-    </div>
-  )
-}
 
 // Word-cloud size/weight/color scaled by usage relative to the top tag —
 // mirrors the mockup's "Vocabulary" cloud using only real counts.
@@ -163,10 +140,10 @@ export default function Tags() {
         <div className="mb-4">
           <KpiMarquee>
             <div key="tags" className="w-[232px] flex-none">
-              <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} />
+              <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} accent={accentFor(0)} />
             </div>
             <div key="taggings" className="w-[232px] flex-none">
-              <StatTile label="Taggings" value={totalTaggings.toLocaleString()} sub="total applications" icon={Layers} />
+              <StatTile label="Taggings" value={totalTaggings.toLocaleString()} sub="total applications" icon={Layers} accent={accentFor(1)} />
             </div>
             <div key="top-tag" className="w-[232px] flex-none">
               <StatTile
@@ -174,6 +151,7 @@ export default function Tags() {
                 value={topTag ? topTag.name : '—'}
                 sub={topTag ? `${topTag.count.toLocaleString()} uses` : undefined}
                 icon={TrendingUp}
+                accent={accentFor(2)}
               />
             </div>
           </KpiMarquee>
@@ -339,7 +317,7 @@ export default function Tags() {
       {/* Merge modal */}
       {mergingTag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md shadow-xl">
+          <div className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md shadow-xl">
             <h2 className="text-xs font-semibold text-text-primary">Merge "{mergingTag}"</h2>
             <p className="text-xs text-text-quaternary mt-1">
               All memories tagged "{mergingTag}" will be retagged to the target.

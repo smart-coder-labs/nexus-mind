@@ -169,7 +169,7 @@ export default function Search() {
                   className="appearance-none h-[34px] pl-3.5 pr-8 rounded-[10px] border border-border-primary bg-white/[0.04] text-[12.5px] text-text-secondary cursor-pointer hover:border-border-primary/70 focus:outline-none focus:border-accent-blue/60 transition-colors"
                 >
                   {TABS.map(t => (
-                    <option key={t.key} value={t.key} className="bg-background-secondary">
+                    <option key={t.key} value={t.key} className="bg-[#111319]">
                       {t.label}
                     </option>
                   ))}

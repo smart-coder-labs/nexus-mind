@@ -15,6 +15,10 @@ function formatDuration(start: string, end?: string | null): string {
 
 const client = createClient()
 
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to keep pages independent.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
 export default function Sessions() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -103,7 +107,7 @@ export default function Sessions() {
       {isLoading ? (
         <div className="space-y-2">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="rounded-[18px] bg-[#272729] border border-border-primary h-16 animate-pulse" />
+            <div key={i} className={`rounded-[18px] h-16 animate-pulse ${GLASS_PANEL}`} />
           ))}
         </div>
       ) : sessions.length === 0 ? (
@@ -111,7 +115,7 @@ export default function Sessions() {
       ) : (
         <div className="space-y-2">
           {sessions.map((session: any) => (
-            <div key={session.id} className="rounded-[18px] bg-[#272729] border border-border-primary">
+            <div key={session.id} className={`rounded-[18px] ${GLASS_PANEL}`}>
               <div
                 className="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/[0.04] rounded-[18px] transition-colors group"
                 onClick={() => setExpandedId(expandedId === session.id ? null : session.id)}

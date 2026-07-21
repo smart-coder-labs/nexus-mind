@@ -14,6 +14,34 @@ pub const DEFAULT_LIST_LIMIT: i64 = 100;
 /// Hard ceiling on `limit` — requests above this are clamped, never rejected.
 pub const MAX_LIST_LIMIT: i64 = 500;
 
+/// Returns the non-enumerating response used after an org-local resource exists
+/// but is outside the caller's viewer scope. Audit failures never alter 404.
+pub fn hidden_resource_not_found(
+    conn: &Connection,
+    auth: &AuthContext,
+    resource_type: &str,
+    resource_id: &str,
+    method: &str,
+    endpoint_family: &str,
+) -> (StatusCode, Json<ApiError>) {
+    let _ = crate::db::queries::log_audit(
+        conn,
+        &auth.org_id,
+        &auth.user_id,
+        "resource.hidden_access_denied",
+        resource_type,
+        Some(resource_id),
+        serde_json::json!({ "method": method, "endpoint_family": endpoint_family }),
+    );
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Resource not found".to_string(),
+            code: "not_found".to_string(),
+        }),
+    )
+}
+
 /// Resolves `limit`/`offset` query params for list endpoints using an
 /// opt-in pagination contract:
 ///
@@ -167,6 +195,49 @@ pub fn require_permission(
     }
 }
 
+/// A non-super-user may administer a user only when they share a project.
+/// This keeps organization administration from becoming an org-wide visibility bypass.
+pub fn user_is_visible_to_actor(
+    conn: &Connection,
+    auth: &AuthContext,
+    user_id: &str,
+) -> rusqlite::Result<bool> {
+    if auth.role.is_super_user() || auth.user_id == user_id {
+        return Ok(true);
+    }
+
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM project_members actor_members
+            JOIN project_members target_members
+              ON target_members.project_id = actor_members.project_id
+            JOIN projects p ON p.id = actor_members.project_id
+            WHERE actor_members.user_id = ?1
+              AND target_members.user_id = ?2
+              AND p.org_id = ?3
+        )",
+        rusqlite::params![auth.user_id, user_id, auth.org_id],
+        |row| row.get(0),
+    )
+}
+
+/// Project-named resources without a canonical project row are organization-shared.
+/// Registered projects require membership unless the caller is a super user.
+pub fn project_is_visible_to_actor(
+    conn: &Connection,
+    auth: &AuthContext,
+    project_name: &str,
+) -> anyhow::Result<bool> {
+    if auth.role.is_super_user() {
+        return Ok(true);
+    }
+    let Some(project_id) = crate::db::queries::get_project_id_by_name(conn, &auth.org_id, project_name)? else {
+        return Ok(true);
+    };
+    crate::db::queries::user_is_project_member(conn, &auth.org_id, &project_id, &auth.user_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +256,42 @@ mod tests {
             user_id: "u1".to_string(),
             role: UserRole::Standard(role),
         }
+    }
+
+    #[test]
+    fn visible_member_requires_a_shared_project_unless_super_user() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org', 'Org', 'org')",
+            [],
+        )
+        .unwrap();
+        for (id, role) in [("admin", "admin"), ("shared", "member"), ("hidden", "member")] {
+            conn.execute(
+                "INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, 'org', ?2, ?1, ?3, 'active', datetime('now'))",
+                rusqlite::params![id, format!("{id}@example.com"), role],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name, created_at) VALUES ('project-a', 'org', 'A', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        for user_id in ["admin", "shared"] {
+            conn.execute(
+                "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES (?1, 'project-a', ?2, 'member', datetime('now'))",
+                rusqlite::params![format!("membership-{user_id}"), user_id],
+            )
+            .unwrap();
+        }
+
+        let admin = AuthContext { org_id: "org".into(), user_id: "admin".into(), role: UserRole::Standard(Role::Admin) };
+        let super_user = AuthContext { org_id: "org".into(), user_id: "admin".into(), role: UserRole::Custom("super_user".into()) };
+
+        assert!(user_is_visible_to_actor(&conn, &admin, "shared").unwrap());
+        assert!(!user_is_visible_to_actor(&conn, &admin, "hidden").unwrap());
+        assert!(user_is_visible_to_actor(&conn, &super_user, "hidden").unwrap());
     }
 
     fn make_custom_auth(role: &str) -> AuthContext {

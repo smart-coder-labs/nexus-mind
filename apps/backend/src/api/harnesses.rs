@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::helpers::{require_permission, AppJson},
+    api::helpers::{hidden_resource_not_found, require_permission, AppJson},
     db::queries,
     models::types::{
         ApiError, AuthContext, CreateHarnessConfigReviewCommentRequest,
@@ -58,11 +58,56 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 }
 
 fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_privileged() {
+    if auth.role.is_super_user() {
         None
     } else {
         Some(auth.user_id.as_str())
     }
+}
+
+fn load_visible_harness(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    id: &str,
+    method: &str,
+) -> Result<Harness, (StatusCode, Json<ApiError>)> {
+    if let Some(harness) = queries::get_harness(
+        conn,
+        &auth.org_id,
+        id,
+        viewer_user_id(auth),
+    )
+    .map_err(db_err)? {
+        return Ok(harness);
+    }
+    if queries::get_harness(conn, &auth.org_id, id, None).map_err(db_err)?.is_some() {
+        return Err(hidden_resource_not_found(conn, auth, "harness", id, method, "harnesses"));
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(ApiError { error: "Harness not found".to_string(), code: "not_found".to_string() }),
+    ))
+}
+
+fn load_visible_config_review(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    id: &str,
+    method: &str,
+) -> Result<HarnessConfigReview, (StatusCode, Json<ApiError>)> {
+    if let Some(review) = queries::get_harness_config_review_visible(
+        conn, &auth.org_id, id, viewer_user_id(auth),
+    ).map_err(db_err)? {
+        return Ok(review);
+    }
+    if queries::get_harness_config_review(conn, &auth.org_id, id).map_err(db_err)?.is_some() {
+        return Err(hidden_resource_not_found(
+            conn, auth, "harness_config_review", id, method, "harnesses",
+        ));
+    }
+    Err((StatusCode::NOT_FOUND, Json(ApiError {
+        error: "Config review not found".to_string(), code: "not_found".to_string(),
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,17 +173,7 @@ pub async fn get_harness(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:read")?;
-    let Some(harness) =
-        queries::get_harness(&conn, &auth.org_id, &id, viewer_user_id(&auth)).map_err(db_err)?
-    else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Harness not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    };
+    let harness = load_visible_harness(&conn, &auth, &id, "GET")?;
     Ok(Json(harness))
 }
 
@@ -151,6 +186,7 @@ pub async fn publish_version(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:write")?;
+    load_visible_harness(&conn, &auth, &id, "POST")?;
     let version = queries::publish_harness_version(&conn, &auth.org_id, &auth.user_id, &id, &input)
         .map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(version)))
@@ -192,17 +228,10 @@ pub async fn archive_harness(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:write")?;
-    let Some(harness) =
-        queries::archive_harness(&conn, &auth.org_id, &id, viewer_user_id(&auth)).map_err(db_err)?
-    else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Harness not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    };
+    load_visible_harness(&conn, &auth, &id, "POST")?;
+    let harness = queries::archive_harness(&conn, &auth.org_id, &id, viewer_user_id(&auth))
+        .map_err(db_err)?
+        .expect("visible harness remains visible during the locked update");
     let _ = queries::log_audit(
         &conn,
         &auth.org_id,
@@ -368,9 +397,9 @@ pub async fn list_config_reviews(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
-    let reviews =
-        queries::list_harness_config_reviews(&conn, &auth.org_id, params.status.as_deref())
-            .map_err(db_err)?;
+    let reviews = queries::list_harness_config_reviews_visible(
+        &conn, &auth.org_id, params.status.as_deref(), viewer_user_id(&auth),
+    ).map_err(db_err)?;
     Ok(Json(reviews))
 }
 
@@ -382,17 +411,7 @@ pub async fn get_config_review(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
-    let Some(review) =
-        queries::get_harness_config_review(&conn, &auth.org_id, &id).map_err(db_err)?
-    else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Config review not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    };
+    let review = load_visible_config_review(&conn, &auth, &id, "GET")?;
     Ok(Json(review))
 }
 
@@ -404,6 +423,7 @@ pub async fn list_config_review_comments(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
+    load_visible_config_review(&conn, &auth, &id, "GET")?;
     let comments = queries::list_harness_config_review_comments(&conn, &auth.org_id, &id)
         .map_err(db_err)?;
     Ok(Json(comments))
@@ -418,6 +438,7 @@ pub async fn create_config_review_comment(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
+    load_visible_config_review(&conn, &auth, &id, "POST")?;
     let comment = queries::create_harness_config_review_comment(
         &conn,
         &auth.org_id,
@@ -487,6 +508,7 @@ mod tests {
                 "/v1/harness-config-reviews",
                 get(list_config_reviews).post(create_config_review),
             )
+            .route("/v1/harness-config-reviews/:id", get(get_config_review))
             .route(
                 "/v1/harness-config-reviews/:id/comments",
                 get(list_config_review_comments).post(create_config_review_comment),
@@ -503,6 +525,7 @@ mod tests {
             let conn = db.lock().unwrap();
             let (org, admin, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
             (key, org.id, admin.id)
         };
         (store, admin_key, org_id, admin_id)
@@ -512,7 +535,7 @@ mod tests {
         let db = store.conn();
         let conn = db.lock().unwrap();
         let user_id = uuid::Uuid::new_v4().to_string();
-        conn.execute("INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, ?2, 'u@test.com', 'User', ?3, 'active', datetime('now'))", rusqlite::params![user_id, org_id, role]).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, ?2, ?3, 'User', ?4, 'active', datetime('now'))", rusqlite::params![user_id, org_id, format!("{user_id}@test.com"), role]).unwrap();
         let key_id = uuid::Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute("INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at) VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))", rusqlite::params![key_id, user_id, org_id, key_hash]).unwrap();
@@ -1345,6 +1368,25 @@ mod tests {
         // The author identity is joined so reviewers see whose config it is.
         assert_eq!(rows[0]["author"]["name"], "Admin");
         assert_eq!(rows[0]["author"]["email"], "admin@acme.com");
+    }
+
+    #[tokio::test]
+    async fn config_review_hidden_from_other_admin_returns_404_and_one_denial_audit() {
+        let (store, super_user_key, org_id, _) = setup_org();
+        let admin_key = create_member_key(&store, &org_id, "admin");
+        let review_id = create_shared_review(&store, &super_user_key).await;
+        let response = app(store.clone()).oneshot(
+            Request::builder().uri(format!("/v1/harness-config-reviews/{review_id}"))
+                .header("Authorization", format!("Bearer {admin_key}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1 AND action = 'resource.hidden_access_denied' AND resource_id = ?2",
+            rusqlite::params![org_id, review_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 
     async fn create_shared_review(store: &SqliteStore, key: &str) -> String {

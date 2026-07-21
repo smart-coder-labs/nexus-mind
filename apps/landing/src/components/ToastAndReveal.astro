@@ -2,7 +2,7 @@
 // Toast notification + confetti + reveal observer
 ---
 
-<div id="toast" class="fixed bottom-6 right-6 z-[999] px-6 py-3 rounded-xl shadow-2xl text-sm font-medium pointer-events-none transition-all duration-500" style="background: var(--color-bg-secondary); color: var(--color-status-success); border: 1px solid rgba(50, 215, 75, 0.2); max-width: 400px; transform: translateY(120px); opacity: 0;"></div>
+<div id="toast" role="status" aria-live="polite" class="fixed bottom-6 right-6 z-[999] px-6 py-3 rounded-xl shadow-2xl text-sm font-medium pointer-events-none transition-all duration-500" style="background: var(--color-bg-secondary); color: var(--color-status-success); border: 1px solid rgba(48, 209, 88, 0.2); max-width: 400px; transform: translateY(120px); opacity: 0;"></div>
 
 <script>
   // Toast system
@@ -19,7 +19,7 @@
     } else {
       t.style.background = 'var(--color-bg-secondary)';
       t.style.color = 'var(--color-status-success)';
-      t.style.borderColor = 'rgba(50, 215, 75, 0.2)';
+      t.style.borderColor = 'rgba(48, 209, 88, 0.2)';
     }
     setTimeout(() => {
       t.style.transform = 'translateY(120px)';

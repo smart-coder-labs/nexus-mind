@@ -100,7 +100,7 @@ export function BackupsTable({
 }: BackupsTableProps) {
   if (!loading && backups.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center bg-background-tertiary rounded-[18px] border border-border-primary px-6">
+      <div className="flex flex-col items-center justify-center py-16 text-center border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] px-6">
         <Database className="w-8 h-8 text-text-quaternary mb-3" />
         <p className="text-[15px] font-semibold text-text-secondary">No backups yet</p>
         <p className="text-[13px] text-text-quaternary mt-1 max-w-xs">
@@ -111,11 +111,11 @@ export function BackupsTable({
   }
 
   return (
-    <div className="rounded-[18px] border border-border-primary overflow-hidden bg-background-secondary">
+    <div className="rounded-[18px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-[13px]">
           <thead>
-            <tr className="border-b border-border-primary bg-background-tertiary/40">
+            <tr className="border-b border-white/[0.07] bg-white/[0.03]">
               <th className="w-8 px-3 py-3" aria-label="Expand" />
               <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Created</th>
               <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Kind</th>
@@ -128,11 +128,11 @@ export function BackupsTable({
             {loading && Array.from({ length: 4 }).map((_, i) => (
               <tr key={`skel-${i}`} className="border-b border-border-primary last:border-0">
                 <td className="px-3 py-3" />
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-28" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-16" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-5 bg-background-tertiary rounded-full w-20" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-16 ml-auto" /></td>
-                <td className="px-4 py-3"><div className="animate-pulse h-6 bg-background-tertiary rounded-[8px] w-32 ml-auto" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-28" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-5 bg-white/[0.04] rounded-full w-20" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16 ml-auto" /></td>
+                <td className="px-4 py-3"><div className="animate-pulse h-6 bg-white/[0.04] rounded-[8px] w-32 ml-auto" /></td>
               </tr>
             ))}
 
@@ -188,7 +188,7 @@ function Row({
 }) {
   return (
     <>
-      <tr className="border-b border-border-primary last:border-0 hover:bg-white/[0.04] transition-colors">
+      <tr className="border-b border-border-primary last:border-0 hover:bg-accent-blue/[0.05] transition-colors">
         <td className="px-3 py-3 align-top">
           <button
             onClick={onToggleExpand}
@@ -251,7 +251,7 @@ function Row({
         </td>
       </tr>
       {isExpanded && (
-        <tr className="border-b border-border-primary last:border-0 bg-background-tertiary/30">
+        <tr className="border-b border-border-primary last:border-0 bg-white/[0.02]">
           <td colSpan={6} className="px-2 py-2">
             <ExpandedPanel detail={detail} loading={detailLoading} error={detailError} />
           </td>

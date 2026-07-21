@@ -103,7 +103,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className }) => {
           )
         },
         pre: ({ children }) => (
-          <pre className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-4 py-3 overflow-x-auto mb-3 last:mb-0">
+          <pre className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-4 py-3 overflow-x-auto mb-3 last:mb-0">
             {children}
           </pre>
         ),

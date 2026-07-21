@@ -58,6 +58,126 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v53(conn)?;
     run_v54(conn)?;
     run_v55(conn)?;
+    run_v56(conn)?;
+    Ok(())
+}
+
+/// Migration v56: durable staging and review records for knowledge migration.
+/// Scope is constrained at the database boundary so a run cannot be repurposed
+/// between organization/project memory and organization convention destinations.
+pub fn run_v56(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 56 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS migration_runs (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            project_id TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+            destination_kind TEXT NOT NULL CHECK(destination_kind IN ('memory', 'convention')),
+            status TEXT NOT NULL DEFAULT 'staging'
+                CHECK(status IN ('staging', 'in_review', 'committing', 'completed', 'cancelled')),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK(
+                (destination_kind = 'memory')
+                OR (destination_kind = 'convention' AND project_id IS NULL)
+            )
+         );
+         CREATE INDEX IF NOT EXISTS idx_migration_runs_org_status
+             ON migration_runs(org_id, status);
+
+         CREATE TRIGGER IF NOT EXISTS migration_runs_scope_insert
+         BEFORE INSERT ON migration_runs
+         WHEN NEW.project_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM projects WHERE id = NEW.project_id AND org_id = NEW.org_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'migration project must belong to run organization');
+         END;
+         CREATE TRIGGER IF NOT EXISTS migration_runs_scope_update
+         BEFORE UPDATE OF org_id, project_id ON migration_runs
+         WHEN NEW.project_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM projects WHERE id = NEW.project_id AND org_id = NEW.org_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'migration project must belong to run organization');
+         END;
+
+         CREATE TABLE IF NOT EXISTS migration_candidates (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            source_identity TEXT NOT NULL,
+            content TEXT NOT NULL,
+            normalized_metadata TEXT NOT NULL DEFAULT '{}',
+            attestation TEXT NOT NULL DEFAULT '{}',
+            provenance_kind TEXT NOT NULL DEFAULT 'client_attested'
+                CHECK(provenance_kind IN ('client_attested', 'verified_manifest')),
+            status TEXT NOT NULL DEFAULT 'staged'
+                CHECK(status IN ('staged', 'approved', 'rejected', 'committing', 'committed', 'skipped', 'failed', 'cancelled')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(run_id, source_identity)
+         );
+         CREATE INDEX IF NOT EXISTS idx_migration_candidates_run_status
+             ON migration_candidates(run_id, status, id);
+
+         CREATE TABLE IF NOT EXISTS migration_review_actions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            candidate_id TEXT REFERENCES migration_candidates(id) ON DELETE CASCADE,
+            actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            actor_authorization TEXT NOT NULL DEFAULT '{}',
+            action TEXT NOT NULL CHECK(action IN ('approved', 'rejected', 'cancelled', 'restaged', 'stale_version', 'permission_denied', 'not_approved', 'stale_approval')),
+            expected_version INTEGER,
+            resulting_version INTEGER,
+            reason TEXT,
+            request_correlation_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_migration_review_actions_candidate
+             ON migration_review_actions(candidate_id, created_at);
+         CREATE TRIGGER IF NOT EXISTS migration_review_actions_no_update
+         BEFORE UPDATE ON migration_review_actions
+         BEGIN
+             SELECT RAISE(ABORT, 'migration review actions are append-only');
+         END;
+         CREATE TRIGGER IF NOT EXISTS migration_review_actions_no_delete
+         BEFORE DELETE ON migration_review_actions
+         BEGIN
+             SELECT RAISE(ABORT, 'migration review actions are append-only');
+         END;
+
+         CREATE TABLE IF NOT EXISTS migration_provenance (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            destination_kind TEXT NOT NULL CHECK(destination_kind IN ('memory', 'convention')),
+            source_identity TEXT NOT NULL,
+            candidate_id TEXT NOT NULL REFERENCES migration_candidates(id) ON DELETE RESTRICT,
+            destination_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, destination_kind, source_identity)
+         );
+
+         CREATE TABLE IF NOT EXISTS migration_outcomes (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            candidate_id TEXT NOT NULL REFERENCES migration_candidates(id) ON DELETE CASCADE,
+            expected_version INTEGER NOT NULL,
+            candidate_status TEXT NOT NULL,
+            outcome_status TEXT NOT NULL CHECK(outcome_status IN ('staged', 'blocked', 'approved', 'committed', 'skipped', 'failed', 'cancelled')),
+            error_code TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_migration_outcomes_candidate
+             ON migration_outcomes(candidate_id, created_at);
+
+         PRAGMA user_version = 56;",
+    )?;
     Ok(())
 }
 
@@ -2264,7 +2384,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
@@ -2661,7 +2781,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
@@ -2670,7 +2790,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 56, "user_version must remain 56 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -2802,7 +2922,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -2829,14 +2949,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
@@ -2954,7 +3074,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -2973,14 +3093,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -3057,14 +3177,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -3147,7 +3267,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -3341,14 +3461,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
@@ -3385,14 +3505,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3431,14 +3551,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 55, "user_version must be 55 after run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must be 56 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -3563,7 +3683,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 (run_all already applied v41-v55)");
+        assert_eq!(get_user_version(&conn), 56, "user_version must remain 56 (run_all already applied v41-v56)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -3574,8 +3694,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            55,
-            "user_version must be 55 after v41-v55 are included in run_all"
+            56,
+            "user_version must be 56 after v41-v56 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3667,7 +3787,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "version must remain 55 on second run_all");
+        assert_eq!(get_user_version(&conn), 56, "version must remain 56 on second run_all");
     }
 
     #[test]
@@ -3793,7 +3913,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 55, "user_version must reach 55 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 56, "user_version must reach 56 after the backfill migration");
     }
 
     #[test]
@@ -3802,7 +3922,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55 on second run_all");
+        assert_eq!(get_user_version(&conn), 56, "user_version must remain 56 on second run_all");
     }
 
     // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
@@ -3822,7 +3942,7 @@ mod tests {
         ] {
             assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
         }
-        assert_eq!(get_user_version(&conn), 55, "user_version must reach 55 on a fresh db");
+        assert_eq!(get_user_version(&conn), 56, "user_version must reach 56 on a fresh db");
     }
 
     #[test]
@@ -4660,15 +4780,15 @@ mod tests {
         );
     }
 
-    /// 1.23 — run_all lands on 55.
+    /// 1.23 — run_all lands on the latest schema version.
     #[test]
-    fn run_all_sets_user_version_to_55() {
+    fn run_all_sets_user_version_to_56() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            55,
-            "run_all must leave user_version at 55"
+            56,
+            "run_all must leave user_version at 56"
         );
     }
 
@@ -4923,6 +5043,108 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 55, "user_version must remain 55");
+        assert_eq!(get_user_version(&conn), 56, "user_version must remain 56");
+    }
+
+    // ── v56 migration tests (knowledge migration durable review foundation) ─────
+
+    #[test]
+    fn run_all_creates_durable_migration_review_tables() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        for table in [
+            "migration_runs",
+            "migration_candidates",
+            "migration_review_actions",
+            "migration_provenance",
+            "migration_outcomes",
+        ] {
+            assert!(table_exists(&conn, table), "missing migration table: {table}");
+        }
+    }
+
+    #[test]
+    fn migration_run_scope_allows_only_v1_destination_matrix() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('project1', 'org1', 'project')",
+            [],
+        )
+        .unwrap();
+
+        for (id, destination_kind, project_id) in [
+            ("org-memory", "memory", None),
+            ("project-memory", "memory", Some("project1")),
+            ("org-convention", "convention", None),
+        ] {
+            conn.execute(
+                "INSERT INTO migration_runs (id, org_id, project_id, destination_kind, created_by)
+                 VALUES (?1, 'org1', ?2, ?3, 'u1')",
+                rusqlite::params![id, project_id, destination_kind],
+            )
+            .unwrap();
+        }
+
+        for (id, project_id, destination_kind) in [
+            ("project-convention", Some("project1"), "convention"),
+            ("unknown-destination", None, "unknown"),
+        ] {
+            let invalid = conn.execute(
+                "INSERT INTO migration_runs (id, org_id, project_id, destination_kind, created_by)
+                 VALUES (?1, 'org1', ?2, ?3, 'u1')",
+                rusqlite::params![id, project_id, destination_kind],
+            );
+            assert!(invalid.is_err(), "{id} must be rejected by the scope matrix");
+        }
+    }
+
+    #[test]
+    fn migration_provenance_is_org_scoped_and_review_actions_are_append_only() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_sdd_fixtures(&conn);
+        conn.execute(
+            "INSERT INTO migration_runs (id, org_id, destination_kind, created_by)
+             VALUES ('run1', 'org1', 'memory', 'u1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO migration_candidates (id, run_id, source_identity, content, attestation)
+             VALUES ('candidate1', 'run1', 'source://one', 'content', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO migration_review_actions
+                (id, run_id, candidate_id, actor_id, action, expected_version, resulting_version)
+             VALUES ('action1', 'run1', 'candidate1', 'u1', 'approved', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO migration_provenance
+                (id, org_id, destination_kind, source_identity, candidate_id)
+             VALUES ('provenance1', 'org1', 'memory', 'source://one', 'candidate1')",
+            [],
+        )
+        .unwrap();
+
+        let duplicate = conn.execute(
+            "INSERT INTO migration_provenance
+                (id, org_id, destination_kind, source_identity, candidate_id)
+             VALUES ('provenance2', 'org1', 'memory', 'source://one', 'candidate1')",
+            [],
+        );
+        assert!(duplicate.is_err(), "provenance must be unique within its org and destination");
+
+        let rewrite = conn.execute(
+            "UPDATE migration_review_actions SET action = 'rejected' WHERE id = 'action1'",
+            [],
+        );
+        assert!(rewrite.is_err(), "review history must be append-only");
     }
 }

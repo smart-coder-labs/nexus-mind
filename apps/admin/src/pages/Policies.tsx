@@ -28,6 +28,10 @@ const CONFIG_HINTS: Record<Policy['rule_type'], string> = {
 
 const RULE_TYPES: Policy['rule_type'][] = ['model_whitelist', 'budget_limit', 'pii_redact']
 
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to keep pages independent.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
 export default function Policies() {
   const { session } = useAuth()
   const qc = useQueryClient()
@@ -157,19 +161,19 @@ export default function Policies() {
           {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
-              className="bg-[#272729] rounded-[18px] border border-border-primary p-5 space-y-3 animate-pulse"
+              className={`rounded-[18px] p-5 space-y-3 animate-pulse ${GLASS_PANEL}`}
             >
               <div className="flex items-center justify-between">
-                <div className="h-4 w-1/3 bg-[#1d1d1f] rounded-[5px]" />
-                <div className="h-4 w-16 bg-[#1d1d1f] rounded-full" />
+                <div className="h-4 w-1/3 bg-white/[0.06] rounded-[5px]" />
+                <div className="h-4 w-16 bg-white/[0.06] rounded-full" />
               </div>
-              <div className="h-3 w-1/4 bg-[#1d1d1f] rounded-[5px]" />
-              <div className="h-3 w-1/2 bg-[#1d1d1f] rounded-[5px]" />
+              <div className="h-3 w-1/4 bg-white/[0.06] rounded-[5px]" />
+              <div className="h-3 w-1/2 bg-white/[0.06] rounded-[5px]" />
             </div>
           ))}
         </div>
       ) : policies.length === 0 ? (
-        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-12 flex flex-col items-center gap-3 text-center">
+        <div className={`rounded-[18px] p-12 flex flex-col items-center gap-3 text-center ${GLASS_PANEL}`}>
           <Shield className="w-8 h-8 text-text-quaternary/50" />
           <p className="text-xs font-semibold text-text-secondary">No policies yet</p>
           <p className="text-xs text-text-quaternary max-w-xs">
@@ -181,7 +185,7 @@ export default function Policies() {
           {policies.map(policy => (
             <div
               key={policy.id}
-              className="group bg-[#272729] rounded-[18px] border border-border-primary p-5 flex flex-col gap-3"
+              className={`group rounded-[18px] p-5 flex flex-col gap-3 ${GLASS_PANEL}`}
             >
               {/* Top row: name + badge */}
               <div className="flex items-center justify-between gap-2">
@@ -253,7 +257,7 @@ export default function Policies() {
       {/* Edit Policy Modal */}
       {editingPolicy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-4">
+          <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-text-primary">Edit policy</h2>
               <button

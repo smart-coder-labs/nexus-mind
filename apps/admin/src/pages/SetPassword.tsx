@@ -34,12 +34,12 @@ function ApiKeyModal({ apiKey, onClose }: { apiKey: string; onClose: () => void 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
       <div
-        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4"
         onClick={e => e.stopPropagation()}
       >
         <p className="text-base font-semibold text-text-primary">Setup complete!</p>
         <p className="text-xs text-text-quaternary">Copy your API key — it won't be shown again.</p>
-        <div className="font-mono text-xs bg-[#272729] rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
+        <div className="font-mono text-xs bg-white/[0.03] border border-white/[0.09] rounded-[11px] p-3 break-all select-all text-text-primary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={handleCopy}
@@ -151,7 +151,7 @@ export default function SetPassword() {
   // No token at all
   if (!inviteToken && !resetToken) {
     return (
-      <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
         <div className="text-center space-y-2">
           <p className="text-base font-semibold text-text-primary">Invalid link</p>
           <p className="text-xs text-text-quaternary mt-0.5">This link is missing a token.</p>
@@ -163,7 +163,7 @@ export default function SetPassword() {
   // Invite token present but still loading validation
   if (inviteToken && inviteLoading) {
     return (
-      <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
         <p className="text-xs text-text-quaternary">Validating invite…</p>
       </div>
     )
@@ -178,7 +178,7 @@ export default function SetPassword() {
         : 'This invite link is not valid.'
 
     return (
-      <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
         <div className="text-center space-y-2">
           <p className="text-base font-semibold text-status-error">{message}</p>
           <p className="text-xs text-text-quaternary mt-0.5">Please ask your admin for a new link.</p>
@@ -199,7 +199,7 @@ export default function SetPassword() {
         />
       )}
 
-      <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <h1 className="text-[34px] font-semibold text-text-primary tracking-[-0.374px]">NexusMind</h1>
@@ -208,7 +208,7 @@ export default function SetPassword() {
             </p>
           </div>
 
-          <div className="bg-[#272729] border border-border-primary rounded-[18px] p-8">
+          <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-8">
             {done ? (
               <div className="text-center space-y-2 py-4">
                 <p className="text-base font-semibold text-text-primary">Password set!</p>

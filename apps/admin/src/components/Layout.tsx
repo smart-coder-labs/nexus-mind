@@ -85,7 +85,7 @@ function ShortcutsPanel({ onClose }: { onClose: () => void }) {
       aria-label="Keyboard shortcuts"
     >
       <div
-        className="bg-background-secondary rounded-[18px] border border-border-primary p-6 max-w-md w-full mx-4"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 max-w-md w-full mx-4"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -374,7 +374,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
           </button>
 
           {notifOpen && (
-            <div className="absolute bottom-full left-0 mb-2 w-72 bg-background-secondary border border-border-primary rounded-[18px] z-50 overflow-hidden">
+            <div className="absolute bottom-full left-0 mb-2 w-72 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[18px] z-50 overflow-hidden">
               <div className="px-4 py-3 border-b border-border-secondary/50">
                 <p className="text-xs font-semibold text-text-primary">Notifications</p>
               </div>
@@ -385,7 +385,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
                 {visibleItems.map((n) => (
                   <div
                     key={n.id}
-                    className="px-4 py-3 border-b border-border-secondary/30 last:border-b-0 hover:bg-white/[0.02]"
+                    className="px-4 py-3 border-b border-border-secondary/30 last:border-b-0 hover:bg-white/[0.05]"
                   >
                     <p className="text-xs text-text-secondary">{n.message}</p>
                     {n.actor && (
@@ -399,7 +399,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
                 <hr className="border-border-secondary/30 my-1" />
                 <p className="text-[11px] text-text-tertiary uppercase tracking-wide font-semibold px-3 pb-1">Preferences</p>
                 {ALL_NOTIF_TYPES.map(type => (
-                  <label key={type} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-white/[0.04] rounded-[8px]">
+                  <label key={type} className="flex items-center gap-[10px] px-[11px] py-[9px] cursor-pointer hover:bg-white/[0.06] rounded-[8px]">
                     <input
                       type="checkbox"
                       checked={enabledTypes.has(type)}

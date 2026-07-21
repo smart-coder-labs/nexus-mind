@@ -13,41 +13,43 @@ export const buttonBaseStyles = `
   select-none
 `;
 
+// Kept in sync with Button.tsx's inline variantStyles (the NexusMind UI Kit's
+// Primary/Secondary/Ghost/Danger grammar) even though this file isn't
+// currently imported by Button.tsx — see that file for the live styles.
 export const buttonVariantStyles: Record<ButtonVariant, string> = {
     primary: `
     bg-accent-blue text-white
     hover:bg-accent-blue-hover
     active:bg-accent-blue-active
-    shadow-sm
+    shadow-md shadow-accent-blue/30
   `,
     secondary: `
-    bg-[#272729] text-text-primary
+    bg-transparent text-text-secondary
     border border-border-primary
-    hover:bg-[#1d1d1f] hover:border-border-primary
-    active:bg-[#272729]
-    shadow-xs
+    hover:bg-white/5 hover:border-border-secondary
+    active:bg-white/10
   `,
     ghost: `
-    bg-transparent text-accent-blue
-    hover:bg-accent-blue-tint
-    active:bg-accent-blue-tint
+    bg-transparent text-text-tertiary
+    hover:text-text-primary
+    active:text-text-primary
   `,
     subtle: `
-    bg-[#272729] text-text-primary
-    hover:bg-[#1d1d1f]
-    active:bg-[#272729]
+    bg-white/[0.06] text-text-primary
+    hover:bg-white/[0.10]
+    active:bg-white/[0.06]
   `,
     outline: `
     bg-transparent text-text-primary
     border border-border-primary
-    hover:bg-[#272729] hover:border-border-secondary
-    active:bg-[#1d1d1f]
+    hover:bg-white/[0.06] hover:border-border-secondary
+    active:bg-white/[0.10]
   `,
     destructive: `
-    bg-status-error text-white
-    hover:bg-status-error/80
-    active:bg-status-error/70
-    shadow-sm
+    bg-transparent text-status-error
+    border border-status-error/35
+    hover:bg-status-error/10
+    active:bg-status-error/15
   `,
 };
 

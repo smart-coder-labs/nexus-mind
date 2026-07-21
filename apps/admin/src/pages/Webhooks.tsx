@@ -14,6 +14,10 @@ const ALL_EVENTS = [
   'user.invited',
 ]
 
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to keep pages independent.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
 function WebhookIcon() {
   return (
     <svg
@@ -92,7 +96,7 @@ function CreateWebhookModal({ onClose, onCreated }: CreateWebhookModalProps) {
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -294,7 +298,7 @@ export default function Webhooks() {
 
       <div className="flex gap-5">
         {/* Webhook list */}
-        <div className="flex-1 bg-[#272729] rounded-[18px] border border-border-primary p-5">
+        <div className={`flex-1 rounded-[18px] p-5 ${GLASS_PANEL}`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xs font-semibold text-text-primary">Webhooks</h2>
             <button
@@ -371,7 +375,7 @@ export default function Webhooks() {
         </div>
 
         {/* Event log */}
-        <div className="w-80 bg-[#272729] rounded-[18px] border border-border-primary p-5 flex flex-col">
+        <div className={`w-80 rounded-[18px] p-5 flex flex-col ${GLASS_PANEL}`}>
           <h2 className="text-xs font-semibold text-text-primary mb-4">Event log</h2>
           {!selectedWebhook ? (
             <div className="flex flex-col items-center justify-center flex-1 gap-2 py-8">

@@ -304,11 +304,11 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   }
 
   return (
-    <div className="relative bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+    <div className="relative rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
       <button
         onClick={onClose}
         aria-label="Close"
-        className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-background-tertiary text-text-secondary hover:bg-background-secondary hover:text-text-primary transition-colors"
+        className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] text-text-secondary hover:bg-white/[0.10] hover:text-text-primary transition-colors"
       >
         <X className="w-3.5 h-3.5" />
       </button>
@@ -400,7 +400,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       <section className="mb-6" data-testid="task-detail-project">
         <h3 className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">Project</h3>
         <div className="flex items-center gap-2">
-          <span className="rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary">
+          <span className="rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary">
             {t.project}
           </span>
         </div>
@@ -420,7 +420,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           {(t.assignees ?? []).map(a => (
             <span
               key={a.id}
-              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               {a.name}
               {canAssign && (
@@ -478,7 +478,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           {(t.labels ?? []).map(label => (
             <span
               key={label}
-              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               <Tag className="w-3 h-3" />
               {label}
@@ -569,7 +569,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             return (
             <span
               key={name}
-              className="flex items-center gap-1.5 rounded-full border border-border-primary bg-background-tertiary px-2.5 py-1 text-xs text-text-secondary"
+              className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs text-text-secondary"
             >
               {change ? (
                 <Link

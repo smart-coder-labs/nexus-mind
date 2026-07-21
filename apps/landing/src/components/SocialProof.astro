@@ -1,14 +1,23 @@
 ---
-// Social Proof section
+// Social Proof section — logo strip as a seamless marquee (same pattern as
+// apps/admin's KpiMarquee: content duplicated once, second copy aria-hidden
+// so screen readers don't hear each name twice; pauses on hover and under
+// prefers-reduced-motion via .marquee-wrapper/.marquee-track in apple-ds.css).
+const logos = ['Acme Corp', 'Quantum Labs', 'DataFlow Inc', 'Nebula Systems', 'Polaris AI'];
 ---
 
 <section class="py-14 px-4" data-reveal>
   <div class="max-w-6xl mx-auto text-center">
-    <p class="text-xs font-semibold tracking-widest uppercase mb-8" style="color: var(--color-text-tertiary);">Trusted by forward-thinking teams</p>
-    <div class="flex flex-wrap justify-center gap-x-12 gap-y-5 text-lg font-semibold opacity-50" style="color: var(--color-text-secondary);">
-      {['Acme Corp', 'Quantum Labs', 'DataFlow Inc', 'Nebula Systems', 'Polaris AI'].map(name => (
-        <span class="hover:opacity-80 transition-opacity duration-300">{name}</span>
-      ))}
+    <p class="tile-label mb-8">Trusted by forward-thinking teams</p>
+    <div class="marquee-wrapper">
+      <div class="marquee-track" role="list">
+        {logos.map(name => (
+          <span role="listitem" class="shrink-0 px-8 text-lg font-semibold opacity-50 hover:opacity-80 transition-opacity duration-300" style="color: var(--color-text-secondary);">{name}</span>
+        ))}
+        {logos.map(name => (
+          <span aria-hidden="true" class="shrink-0 px-8 text-lg font-semibold opacity-50" style="color: var(--color-text-secondary);">{name}</span>
+        ))}
+      </div>
     </div>
   </div>
 </section>

@@ -7,6 +7,8 @@ import { todayStamp } from '../lib/download'
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
 import { Markdown } from '../components/ui/Markdown'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { DateRangePicker } from '../components/ui/DateRangePicker'
 import { Search, X, Brain, Tag, SlidersHorizontal, Trash2, Clock, Hash, ChevronDown, ChevronUp, CheckCircle2, Copy, Download, Upload, Loader2, Pencil, Check, Archive, ArchiveRestore, RotateCcw, ArchiveX, Pin, Bookmark, BookmarkCheck, GitMerge, History, Folder, CalendarClock, Star, Plus, List, ArrowDownWideNarrow } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { MemoryStatTiles } from './memories/MemoryStatTiles'
@@ -15,6 +17,14 @@ import { MemoryStatTiles } from './memories/MemoryStatTiles'
 // Graph.tsx's lazy `OrgMemoryGraph` import, so it never blocks the initial
 // Memories page render/bundle and stays out of environments without WebGL.
 const MemoryBackgroundGraph = lazy(() => import('./memories/MemoryBackgroundGraph'))
+
+// Dark-glass surface recipes — same tokens used across the app (see
+// GLASS_PANEL const in src/pages/Users.tsx, and the modal/dropdown recipes
+// inlined in src/components/ui/Modal/Modal.tsx and src/components/ui/Select/Select.tsx).
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+const GLASS_MODAL = 'border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]'
+const GLASS_DROPDOWN = 'border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)]'
+const GLASS_CHIP = 'bg-white/[0.06] border-white/[0.09]'
 
 const FAV_KEY = 'nexusmind-memory-favorites'
 function loadFavorites(): Set<string> {
@@ -58,7 +68,7 @@ const TYPE_META: Record<string, { label: string; cls: string }> = {
 function TypeBadge({ type }: { type?: string }) {
   if (!type) return null
   const meta = TYPE_META[type]
-  const cls = meta?.cls ?? 'text-text-tertiary bg-[#272729] border-border-primary'
+  const cls = meta?.cls ?? `text-text-tertiary ${GLASS_CHIP}`
   return (
     <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 ${cls}`}>
       {meta?.label ?? type}
@@ -73,7 +83,7 @@ function TypeBadge({ type }: { type?: string }) {
 function TypeChip({ type }: { type?: string }) {
   if (!type) return null
   const meta = TYPE_META[type]
-  const cls = meta?.cls ?? 'text-text-tertiary bg-[#272729] border-border-primary'
+  const cls = meta?.cls ?? `text-text-tertiary ${GLASS_CHIP}`
   return (
     <span className={`text-[11.5px] font-semibold border rounded-full px-2.5 py-0.5 ${cls}`}>
       {meta?.label ?? type}
@@ -180,7 +190,7 @@ function CreateMemoryModal({
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        className={`${GLASS_MODAL} rounded-[18px] p-6 max-w-lg w-full shadow-2xl mx-4 max-h-[90vh] overflow-y-auto`}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -215,10 +225,17 @@ function CreateMemoryModal({
             <div>
               <label className="block text-xs text-text-tertiary mb-1.5">Tags</label>
               <div className="rounded-[8px] border border-border-primary bg-white/[0.04] px-2 py-1.5 flex flex-wrap gap-1.5 focus-within:border-accent-blue/60 transition-colors">
+                {/* "#tag ×" chip — matches the NexusMind UI Kit multi-select's
+                    tag chip inside the field exactly. */}
                 {tags.map(tag => (
-                  <span key={tag} className="bg-white/[0.06] rounded-full px-2 py-0.5 text-[10px] text-text-secondary flex items-center gap-1">
-                    {tag}
-                    <button type="button" onClick={() => removeTag(tag)} className="hover:text-text-primary transition-colors">
+                  <span key={tag} className="inline-flex items-center gap-1 rounded-[9px] bg-accent-blue/[0.14] pl-2.5 pr-1 py-[3px] text-[11.5px] font-semibold text-accent-blue">
+                    #{tag}
+                    <button
+                      type="button"
+                      onClick={() => removeTag(tag)}
+                      aria-label={`Remove tag ${tag}`}
+                      className="inline-flex w-[15px] h-[15px] rounded-[5px] items-center justify-center hover:bg-white/[0.12] transition-colors"
+                    >
                       <X className="w-2.5 h-2.5" />
                     </button>
                   </span>
@@ -306,7 +323,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
     >
       <div
         ref={panelRef}
-        className="bg-[#272729] border border-white/[0.08] rounded-[18px] w-full max-w-3xl flex flex-col max-h-full"
+        className={`${GLASS_MODAL} rounded-[18px] w-full max-w-3xl flex flex-col max-h-full`}
         onClick={e => e.stopPropagation()}
       >
 
@@ -317,7 +334,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
               <p className="text-xs font-semibold text-text-primary leading-snug">{memory.title}</p>
             )}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] font-semibold border border-border-primary rounded-[5px] px-2 py-0.5 text-text-tertiary bg-[#272729]">
+              <span className={`text-[11px] font-semibold border rounded-[5px] px-2 py-0.5 text-text-tertiary ${GLASS_CHIP}`}>
                 {memory.tool}
               </span>
               {memory.project && (
@@ -325,7 +342,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
               )}
               <TypeBadge type={memory.type} />
               {memory.revision_count != null && memory.revision_count > 1 && (
-                <span className="text-[11px] text-text-quaternary bg-[#272729] border border-border-secondary rounded-[5px] px-1.5 py-0.5">
+                <span className={`text-[11px] text-text-quaternary border rounded-[5px] px-1.5 py-0.5 ${GLASS_CHIP}`}>
                   rev {memory.revision_count}
                 </span>
               )}
@@ -337,7 +354,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
           <button
             onClick={onClose}
             aria-label="Close memory detail"
-            className="p-1.5 rounded-[11px] text-text-quaternary hover:text-text-primary hover:bg-[#272729] transition-colors shrink-0"
+            className="p-1.5 rounded-[11px] text-text-quaternary hover:text-text-primary hover:bg-white/[0.10] transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -351,7 +368,7 @@ function MemoryDetailModal({ memory, onClose, onDelete, deleting, deleteError }:
             <div className="flex items-center gap-2 flex-wrap mt-5 pt-4 border-t border-border-secondary">
               <Tag className="w-3 h-3 text-text-quaternary shrink-0" />
               {memory.tags.map(tag => (
-                <span key={tag} className="text-[11px] bg-[#272729] text-text-tertiary border border-border-secondary rounded-[5px] px-2 py-0.5">
+                <span key={tag} className={`text-[11px] text-text-tertiary border rounded-[5px] px-2 py-0.5 ${GLASS_CHIP}`}>
                   {tag}
                 </span>
               ))}
@@ -452,7 +469,7 @@ function BulkActionBar({
   if (count === 0) return null
   return (
     <div
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 bg-[#272729] border border-border-primary rounded-full px-4 py-2.5 shadow-xl"
+      className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 ${GLASS_DROPDOWN} rounded-full px-4 py-2.5`}
       role="toolbar"
       aria-label="Bulk actions"
     >
@@ -673,7 +690,7 @@ function MemorySlideOver({
 
       {/* Slide-over panel */}
       <div
-        className={`fixed right-0 top-0 h-full w-[420px] bg-[#1d1d1f] border-l border-border-primary shadow-2xl z-50 flex flex-col transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed right-0 top-0 h-full w-[420px] border-l border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] shadow-2xl z-50 flex flex-col transform transition-transform duration-200 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-border-primary flex items-start justify-between gap-3 shrink-0">
@@ -938,13 +955,13 @@ function HistoryPanel({
   return (
     <div
       ref={panelRef}
-      className="absolute right-0 top-6 z-50 bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl w-64"
+      className={`absolute right-0 top-6 z-50 ${GLASS_DROPDOWN} rounded-[11px] p-3 w-64`}
     >
       <p className="text-[11px] font-semibold text-text-quaternary mb-2">Edit History</p>
       {isLoading ? (
         <div className="space-y-2">
           {[1, 2].map(i => (
-            <div key={i} className="h-3 rounded-[4px] bg-[#1d1d1f] animate-pulse" />
+            <div key={i} className="h-3 rounded-[4px] bg-white/[0.06] animate-pulse" />
           ))}
         </div>
       ) : !data || data.length === 0 ? (
@@ -1791,7 +1808,7 @@ export default function Memories() {
 
       {/* Import result toast */}
       {importToast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#272729] border border-border-primary rounded-[11px] px-4 py-3 shadow-xl flex items-center gap-3">
+        <div className={`fixed bottom-6 right-6 z-50 ${GLASS_DROPDOWN} rounded-[11px] px-4 py-3 flex items-center gap-3`}>
           <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
           <span className="text-xs text-text-primary">
             Imported {importToast.imported} {importToast.imported === 1 ? 'memory' : 'memories'}
@@ -1871,7 +1888,7 @@ export default function Memories() {
               }
             </button>
             {savePresetOpen && (
-              <div className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] p-3 z-20 min-w-[200px] space-y-2">
+              <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[11px] p-3 z-20 min-w-[200px] space-y-2`}>
                 <p className="text-xs text-text-tertiary">Name this filter preset</p>
                 <input
                   autoFocus
@@ -1904,15 +1921,15 @@ export default function Memories() {
                 Presets
               </button>
               {presetsOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] py-1 z-20 min-w-[180px]">
+                <div className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[12px] p-[5px] z-20 min-w-[180px]`}>
                   {presets.map(preset => (
                     <div
                       key={preset.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 hover:bg-white/[0.04] transition-colors group"
+                      className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-[8px] hover:bg-white/[0.06] transition-colors group"
                     >
                       <button
                         onClick={() => handleApplyPreset(preset)}
-                        className="flex-1 text-left text-xs text-text-secondary hover:text-text-primary transition-colors truncate"
+                        className="flex-1 text-left text-[12.5px] text-text-secondary hover:text-text-primary transition-colors truncate"
                       >
                         {preset.name}
                       </button>
@@ -1979,27 +1996,27 @@ export default function Memories() {
             {exportOpen && (
               <div
                 role="menu"
-                className="absolute right-0 top-full mt-1 bg-[#272729] border border-border-primary rounded-[11px] py-1 z-10 min-w-[160px]"
+                className={`absolute right-0 top-full mt-1 ${GLASS_DROPDOWN} rounded-[12px] p-[5px] z-10 min-w-[160px]`}
               >
                 <button
                   role="menuitem"
                   onClick={() => handleExport('json')}
-                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
                 >
                   Export JSON
                 </button>
                 <button
                   role="menuitem"
                   onClick={() => handleExport('csv')}
-                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
                 >
                   Export CSV
                 </button>
-                <div className="border-t border-border-secondary/40 my-1" />
+                <div className="h-px mx-2 my-1 bg-white/[0.06]" />
                 <button
                   role="menuitem"
                   onClick={handleExportServer}
-                  className="block w-full text-left px-4 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.04] transition-colors"
+                  className="block w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors"
                 >
                   Export via API
                 </button>
@@ -2019,7 +2036,7 @@ export default function Memories() {
           aria-label="Import memories"
         >
           <div
-            className="bg-[#272729] border border-border-primary rounded-[18px] p-6 max-w-md w-full mx-4 space-y-4"
+            className={`${GLASS_MODAL} rounded-[18px] p-6 max-w-md w-full mx-4 space-y-4`}
             onClick={e => e.stopPropagation()}
           >
             {importState === 'success' && importResult ? (
@@ -2067,7 +2084,7 @@ export default function Memories() {
                   <div className="space-y-1">
                     <p className="text-xs text-text-quaternary">Preview:</p>
                     {importPending.slice(0, 3).map((m, i) => (
-                      <p key={i} className="text-xs text-text-tertiary font-mono bg-[#1d1d1f] rounded-[8px] px-3 py-1.5 truncate">
+                      <p key={i} className="text-xs text-text-tertiary font-mono bg-white/[0.06] rounded-[8px] px-3 py-1.5 truncate">
                         {m.content.slice(0, 50)}{m.content.length > 50 ? '…' : ''}
                       </p>
                     ))}
@@ -2116,16 +2133,20 @@ export default function Memories() {
         />
       )}
 
-      {/* Tabs */}
-      <div className="bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 flex w-fit overflow-x-auto">
+      {/* Tabs — aligned to NexusMind UI Kit "Tabs con contador": p-1 pill
+          container, 9px-radius active pill with accent tint, 600-weight
+          labels, and a neutral 10.5px counter chip on tabs that carry a count
+          (duplicates keeps its red/error tint — that urgency signal predates
+          this pass and stays semantically meaningful). */}
+      <div className={`${GLASS_PANEL} rounded-[12px] p-1 flex gap-0.5 w-fit overflow-x-auto`}>
         {(['memories', 'sessions', 'tags', 'duplicates', 'collections'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-[7px] px-[15px] py-[7px] text-[13px] font-semibold rounded-[9px] transition-colors whitespace-nowrap ${
               activeTab === tab
-                ? 'bg-white/[0.08] text-text-primary font-semibold'
-                : 'text-text-secondary hover:text-text-primary font-normal'
+                ? 'bg-accent-blue-tint text-accent-blue'
+                : 'text-text-tertiary hover:text-text-primary'
             }`}
           >
             {tab === 'memories'
@@ -2139,7 +2160,7 @@ export default function Memories() {
                   <Copy className="w-3.5 h-3.5" />
                   Duplicates
                   {duplicateGroups && duplicateGroups.length > 0 && (
-                    <span className="ml-1 rounded-full bg-status-error/10 border border-status-error/20 text-status-error text-[10px] px-1.5">
+                    <span className="ml-1 rounded-[8px] bg-status-error/10 border border-status-error/20 text-status-error text-[10.5px] font-bold px-[7px] py-px">
                       {duplicateGroups.length}
                     </span>
                   )}
@@ -2148,7 +2169,7 @@ export default function Memories() {
                   <Folder className="w-3.5 h-3.5" />
                   Collections
                   {collections && collections.length > 0 && (
-                    <span className="ml-1 rounded-full bg-[#272729] border border-border-primary text-text-quaternary text-[10px] px-1.5">
+                    <span className="ml-1 rounded-[8px] bg-white/[0.07] text-text-tertiary text-[10.5px] font-bold px-[7px] py-px">
                       {collections.length}
                     </span>
                   )}
@@ -2180,21 +2201,15 @@ export default function Memories() {
             </button>
           )}
         </div>
-        <div className="flex items-center bg-transparent border border-border-primary rounded-[11px] px-1 gap-0.5">
-          {(['keyword', 'hybrid'] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-3 py-1.5 text-xs font-normal rounded-[8px] transition-colors ${
-                mode === m
-                  ? 'bg-accent-blue/15 text-accent-blue'
-                  : 'text-text-quaternary hover:text-text-tertiary'
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl<'keyword' | 'hybrid'>
+          size="sm"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'keyword', label: 'keyword' },
+            { value: 'hybrid', label: 'hybrid' },
+          ]}
+        />
       </div>
 
       {/* Facet filters — admin only, only when facets loaded. One coherent
@@ -2245,25 +2260,14 @@ export default function Memories() {
             </div>
           )}
 
-          {/* Date range — single glass pill housing both native date inputs,
-              "dd/mm/yyyy → dd/mm/yyyy" per the mockup. */}
-          <div className="flex items-center gap-1.5 h-9 shrink-0 rounded-full border border-white/[0.09] bg-[#0d0f14]/60 backdrop-blur-[12px] pl-3.5 pr-3 text-[12.5px] text-text-quaternary">
-            <input
-              type="date"
-              value={fromDate}
-              onChange={e => setFromDate(e.target.value)}
-              className="bg-transparent border-none outline-none text-[12.5px] text-text-secondary [color-scheme:dark] w-[108px]"
-              aria-label="From date"
-            />
-            <span aria-hidden="true" className="text-text-quaternary">→</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={e => setToDate(e.target.value)}
-              className="bg-transparent border-none outline-none text-[12.5px] text-text-secondary [color-scheme:dark] w-[108px]"
-              aria-label="To date"
-            />
-          </div>
+          {/* Date range — NexusMind UI Kit DateRangePicker: trigger pill +
+              calendar popover with month nav, range highlight and presets.
+              Same from/to string state contract as the native inputs it replaces. */}
+          <DateRangePicker
+            from={fromDate}
+            to={toDate}
+            onChange={(next) => { setFromDate(next.from); setToDate(next.to) }}
+          />
 
           {/* Pinned only toggle */}
           <button
@@ -2414,7 +2418,7 @@ export default function Memories() {
                 <tr key={i} className="border-t border-border-secondary">
                   {Array.from({ length: 6 }).map((_, j) => (
                     <td key={j} className="px-4 py-4">
-                      <div className="h-3.5 rounded-[5px] bg-[#272729] animate-pulse" />
+                      <div className="h-3.5 rounded-[5px] bg-white/[0.06] animate-pulse" />
                     </td>
                   ))}
                 </tr>
@@ -2442,7 +2446,7 @@ export default function Memories() {
                   role="button"
                   tabIndex={0}
                   aria-label={`View memory: ${mem.title ?? 'untitled'}`}
-                  className={`border-t border-white/[0.05] transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-[#1d1d1f]' : 'hover:bg-accent-blue/[0.05]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
+                  className={`border-t border-white/[0.05] transition-colors cursor-pointer group focus:outline-none focus:border-accent-blue/60 ${idx === 0 ? 'border-t-0' : ''} ${isChecked ? 'bg-accent-blue/[0.06] ring-1 ring-accent-blue/60' : ''} ${isEditing ? 'bg-white/[0.04]' : 'hover:bg-accent-blue/[0.05]'} ${didSave ? 'bg-status-success/5' : ''} ${mem.pinned ? 'border-l-2 border-l-accent-blue/40' : ''}`}
                 >
                   {/* Row checkbox — only shown in selectMode */}
                   <td className="w-10 px-4 py-3.5" onClick={e => e.stopPropagation()}>
@@ -2469,7 +2473,7 @@ export default function Memories() {
                       <p className="text-[13px] text-text-secondary">
                         {userMap.get(mem.user_id) ?? '—'}
                       </p>
-                      <span className="text-[10.5px] border border-border-primary rounded-[6px] px-1.5 py-0.5 text-text-quaternary bg-[#272729]/50 inline-block font-mono">
+                      <span className={`text-[10.5px] border rounded-[6px] px-1.5 py-0.5 text-text-quaternary inline-block font-mono ${GLASS_CHIP}`}>
                         {mem.tool}
                       </span>
                     </div>
@@ -2493,7 +2497,7 @@ export default function Memories() {
                             if (e.key === 'Escape') { setEditingId(null) }
                           }}
                           rows={3}
-                          className="w-full text-xs text-text-secondary bg-[#1d1d1f] border border-accent-blue/40 rounded-[8px] p-2 resize-none focus:outline-none focus:border-accent-blue"
+                          className="w-full text-xs text-text-secondary bg-white/[0.03] border border-accent-blue/40 rounded-[8px] p-2 resize-none focus:outline-none focus:border-accent-blue"
                         />
                         <div className="flex items-center justify-between mt-1">
                           <span className="text-[10px] text-text-quaternary">
@@ -2535,7 +2539,7 @@ export default function Memories() {
                             </p>
                           )}
                           {mem.archived_at && (
-                            <span className="text-[10px] bg-[#272729] text-text-quaternary border border-border-primary rounded-[5px] px-1.5 py-0.5 shrink-0">
+                            <span className={`text-[10px] text-text-quaternary border rounded-[5px] px-1.5 py-0.5 shrink-0 ${GLASS_CHIP}`}>
                               archived
                             </span>
                           )}
@@ -2655,7 +2659,7 @@ export default function Memories() {
                             <Folder className="w-3.5 h-3.5" />
                           </button>
                           {assigningMemory === mem.id && (
-                            <div className="absolute right-0 top-7 z-20 bg-[#272729] border border-border-primary rounded-[11px] py-1 min-w-[160px] shadow-xl">
+                            <div className={`absolute right-0 top-7 z-20 ${GLASS_DROPDOWN} rounded-[11px] py-1 min-w-[160px]`}>
                               <button
                                 className="w-full text-left px-3 py-2 text-xs text-text-quaternary hover:bg-white/[0.04] transition-colors"
                                 onClick={() => assignCollectionMut.mutate({ memoryId: mem.id, collectionId: null })}
@@ -2757,7 +2761,7 @@ export default function Memories() {
                             <CalendarClock className="w-3.5 h-3.5" />
                           </button>
                           {schedulePopoverId === mem.id && (
-                            <div className="bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl absolute right-0 top-7 z-50 min-w-[200px]" onClick={e => e.stopPropagation()}>
+                            <div className={`${GLASS_DROPDOWN} rounded-[11px] p-3 absolute right-0 top-7 z-50 min-w-[200px]`} onClick={e => e.stopPropagation()}>
                               <p className="text-[10px] text-text-tertiary mb-2 font-semibold">Schedule deletion</p>
                               <input
                                 type="date"
@@ -2903,8 +2907,8 @@ export default function Memories() {
                   key={i}
                   className="border border-border-primary rounded-[18px] p-4 animate-pulse"
                 >
-                  <div className="h-3.5 w-1/2 rounded bg-[#272729] mb-2" />
-                  <div className="h-5 w-16 rounded bg-[#272729]" />
+                  <div className="h-3.5 w-1/2 rounded bg-white/[0.06] mb-2" />
+                  <div className="h-5 w-16 rounded bg-white/[0.06]" />
                 </div>
               ))}
             </div>
@@ -3018,7 +3022,7 @@ export default function Memories() {
         <div className="space-y-4">
           {/* Create collection form */}
           {isAdmin && (
-            <div className="border border-border-primary rounded-[18px] p-5 bg-[#1d1d1f] space-y-3">
+            <div className={`${GLASS_PANEL} rounded-[18px] p-5 space-y-3`}>
               <p className="text-xs font-semibold text-text-secondary">New collection</p>
               <div className="flex gap-2">
                 <input
@@ -3055,8 +3059,8 @@ export default function Memories() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="border border-border-primary rounded-[18px] p-4 animate-pulse">
-                  <div className="h-3.5 w-1/2 rounded bg-[#272729] mb-2" />
-                  <div className="h-5 w-16 rounded bg-[#272729]" />
+                  <div className="h-3.5 w-1/2 rounded bg-white/[0.06] mb-2" />
+                  <div className="h-5 w-16 rounded bg-white/[0.06]" />
                 </div>
               ))}
             </div>
@@ -3073,7 +3077,7 @@ export default function Memories() {
               {collections.map((col: Collection) => (
                 <div
                   key={col.id}
-                  className="relative group border border-border-primary rounded-[18px] p-5 bg-[#272729] hover:border-border-focus transition-colors"
+                  className={`relative group ${GLASS_PANEL} rounded-[18px] p-5 hover:border-border-focus transition-colors`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
@@ -3126,8 +3130,8 @@ export default function Memories() {
           {duplicatesLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="border border-border-primary rounded-[18px] p-5 animate-pulse space-y-3">
-                <div className="h-3.5 w-1/3 rounded bg-[#272729]" />
-                <div className="h-2.5 w-2/3 rounded bg-[#272729]" />
+                <div className="h-3.5 w-1/3 rounded bg-white/[0.06]" />
+                <div className="h-2.5 w-2/3 rounded bg-white/[0.06]" />
               </div>
             ))
           ) : !duplicateGroups?.length ? (
@@ -3214,7 +3218,7 @@ export default function Memories() {
                               <span className="text-[11px] font-semibold text-text-tertiary">
                                 {new Date(mem.created_at).toLocaleString()}
                               </span>
-                              <span className="text-[10px] border border-border-primary rounded-[5px] px-1.5 py-0.5 text-text-quaternary bg-[#272729]/50">
+                              <span className={`text-[10px] border rounded-[5px] px-1.5 py-0.5 text-text-quaternary ${GLASS_CHIP}`}>
                                 {mem.project}
                               </span>
                               {memIdx === 0 && (
@@ -3272,9 +3276,9 @@ export default function Memories() {
         <div className="space-y-3">
           {sessionsLoading ? (
             Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="border border-border-primary rounded-[18px] p-4 bg-[#272729] space-y-2 animate-pulse">
-                <div className="h-3.5 w-1/3 rounded bg-[#1d1d1f]" />
-                <div className="h-2.5 w-2/3 rounded bg-[#1d1d1f]" />
+              <div key={i} className={`${GLASS_PANEL} rounded-[18px] p-4 space-y-2 animate-pulse`}>
+                <div className="h-3.5 w-1/3 rounded bg-white/[0.06]" />
+                <div className="h-2.5 w-2/3 rounded bg-white/[0.06]" />
               </div>
             ))
           ) : !sessions?.length ? (
@@ -3291,7 +3295,7 @@ export default function Memories() {
               return (
               <div
                 key={session.id}
-                className="group border border-border-primary rounded-[18px] bg-[#272729] overflow-hidden transition-colors hover:border-border-focus"
+                className={`group ${GLASS_PANEL} rounded-[18px] overflow-hidden transition-colors hover:border-border-focus`}
               >
                 {/* Card header — clickable to expand */}
                 <div
@@ -3312,7 +3316,7 @@ export default function Memories() {
                         {session.memory_count} {session.memory_count === 1 ? 'memory' : 'memories'}
                       </span>
                       {session.ended_at ? (
-                        <span className="text-[10px] bg-[#1d1d1f] text-text-quaternary border border-border-secondary px-2 py-0.5 rounded-[5px]">
+                        <span className={`text-[10px] text-text-quaternary border px-2 py-0.5 rounded-[5px] ${GLASS_CHIP}`}>
                           ended
                         </span>
                       ) : (
@@ -3347,7 +3351,7 @@ export default function Memories() {
                               setEditingSessionId(null)
                             }
                           }}
-                          className="w-full bg-[#1d1d1f] border border-accent-blue/40 rounded-[8px] px-2 py-1 text-[13px] text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue"
+                          className="w-full bg-white/[0.03] border border-accent-blue/40 rounded-[8px] px-2 py-1 text-[13px] text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue"
                           placeholder="Session summary…"
                         />
                       </div>
@@ -3394,7 +3398,7 @@ export default function Memories() {
                         <Trash2 className="w-3 h-3" />
                       </button>
                       {deleteConfirmSessionId === session.id && (
-                        <div className="absolute right-0 top-7 z-30 bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl min-w-[180px]">
+                        <div className={`absolute right-0 top-7 z-30 ${GLASS_DROPDOWN} rounded-[11px] p-3 min-w-[180px]`}>
                           <p className="text-[11px] text-text-secondary mb-2">Delete this session?</p>
                           <div className="flex gap-2">
                             <button
@@ -3432,10 +3436,10 @@ export default function Memories() {
                       {sessionMemoriesLoading ? (
                         Array.from({ length: 3 }).map((_, i) => (
                           <div key={i} className="flex items-start gap-3 py-2.5 border-b border-border-secondary/30 last:border-b-0 animate-pulse">
-                            <div className="h-4 w-16 rounded-[5px] bg-[#1d1d1f] shrink-0" />
+                            <div className="h-4 w-16 rounded-[5px] bg-white/[0.06] shrink-0" />
                             <div className="flex-1 space-y-1">
-                              <div className="h-3 w-full rounded bg-[#1d1d1f]" />
-                              <div className="h-3 w-2/3 rounded bg-[#1d1d1f]" />
+                              <div className="h-3 w-full rounded bg-white/[0.06]" />
+                              <div className="h-3 w-2/3 rounded bg-white/[0.06]" />
                             </div>
                           </div>
                         ))

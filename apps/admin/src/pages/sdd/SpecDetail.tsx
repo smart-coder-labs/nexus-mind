@@ -75,7 +75,7 @@ export default function SpecDetail({ specId, onClose }: SpecDetailProps) {
       <button
         onClick={onClose}
         aria-label="Close"
-        className={`absolute top-0 right-0 w-8 h-8 flex items-center justify-center rounded-full bg-background-tertiary text-text-secondary hover:text-text-primary transition-colors ${FOCUS}`}
+        className={`absolute top-0 right-0 w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] text-text-secondary hover:text-text-primary transition-colors ${FOCUS}`}
       >
         <X className="w-3.5 h-3.5" />
       </button>

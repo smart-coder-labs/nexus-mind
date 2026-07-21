@@ -1,8 +1,16 @@
 /**
- * Apple Design System - Global Styles
+ * NexusMind Dark-Glass Design System
+ *
+ * Ported from the apps/admin design language (src/index.css + KpiMarquee),
+ * adapted for the marketing landing page. Single source of truth for the
+ * "dark glass" tokens: near-black canvas, translucent frosted panels, one
+ * accent blue (no competing hues), and pill-shaped controls.
+ *
+ * The site is dark-only (no light/dark toggle), so tokens live directly on
+ * :root instead of being duplicated under a `.dark` class. Layout.astro still
+ * sets `class="dark"` on <html> — that's kept as a harmless no-op selector
+ * below so nothing breaks if a future toggle is reintroduced.
  */
-
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 @import "tailwindcss";
 @variant dark (&:where(.dark, .dark *));
@@ -13,81 +21,60 @@
    ======================================== */
 
 :root {
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f5f5f7;
-  --color-bg-tertiary: #e8e8ed;
-  --color-bg-elevated: #ffffff;
+  /* Canvas */
+  --color-bg-primary: #07080c;      /* page background */
+  --color-bg-secondary: #0a0c12;    /* alternating section background */
+  --color-bg-tertiary: #14161d;     /* code blocks, inset wells */
+  --color-bg-elevated: #12141a;
 
-  --color-surface-primary: #ffffff;
-  --color-surface-secondary: #f5f5f7;
-  --color-surface-glass: rgba(255, 255, 255, 0.72);
-  --color-surface-glass-dark: rgba(255, 255, 255, 0.85);
+  /* Surfaces — solid tiles (non-blurred contexts) + glass panels */
+  --color-surface-primary: #0d0f14;
+  --color-surface-secondary: #12141a;
+  --color-surface-glass: rgba(13, 15, 20, 0.60);
+  --color-surface-glass-dark: rgba(13, 15, 20, 0.78);
 
-  --color-text-primary: #1d1d1f;
-  --color-text-secondary: #6e6e73;
-  --color-text-tertiary: #86868b;
-  --color-text-quaternary: #a1a1a6;
-  --color-text-inverse: #ffffff;
+  /* Text ladder */
+  --color-text-primary: #f4f6fa;    /* headings, near-white */
+  --color-text-secondary: #98a0b1;  /* body / secondary copy */
+  --color-text-tertiary: #5b6373;   /* muted */
+  --color-text-quaternary: #3d4350; /* least emphasis */
+  --color-text-inverse: #07080c;
 
-  --color-border-primary: rgba(0, 0, 0, 0.08);
-  --color-border-secondary: rgba(0, 0, 0, 0.04);
-  --color-border-focus: rgba(0, 125, 250, 0.4);
+  /* Borders — hairline on dark */
+  --color-border-primary: rgba(255, 255, 255, 0.07);
+  --color-border-secondary: rgba(255, 255, 255, 0.04);
+  --color-border-hover: rgba(255, 255, 255, 0.14);
+  --color-border-focus: rgba(0, 102, 204, 0.5);
 
-  --color-accent-blue: #007aff;
-  --color-accent-blue-hover: #0051d5;
-  --color-accent-blue-active: #004fc4;
-  --color-accent-blue-tint: rgba(0, 122, 255, 0.1);
+  /* Accent — Action Blue, the single interactive color (matches apps/admin) */
+  --color-accent-blue: #0066cc;
+  --color-accent-blue-hover: #0071e3;
+  --color-accent-blue-active: #0058a8;
+  --color-accent-blue-tint: rgba(0, 102, 204, 0.12);
+  /* Alias so pre-existing `text-accent` / `bg-accent` / `border-accent`
+     utility classes (used across Navbar/Solution/EarlyAdopters/Pricing/
+     Features) resolve to the same single accent instead of staying
+     undefined — see session report for details on this fix. */
+  --color-accent: var(--color-accent-blue);
 
-  --color-status-success: #34c759;
-  --color-status-warning: #ff9500;
-  --color-status-error: #ff3b30;
-  --color-status-info: #5ac8fa;
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.16), 0 8px 24px rgba(0, 0, 0, 0.08);
-
-  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.dark {
-  --color-bg-primary: #000000;
-  --color-bg-secondary: #1c1c1e;
-  --color-bg-tertiary: #2c2c2e;
-  --color-bg-elevated: #1c1c1e;
-
-  --color-surface-primary: #1c1c1e;
-  --color-surface-secondary: #2c2c2e;
-  --color-surface-glass: rgba(28, 28, 30, 0.72);
-  --color-surface-glass-dark: rgba(28, 28, 30, 0.85);
-
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #98989d;
-  --color-text-tertiary: #6e6e73;
-  --color-text-quaternary: #48484a;
-  --color-text-inverse: #000000;
-
-  --color-border-primary: rgba(255, 255, 255, 0.12);
-  --color-border-secondary: rgba(255, 255, 255, 0.06);
-  --color-border-focus: rgba(10, 132, 255, 0.6);
-
-  --color-accent-blue: #0a84ff;
-  --color-accent-blue-hover: #409cff;
-  --color-accent-blue-active: #5eb0ff;
-  --color-accent-blue-tint: rgba(10, 132, 255, 0.15);
-
-  --color-status-success: #32d74b;
-  --color-status-warning: #ff9f0a;
+  /* Status — semantic, distinct from the decorative accent */
+  --color-status-success: #30d158;
+  --color-status-warning: #ffd60a;
   --color-status-error: #ff453a;
-  --color-status-info: #64d2ff;
+  --color-status-info: #0066cc;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.24);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.40), 0 2px 8px rgba(0, 0, 0, 0.32);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.48), 0 4px 16px rgba(0, 0, 0, 0.40);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.56), 0 8px 24px rgba(0, 0, 0, 0.48);
+
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* No-op: the page is dark-only, tokens already live on :root above. Kept so
+   Layout.astro's `<html class="dark">` continues to resolve cleanly. */
+.dark {
 }
 
 @theme {
@@ -98,6 +85,9 @@
 
   --color-surface-primary: var(--color-surface-primary);
   --color-surface-secondary: var(--color-surface-secondary);
+  --color-surface-elevated: var(--color-bg-elevated);
+  --color-surface-glass: var(--color-surface-glass);
+  --color-surface-glass-dark: var(--color-surface-glass-dark);
 
   --color-text-primary: var(--color-text-primary);
   --color-text-secondary: var(--color-text-secondary);
@@ -107,9 +97,13 @@
 
   --color-border-primary: var(--color-border-primary);
   --color-border-secondary: var(--color-border-secondary);
+  --color-border-hover: var(--color-border-hover);
+  --color-border-focus: var(--color-border-focus);
 
+  --color-accent: var(--color-accent);
   --color-accent-blue: var(--color-accent-blue);
   --color-accent-blue-hover: var(--color-accent-blue-hover);
+  --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
 
   --color-status-success: var(--color-status-success);
@@ -136,11 +130,15 @@
 
   body {
     background-color: var(--color-bg-primary);
-    color: var(--color-text-primary);
+    color: var(--color-text-secondary);
     font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
     font-size: 15px;
     line-height: 1.5;
     letter-spacing: -0.01em;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--color-text-primary);
   }
 
   ::-webkit-scrollbar {
@@ -164,6 +162,17 @@
   button,
   [role="button"] {
     cursor: pointer;
+  }
+
+  /* Visible keyboard-focus ring everywhere, including plain <a> CTAs that
+     aren't wrapped by the Button component's own focus-visible styles. */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--color-accent-blue-hover);
+    outline-offset: 2px;
   }
 }
 
@@ -207,31 +216,124 @@
     transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  /* Landing-specific surface utilities */
+  /* ----------------------------------------
+     Glass panels/cards — the primary "dark glass" surface recipe used for
+     every card-like section (Solution diagram, Early Adopter cards,
+     Pricing tiers, the waitlist form). Border/bg/blur values match the
+     apps/admin GLASS_PANEL recipe; hover lift + brighter border added per
+     the redesign spec.
+     ---------------------------------------- */
   .ds-surface {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(13, 15, 20, 0.60);
     border: 1px solid var(--color-border-primary);
     border-radius: 1rem;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: transform 0.25s var(--ease-apple), border-color 0.25s var(--ease-apple);
+  }
+
+  .ds-surface:hover {
+    transform: translateY(-2px);
+    border-color: var(--color-border-hover);
   }
 
   .ds-surface-elevated {
-    background: rgba(255, 255, 255, 0.07);
+    background: rgba(13, 15, 20, 0.78);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 1rem;
+    transition: transform 0.25s var(--ease-apple), border-color 0.25s var(--ease-apple);
+  }
+
+  .ds-surface-elevated:hover {
+    transform: translateY(-2px);
+    border-color: var(--color-border-hover);
+  }
+
+  /* Per-tile blurred accent glow — position inside a `relative overflow-hidden`
+     tile with `style="background: var(--color-accent-blue)"` (or any other
+     existing token) to tint it. Mirrors apps/admin's MemoryStatTiles <Glow>. */
+  .tile-glow {
+    position: absolute;
+    top: -2.5rem;
+    right: -1.5rem;
+    width: 7rem;
+    height: 7rem;
+    border-radius: 9999px;
+    opacity: 0.18;
+    filter: blur(30px);
+    pointer-events: none;
+  }
+
+  .tile-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-tertiary);
+  }
+
+  /* ----------------------------------------
+     Pill buttons — the shared recipe behind ui/Button so plain marketing
+     CTAs (Pricing tiers, Early Adopter card, ForTeams callout, mobile nav)
+     look identical to the React Button component without needing to
+     hydrate a client island just for a link.
+     ---------------------------------------- */
+  .btn-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    transition-property: background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 200ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .btn-pill:active {
+    transform: scale(0.98);
+  }
+
+  .btn-pill-primary {
+    background: var(--color-accent-blue);
+    color: #ffffff;
+    box-shadow: 0 8px 20px -6px var(--color-accent-blue-tint);
+  }
+
+  .btn-pill-primary:hover {
+    background: var(--color-accent-blue-hover);
+    box-shadow: 0 10px 28px -6px rgba(0, 102, 204, 0.35);
+  }
+
+  .btn-pill-primary:active {
+    background: var(--color-accent-blue-active);
+  }
+
+  .btn-pill-glass {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--color-text-primary);
+  }
+
+  .btn-pill-glass:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
   }
 
   /* Text gradients */
   .text-gradient {
-    background: linear-gradient(135deg, #ffffff 0%, #98989d 100%);
+    background: linear-gradient(135deg, #ffffff 0%, #98a0b1 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   .text-gradient-accent {
-    background: linear-gradient(135deg, #0a84ff 0%, #5856d6 50%, #ff2d55 100%);
+    background: linear-gradient(135deg, var(--color-accent-blue-hover) 0%, var(--color-accent-blue) 55%, var(--color-text-primary) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -239,11 +341,32 @@
 
   /* Background gradients */
   .hero-gradient {
-    background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(10, 132, 255, 0.15), transparent);
+    background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(0, 102, 204, 0.18), transparent);
   }
 
   .feature-gradient {
-    background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(10, 132, 255, 0.08), transparent);
+    background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(0, 102, 204, 0.08), transparent);
+  }
+
+  /* ----------------------------------------
+     KPI / logo marquee wrapper — seamless horizontal scroll, ported from
+     apps/admin's KpiMarquee.css. Keyframes live in global.css next to the
+     other page-level @keyframes.
+     ---------------------------------------- */
+  .marquee-wrapper {
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+  }
+
+  .marquee-track {
+    display: flex;
+    width: max-content;
+    animation: marquee-scroll 36s linear infinite;
+  }
+
+  .marquee-wrapper:hover .marquee-track {
+    animation-play-state: paused;
   }
 }
 
@@ -315,5 +438,9 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  .marquee-track {
+    animation-play-state: paused;
   }
 }

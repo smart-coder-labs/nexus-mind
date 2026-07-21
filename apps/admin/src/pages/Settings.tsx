@@ -3,9 +3,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { Switch } from '../components/ui/Switch/Switch'
-import { Check, X, ChevronDown, ChevronUp, Download, Upload, Plus, Pencil, Trash2, AlertCircle } from 'lucide-react'
+import {
+  Check, X, ChevronDown, ChevronUp, Download, Upload, Plus, Pencil, Trash2, AlertCircle,
+  Settings as SettingsIcon, RefreshCw, CheckCircle2, GitPullRequest, MessageSquare, GitBranch, Search,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AgentEventSettings, OrgSettings, Webhook, CreateWebhookRequest, WebhookTestResult, ImportConfigResponse } from '../types'
+
+// Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
+// imported to keep pages independent.
+const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
+
+// Top-level card surface per the Settings mockup: glass panel + 16px radius + 22px padding.
+const CARD = `${GLASS_PANEL} rounded-[16px] p-[22px]`
+
+const PRIMARY_BTN = 'h-10 px-4 rounded-[11px] bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-bold disabled:opacity-40 transition-colors shrink-0'
+const NEUTRAL_BTN = 'h-[38px] px-4 rounded-[10px] bg-white/[0.06] border border-white/[0.09] text-[13px] font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.10] transition-colors disabled:opacity-40'
+const NEUTRAL_BTN_SM = 'h-8 px-3 rounded-[9px] bg-white/[0.06] border border-white/[0.09] text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.10] transition-colors disabled:opacity-40 flex items-center gap-1.5'
+
+const inputCls = 'w-full h-10 px-3.5 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+const selectCls = 'h-10 px-3.5 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none'
 
 // ── Memory Templates ──────────────────────────────────────────────────────────
 
@@ -95,127 +113,122 @@ function MemoryTemplatesSection() {
     setEditingId(null)
   }
 
-  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
+  const formInputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
 
   return (
-    <section className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Memory Templates</p>
+    <div className={`${CARD} flex flex-col gap-4`}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-[16px] font-bold text-text-primary">Memory templates</h2>
+          <p className="text-[12.5px] text-text-tertiary mt-0.5">Reusable templates that pre-fill content when creating memories.</p>
+        </div>
         {!showForm && (
-          <button
-            onClick={openCreate}
-            className="flex items-center gap-1.5 text-xs border border-border-primary rounded-full px-3 py-1.5 text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors"
-          >
+          <button onClick={openCreate} className={NEUTRAL_BTN_SM}>
             <Plus className="w-3 h-3" />
             Add template
           </button>
         )}
       </div>
-      <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-        <p className="text-xs text-text-tertiary">
-          Define reusable templates for creating memories. Templates pre-fill content when users create new memories.
-        </p>
 
-        {/* Template list */}
-        {templates.length > 0 && !showForm && (
-          <div className="space-y-2">
-            {templates.map(t => (
-              <div key={t.id} className="flex items-start gap-3 p-3 rounded-[11px] border border-border-secondary bg-[#272729]">
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-semibold text-text-primary">{t.name}</span>
-                    <span className={`text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 ${TYPE_BADGE_CLS[t.type]}`}>
-                      {t.type}
-                    </span>
-                  </div>
-                  <p className="text-xs text-text-tertiary truncate">{t.content}</p>
+      {/* Template list */}
+      {templates.length > 0 && !showForm && (
+        <div className="space-y-2">
+          {templates.map(t => (
+            <div key={t.id} className="flex items-start gap-3 p-3 rounded-[11px] border border-white/[0.07] bg-white/[0.02]">
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold text-text-primary">{t.name}</span>
+                  <span className={`text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 ${TYPE_BADGE_CLS[t.type]}`}>
+                    {t.type}
+                  </span>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => openEdit(t)}
-                    aria-label={`Edit template ${t.name}`}
-                    className="p-1.5 rounded-[8px] text-text-quaternary hover:text-text-secondary hover:bg-[#272729] transition-colors"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(t.id)}
-                    aria-label={`Delete template ${t.name}`}
-                    className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-error hover:bg-[#272729] transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <p className="text-xs text-text-tertiary truncate">{t.content}</p>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => openEdit(t)}
+                  aria-label={`Edit template ${t.name}`}
+                  className="p-1.5 rounded-[8px] text-text-quaternary hover:text-text-secondary hover:bg-white/[0.10] transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => handleDelete(t.id)}
+                  aria-label={`Delete template ${t.name}`}
+                  className="p-1.5 rounded-[8px] text-text-quaternary hover:text-status-error hover:bg-white/[0.10] transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
-        {templates.length === 0 && !showForm && (
-          <div className="text-center py-6 space-y-1">
-            <p className="text-xs font-semibold text-text-secondary">No templates yet</p>
-            <p className="text-xs text-text-tertiary">Add a template to speed up memory creation.</p>
-          </div>
-        )}
+      {templates.length === 0 && !showForm && (
+        <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-[12px] border-[1.5px] border-dashed border-white/[0.1]">
+          <p className="text-[13.5px] font-bold text-text-secondary">No templates yet</p>
+          <p className="text-xs text-text-quaternary">Add a template to speed up memory creation.</p>
+        </div>
+      )}
 
-        {/* Create / Edit form */}
-        {showForm && (
-          <div className="space-y-3">
-            <p className="text-xs font-semibold text-text-secondary">
-              {editingId ? 'Edit template' : 'New template'}
-            </p>
-            <div className="space-y-1.5">
-              <label className="text-xs text-text-tertiary">Name</label>
-              <input
-                value={formName}
-                onChange={e => setFormName(e.target.value)}
-                placeholder="e.g. Bug report"
-                className={inputCls}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs text-text-tertiary">Type</label>
-              <select
-                value={formType}
-                onChange={e => setFormType(e.target.value as TemplateType)}
-                className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full"
-              >
-                {TEMPLATE_TYPES.map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs text-text-tertiary">Content</label>
-              <textarea
-                value={formContent}
-                onChange={e => setFormContent(e.target.value)}
-                placeholder="Template content that will pre-fill the memory..."
-                rows={5}
-                className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px]"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCancel}
-                className="text-xs text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={!formName.trim() || !formContent.trim()}
-                className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {editingId ? 'Save changes' : 'Add template'}
-              </button>
-            </div>
+      {/* Create / Edit form */}
+      {showForm && (
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-text-secondary">
+            {editingId ? 'Edit template' : 'New template'}
+          </p>
+          <div className="space-y-1.5">
+            <label className="text-xs text-text-tertiary">Name</label>
+            <input
+              value={formName}
+              onChange={e => setFormName(e.target.value)}
+              placeholder="e.g. Bug report"
+              className={formInputCls}
+            />
           </div>
-        )}
-      </div>
-    </section>
+          <div className="space-y-1.5">
+            <label className="text-xs text-text-tertiary">Type</label>
+            <select
+              value={formType}
+              onChange={e => setFormType(e.target.value as TemplateType)}
+              className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors appearance-none w-full"
+            >
+              {TEMPLATE_TYPES.map(t => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-text-tertiary">Content</label>
+            <textarea
+              value={formContent}
+              onChange={e => setFormContent(e.target.value)}
+              placeholder="Template content that will pre-fill the memory..."
+              rows={5}
+              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors resize-y min-h-[100px]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="text-xs text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!formName.trim() || !formContent.trim()}
+              className="rounded-full bg-accent-blue text-white px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              {editingId ? 'Save changes' : 'Add template'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -257,7 +270,7 @@ function WebhookDeliveryPanel({ webhookId, client }: { webhookId: string; client
     return (
       <div className="space-y-1.5 mt-2">
         {[0, 1, 2].map(i => (
-          <div key={i} className="h-5 bg-[#272729] animate-pulse rounded-[5px]" />
+          <div key={i} className="h-5 bg-white/[0.06] animate-pulse rounded-[5px]" />
         ))}
       </div>
     )
@@ -307,10 +320,34 @@ function WebhookDeliveryPanel({ webhookId, client }: { webhookId: string; client
   )
 }
 
+// ── Settings section nav ──────────────────────────────────────────────────────
+
+type SectionId = 'account' | 'org' | 'agents' | 'integrations'
+
+const EVENT_ICONS: Record<keyof AgentEventSettings, { Icon: LucideIcon; color: string; bg: string }> = {
+  resolve_issues:   { Icon: CheckCircle2,   color: '#34d399', bg: 'rgba(52,211,153,0.1)' },
+  review_prs:       { Icon: GitPullRequest, color: '#60a5fa', bg: 'rgba(96,165,250,0.1)' },
+  respond_comments: { Icon: MessageSquare,  color: '#a78bfa', bg: 'rgba(167,139,250,0.1)' },
+  auto_index:       { Icon: GitBranch,      color: '#facc15', bg: 'rgba(250,204,21,0.1)' },
+  scanner:          { Icon: Search,         color: '#f87171', bg: 'rgba(248,113,113,0.1)' },
+}
+
 export default function Settings() {
   const { session, setSession } = useAuth()
   const qc = useQueryClient()
   const client = useMemo(() => createClient(), [session])
+  const isAdmin = session?.user.role === 'admin' || session?.user.role === 'super_user'
+
+  const [activeSection, setActiveSection] = useState<SectionId>('account')
+
+  const NAV_ITEMS: { id: SectionId; label: string }[] = [
+    { id: 'account', label: 'My account' },
+    { id: 'org', label: 'Organization' },
+    { id: 'agents', label: 'Agents' },
+    // Every card in Integrations & data is admin/super_user only — omit the
+    // tab entirely for other roles instead of showing an empty panel.
+    ...(isAdmin ? [{ id: 'integrations' as SectionId, label: 'Integrations & data' }] : []),
+  ]
 
   const { data: org } = useQuery({
     queryKey: ['org'],
@@ -408,7 +445,7 @@ export default function Settings() {
   const { data: orgSettings } = useQuery({
     queryKey: ['org-settings'],
     queryFn: () => client.getOrgSettings(),
-    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
+    enabled: isAdmin,
   })
 
   const { data: retentionPreview } = useQuery({
@@ -505,7 +542,7 @@ export default function Settings() {
   const { data: webhooksData, isLoading: webhooksLoading, refetch: refetchWebhooks } = useQuery({
     queryKey: ['webhooks'],
     queryFn: () => client.listWebhooks(),
-    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
+    enabled: isAdmin,
   })
   const webhooks: Webhook[] = webhooksData?.webhooks ?? []
 
@@ -677,742 +714,750 @@ export default function Settings() {
     a.click()
   }
 
-  const inputCls = 'w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors'
-
   return (
-    <div className="p-8 max-w-2xl mx-auto space-y-10">
-      <div>
-        <h1 className="text-[21px] font-semibold text-text-primary tracking-[0.231px]">Settings</h1>
-        <p className="text-[14px] text-text-tertiary mt-0.5 tracking-[-0.224px]">Organization and account configuration</p>
+    <div className="p-8 max-w-[1280px] mx-auto">
+      {/* Header */}
+      <div className="flex items-center gap-3.5 mb-6">
+        <div className="w-11 h-11 rounded-[13px] bg-white/[0.06] flex items-center justify-center shrink-0">
+          <SettingsIcon className="w-[22px] h-[22px] text-text-secondary" strokeWidth={1.7} />
+        </div>
+        <div>
+          <h1 className="text-[26px] font-extrabold tracking-[-0.02em] text-text-primary">Settings</h1>
+          <p className="text-[13px] text-text-tertiary mt-0.5">Organization and account configuration.</p>
+        </div>
       </div>
 
-      {/* My Profile */}
-      <section className="space-y-4">
-        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">My Profile</p>
-        <div className="bg-[#272729] rounded-[18px] border border-border-primary p-5 mb-6">
-          <h3 className="text-xs font-semibold text-text-primary mb-4">My Profile</h3>
-          <div className="space-y-4">
-            {/* Display name */}
-            <div>
-              <label className="text-[10px] text-text-quaternary uppercase tracking-wide">Display Name</label>
-              <div className="flex items-center gap-2 mt-1">
-                <input
-                  value={displayName}
-                  onChange={e => setDisplayName(e.target.value)}
-                  className="flex-1 rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60"
-                />
-                <button
-                  onClick={() => updateProfileMut.mutate({ name: displayName })}
-                  disabled={updateProfileMut.isPending}
-                  className="bg-accent-blue text-white rounded-full px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-                >
-                  {updateProfileMut.isPending ? 'Saving…' : profileSaved ? 'Saved!' : 'Save'}
-                </button>
-              </div>
-              {updateProfileMut.isError && (
-                <p className="text-[10px] text-status-error mt-1">Profile update not yet supported by backend</p>
-              )}
-            </div>
-            {/* Email (read-only) */}
-            <div>
-              <label className="text-[10px] text-text-quaternary uppercase tracking-wide">Email</label>
-              <p className="text-xs text-text-secondary mt-1">{session?.user?.email}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Organization */}
-      <section className="space-y-4">
-        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Organization</p>
-        <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="org-name" className="text-xs text-text-tertiary">Name</label>
-            <input
-              id="org-name"
-              value={orgName}
-              onChange={e => setOrgName(e.target.value)}
-              readOnly={(session?.user.role !== 'admin' && session?.user.role !== 'super_user')}
-              className={`${inputCls} ${(session?.user.role !== 'admin' && session?.user.role !== 'super_user') ? 'opacity-50 cursor-not-allowed' : ''}`}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="org-slug" className="text-xs text-text-tertiary">Slug</label>
-            <input id="org-slug" value={org?.slug ?? ''} readOnly className={`${inputCls} opacity-50 cursor-not-allowed`} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="org-created" className="text-xs text-text-tertiary">Created</label>
-            <input
-              id="org-created"
-              value={org ? new Date(org.created_at).toLocaleDateString() : ''}
-              readOnly
-              className={`${inputCls} opacity-50 cursor-not-allowed`}
-            />
-          </div>
-          {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => updateOrgMut.mutate(orgName)}
-                disabled={updateOrgMut.isPending || orgName === org?.name}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
-              >
-                {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
-              </button>
-              {updateOrgMut.isError && (
-                <p className="text-[10px] text-status-error">Failed to save.</p>
-              )}
-            </div>
-          )}
-          {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-            <div className="space-y-2 pt-2 border-t border-border-secondary/30">
-              <p className="text-xs text-text-tertiary font-semibold">Branding</p>
-              <div className="space-y-1.5">
-                <label className="text-xs text-text-tertiary">Logo URL</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    value={logoUrl}
-                    onChange={e => setLogoUrl(e.target.value)}
-                    placeholder="https://example.com/logo.png"
-                    className="rounded-[8px] border border-border-primary bg-white/[0.04] text-xs text-text-primary px-2 py-1.5 focus:outline-none focus:border-accent-blue/60 flex-1"
-                  />
-                  <button
-                    onClick={() => updateLogoMut.mutate(logoUrl.trim() || null)}
-                    disabled={updateLogoMut.isPending}
-                    className="rounded-full border border-border-primary px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors disabled:opacity-50"
-                  >
-                    {updateLogoMut.isPending ? 'Saving…' : 'Save'}
-                  </button>
-                  {logoSaved && <span className="text-[10px] text-status-success">Saved</span>}
-                </div>
-                {logoUrl && (
-                  <img
-                    src={logoUrl}
-                    className="w-8 h-8 rounded-full object-cover border border-border-primary"
-                    alt="org logo preview"
-                  />
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Data Retention */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Data Retention</p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs font-semibold text-text-primary">Data Retention</p>
-                <p className="text-xs text-text-tertiary mt-0.5">
-                  Automatically delete memories older than the selected period. Set to "Never" to keep all memories.
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <select
-                    value={retentionDays ?? ''}
-                    onChange={(e) => setRetentionDays(e.target.value ? parseInt(e.target.value) : null)}
-                    className="bg-transparent border border-border-primary rounded-[11px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none pr-8"
-                  >
-                    <option value="">Never (keep all)</option>
-                    <option value="30">30 days</option>
-                    <option value="60">60 days</option>
-                    <option value="90">90 days</option>
-                    <option value="180">180 days</option>
-                    <option value="365">1 year</option>
-                  </select>
-                </div>
-                <button
-                  onClick={() => updateRetentionMut.mutate(retentionDays)}
-                  disabled={updateRetentionMut.isPending}
-                  className="px-4 py-2 bg-accent-blue text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity disabled:opacity-50"
-                >
-                  {updateRetentionMut.isPending ? 'Saving…' : 'Save'}
-                </button>
-                {updateRetentionMut.isSuccess && (
-                  <span className="text-[10px] text-status-success">Saved</span>
-                )}
-              </div>
-              {orgSettings?.retention_days && (
-                <p className="text-xs text-text-quaternary mt-1.5">
-                  {retentionPreview ? `${retentionPreview.would_delete} memories would be deleted with current settings` : '…'}
-                </p>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Agent Instructions */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Agent Instructions</p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <div>
-              <p className="text-xs font-semibold text-text-primary">Agent Instructions</p>
-              <p className="text-xs text-text-tertiary mt-0.5 mb-3">
-                System-level instructions added to every agent's context for this organization.
-                Use this to set team conventions, coding standards, or custom behavior.
-              </p>
-            </div>
-            <textarea
-              value={customInstructions}
-              onChange={e => setCustomInstructions(e.target.value)}
-              rows={5}
-              placeholder="e.g., Always use TypeScript strict mode. Prefer functional components. Follow our naming conventions..."
-              className="w-full bg-transparent border border-border-primary rounded-[11px] px-3 py-2.5 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y min-h-[100px]"
-            />
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => updateInstructionsMut.mutate(customInstructions.trim() || null)}
-                disabled={updateInstructionsMut.isPending}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
-              >
-                {updateInstructionsMut.isPending ? 'Saving…' : 'Save Instructions'}
-              </button>
-              {instructionsSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Announcement Banner */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Announcement Banner</p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <div>
-              <p className="text-xs font-semibold text-text-primary">Announcement Banner</p>
-              <p className="text-xs text-text-tertiary mt-0.5">
-                Display a banner at the top of the admin UI for all users. Leave blank to hide the banner.
-              </p>
-            </div>
-
-            {/* Live preview */}
-            {announcementText.trim() && (
-              <div className={cn(
-                'w-full px-5 py-2.5 text-xs flex items-center gap-2',
-                announcementType === 'error'
-                  ? 'bg-status-error/10 text-status-error border-b border-status-error/20'
-                  : announcementType === 'warning'
-                  ? 'bg-status-warning/10 text-status-warning border-b border-status-warning/20'
-                  : 'bg-accent-blue/10 text-accent-blue border-b border-accent-blue/20',
-              )}>
-                <AlertCircle className="w-3 h-3 shrink-0" />
-                <span>{announcementText}</span>
-              </div>
-            )}
-
-            <textarea
-              value={announcementText}
-              onChange={e => setAnnouncementText(e.target.value)}
-              placeholder="e.g. Scheduled maintenance on Saturday 2 AM UTC. Expect ~30 min downtime."
-              className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-none h-20"
-            />
-
-            <div className="flex items-center gap-3">
-              <select
-                value={announcementType}
-                onChange={e => setAnnouncementType(e.target.value as 'info' | 'warning' | 'error')}
-                className="bg-white/[0.04] border border-border-primary rounded-[11px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
-              >
-                <option value="info">Info</option>
-                <option value="warning">Warning</option>
-                <option value="error">Error</option>
-              </select>
-              <button
-                onClick={() => updateAnnouncementMut.mutate({ text: announcementText.trim(), type: announcementType })}
-                disabled={updateAnnouncementMut.isPending}
-                className="rounded-full bg-accent-blue text-white text-xs font-semibold px-3 py-1.5 hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {updateAnnouncementMut.isPending ? 'Saving…' : 'Save'}
-              </button>
-              {announcementText.trim() && (
-                <button
-                  onClick={() => {
-                    setAnnouncementText('')
-                    updateAnnouncementMut.mutate({ text: '', type: announcementType })
-                  }}
-                  disabled={updateAnnouncementMut.isPending}
-                  className="text-xs text-text-quaternary hover:text-status-error transition-colors disabled:opacity-50"
-                >
-                  Clear
-                </button>
-              )}
-              {announcementSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Password Policy */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Password Policy</p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <div>
-              <p className="text-xs font-semibold text-text-primary">Minimum password length</p>
-              <p className="text-xs text-text-tertiary mt-0.5">
-                Enforce a minimum character count for all passwords in this organization.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <select
-                value={minPasswordLength}
-                onChange={e => setMinPasswordLength(parseInt(e.target.value))}
-                className="rounded-[11px] bg-transparent border border-border-primary px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 appearance-none"
-              >
-                <option value={6}>6 characters</option>
-                <option value={8}>8 characters</option>
-                <option value={10}>10 characters</option>
-                <option value={12}>12 characters</option>
-                <option value={16}>16 characters</option>
-                <option value={20}>20 characters</option>
-              </select>
-              <button
-                onClick={() => updatePasswordPolicyMut.mutate(minPasswordLength)}
-                disabled={updatePasswordPolicyMut.isPending}
-                className="rounded-full bg-accent-blue text-white font-semibold px-4 py-2 text-xs hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {updatePasswordPolicyMut.isPending ? 'Saving…' : 'Save'}
-              </button>
-              {passwordPolicySaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Password */}
-      <section className="space-y-4">
-        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Password</p>
-        <div className="border border-border-primary rounded-[18px] p-5">
-          <form onSubmit={handleChangePassword} className="space-y-4">
-            <div className="space-y-1.5">
-              <label htmlFor="current-password" className="text-xs text-text-tertiary">Current password</label>
-              <input
-                id="current-password"
-                type="password"
-                value={currentPassword}
-                onChange={e => setCurrentPassword(e.target.value)}
-                autoComplete="current-password"
-                className={inputCls}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="new-password" className="text-xs text-text-tertiary">New password</label>
-              <input
-                id="new-password"
-                type="password"
-                value={newPassword}
-                onChange={e => setNewPassword(e.target.value)}
-                autoComplete="new-password"
-                className={inputCls}
-              />
-              <p className="text-[11px] text-text-quaternary mt-1">At least 8 characters</p>
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="confirm-password" className="text-xs text-text-tertiary">Confirm new password</label>
-              <input
-                id="confirm-password"
-                type="password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                autoComplete="new-password"
-                className={inputCls}
-              />
-            </div>
-            {passwordError && <p className="text-[10px] text-status-error">{passwordError}</p>}
-            <div className="flex items-center gap-3">
-              <button
-                type="submit"
-                disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
-                className="px-4 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-30 transition-colors"
-              >
-                {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-
-      {/* My API Key */}
-      <section className="space-y-4">
-        <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">My API Key</p>
-        <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-          <div className="flex items-center gap-3 bg-[#272729] rounded-[11px] px-3 py-2">
-            <code className="flex-1 text-xs text-text-tertiary truncate">
-              Session managed via secure HttpOnly cookie
-            </code>
-          </div>
-
-          {newKey ? (
-            <div className="space-y-3">
-              <p className="text-xs text-text-tertiary">New key — copy it now, it won't be shown again.</p>
-              <div className="flex items-center gap-2 bg-[#272729] rounded-[11px] px-3 py-2">
-                <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(newKey); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-                  className="text-xs text-text-tertiary hover:text-text-secondary transition-colors shrink-0"
-                >
-                  {copied ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
-              <button
-                onClick={() => setNewKey(null)}
-                className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
-              >
-                Done
-              </button>
-            </div>
-          ) : rotateConfirm ? (
-            <div className="space-y-3">
-              <p className="text-xs text-text-secondary">Your current key will stop working immediately. Continue?</p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setRotateConfirm(false)}
-                  className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-tertiary hover:text-text-secondary transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => rotateMut.mutate()}
-                  disabled={rotateMut.isPending}
-                  className="flex-1 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-semibold disabled:opacity-40 transition-colors"
-                >
-                  {rotateMut.isPending ? 'Rotating…' : 'Rotate'}
-                </button>
-              </div>
-            </div>
-          ) : (
+      <div className="grid grid-cols-[190px_minmax(0,1fr)] gap-6 items-start">
+        {/* Section nav */}
+        <nav className="sticky top-6 flex flex-col gap-0.5">
+          {NAV_ITEMS.map(item => (
             <button
-              onClick={() => setRotateConfirm(true)}
-              className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+              key={item.id}
+              type="button"
+              onClick={() => setActiveSection(item.id)}
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-2 rounded-[9px] text-[13px] text-left transition-colors border-l-2',
+                activeSection === item.id
+                  ? 'font-bold text-text-primary bg-white/[0.06] border-accent-blue'
+                  : 'font-medium text-text-tertiary border-transparent hover:text-text-primary',
+              )}
             >
-              Rotate key
+              {item.label}
             </button>
-          )}
-        </div>
-      </section>
+          ))}
+        </nav>
 
-      {/* Agent Events */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">
-            Agent Events
-            {eventSaved && <span className="ml-2 text-status-success text-[10px]">Saved</span>}
-          </p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <p className="text-xs text-text-tertiary">
-              Control which GitHub events the AI agent reacts to automatically.
-            </p>
-            <div className="divide-y divide-border-secondary">
-              {([
-                { key: 'resolve_issues' as const, label: 'Resolve Issues', description: 'Agent responds to newly opened GitHub issues' },
-                { key: 'review_prs' as const, label: 'Review Pull Requests', description: 'Agent auto-reviews PRs when opened or updated' },
-                { key: 'respond_comments' as const, label: 'Respond to Comments', description: 'Agent replies to issue and PR review comments' },
-                { key: 'auto_index' as const, label: 'Auto-index on Push', description: 'Trigger code indexing jobs on every push' },
-                { key: 'scanner' as const, label: 'Proactive Scanner', description: 'Periodically scan for issues without being triggered' },
-              ] as { key: keyof AgentEventSettings; label: string; description: string }[]).map(({ key, label, description }) => (
-                <div key={key} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+        {/* Panels */}
+        <div className="flex flex-col gap-4 min-w-0">
+
+          {/* ── My account ────────────────────────────────────────────────── */}
+          {activeSection === 'account' && (
+            <>
+              {/* My profile */}
+              <div className={CARD}>
+                <div className="flex items-center gap-3 mb-4.5">
+                  <div className="w-11 h-11 rounded-full bg-accent-blue/20 flex items-center justify-center text-accent-blue text-base font-extrabold shrink-0">
+                    {(session?.user?.name || session?.user?.email || '?').charAt(0).toUpperCase()}
+                  </div>
                   <div>
-                    <p className="text-xs text-text-secondary font-semibold">{label}</p>
-                    <p className="text-xs text-text-tertiary mt-0.5">{description}</p>
+                    <h2 className="text-[16px] font-bold text-text-primary">My profile</h2>
+                    <p className="text-[12.5px] text-text-tertiary">{session?.user?.email}</p>
                   </div>
-                  <Switch
-                    checked={eventSettings[key]}
-                    onCheckedChange={() => handleEventToggle(key)}
-                    size="sm"
-                  />
                 </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Memory Templates */}
-      <MemoryTemplatesSection />
-
-      {/* Webhooks */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Webhooks</p>
-          <div className="border border-border-primary rounded-[18px] p-5 space-y-4">
-            <p className="text-xs text-text-tertiary">Manage GitHub webhook endpoints for this organization.</p>
-
-            {/* Loading skeletons */}
-            {webhooksLoading && (
-              <div className="space-y-3">
-                <div className="animate-pulse h-16 bg-[#272729] rounded-[18px]" />
-                <div className="animate-pulse h-16 bg-[#272729] rounded-[18px]" />
-              </div>
-            )}
-
-            {/* Webhook cards */}
-            {!webhooksLoading && webhooks.length > 0 && (
-              <div className="space-y-3">
-                {webhooks.map(wh => (
-                  <div key={wh.id} className="border border-border-primary rounded-[18px] p-4 space-y-3">
-                    {/* Header row: name + switch */}
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs font-semibold text-text-primary truncate">{wh.name}</p>
-                      <Switch
-                        checked={wh.active}
-                        onCheckedChange={(checked) =>
-                          updateWebhookMut.mutate({ id: wh.id, data: { active: checked } })
-                        }
-                        size="sm"
-                      />
-                    </div>
-                    {/* URL row */}
-                    <p className="text-xs font-mono text-text-tertiary truncate">{wh.target_url}</p>
-                    {/* Events chips */}
-                    <div className="flex flex-wrap gap-1">
-                      {wh.events.map(ev => (
-                        <span
-                          key={ev}
-                          className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-[#272729] border border-border-secondary text-text-tertiary"
-                        >
-                          {ev}
-                        </span>
-                      ))}
-                    </div>
-                    {/* Footer row: date + actions */}
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[11px] text-text-quaternary">
-                        Created {new Date(wh.created_at).toLocaleDateString()}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        {testStates[wh.id]?.result && (
-                          testStates[wh.id].result!.success
-                            ? <span className="text-[10px] text-status-success">✓ {testStates[wh.id].result!.status_code}</span>
-                            : <span className="text-[10px] text-status-error">✗ {testStates[wh.id].result!.error}</span>
-                        )}
-                        <button
-                          onClick={() => handleTestWebhook(wh.id)}
-                          disabled={!!testStates[wh.id]?.testing}
-                          className="border border-border-primary rounded-[8px] px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40"
-                        >
-                          {testStates[wh.id]?.testing ? 'Testing…' : 'Test'}
-                        </button>
-                        <button
-                          onClick={() => handleDeleteWebhook(wh.id, wh.name)}
-                          className="text-xs border border-status-error/20 rounded-full px-3 py-1 text-status-error/60 hover:text-status-error transition-colors"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                    {/* Deliveries collapsible */}
-                    <div>
-                      <button
-                        onClick={() => setDeliveriesExpanded(s => ({ ...s, [wh.id]: !s[wh.id] }))}
-                        className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors"
-                      >
-                        {deliveriesExpanded[wh.id]
-                          ? <ChevronUp className="w-3 h-3" />
-                          : <ChevronDown className="w-3 h-3" />
-                        }
-                        Deliveries (last 20)
-                      </button>
-                      {deliveriesExpanded[wh.id] && (
-                        <WebhookDeliveryPanel webhookId={wh.id} client={client} />
-                      )}
-                    </div>
+                <div className="flex items-end gap-2.5">
+                  <div className="flex-1 max-w-[380px] flex flex-col gap-1.5">
+                    <label htmlFor="display-name" className="text-[12.5px] font-semibold text-text-secondary">Display name</label>
+                    <input
+                      id="display-name"
+                      value={displayName}
+                      onChange={e => setDisplayName(e.target.value)}
+                      className={inputCls}
+                    />
                   </div>
-                ))}
+                  <button
+                    onClick={() => updateProfileMut.mutate({ name: displayName })}
+                    disabled={updateProfileMut.isPending}
+                    className={PRIMARY_BTN}
+                  >
+                    {updateProfileMut.isPending ? 'Saving…' : profileSaved ? 'Saved!' : 'Save'}
+                  </button>
+                </div>
+                {updateProfileMut.isError && (
+                  <p className="text-[10px] text-status-error mt-2">Profile update not yet supported by backend</p>
+                )}
               </div>
-            )}
 
-            {/* Empty state */}
-            {!webhooksLoading && webhooks.length === 0 && !showAddWebhook && (
-              <div className="text-center py-6 space-y-2">
-                <p className="text-xs font-semibold text-text-primary">No webhooks configured</p>
-                <p className="text-xs text-text-tertiary">Add a webhook to receive GitHub events.</p>
-              </div>
-            )}
-
-            {/* Add Webhook form */}
-            {showAddWebhook && (
-              <form onSubmit={handleAddWebhook} className="space-y-3">
-                <div className="space-y-1.5">
-                  <label htmlFor="webhook-name" className="text-xs text-text-tertiary">Name</label>
-                  <input
-                    id="webhook-name"
-                    value={webhookName}
-                    onChange={e => setWebhookName(e.target.value)}
-                    placeholder="e.g. pr-reviewer"
-                    className={inputCls}
-                  />
+              {/* Password */}
+              <div className={CARD}>
+                <div className="mb-4">
+                  <h2 className="text-[16px] font-bold text-text-primary">Password</h2>
+                  <p className="text-[12.5px] text-text-tertiary mt-0.5">Minimum {minPasswordLength} characters per organization policy.</p>
                 </div>
-                <div className="space-y-1.5">
-                  <label htmlFor="webhook-url" className="text-xs text-text-tertiary">Target URL</label>
-                  <input
-                    id="webhook-url"
-                    type="url"
-                    value={webhookUrl}
-                    onChange={e => setWebhookUrl(e.target.value)}
-                    placeholder="https://your-server.com/webhook"
-                    className={inputCls}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label htmlFor="webhook-secret" className="text-xs text-text-tertiary">Secret (optional)</label>
-                  <input
-                    id="webhook-secret"
-                    type="password"
-                    value={webhookSecret}
-                    onChange={e => setWebhookSecret(e.target.value)}
-                    placeholder="Webhook signing secret"
-                    className={inputCls}
-                    autoComplete="off"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs text-text-tertiary">Events</label>
-                  <div className="space-y-1.5">
-                    <label className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                <form onSubmit={handleChangePassword} className="space-y-4">
+                  <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                    <div className="space-y-1.5">
+                      <label htmlFor="current-password" className="text-[12.5px] font-semibold text-text-secondary">Current password</label>
                       <input
-                        type="checkbox"
-                        checked={webhookEvents.includes('*')}
-                        onChange={e => handleWebhookEventsChange('*', e.target.checked)}
-                        className="accent-accent-blue"
+                        id="current-password"
+                        type="password"
+                        value={currentPassword}
+                        onChange={e => setCurrentPassword(e.target.value)}
+                        autoComplete="current-password"
+                        placeholder="••••••••"
+                        className={inputCls}
                       />
-                      All events (*)
-                    </label>
-                    {WEBHOOK_EVENTS.map(ev => (
-                      <label key={ev} className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="new-password" className="text-[12.5px] font-semibold text-text-secondary">New password</label>
+                      <input
+                        id="new-password"
+                        type="password"
+                        value={newPassword}
+                        onChange={e => setNewPassword(e.target.value)}
+                        autoComplete="new-password"
+                        placeholder="••••••••"
+                        className={inputCls}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="confirm-password" className="text-[12.5px] font-semibold text-text-secondary">Confirm new password</label>
+                      <input
+                        id="confirm-password"
+                        type="password"
+                        value={confirmPassword}
+                        onChange={e => setConfirmPassword(e.target.value)}
+                        autoComplete="new-password"
+                        placeholder="••••••••"
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+                  {passwordError && <p className="text-[10px] text-status-error">{passwordError}</p>}
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="submit"
+                      disabled={changePasswordMut.isPending || !currentPassword || !newPassword || !confirmPassword}
+                      className={NEUTRAL_BTN}
+                    >
+                      {changePasswordMut.isPending ? 'Saving…' : passwordSaved ? 'Saved!' : 'Update password'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* My API key */}
+              <div className={CARD}>
+                <div className="mb-3.5">
+                  <h2 className="text-[16px] font-bold text-text-primary">My API key</h2>
+                  <p className="text-[12.5px] text-text-tertiary mt-0.5">
+                    Your session is managed via a secure HttpOnly cookie. The API key is only used for agent/programmatic access.
+                  </p>
+                </div>
+                {/*
+                  The mockup shows a persistently masked key (nxm_••••4f2a) with a copy
+                  button. There is no backend endpoint to fetch/re-mask an existing key —
+                  rotateKey() only returns a brand-new key once, at rotation time — so we
+                  don't fabricate a masked value here and keep the reveal-once flow below.
+                */}
+                {newKey ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-text-tertiary">New key — copy it now, it won't be shown again.</p>
+                    <div className="flex items-center gap-2 rounded-[11px] px-3.5 py-2.5 border border-white/[0.07] bg-[#0a0c11] font-mono">
+                      <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(newKey); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                        className="text-xs text-text-tertiary hover:text-text-secondary transition-colors shrink-0"
+                      >
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setNewKey(null)}
+                      className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                ) : rotateConfirm ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-text-secondary">Your current key will stop working immediately. Continue?</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setRotateConfirm(false)}
+                        className={`${NEUTRAL_BTN} flex-1`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => rotateMut.mutate()}
+                        disabled={rotateMut.isPending}
+                        className={`${PRIMARY_BTN} flex-1`}
+                      >
+                        {rotateMut.isPending ? 'Rotating…' : 'Rotate'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setRotateConfirm(true)}
+                    className={NEUTRAL_BTN_SM}
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Rotate key
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── Organization ──────────────────────────────────────────────── */}
+          {activeSection === 'org' && (
+            <>
+              <div className={CARD}>
+                <h2 className="text-[16px] font-bold text-text-primary mb-4">Organization</h2>
+                <div className="grid gap-3.5 mb-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                  <div className="space-y-1.5">
+                    <label htmlFor="org-name" className="text-[12.5px] font-semibold text-text-secondary">Name</label>
+                    <input
+                      id="org-name"
+                      value={orgName}
+                      onChange={e => setOrgName(e.target.value)}
+                      readOnly={!isAdmin}
+                      className={`${inputCls} ${!isAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="org-slug" className="text-[12.5px] font-semibold text-text-secondary">Slug</label>
+                    <input id="org-slug" value={org?.slug ?? ''} readOnly className={`${inputCls} opacity-50 cursor-not-allowed font-mono`} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="org-created" className="text-[12.5px] font-semibold text-text-secondary">Created</label>
+                    <input
+                      id="org-created"
+                      value={org ? new Date(org.created_at).toLocaleDateString() : ''}
+                      readOnly
+                      className={`${inputCls} opacity-50 cursor-not-allowed`}
+                    />
+                  </div>
+                </div>
+                {isAdmin && (
+                  <div className="flex items-center gap-3 mb-4">
+                    <button
+                      onClick={() => updateOrgMut.mutate(orgName)}
+                      disabled={updateOrgMut.isPending || orgName === org?.name}
+                      className={PRIMARY_BTN}
+                    >
+                      {updateOrgMut.isPending ? 'Saving…' : orgSaved ? 'Saved!' : 'Save'}
+                    </button>
+                    {updateOrgMut.isError && (
+                      <p className="text-[10px] text-status-error">Failed to save.</p>
+                    )}
+                  </div>
+                )}
+                {isAdmin && (
+                  <div className="pt-4 border-t border-white/[0.06] space-y-1.5">
+                    <label className="text-[12.5px] font-semibold text-text-secondary">Logo URL</label>
+                    <div className="flex items-end gap-2.5">
+                      <div className="flex-1 max-w-[440px]">
                         <input
-                          type="checkbox"
-                          checked={webhookEvents.includes(ev)}
-                          onChange={e => handleWebhookEventsChange(ev, e.target.checked)}
-                          disabled={webhookEvents.includes('*')}
-                          className="accent-accent-blue"
+                          value={logoUrl}
+                          onChange={e => setLogoUrl(e.target.value)}
+                          placeholder="https://example.com/logo.png"
+                          className={inputCls}
                         />
-                        {ev}
-                      </label>
+                      </div>
+                      <button
+                        onClick={() => updateLogoMut.mutate(logoUrl.trim() || null)}
+                        disabled={updateLogoMut.isPending}
+                        className={PRIMARY_BTN}
+                      >
+                        {updateLogoMut.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                      {logoSaved && <span className="text-[10px] text-status-success">Saved</span>}
+                    </div>
+                    {logoUrl && (
+                      <img
+                        src={logoUrl}
+                        className="w-8 h-8 rounded-full object-cover border border-white/[0.09] mt-2"
+                        alt="org logo preview"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {isAdmin && (
+                <div className={CARD}>
+                  <div className="mb-3.5">
+                    <h2 className="text-[16px] font-bold text-text-primary">Announcement banner</h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5">
+                      Shown above the admin UI for all users. Leave blank to hide the banner.
+                    </p>
+                  </div>
+
+                  {announcementText.trim() && (
+                    <div className={cn(
+                      'w-full px-4 py-2.5 mb-3.5 rounded-[10px] text-xs flex items-center gap-2',
+                      announcementType === 'error'
+                        ? 'bg-status-error/10 text-status-error border border-status-error/20'
+                        : announcementType === 'warning'
+                        ? 'bg-status-warning/10 text-status-warning border border-status-warning/20'
+                        : 'bg-accent-blue/10 text-accent-blue border border-accent-blue/20',
+                    )}>
+                      <AlertCircle className="w-3 h-3 shrink-0" />
+                      <span>{announcementText}</span>
+                    </div>
+                  )}
+
+                  <textarea
+                    value={announcementText}
+                    onChange={e => setAnnouncementText(e.target.value)}
+                    placeholder="e.g. Scheduled maintenance on Saturday 2 AM UTC. Expect ~30 min downtime."
+                    className="w-full min-h-[72px] px-3.5 py-3 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] leading-[1.55] placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors"
+                  />
+
+                  <div className="flex items-center gap-2.5 mt-3.5 flex-wrap">
+                    <div className="inline-flex items-center p-[3px] rounded-[10px] border border-white/[0.08] bg-[#0d0f14]/70">
+                      {(['info', 'warning', 'error'] as const).map(level => {
+                        const dotColor = level === 'error' ? '#f87171' : level === 'warning' ? '#facc15' : '#7aa2ff'
+                        const active = announcementType === level
+                        return (
+                          <button
+                            key={level}
+                            type="button"
+                            onClick={() => setAnnouncementType(level)}
+                            className={cn(
+                              'flex items-center gap-1.5 px-3.5 py-1.5 rounded-[8px] text-[12px] font-semibold transition-colors',
+                              active ? 'bg-white/[0.07] text-text-primary' : 'text-text-tertiary hover:text-text-secondary',
+                            )}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
+                            {level === 'error' ? 'Critical' : level.charAt(0).toUpperCase() + level.slice(1)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div className="flex-1" />
+                    <button
+                      onClick={() => updateAnnouncementMut.mutate({ text: announcementText.trim(), type: announcementType })}
+                      disabled={updateAnnouncementMut.isPending}
+                      className={PRIMARY_BTN}
+                    >
+                      {updateAnnouncementMut.isPending ? 'Saving…' : 'Save'}
+                    </button>
+                    {announcementText.trim() && (
+                      <button
+                        onClick={() => {
+                          setAnnouncementText('')
+                          updateAnnouncementMut.mutate({ text: '', type: announcementType })
+                        }}
+                        disabled={updateAnnouncementMut.isPending}
+                        className="text-xs text-text-quaternary hover:text-status-error transition-colors disabled:opacity-50"
+                      >
+                        Clear
+                      </button>
+                    )}
+                    {announcementSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
+                  </div>
+                </div>
+              )}
+
+              {isAdmin && (
+                <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+                  <div className={CARD}>
+                    <h2 className="text-[15px] font-bold text-text-primary">Data retention</h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5 mb-3.5 leading-[1.5]">
+                      Automatically delete memories older than the selected period. "Never" keeps all memories.
+                    </p>
+                    <div className="flex items-center gap-2.5">
+                      <select
+                        value={retentionDays ?? ''}
+                        onChange={(e) => setRetentionDays(e.target.value ? parseInt(e.target.value) : null)}
+                        className={`${selectCls} flex-1`}
+                      >
+                        <option value="">Never (keep all)</option>
+                        <option value="30">30 days</option>
+                        <option value="60">60 days</option>
+                        <option value="90">90 days</option>
+                        <option value="180">180 days</option>
+                        <option value="365">1 year</option>
+                      </select>
+                      <button
+                        onClick={() => updateRetentionMut.mutate(retentionDays)}
+                        disabled={updateRetentionMut.isPending}
+                        className={PRIMARY_BTN}
+                      >
+                        {updateRetentionMut.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                    {updateRetentionMut.isSuccess && (
+                      <span className="text-[10px] text-status-success mt-1.5 block">Saved</span>
+                    )}
+                    {orgSettings?.retention_days && (
+                      <p className="text-xs text-text-quaternary mt-1.5">
+                        {retentionPreview ? `${retentionPreview.would_delete} memories would be deleted with current settings` : '…'}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className={CARD}>
+                    <h2 className="text-[15px] font-bold text-text-primary">Password policy</h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5 mb-3.5 leading-[1.5]">
+                      Minimum character length for all passwords in this organization.
+                    </p>
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex-1 flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={6}
+                          max={24}
+                          value={minPasswordLength}
+                          onChange={e => setMinPasswordLength(Number(e.target.value))}
+                          className="flex-1 accent-accent-blue cursor-pointer"
+                        />
+                        <span className="text-sm font-extrabold text-accent-blue tabular-nums w-16 shrink-0">{minPasswordLength} chars</span>
+                      </div>
+                      <button
+                        onClick={() => updatePasswordPolicyMut.mutate(minPasswordLength)}
+                        disabled={updatePasswordPolicyMut.isPending}
+                        className={PRIMARY_BTN}
+                      >
+                        {updatePasswordPolicyMut.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                    {passwordPolicySaved && <span className="text-[10px] text-status-success mt-1.5 block">Saved ✓</span>}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Agents ────────────────────────────────────────────────────── */}
+          {activeSection === 'agents' && (
+            <>
+              {isAdmin && (
+                <div className={CARD}>
+                  <div className="mb-3.5">
+                    <h2 className="text-[16px] font-bold text-text-primary">Agent instructions</h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5">
+                      System-level instructions added to every agent's context for this organization.
+                      Use this to set team conventions, coding standards, or custom behavior.
+                    </p>
+                  </div>
+                  <textarea
+                    value={customInstructions}
+                    onChange={e => setCustomInstructions(e.target.value)}
+                    rows={5}
+                    placeholder="e.g. Always use TypeScript strict mode. Prefer functional components. Follow our naming conventions…"
+                    className="w-full min-h-[120px] px-3.5 py-3 rounded-[11px] border border-white/[0.09] bg-white/[0.03] text-text-primary text-[13px] leading-[1.6] font-mono placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 resize-y transition-colors"
+                  />
+                  <div className="flex items-center gap-3 mt-3.5">
+                    <button
+                      onClick={() => updateInstructionsMut.mutate(customInstructions.trim() || null)}
+                      disabled={updateInstructionsMut.isPending}
+                      className={PRIMARY_BTN}
+                    >
+                      {updateInstructionsMut.isPending ? 'Saving…' : 'Save instructions'}
+                    </button>
+                    {instructionsSaved && <span className="text-[10px] text-status-success">Saved ✓</span>}
+                  </div>
+                </div>
+              )}
+
+              {isAdmin && (
+                <div className={CARD}>
+                  <div className="mb-2.5">
+                    <h2 className="text-[16px] font-bold text-text-primary">
+                      Agent events
+                      {eventSaved && <span className="ml-2 text-status-success text-[10px] font-normal align-middle">Saved</span>}
+                    </h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5">
+                      Control which GitHub events the agent reacts to automatically.
+                    </p>
+                  </div>
+                  <div className="divide-y divide-white/[0.04]">
+                    {([
+                      { key: 'resolve_issues' as const, label: 'Resolve issues', description: 'Agent responds to newly opened GitHub issues.' },
+                      { key: 'review_prs' as const, label: 'Review pull requests', description: 'Auto-review of PRs when opened or updated.' },
+                      { key: 'respond_comments' as const, label: 'Respond to comments', description: 'Agent replies to issue and PR review comments.' },
+                      { key: 'auto_index' as const, label: 'Auto-index on push', description: 'Trigger code indexing jobs on every push.' },
+                      { key: 'scanner' as const, label: 'Proactive scanner', description: 'Periodically scans for issues without being invoked.' },
+                    ] as { key: keyof AgentEventSettings; label: string; description: string }[]).map(({ key, label, description }) => {
+                      const { Icon, color, bg } = EVENT_ICONS[key]
+                      return (
+                        <div key={key} className="flex items-center gap-3.5 py-3.5 first:pt-0 last:pb-0">
+                          <div className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: bg }}>
+                            <Icon className="w-4 h-4" style={{ color }} strokeWidth={1.7} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[13.5px] font-bold text-text-primary">{label}</p>
+                            <p className="text-xs text-text-tertiary mt-0.5">{description}</p>
+                          </div>
+                          <Switch
+                            checked={eventSettings[key]}
+                            onCheckedChange={() => handleEventToggle(key)}
+                            size="sm"
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <MemoryTemplatesSection />
+            </>
+          )}
+
+          {/* ── Integrations & data ──────────────────────────────────────── */}
+          {activeSection === 'integrations' && isAdmin && (
+            <>
+              <div className={CARD}>
+                <div className="flex items-center justify-between gap-3 mb-3.5">
+                  <div>
+                    <h2 className="text-[16px] font-bold text-text-primary">Webhooks</h2>
+                    <p className="text-[12.5px] text-text-tertiary mt-0.5">GitHub endpoints for this organization.</p>
+                  </div>
+                  {!showAddWebhook && !webhooksLoading && (
+                    <button onClick={() => setShowAddWebhook(true)} className={NEUTRAL_BTN_SM}>
+                      <Plus className="w-3 h-3" />
+                      Add webhook
+                    </button>
+                  )}
+                </div>
+
+                {webhooksLoading && (
+                  <div className="space-y-3">
+                    <div className="animate-pulse h-16 bg-white/[0.06] rounded-[14px]" />
+                    <div className="animate-pulse h-16 bg-white/[0.06] rounded-[14px]" />
+                  </div>
+                )}
+
+                {!webhooksLoading && webhooks.length > 0 && (
+                  <div className="space-y-3">
+                    {webhooks.map(wh => (
+                      <div key={wh.id} className="border border-white/[0.07] rounded-[14px] p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold text-text-primary truncate">{wh.name}</p>
+                          <Switch
+                            checked={wh.active}
+                            onCheckedChange={(checked) =>
+                              updateWebhookMut.mutate({ id: wh.id, data: { active: checked } })
+                            }
+                            size="sm"
+                          />
+                        </div>
+                        <p className="text-xs font-mono text-text-tertiary truncate">{wh.target_url}</p>
+                        <div className="flex flex-wrap gap-1">
+                          {wh.events.map(ev => (
+                            <span
+                              key={ev}
+                              className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.06] border border-white/[0.07] text-text-tertiary"
+                            >
+                              {ev}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-[11px] text-text-quaternary">
+                            Created {new Date(wh.created_at).toLocaleDateString()}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {testStates[wh.id]?.result && (
+                              testStates[wh.id].result!.success
+                                ? <span className="text-[10px] text-status-success">✓ {testStates[wh.id].result!.status_code}</span>
+                                : <span className="text-[10px] text-status-error">✗ {testStates[wh.id].result!.error}</span>
+                            )}
+                            <button
+                              onClick={() => handleTestWebhook(wh.id)}
+                              disabled={!!testStates[wh.id]?.testing}
+                              className="border border-white/[0.09] rounded-[8px] px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40"
+                            >
+                              {testStates[wh.id]?.testing ? 'Testing…' : 'Test'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteWebhook(wh.id, wh.name)}
+                              className="text-xs border border-status-error/20 rounded-full px-3 py-1 text-status-error/60 hover:text-status-error transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <button
+                            onClick={() => setDeliveriesExpanded(s => ({ ...s, [wh.id]: !s[wh.id] }))}
+                            className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors"
+                          >
+                            {deliveriesExpanded[wh.id]
+                              ? <ChevronUp className="w-3 h-3" />
+                              : <ChevronDown className="w-3 h-3" />
+                            }
+                            Deliveries (last 20)
+                          </button>
+                          {deliveriesExpanded[wh.id] && (
+                            <WebhookDeliveryPanel webhookId={wh.id} client={client} />
+                          )}
+                        </div>
+                      </div>
                     ))}
                   </div>
-                </div>
-                {webhookError && <p className="text-[10px] text-status-error">{webhookError}</p>}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setShowAddWebhook(false); setWebhookError('') }}
-                    className="rounded-full border border-border-primary px-4 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
-                  >
-                    Cancel
+                )}
+
+                {!webhooksLoading && webhooks.length === 0 && !showAddWebhook && (
+                  <div className="flex flex-col items-center gap-1.5 py-6 px-6 rounded-[12px] border-[1.5px] border-dashed border-white/[0.1]">
+                    <p className="text-[13.5px] font-bold text-text-secondary">No webhooks configured</p>
+                    <p className="text-xs text-text-quaternary">Add a webhook to receive GitHub events.</p>
+                  </div>
+                )}
+
+                {showAddWebhook && (
+                  <form onSubmit={handleAddWebhook} className="space-y-3 mt-3.5">
+                    <div className="space-y-1.5">
+                      <label htmlFor="webhook-name" className="text-xs text-text-tertiary">Name</label>
+                      <input
+                        id="webhook-name"
+                        value={webhookName}
+                        onChange={e => setWebhookName(e.target.value)}
+                        placeholder="e.g. pr-reviewer"
+                        className={inputCls}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="webhook-url" className="text-xs text-text-tertiary">Target URL</label>
+                      <input
+                        id="webhook-url"
+                        type="url"
+                        value={webhookUrl}
+                        onChange={e => setWebhookUrl(e.target.value)}
+                        placeholder="https://your-server.com/webhook"
+                        className={inputCls}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="webhook-secret" className="text-xs text-text-tertiary">Secret (optional)</label>
+                      <input
+                        id="webhook-secret"
+                        type="password"
+                        value={webhookSecret}
+                        onChange={e => setWebhookSecret(e.target.value)}
+                        placeholder="Webhook signing secret"
+                        className={inputCls}
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-text-tertiary">Events</label>
+                      <div className="space-y-1.5">
+                        <label className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={webhookEvents.includes('*')}
+                            onChange={e => handleWebhookEventsChange('*', e.target.checked)}
+                            className="accent-accent-blue"
+                          />
+                          All events (*)
+                        </label>
+                        {WEBHOOK_EVENTS.map(ev => (
+                          <label key={ev} className="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={webhookEvents.includes(ev)}
+                              onChange={e => handleWebhookEventsChange(ev, e.target.checked)}
+                              disabled={webhookEvents.includes('*')}
+                              className="accent-accent-blue"
+                            />
+                            {ev}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    {webhookError && <p className="text-[10px] text-status-error">{webhookError}</p>}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setShowAddWebhook(false); setWebhookError('') }}
+                        className={NEUTRAL_BTN}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={createWebhookMut.isPending}
+                        className={PRIMARY_BTN}
+                      >
+                        {createWebhookMut.isPending ? 'Saving…' : 'Save webhook'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              <div className={CARD}>
+                <h2 className="text-[16px] font-bold text-text-primary mb-1">Org data export</h2>
+                <p className="text-[12.5px] text-text-tertiary mb-4">
+                  Download your organization's data as JSON for backup or migration.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={handleExportMemories} disabled={exportingMemories} className={NEUTRAL_BTN_SM}>
+                    <Download className="w-3 h-3" />
+                    {exportingMemories ? 'Exporting…' : 'Export memories'}
+                  </button>
+                  <button onClick={handleExportConventions} disabled={exportingConventions} className={NEUTRAL_BTN_SM}>
+                    <Download className="w-3 h-3" />
+                    {exportingConventions ? 'Exporting…' : 'Export conventions'}
                   </button>
                   <button
-                    type="submit"
-                    disabled={createWebhookMut.isPending}
-                    className="rounded-full bg-accent-blue text-white px-4 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+                    onClick={handleExportAllData}
+                    disabled={exportingAll}
+                    className="h-9 px-4 rounded-[10px] bg-accent-blue hover:bg-accent-blue-hover text-white text-xs font-bold transition-colors flex items-center gap-1.5 disabled:opacity-40"
                   >
-                    {createWebhookMut.isPending ? 'Saving…' : 'Save webhook'}
+                    <Download className="w-3 h-3" />
+                    {exportingAll ? 'Preparing…' : 'Export all data'}
                   </button>
                 </div>
-              </form>
-            )}
-
-            {/* Add Webhook CTA */}
-            {!showAddWebhook && !webhooksLoading && (
-              <button
-                onClick={() => setShowAddWebhook(true)}
-                className="text-xs border border-border-primary rounded-full px-3 py-1.5 text-text-tertiary hover:text-text-secondary hover:bg-[#272729] transition-colors"
-              >
-                + Add Webhook
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Org Data Export */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Org Data Export</p>
-          <div className="rounded-[18px] border border-border-primary bg-[#272729] p-5">
-            <h2 className="text-xs font-semibold text-text-primary mb-1">Org Data Export</h2>
-            <p className="text-xs text-text-quaternary mb-4">
-              Download all your organization's data as JSON for backup or migration.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={handleExportMemories}
-                disabled={exportingMemories}
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <Download className="w-3 h-3" />
-                {exportingMemories ? 'Exporting…' : 'Export Memories'}
-              </button>
-              <button
-                onClick={handleExportConventions}
-                disabled={exportingConventions}
-                className="border border-border-primary rounded-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <Download className="w-3 h-3" />
-                {exportingConventions ? 'Exporting…' : 'Export Conventions'}
-              </button>
-              <button
-                onClick={handleExportAllData}
-                disabled={exportingAll}
-                className="bg-accent-blue/10 text-accent-blue border border-accent-blue/30 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 disabled:opacity-40 hover:bg-accent-blue/20"
-              >
-                <Download className="w-3 h-3" />
-                {exportingAll ? 'Preparing…' : 'Export All Data'}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Danger zone */}
-      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
-        <section className="space-y-4">
-          <p className="text-text-tertiary text-[12px] tracking-[-0.12px]">Danger Zone</p>
-          <div className="border border-status-error/30 bg-status-error/[0.04] rounded-[18px] p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-text-secondary font-semibold">Export all data</p>
-                <p className="text-xs text-text-tertiary mt-0.5">Download all memories, users, and audit logs as JSON.</p>
               </div>
-              <button
-                onClick={handleExportAll}
-                className="text-xs text-text-tertiary hover:text-text-secondary border border-border-primary rounded-full px-3 py-1.5 hover:bg-[#272729] transition-colors"
-              >
-                Export
-              </button>
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-text-secondary font-semibold">Export org config</p>
-                <p className="text-xs text-text-tertiary mt-0.5">Download org settings, webhooks, and project list as JSON.</p>
+
+              <div className="rounded-[16px] border border-status-error/25 bg-gradient-to-br from-status-error/[0.05] via-status-error/[0.01] to-transparent backdrop-blur-[12px] p-[22px]">
+                <h2 className="text-[16px] font-bold text-status-error/90 mb-2">Danger zone</h2>
+                <div className="flex items-center justify-between gap-3 py-3.5 border-b border-status-error/10">
+                  <div className="min-w-0">
+                    <p className="text-[13.5px] font-bold text-text-primary">Export all data</p>
+                    <p className="text-xs text-text-tertiary mt-0.5">All memories, users, and audit logs as JSON.</p>
+                  </div>
+                  <button onClick={handleExportAll} className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors shrink-0">
+                    Export
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 py-3.5">
+                  <div className="min-w-0">
+                    <p className="text-[13.5px] font-bold text-text-primary">Org config</p>
+                    <p className="text-xs text-text-tertiary mt-0.5">Settings, webhooks, and project list as JSON.</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={handleImportConfig}
+                      className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors flex items-center gap-1.5"
+                    >
+                      <Upload className="w-3 h-3" /> Import
+                    </button>
+                    <button
+                      onClick={() => client.exportOrgConfig().then(blob => downloadBlob(blob, 'nexusmind-config.json'))}
+                      className="border border-white/[0.09] rounded-[9px] px-3.5 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:bg-white/[0.06] transition-colors flex items-center gap-1.5"
+                    >
+                      <Download className="w-3 h-3" /> Export
+                    </button>
+                  </div>
+                </div>
+                {importFlash && (
+                  <p className={`text-[10px] mt-1 ${importFlash.type === 'success' ? 'text-status-success' : importFlash.type === 'warning' ? 'text-status-warning' : 'text-status-error'}`}>
+                    {importFlash.type === 'success' ? '✓ ' : ''}{importFlash.message}
+                  </p>
+                )}
               </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleImportConfig}
-                  className="border border-border-primary rounded-full px-4 py-2 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
-                >
-                  <Upload className="w-3.5 h-3.5" /> Import config
-                </button>
-                <button
-                  onClick={() => client.exportOrgConfig().then(blob => downloadBlob(blob, 'nexusmind-config.json'))}
-                  className="border border-border-primary rounded-full px-4 py-2 text-xs text-text-secondary hover:text-text-primary flex items-center gap-2 transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" /> Export org config
-                </button>
-              </div>
-            </div>
-            {importFlash && (
-              <p className={`text-[10px] mt-1 ${importFlash.type === 'success' ? 'text-status-success' : importFlash.type === 'warning' ? 'text-status-warning' : 'text-status-error'}`}>
-                {importFlash.type === 'success' ? '✓ ' : ''}{importFlash.message}
-              </p>
-            )}
-          </div>
-        </section>
-      )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

@@ -69,32 +69,32 @@ function SkeletonRow() {
       {/* User cell */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="animate-pulse w-7 h-7 rounded-full bg-background-tertiary shrink-0" />
+          <div className="animate-pulse w-7 h-7 rounded-full bg-white/[0.04] shrink-0" />
           <div className="space-y-1.5">
-            <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-24" />
-            <div className="animate-pulse h-3 bg-background-tertiary rounded-[8px] w-32" />
+            <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-24" />
+            <div className="animate-pulse h-3 bg-white/[0.04] rounded-[8px] w-32" />
           </div>
         </div>
       </td>
       {/* Label */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-28" />
+        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-28" />
       </td>
       {/* Last used */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-20" />
       </td>
       {/* Created */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-20" />
+        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-20" />
       </td>
       {/* Expires */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-3.5 bg-background-tertiary rounded-[8px] w-16" />
+        <div className="animate-pulse h-3.5 bg-white/[0.04] rounded-[8px] w-16" />
       </td>
       {/* Action */}
       <td className="px-4 py-3">
-        <div className="animate-pulse h-6 bg-background-tertiary rounded-[8px] w-14 ml-auto" />
+        <div className="animate-pulse h-6 bg-white/[0.04] rounded-[8px] w-14 ml-auto" />
       </td>
     </tr>
   )
@@ -177,7 +177,7 @@ function CreateKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-background-secondary">
+      <div className="w-full max-w-md rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">New API Key</h2>
@@ -299,7 +299,7 @@ function CreatedKeyModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[18px] border border-border-primary bg-background-secondary">
+      <div className="w-full max-w-md rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-primary">
           <h2 className="text-[15px] font-semibold text-text-primary">Key Created</h2>
@@ -446,7 +446,7 @@ export default function ApiKeys() {
         <div className="overflow-x-auto">
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="border-b border-border-primary bg-background-tertiary/40">
+              <tr className="border-b border-border-primary bg-white/[0.03]">
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">User</th>
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Label</th>
                 <th className="px-4 py-3 text-left text-[12px] font-medium text-text-tertiary uppercase tracking-wider">Last used</th>

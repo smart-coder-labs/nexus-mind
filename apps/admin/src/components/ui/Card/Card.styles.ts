@@ -10,22 +10,27 @@ export const cardBaseStyles = `
 
 export const cardVariantStyles: Record<CardVariant, string> = {
     elevated: `
-    bg-[#1d1d1f]
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
     shadow-md
     hover:shadow-lg
   `,
     glass: `
     glass
-    border border-border-secondary
+    border border-white/[0.07]
     shadow-sm
   `,
     outlined: `
-    bg-[#1d1d1f]
-    border border-border-primary
-    hover:border-border-primary
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
+    hover:border-white/[0.07]
   `,
     flat: `
-    bg-[#272729]
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
   `,
 };
 

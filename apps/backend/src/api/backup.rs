@@ -63,7 +63,7 @@ pub async fn list_backups_handler(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListBackupsParams>,
 ) -> Result<Json<Vec<BackupRow>>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
@@ -91,7 +91,7 @@ pub async fn get_backup_handler(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BackupDetail>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let backup = get_backup(&pool, &auth.org_id, id)
@@ -119,7 +119,7 @@ pub async fn create_backup_handler(
     Extension(auth): Extension<AuthContext>,
     State(store): State<SqliteStore>,
 ) -> Result<Json<BackupResult>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let sqlite = store.conn();
@@ -154,7 +154,7 @@ pub async fn restore_backup_handler(
     Query(params): Query<RestoreParams>,
     headers: HeaderMap,
 ) -> Result<Json<RestoreResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
 
@@ -243,7 +243,7 @@ pub async fn download_backup_handler(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BackupDownload>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let backup = get_backup(&pool, &auth.org_id, id)
@@ -258,4 +258,85 @@ pub async fn download_backup_handler(
         org_id: backup.org_id,
         tables,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        db::{connection::connect, migrations},
+        models::types::{Role, UserRole},
+    };
+    use axum::extract::{Path, Query, State};
+    use sqlx::postgres::PgPoolOptions;
+
+    fn auth(role: &str) -> AuthContext {
+        AuthContext {
+            org_id: "org".to_string(),
+            user_id: "user".to_string(),
+            role: if role == "admin" {
+                UserRole::Standard(Role::Admin)
+            } else {
+                UserRole::Custom(role.to_string())
+            },
+        }
+    }
+
+    fn store() -> SqliteStore {
+        let conn = connect(":memory:").unwrap();
+        migrations::run(&conn).unwrap();
+        SqliteStore::new(conn)
+    }
+
+    fn pool() -> PgPool {
+        PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/nexusmind")
+            .unwrap()
+    }
+
+    fn error<T>(result: Result<T, (StatusCode, Json<ApiError>)>) -> (StatusCode, Json<ApiError>) {
+        match result {
+            Err(error) => error,
+            Ok(_) => panic!("expected handler to return an error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn backup_endpoints_deny_admin_and_allow_super_user_past_role_gate() {
+        let backup_id = Uuid::new_v4();
+        let headers = HeaderMap::new();
+
+        let list_admin = error(list_backups_handler(
+            Extension(pool()), Extension(auth("admin")), Query(ListBackupsParams::default()),
+        ).await);
+        assert_eq!(list_admin.0, StatusCode::FORBIDDEN);
+        let list_super = error(list_backups_handler(
+            Extension(pool()), Extension(auth("super_user")), Query(ListBackupsParams::default()),
+        ).await);
+        assert_ne!(list_super.0, StatusCode::FORBIDDEN);
+
+        let get_admin = error(get_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id)).await);
+        assert_eq!(get_admin.0, StatusCode::FORBIDDEN);
+        let get_super = error(get_backup_handler(Extension(pool()), Extension(auth("super_user")), Path(backup_id)).await);
+        assert_ne!(get_super.0, StatusCode::FORBIDDEN);
+
+        let create_admin = error(create_backup_handler(Extension(pool()), Extension(auth("admin")), State(store())).await);
+        assert_eq!(create_admin.0, StatusCode::FORBIDDEN);
+        let create_super = error(create_backup_handler(Extension(pool()), Extension(auth("super_user")), State(store())).await);
+        assert_ne!(create_super.0, StatusCode::FORBIDDEN);
+
+        let restore_admin = error(restore_backup_handler(
+            Extension(pool()), Extension(auth("admin")), State(store()), Path(backup_id), Query(RestoreParams::default()), headers.clone(),
+        ).await);
+        assert_eq!(restore_admin.0, StatusCode::FORBIDDEN);
+        let restore_super = error(restore_backup_handler(
+            Extension(pool()), Extension(auth("super_user")), State(store()), Path(backup_id), Query(RestoreParams::default()), headers,
+        ).await);
+        assert_eq!(restore_super.0, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let download_admin = error(download_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id)).await);
+        assert_eq!(download_admin.0, StatusCode::FORBIDDEN);
+        let download_super = error(download_backup_handler(Extension(pool()), Extension(auth("super_user")), Path(backup_id)).await);
+        assert_ne!(download_super.0, StatusCode::FORBIDDEN);
+    }
 }

@@ -48,7 +48,7 @@ export function RelationGraph({
   const nodeLabel = useCallback((node: object) => {
     const n = node as RelationGraphNode
     const color = nodeColors[n.type] ?? '#94a3b8'
-    return `<div style="padding:6px 9px;background:#16161a;border:1px solid #2a2a2e;border-radius:8px;font-family:ui-sans-serif,system-ui;max-width:280px;">
+    return `<div style="padding:6px 9px;background:rgba(17,19,25,0.95);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,0.10);border-radius:8px;font-family:ui-sans-serif,system-ui;max-width:280px;">
       <div style="font-size:12px;font-weight:600;color:#e5e7eb;">${escapeHtml(n.label)}</div>
       <div style="font-size:10px;color:${color};margin-top:1px;">${escapeHtml(n.type)}</div>
     </div>`
@@ -106,7 +106,7 @@ export function RelationGraph({
 
       {/* Detail panel */}
       {selectedNode && onNodeClick && (
-        <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col">
+        <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#0f1117]/[0.94] border-l border-white/10 backdrop-blur-[22px] flex flex-col">
           <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-text-primary truncate">{selectedNode.label}</p>

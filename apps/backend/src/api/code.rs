@@ -58,6 +58,7 @@ mod token_cipher {
 }
 
 use crate::{
+    api::helpers::hidden_resource_not_found,
     api::helpers::{require_permission, AppJson},
     db::queries as db_queries,
     embed::{self},
@@ -665,7 +666,7 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
 }
 
 fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_privileged() {
+    if auth.role.is_super_user() {
         None
     } else {
         Some(auth.user_id.as_str())
@@ -697,7 +698,7 @@ fn ensure_code_project_name_access(
     auth: &AuthContext,
     project: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if auth.role.is_privileged() {
+    if auth.role.is_super_user() {
         return Ok(());
     }
     let allowed = db_queries::user_can_access_canonical_project_by_name(
@@ -712,6 +713,37 @@ fn ensure_code_project_name_access(
     } else {
         Err(code_project_not_found())
     }
+}
+
+fn load_visible_code_project(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    id: i64,
+    method: &str,
+) -> Result<CodeProject, (StatusCode, Json<ApiError>)> {
+    if let Some(project) = db_queries::get_code_project_by_id_visible(
+        conn,
+        &auth.org_id,
+        id,
+        viewer_user_id(auth),
+    )
+    .map_err(db_err)? {
+        return Ok(project);
+    }
+    if db_queries::get_code_project_by_id(conn, &auth.org_id, id)
+        .map_err(db_err)?
+        .is_some()
+    {
+        return Err(hidden_resource_not_found(
+            conn,
+            auth,
+            "code_project",
+            &id.to_string(),
+            method,
+            "code",
+        ));
+    }
+    Err(code_project_not_found())
 }
 
 /// Query params for `GET /v1/code/projects`.
@@ -750,11 +782,10 @@ pub async fn archive_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
-        return Err(forbidden());
-    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    load_visible_code_project(&conn, &auth, id, "POST")?;
+    if !auth.role.is_privileged() { return Err(forbidden()); }
     let found = db_queries::archive_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -777,11 +808,10 @@ pub async fn restore_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
-        return Err(forbidden());
-    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    load_visible_code_project(&conn, &auth, id, "POST")?;
+    if !auth.role.is_privileged() { return Err(forbidden()); }
     let found = db_queries::restore_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -804,11 +834,10 @@ pub async fn delete_project(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
-        return Err(forbidden());
-    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    load_visible_code_project(&conn, &auth, id, "DELETE")?;
+    if !auth.role.is_privileged() { return Err(forbidden()); }
     let deleted = db_queries::delete_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -833,17 +862,10 @@ pub async fn update_schedule(
     Path(id): Path<i64>,
     AppJson(body): AppJson<UpdateReindexScheduleRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "Admin access required".to_string(),
-                code: "forbidden".to_string(),
-            }),
-        ));
-    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    load_visible_code_project(&conn, &auth, id, "PATCH")?;
+    if !auth.role.is_privileged() { return Err(forbidden()); }
     let found = db_queries::update_reindex_interval(&conn, &auth.org_id, id, body.interval_hours)
         .map_err(db_err)?;
     if found {
@@ -875,11 +897,10 @@ pub async fn update_code_project(
             code: "validation_error".to_string(),
         }),
     ))?;
-    if !auth.role.is_privileged() {
-        return Err(forbidden());
-    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    load_visible_code_project(&conn, &auth, id, "PATCH")?;
+    if !auth.role.is_privileged() { return Err(forbidden()); }
     let patterns = body.exclude_patterns.unwrap_or_default();
     // Enforce maximum 20 patterns
     if patterns.len() > 20 {
@@ -917,16 +938,7 @@ pub async fn get_project_files(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     // Verify the project belongs to this org
-    let project = db_queries::get_code_project_by_id_visible(
-        &conn,
-        &auth.org_id,
-        id,
-        viewer_user_id(&auth),
-    )
-    .map_err(db_err)?;
-    if project.is_none() {
-        return Err(code_project_not_found());
-    }
+    load_visible_code_project(&conn, &auth, id, "GET")?;
     let file_map = db_queries::list_indexed_files_with_hashes(&conn, id).map_err(db_err)?;
     let mut files: Vec<String> = file_map.into_keys().collect();
     files.sort();
@@ -942,16 +954,13 @@ pub async fn post_reindex(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<i64>,
 ) -> Result<Json<ReindexProjectResponse>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
-        return Err(forbidden());
-    }
-
     // Look up the project
     let project = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
-        db_queries::get_code_project_by_id(&conn, &auth.org_id, id)
-            .map_err(db_err)?
+        let project = load_visible_code_project(&conn, &auth, id, "POST")?;
+        if !auth.role.is_privileged() { return Err(forbidden()); }
+        Some(project)
     };
 
     let project = match project {
@@ -1354,6 +1363,11 @@ mod tests {
             .route("/v1/code/context", get(get_context))
             .route("/v1/code/projects", get(list_projects))
             .route("/v1/code/projects/:id/files", get(get_project_files))
+            .route("/v1/code/projects/:id/archive", post(archive_project))
+            .route("/v1/code/projects/:id/restore", post(restore_project))
+            .route("/v1/code/projects/:id", axum::routing::patch(update_code_project).delete(delete_project))
+            .route("/v1/code/projects/:id/schedule", axum::routing::patch(update_schedule))
+            .route("/v1/code/projects/:id/reindex", post(post_reindex))
             .route("/v1/code/graph", get(get_graph))
             .route("/v1/code/snippet", get(get_snippet))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
@@ -1366,7 +1380,9 @@ mod tests {
         let raw_key = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (org, admin, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
+            let _ = org;
             key
         };
         (store, raw_key)
@@ -1378,6 +1394,7 @@ mod tests {
             let db = store.conn();
             let conn = db.lock().unwrap();
             let (org, _, admin_key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org.id]).unwrap();
             let (member, member_key) = q::invite_user(&conn, &org.id, "member@acme.com", "Member", "member").unwrap();
             let project_a = q::create_project(&conn, &org.id, "project-a", None, None).unwrap();
             let _project_b = q::create_project(&conn, &org.id, "project-b", None, None).unwrap();
@@ -1577,6 +1594,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(graph_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn hidden_code_lifecycle_ids_return_404_and_one_audit_each() {
+        let (store, _, member_key, project_b_code_id) = setup_code_access_fixture();
+        for (method, suffix, body) in [
+            ("POST", "archive", None), ("POST", "restore", None), ("DELETE", "", None),
+            ("PATCH", "schedule", Some(r#"{"interval_hours": 6}"#)),
+            ("PATCH", "", Some(r#"{"exclude_patterns": []}"#)), ("POST", "reindex", None),
+        ] {
+            let path = if suffix.is_empty() { format!("/v1/code/projects/{project_b_code_id}") } else { format!("/v1/code/projects/{project_b_code_id}/{suffix}") };
+            let mut request = Request::builder().method(method).uri(path)
+                .header("Authorization", format!("Bearer {member_key}"));
+            if body.is_some() { request = request.header("Content-Type", "application/json"); }
+            let response = app(store.clone()).oneshot(request.body(Body::from(body.unwrap_or_default())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {suffix}");
+        }
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'resource.hidden_access_denied' AND resource_type = 'code_project' AND resource_id = ?1",
+            [project_b_code_id.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 6);
     }
 
     // ── POST /v1/code/search ──────────────────────────────────────────────────
@@ -1843,8 +1884,9 @@ mod tests {
         let (raw_key, pid) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, _, key) =
+            let (org, admin, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
             let pid = q::upsert_code_project(&conn, &org.id, "myapp", "/ws").unwrap();
             (key, pid)
         };

@@ -1,11 +1,13 @@
 @import './apple-ds.css';
 
-@keyframes pulse-badge {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
 @keyframes confetti-fall {
   0% { opacity: 1; transform: translateY(0) rotate(0deg); }
   100% { opacity: 0; transform: translateY(300px) rotate(720deg); }
+}
+
+/* Seamless marquee loop for stat-tile / logo strips (see .marquee-wrapper /
+   .marquee-track in apple-ds.css). Ported from apps/admin's KpiMarquee. */
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
 }

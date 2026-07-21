@@ -116,7 +116,7 @@ function CreateCollectionModal({ onClose, onCreated }: CreateCollectionModalProp
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -219,7 +219,7 @@ function RenameModal({ collection, onClose, onRenamed }: RenameModalProps) {
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -304,7 +304,7 @@ function CollectionMemories({ collection, onClose }: CollectionMemoriesProps) {
       onClick={onClose}
     >
       <div
-        className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-lg"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-lg"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">

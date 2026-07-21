@@ -239,7 +239,7 @@ export const Modal: React.FC<ModalProps> = ({
                     {/* Content */}
                     <motion.div
                         ref={contentRef}
-                        className={`w-full ${sizeStyles[size]} bg-background-secondary border border-border-primary p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
+                        className={`w-full ${sizeStyles[size]} border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 relative z-50 focus:outline-none overflow-y-auto max-h-screen ${config.content}`}
                         initial={resolvedVariants?.initial}
                         animate={resolvedVariants?.animate}
                         exit={resolvedVariants?.exit}
@@ -339,9 +339,10 @@ export const ModalCloseButton: React.FC<{ className?: string }> = ({
         w-8 h-8
         flex items-center justify-center
         rounded-full
-        bg-background-tertiary
+        bg-white/[0.06]
+        border border-white/[0.09]
         text-text-secondary
-        hover:bg-background-secondary
+        hover:bg-white/[0.10]
         hover:text-text-primary
         transition-apple
         ${FOCUS_RING}

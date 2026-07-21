@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
+import { AlertTriangle, HelpCircle, X } from 'lucide-react'
 
 interface Props {
   open: boolean
@@ -61,39 +61,56 @@ export function ConfirmModal({ open, title, description, confirmLabel, danger, l
     >
       <div
         ref={modalRef}
-        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-sm space-y-4"
+        className="relative border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-sm"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between">
-          <p className="text-text-primary font-semibold">{title}</p>
-          <button
-            onClick={onClose}
-            aria-label={`Close ${title} dialog`}
-            className="text-text-tertiary hover:text-text-primary transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <p className="text-xs text-text-secondary">{description}</p>
-        <div className="flex gap-2">
-          <button
-            onClick={onClose}
-            disabled={loading}
-            className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors disabled:opacity-40"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={loading}
-            className={`flex-1 py-2 rounded-full text-xs font-semibold transition-colors disabled:opacity-40 ${
-              danger
-                ? 'bg-status-error text-white hover:opacity-90'
-                : 'bg-accent-blue hover:bg-accent-blue-hover text-white'
-            }`}
-          >
-            {loading ? '…' : confirmLabel}
-          </button>
+        <button
+          onClick={onClose}
+          aria-label={`Close ${title} dialog`}
+          className="absolute top-4 right-4 text-text-tertiary hover:text-text-primary transition-colors"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* Icon + title/message — NexusMind UI Kit "Confirmación destructiva":
+            36px icon tile, 800-weight title, 12.5px message below it. */}
+        <div className="space-y-4 pr-6">
+          <div className="flex items-start gap-3">
+            <div className={`w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0 ${
+              danger ? 'bg-status-error/10' : 'bg-accent-blue-tint'
+            }`}>
+              {danger
+                ? <AlertTriangle className="w-[17px] h-[17px] text-status-error" />
+                : <HelpCircle className="w-[17px] h-[17px] text-accent-blue" />
+              }
+            </div>
+            <div className="flex flex-col gap-0.5 min-w-0 pt-0.5">
+              <p className="text-[14px] font-extrabold text-text-primary">{title}</p>
+              <p className="text-[12.5px] text-text-secondary leading-relaxed">{description}</p>
+            </div>
+          </div>
+
+          {/* Button row — ghost cancel + solid danger/primary confirm, right-aligned */}
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={onClose}
+              disabled={loading}
+              className="flex items-center h-[34px] px-[14px] rounded-[9px] text-[12.5px] font-semibold text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={loading}
+              className={`flex items-center h-[34px] px-4 rounded-[9px] text-[12.5px] font-bold text-white transition-colors disabled:opacity-40 ${
+                danger
+                  ? 'bg-status-error hover:opacity-90'
+                  : 'bg-accent-blue hover:bg-accent-blue-hover'
+              }`}
+            >
+              {loading ? '…' : confirmLabel}
+            </button>
+          </div>
         </div>
       </div>
     </div>

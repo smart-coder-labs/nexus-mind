@@ -18,9 +18,9 @@ const baseStyles = `
 // status/accent color plus a 20% border. `default` is the neutral surface variant.
 const variantStyles: Record<BadgeVariant, string> = {
   default: `
-    bg-background-tertiary
+    bg-white/[0.06]
     text-text-secondary
-    border border-border-primary
+    border border-white/[0.09]
   `,
   primary: `
     bg-accent-blue/10

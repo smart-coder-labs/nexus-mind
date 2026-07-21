@@ -17,7 +17,7 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::{
-    api::helpers::{require_permission, AppJson},
+    api::helpers::{hidden_resource_not_found, project_is_visible_to_actor, require_permission, AppJson},
     db::queries,
     models::types::{
         ApiError, AuthContext, LinkChangeMemoryRequest, Memory, PatchChangeRequest,
@@ -77,6 +77,28 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+fn require_visible_project(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    project: &str,
+    method: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if project_is_visible_to_actor(conn, auth, project).map_err(|e| db_err(e.into()))? {
+        Ok(())
+    } else {
+        Err(hidden_resource_not_found(conn, auth, "sdd_project", project, method, "sdd"))
+    }
+}
+
+fn require_visible_change(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    change: &SddChange,
+    method: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    require_visible_project(conn, auth, &change.project, method)
+}
+
 // ── Changes ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
@@ -105,7 +127,8 @@ pub async fn list_changes_handler(
         sprint_id: params.sprint_id,
         include_archived: params.include_archived,
     };
-    let changes = queries::list_sdd_changes(&conn, &auth.org_id, &filters).map_err(db_err)?;
+    let mut changes = queries::list_sdd_changes(&conn, &auth.org_id, &filters).map_err(db_err)?;
+    changes.retain(|change| project_is_visible_to_actor(&conn, &auth, &change.project).unwrap_or(false));
     Ok(Json(changes))
 }
 
@@ -117,6 +140,7 @@ pub async fn create_change_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, Some(&input.project), "sdd:write")?;
+    require_visible_project(&conn, &auth, &input.project, "POST")?;
 
     let change = queries::upsert_sdd_change(&conn, &auth.org_id, &auth.user_id, &input)
         .map_err(db_err)?;
@@ -138,8 +162,9 @@ pub async fn get_change_handler(
     let Some(mut change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
         return Err(not_found());
     };
+    require_visible_change(&conn, &auth, &change, "GET")?;
 
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
     change.task_links =
         queries::list_tasks_for_sdd_change(&conn, &auth.org_id, &change.name, viewer)
             .map_err(db_err)?;
@@ -158,9 +183,8 @@ pub async fn patch_change_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
 
-    if queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
-        return Err(not_found());
-    }
+    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_change(&conn, &auth, &existing, "PATCH")?;
     let change = queries::patch_sdd_change(&conn, &auth.org_id, &id, &input).map_err(db_err)?;
     Ok(Json(change))
 }
@@ -174,6 +198,8 @@ pub async fn delete_change_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:delete")?;
 
+    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_change(&conn, &auth, &existing, "DELETE")?;
     if queries::archive_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -193,6 +219,7 @@ pub async fn list_change_artifacts_handler(
     let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
         return Err(not_found());
     };
+    require_visible_change(&conn, &auth, &change, "GET")?;
     Ok(Json(change.artifacts))
 }
 
@@ -209,7 +236,8 @@ pub async fn list_change_tasks_handler(
     let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
         return Err(not_found());
     };
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    require_visible_change(&conn, &auth, &change, "GET")?;
+    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
     let tasks = queries::list_tasks_for_sdd_change(&conn, &auth.org_id, &change.name, viewer)
         .map_err(db_err)?;
     Ok(Json(tasks))
@@ -228,6 +256,7 @@ pub async fn put_artifact_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, Some(&input.project), "sdd:write")?;
+    require_visible_project(&conn, &auth, &input.project, "PUT")?;
 
     // Validate the kind before the store is touched, so a bad kind cannot create
     // a change or an artifact on its way to failing.
@@ -275,6 +304,7 @@ pub async fn get_artifact_by_key_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
+    require_visible_project(&conn, &auth, &params.project, "GET")?;
 
     let found = queries::get_sdd_artifact_by_kind(
         &conn,
@@ -300,10 +330,9 @@ pub async fn get_artifact_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    queries::get_sdd_artifact(&conn, &auth.org_id, &id)
-        .map_err(db_err)?
-        .map(Json)
-        .ok_or_else(not_found)
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &artifact.project, "GET")?;
+    Ok(Json(artifact))
 }
 
 pub async fn list_artifact_revisions_handler(
@@ -315,9 +344,8 @@ pub async fn list_artifact_revisions_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    if queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
-        return Err(not_found());
-    }
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &artifact.project, "GET")?;
     let revisions =
         queries::list_sdd_artifact_revisions(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(revisions))
@@ -332,10 +360,9 @@ pub async fn get_artifact_revision_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    queries::get_sdd_artifact_revision(&conn, &auth.org_id, &id, revision)
-        .map_err(db_err)?
-        .map(Json)
-        .ok_or_else(not_found)
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &artifact.project, "GET")?;
+    queries::get_sdd_artifact_revision(&conn, &auth.org_id, &id, revision).map_err(db_err)?.map(Json).ok_or_else(not_found)
 }
 
 // ── Specs — the living specification ────────────────────────────────────────
@@ -358,6 +385,7 @@ pub async fn put_spec_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, Some(&input.project), "sdd:write")?;
+    require_visible_project(&conn, &auth, &input.project, "PUT")?;
 
     let source = input.source.as_deref().unwrap_or("agent");
     if !matches!(source, "agent" | "admin" | "import") {
@@ -413,6 +441,7 @@ pub async fn get_specs_handler(
         let found = queries::get_sdd_spec_by_capability(&conn, &auth.org_id, project, capability)
             .map_err(db_err)?;
         let detail = found.ok_or_else(not_found)?;
+        require_visible_project(&conn, &auth, &detail.spec.project, "GET")?;
         return Ok(Json(detail).into_response());
     }
 
@@ -420,7 +449,8 @@ pub async fn get_specs_handler(
         project: params.project,
         include_archived: params.include_archived,
     };
-    let specs = queries::list_sdd_specs(&conn, &auth.org_id, &filters).map_err(db_err)?;
+    let mut specs = queries::list_sdd_specs(&conn, &auth.org_id, &filters).map_err(db_err)?;
+    specs.retain(|spec| project_is_visible_to_actor(&conn, &auth, &spec.project).unwrap_or(false));
     Ok(Json(specs).into_response())
 }
 
@@ -433,10 +463,9 @@ pub async fn get_spec_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    queries::get_sdd_spec(&conn, &auth.org_id, &id)
-        .map_err(db_err)?
-        .map(Json)
-        .ok_or_else(not_found)
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
+    Ok(Json(spec))
 }
 
 pub async fn list_spec_revisions_handler(
@@ -448,9 +477,8 @@ pub async fn list_spec_revisions_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    if queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
-        return Err(not_found());
-    }
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
     let revisions = queries::list_sdd_spec_revisions(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(revisions))
 }
@@ -464,10 +492,9 @@ pub async fn get_spec_revision_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    queries::get_sdd_spec_revision(&conn, &auth.org_id, &id, revision)
-        .map_err(db_err)?
-        .map(Json)
-        .ok_or_else(not_found)
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
+    queries::get_sdd_spec_revision(&conn, &auth.org_id, &id, revision).map_err(db_err)?.map(Json).ok_or_else(not_found)
 }
 
 /// The edge that joins the two trees: which living specifications has this change
@@ -481,9 +508,8 @@ pub async fn list_change_specs_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    if queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)?.is_none() {
-        return Err(not_found());
-    }
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_change(&conn, &auth, &change, "GET")?;
     let specs = queries::list_sdd_specs_for_change(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(specs))
 }
@@ -513,7 +539,8 @@ pub async fn search_handler(
         return Ok(Json(Vec::new()));
     }
     let limit = params.limit.unwrap_or(20).clamp(1, 50);
-    let hits = queries::search_sdd_all(&conn, &auth.org_id, &params.q, limit).map_err(db_err)?;
+    let mut hits = queries::search_sdd_all(&conn, &auth.org_id, &params.q, limit).map_err(db_err)?;
+    hits.retain(|hit| project_is_visible_to_actor(&conn, &auth, &hit.project).unwrap_or(false));
     Ok(Json(hits))
 }
 
@@ -528,6 +555,8 @@ pub async fn link_change_memory_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_change(&conn, &auth, &change, "POST")?;
 
     let relation = input.relation.as_deref().unwrap_or("produced");
     queries::link_sdd_change_memory(
@@ -552,6 +581,8 @@ pub async fn unlink_change_memory_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    require_visible_change(&conn, &auth, &change, "DELETE")?;
 
     if queries::unlink_sdd_change_memory(&conn, &auth.org_id, &id, &memory_id).map_err(db_err)? {
         Ok(StatusCode::NO_CONTENT)
@@ -928,6 +959,54 @@ mod tests {
 
         let json = body_json(req(&store, &key_b, "GET", "/v1/sdd/changes", None).await).await;
         assert_eq!(json.as_array().unwrap().len(), 0, "org B must not see org A's changes");
+    }
+
+    #[tokio::test]
+    async fn scoped_admin_cannot_read_or_mutate_hidden_sdd_resources_but_super_user_can() {
+        let (store, super_user_key, org_id) = setup_with_key();
+        let (scoped_admin_key, visible_project, hidden_project) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org_id]).unwrap();
+            let (scoped_admin, key) = q::invite_user(&conn, &org_id, "scoped@acme.com", "Scoped", "admin").unwrap();
+            let visible = q::create_project(&conn, &org_id, "visible-sdd", None, None).unwrap();
+            let hidden = q::create_project(&conn, &org_id, "hidden-sdd", None, None).unwrap();
+            q::upsert_project_member(&conn, &visible.id, &scoped_admin.id, "admin").unwrap();
+            (key, visible.name, hidden.name)
+        };
+
+        for project in [&visible_project, &hidden_project] {
+            let artifact = req(&store, &super_user_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
+                "project": project, "change_name": "isolation", "kind": "design", "content": format!("{project} artifact")
+            }))).await;
+            assert_eq!(artifact.status(), StatusCode::OK);
+            let spec = req(&store, &super_user_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
+                "project": project, "capability": "isolation", "content": format!("{project} specification")
+            }))).await;
+            assert_eq!(spec.status(), StatusCode::OK);
+        }
+
+        let hidden_change_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/changes?project={hidden_project}"), None).await).await[0]["id"].as_str().unwrap().to_string();
+        let hidden_artifact_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/artifacts?project={hidden_project}&change_name=isolation&kind=design"), None).await).await["id"].as_str().unwrap().to_string();
+        let hidden_spec_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/specs?project={hidden_project}&capability=isolation"), None).await).await["id"].as_str().unwrap().to_string();
+
+        let scoped_changes = body_json(req(&store, &scoped_admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        assert_eq!(scoped_changes.as_array().unwrap().len(), 1);
+        assert_eq!(scoped_changes[0]["project"], visible_project);
+        for (method, uri, body) in [
+            ("GET", format!("/v1/sdd/changes/{hidden_change_id}"), None),
+            ("GET", format!("/v1/sdd/artifacts/{hidden_artifact_id}"), None),
+            ("GET", format!("/v1/sdd/specs/{hidden_spec_id}"), None),
+            ("PATCH", format!("/v1/sdd/changes/{hidden_change_id}"), Some(serde_json::json!({"phase": "design"}))),
+            ("PUT", "/v1/sdd/artifacts".to_string(), Some(serde_json::json!({"project": hidden_project, "change_name": "new-hidden", "kind": "design", "content": "blocked"}))),
+        ] {
+            assert_eq!(req(&store, &scoped_admin_key, method, &uri, body).await.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+        let scoped_search = body_json(req(&store, &scoped_admin_key, "GET", "/v1/sdd/search?q=hidden", None).await).await;
+        assert!(scoped_search.as_array().unwrap().is_empty());
+
+        assert_eq!(req(&store, &super_user_key, "GET", &format!("/v1/sdd/changes/{hidden_change_id}"), None).await.status(), StatusCode::OK);
+        assert_eq!(req(&store, &super_user_key, "PATCH", &format!("/v1/sdd/changes/{hidden_change_id}"), Some(serde_json::json!({"phase": "design"}))).await.status(), StatusCode::OK);
     }
 
     /// 3.13
@@ -1524,8 +1603,16 @@ mod tests {
         let saved = save_spec(&store, &admin_key, "cap", "C").await;
         let spec_id = saved["spec"]["id"].as_str().unwrap().to_string();
 
-        let (reader, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
+        let (reader, reader_id) = member_with_perms(&store, &org_id, &["sdd:read"]);
         let (writer, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let project_id = q::get_project_id_by_name(&conn, &org_id, "nexus-mind")
+                .unwrap()
+                .unwrap_or_else(|| q::create_project(&conn, &org_id, "nexus-mind", None, None).unwrap().id);
+            q::upsert_project_member(&conn, &project_id, &reader_id, "member").unwrap();
+        }
 
         for uri in [
             format!("/v1/sdd/specs/{spec_id}"),

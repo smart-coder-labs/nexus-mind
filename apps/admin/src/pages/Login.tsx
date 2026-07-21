@@ -96,14 +96,14 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-[#1d1d1f] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background-primary flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-base font-semibold text-text-primary">NexusMind</h1>
           <p className="text-xs text-text-quaternary mt-0.5">Enterprise Memory Control Plane</p>
         </div>
 
-        <div className="bg-[#272729] border border-border-primary rounded-[18px] p-8 space-y-6">
+        <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-8 space-y-6">
           {/* Mode toggle */}
           <div className="flex rounded-[11px] border border-border-primary overflow-hidden text-xs">
             <button

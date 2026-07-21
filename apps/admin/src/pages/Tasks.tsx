@@ -10,6 +10,7 @@ import {
 } from '../components/ui/Select/Select'
 import { Badge } from '../components/ui/Badge/Badge'
 import { EmptyState } from '../components/ui/EmptyState/EmptyState'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
 import TaskDetail from './tasks/TaskDetail'
 import TasksBoard from './tasks/TasksBoard'
 import TasksTimeline from './tasks/TasksTimeline'
@@ -357,35 +358,16 @@ export default function Tasks() {
             Show archived
           </label>
 
-          <div className="flex items-center gap-1 rounded-full border border-border-primary p-0.5">
-          <button
-            onClick={() => setView('list')}
-            aria-label="List view"
-            aria-pressed={view === 'list'}
-            title="List view"
-            className={`p-1.5 rounded-full transition-colors ${view === 'list' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
-          >
-            <List className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setView('board')}
-            aria-label="Board view"
-            aria-pressed={view === 'board'}
-            title="Board view"
-            className={`p-1.5 rounded-full transition-colors ${view === 'board' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
-          >
-            <LayoutGrid className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setView('timeline')}
-            aria-label="Timeline view"
-            aria-pressed={view === 'timeline'}
-            title="Timeline view"
-            className={`p-1.5 rounded-full transition-colors ${view === 'timeline' ? 'bg-accent-blue text-white' : 'text-text-quaternary hover:text-text-primary'}`}
-          >
-            <ChartGantt className="w-3.5 h-3.5" />
-          </button>
-          </div>
+          <SegmentedControl<TasksView>
+            size="sm"
+            value={view}
+            onChange={setView}
+            options={[
+              { value: 'list', icon: <List className="w-3.5 h-3.5" />, 'aria-label': 'List view' },
+              { value: 'board', icon: <LayoutGrid className="w-3.5 h-3.5" />, 'aria-label': 'Board view' },
+              { value: 'timeline', icon: <ChartGantt className="w-3.5 h-3.5" />, 'aria-label': 'Timeline view' },
+            ]}
+          />
         </div>
       </div>
 
@@ -552,7 +534,7 @@ export default function Tasks() {
       {/* Create Task Modal */}
       <Modal open={creating} onOpenChange={setCreating}>
         <ModalCloseButton />
-        <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
+        <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
           <h2 className="text-xs font-semibold text-text-primary mb-4">New Task</h2>
           <form onSubmit={handleCreateSubmit} className="space-y-4 text-xs">
             <div className="space-y-1">

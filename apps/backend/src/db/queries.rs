@@ -1598,7 +1598,7 @@ pub fn list_visible_harnesses(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
     let mut idx = 2usize;
     if let Some(user_id) = viewer_user_id {
-        sql.push_str(&format!(" AND (h.project_id IS NULL OR h.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{idx}))"));
+        sql.push_str(&format!(" AND ((h.project_id IS NULL AND h.owner_user_id = ?{idx}) OR h.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{idx}))"));
         params.push(Box::new(user_id.to_string()));
         idx += 1;
     }
@@ -1637,15 +1637,16 @@ pub fn get_harness(
     let Some(mut harness) = result else {
         return Ok(None);
     };
-    if let (Some(project_id), Some(user_id)) = (harness.project_id.as_deref(), viewer_user_id) {
-        let allowed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
-            rusqlite::params![project_id, user_id],
-            |r| r.get(0),
-        )?;
-        if allowed == 0 {
-            return Ok(None);
-        }
+    if let Some(user_id) = viewer_user_id {
+        let allowed = match harness.project_id.as_deref() {
+            Some(project_id) => conn.query_row(
+                "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
+                |r| r.get::<_, i64>(0),
+            )? > 0,
+            None => harness.owner_user_id == user_id,
+        };
+        if !allowed { return Ok(None); }
     }
     harness.latest_version = latest_harness_version_summary(conn, &harness.id)?;
     Ok(Some(harness))
@@ -2034,6 +2035,23 @@ pub fn get_harness_config_review(
     .map_err(Into::into)
 }
 
+/// Retrieves a config review only when it belongs to the caller. Passing `None`
+/// is reserved for the super-user scope.
+pub fn get_harness_config_review_visible(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Option<HarnessConfigReview>> {
+    let Some(review) = get_harness_config_review(conn, org_id, id)? else {
+        return Ok(None);
+    };
+    Ok(match viewer_user_id {
+        Some(user_id) if review.user_id != user_id => None,
+        _ => Some(review),
+    })
+}
+
 /// Lists config reviews for an org, newest first. Optionally filters by status
 /// (e.g. "shared"). Returns redacted snapshots only — raw secrets are never stored.
 pub fn list_harness_config_reviews(
@@ -2050,6 +2068,34 @@ pub fn list_harness_config_reviews(
     sql.push_str(" ORDER BY hcr.created_at DESC, hcr.id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt
+        .query_map(refs.as_slice(), map_config_review)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Lists config reviews within the caller's ownership scope.
+pub fn list_harness_config_reviews_visible(
+    conn: &Connection,
+    org_id: &str,
+    status: Option<&str>,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<HarnessConfigReview>> {
+    let mut sql = format!("{CONFIG_REVIEW_SELECT} WHERE hcr.org_id = ?1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    let mut index = 2;
+    if let Some(user_id) = viewer_user_id {
+        sql.push_str(&format!(" AND hcr.user_id = ?{index}"));
+        params.push(Box::new(user_id.to_string()));
+        index += 1;
+    }
+    if let Some(status) = status {
+        sql.push_str(&format!(" AND hcr.status = ?{index}"));
+        params.push(Box::new(status.to_string()));
+    }
+    sql.push_str(" ORDER BY hcr.created_at DESC, hcr.id DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|value| value.as_ref()).collect();
     let rows = stmt
         .query_map(refs.as_slice(), map_config_review)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -3751,13 +3797,6 @@ pub fn get_or_create_project(
                 "INSERT INTO projects (id, org_id, name, description) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![id, org_id, project_name, None::<String>],
             )?;
-            // Seed all active org users as members so they retain access to the new project.
-            conn.execute(
-                "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
-                 SELECT lower(hex(randomblob(16))), ?1, u.id, u.role, datetime('now')
-                 FROM users u WHERE u.org_id = ?2 AND u.status = 'active'",
-                rusqlite::params![id, org_id],
-            )?;
             Ok(id)
         }
         Err(e) => Err(e.into()),
@@ -3874,6 +3913,23 @@ pub fn list_project_ids_for_org(conn: &Connection, org_id: &str) -> Result<Vec<S
         ids.push(row?);
     }
     Ok(ids)
+}
+
+pub fn list_project_ids_for_user(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT pm.project_id
+         FROM project_members pm
+         JOIN projects p ON p.id = pm.project_id
+         WHERE p.org_id = ?1 AND pm.user_id = ?2",
+    )?;
+    let project_ids = stmt
+        .query_map(rusqlite::params![org_id, user_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(project_ids)
 }
 
 pub fn user_is_project_member(
@@ -4051,6 +4107,37 @@ pub fn create_project(
         "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, org_id, name, description, now, parent_id],
     )?;
+    Ok(Project {
+        id,
+        org_id: org_id.to_string(),
+        name: name.to_string(),
+        description: description.map(String::from),
+        created_at: now,
+        parent_id: parent_id.map(String::from),
+        archived_at: None,
+    })
+}
+
+pub fn create_project_with_creator_membership(
+    conn: &Connection,
+    org_id: &str,
+    creator_id: &str,
+    name: &str,
+    description: Option<&str>,
+    parent_id: Option<&str>,
+) -> Result<Project> {
+    let tx = conn.unchecked_transaction()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    tx.execute(
+        "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, org_id, name, description, now, parent_id],
+    )?;
+    tx.execute(
+        "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES (?1, ?2, ?3, 'admin', ?4)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), id, creator_id, now],
+    )?;
+    tx.commit()?;
     Ok(Project {
         id,
         org_id: org_id.to_string(),
@@ -7123,15 +7210,21 @@ pub fn resolve_tasks_by_spec(
     conn: &Connection,
     org_id: &str,
     spec_change_name: &str,
+    viewer_user_id: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT t.id FROM tasks t
          JOIN task_spec_links l ON l.task_id = t.id
          WHERE t.org_id = ?1 AND l.spec_change_name = ?2
-           AND t.status NOT IN ('done', 'cancelled')",
+            AND t.status NOT IN ('done', 'cancelled')
+            AND (?3 IS NULL OR EXISTS (
+                SELECT 1 FROM project_members pm
+                JOIN projects p ON p.id = pm.project_id
+                WHERE pm.user_id = ?3 AND p.org_id = t.org_id AND p.name = t.project
+            ))",
     )?;
     let ids: Vec<String> = stmt
-        .query_map(rusqlite::params![org_id, spec_change_name], |row| row.get::<_, String>(0))?
+        .query_map(rusqlite::params![org_id, spec_change_name, viewer_user_id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     if ids.is_empty() {
@@ -11219,8 +11312,8 @@ mod tests {
 
         let visible = list_visible_harnesses(&conn, &org.id, Some(&user_id), None, None).unwrap();
         let names: Vec<&str> = visible.iter().map(|h| h.name.as_str()).collect();
-        assert_eq!(visible.len(), 2);
-        assert!(names.contains(&"Org Wide"));
+        assert_eq!(visible.len(), 1);
+        assert!(!names.contains(&"Org Wide"));
         assert!(names.contains(&"Visible"));
         assert!(!names.contains(&"Hidden"));
     }
@@ -16960,7 +17053,7 @@ mod task_query_tests {
             link_task_spec(&conn, &t.id, &user, "team-tasks").unwrap();
             ids.push(t.id);
         }
-        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks").unwrap();
+        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks", None).unwrap();
         assert_eq!(resolved.len(), 3);
         for id in &ids {
             let task = get_task(&conn, &org, id).unwrap().unwrap();
@@ -16972,7 +17065,7 @@ mod task_query_tests {
     fn resolve_tasks_by_spec_noop_for_unlinked_change() {
         let (conn, org, user) = setup();
         mk_task(&conn, &org, &user, "proj", "T");
-        let resolved = resolve_tasks_by_spec(&conn, &org, "no-such-change").unwrap();
+        let resolved = resolve_tasks_by_spec(&conn, &org, "no-such-change", None).unwrap();
         assert!(resolved.is_empty());
     }
 
@@ -16984,7 +17077,7 @@ mod task_query_tests {
         // Route it to cancelled via a legal path: backlog -> cancelled.
         patch_task(&conn, &org, &t.id, &PatchTaskRequest { status: Some("cancelled".to_string()), ..Default::default() }).unwrap();
 
-        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks").unwrap();
+        let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks", None).unwrap();
         assert!(resolved.is_empty());
         let reloaded = get_task(&conn, &org, &t.id).unwrap().unwrap();
         assert_eq!(reloaded.status, "cancelled");

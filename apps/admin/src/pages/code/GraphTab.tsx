@@ -253,7 +253,7 @@ export default function GraphTab({ projects }: GraphTabProps) {
 
             {/* Detail panel */}
             {selectedNode && (
-              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col">
+              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] border-l border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] flex flex-col">
                 <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary">
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-text-primary truncate">{selectedNode.name}</p>

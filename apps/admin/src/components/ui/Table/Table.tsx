@@ -97,10 +97,10 @@ export function Table<T>({
         density === "compact" ? "py-2" : "py-3";
 
     return (
-        <div className="overflow-hidden border border-border-primary rounded-[18px] bg-background-secondary">
+        <div className="overflow-hidden border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px]">
             {/* TABLE */}
             <table className="w-full border-collapse text-left">
-                <thead className="bg-background-tertiary/50 border-b border-border-primary">
+                <thead className="bg-white/[0.03] border-b border-white/[0.07]">
                     <tr>
                         {selectable && (
                             <th className="w-10 px-4">
@@ -115,7 +115,7 @@ export function Table<T>({
                             <th
                                 key={String(col.key)}
                                 className={cn(
-                                    "px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wide select-none whitespace-nowrap",
+                                    "px-4 py-3 text-[10.5px] font-bold text-text-tertiary uppercase tracking-[0.08em] select-none whitespace-nowrap",
                                     col.width && `w-[${col.width}]`
                                 )}
                             >
@@ -125,7 +125,8 @@ export function Table<T>({
                                         FOCUS_RING,
                                         col.sortable
                                             ? "flex items-center gap-1 hover:text-text-primary transition-colors"
-                                            : "cursor-default"
+                                            : "cursor-default",
+                                        col.sortable && sortKey === col.key && "text-accent-blue"
                                     )}
                                     onClick={() => handleSort(col)}
                                 >
@@ -136,7 +137,7 @@ export function Table<T>({
                                             className={cn(
                                                 "h-3 w-3 transition-opacity",
                                                 sortKey === col.key
-                                                    ? "opacity-100 text-text-primary"
+                                                    ? "opacity-100 text-accent-blue"
                                                     : "opacity-40"
                                             )}
                                         />
@@ -171,10 +172,10 @@ export function Table<T>({
                                 className={cn(
                                     "border-b border-border-secondary transition-colors",
                                     striped && index % 2 === 1
-                                        ? "bg-background-tertiary/40"
+                                        ? "bg-white/[0.02]"
                                         : "",
                                     hoverable &&
-                                    "hover:bg-white/[0.03] cursor-pointer"
+                                    "hover:bg-accent-blue/[0.05] cursor-pointer"
                                 )}
                                 onClick={() => onRowClick?.(row)}
                             >
@@ -207,7 +208,7 @@ export function Table<T>({
             </table>
 
             {/* PAGINATION */}
-            <div className="flex items-center justify-between px-4 py-3 bg-background-tertiary/40 border-t border-border-primary">
+            <div className="flex items-center justify-between px-4 py-3 bg-white/[0.03] border-t border-white/[0.07]">
                 <p className="text-xs text-text-tertiary">
                     Page {page} of {totalPages}
                 </p>
@@ -249,8 +250,8 @@ function PaginationButton({
             disabled={disabled}
             onClick={onClick}
             className={cn(
-                "p-2 rounded-[8px] border border-border-primary text-text-secondary transition-all",
-                "hover:bg-background-tertiary hover:text-text-primary",
+                "p-2 rounded-[9px] border border-white/[0.09] text-text-tertiary transition-all",
+                "hover:border-white/[0.25] hover:text-text-primary",
                 FOCUS_RING,
                 "disabled:opacity-40 disabled:cursor-not-allowed"
             )}
@@ -288,7 +289,7 @@ function Checkbox({
                 }
             }}
             className={cn(
-                "h-4 w-4 rounded-[5px] border border-border-primary bg-white/[0.04] flex items-center justify-center",
+                "h-4 w-4 rounded-[5px] border border-white/[0.09] bg-white/[0.03] flex items-center justify-center",
                 "data-[state=checked]:bg-accent-blue data-[state=checked]:border-accent-blue",
                 "transition-colors",
                 FOCUS_RING,

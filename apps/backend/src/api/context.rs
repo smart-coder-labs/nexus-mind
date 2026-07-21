@@ -9,7 +9,7 @@ use crate::{
     db::queries as db_queries,
     models::types::{ApiError, AuthContext, MemoryPreview},
     store::sqlite::SqliteStore,
-    api::helpers::require_permission,
+    api::helpers::{hidden_resource_not_found, require_permission},
 };
 
 // Re-export the return type alias for clarity.
@@ -33,7 +33,7 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
 /// Project-membership visibility scope: admins see all org memories (`None`),
 /// non-admins are restricted to memories they may see (`Some(user_id)`).
 fn viewer_scope(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_admin() {
+    if auth.role.is_super_user() {
         None
     } else {
         Some(&auth.user_id)
@@ -57,13 +57,21 @@ pub async fn get_project_context(
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
 
+    if !auth.role.is_super_user()
+        && !db_queries::user_can_view_project_name(&conn, &auth.org_id, &project, Some(&auth.user_id))
+            .map_err(db_err)?
+    {
+        return Err(hidden_resource_not_found(
+            &conn, &auth, "project", &project, "GET", "context",
+        ));
+    }
     require_permission(&conn, &auth, Some(&project), "memory:read")?;
 
     let ctx = db_queries::get_project_context(&conn, &auth.org_id, &project)
         .map_err(db_err)?;
 
     // Scope to org-wide + this project's conventions (project scoping ADDS to org-wide).
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), Some(&project), MAX_CONTEXT_CONVENTIONS, 0)
+    let conventions = db_queries::list_conventions_visible(&conn, &auth.org_id, None, Some(false), Some(&project), MAX_CONTEXT_CONVENTIONS, 0, viewer_scope(&auth))
         .map_err(db_err)?;
 
     let mut ctx_json = if params.compact.unwrap_or(false) {
@@ -155,7 +163,7 @@ pub async fn get_global_context(
     };
 
     // Global context has no project in scope — admin listing (everything for the org).
-    let conventions = db_queries::list_conventions(&conn, &auth.org_id, None, Some(false), None, MAX_CONTEXT_CONVENTIONS, 0)
+    let conventions = db_queries::list_conventions_visible(&conn, &auth.org_id, None, Some(false), None, MAX_CONTEXT_CONVENTIONS, 0, viewer)
         .map_err(db_err)?;
 
     let mut resp = build_context_response(full_values, "scope", serde_json::json!("global"));
@@ -276,6 +284,7 @@ mod tests {
             let db = store.conn();
             let conn = db.lock().unwrap();
             let (org, _, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org.id]).unwrap();
             (key, org.id)
         };
         (store, admin_key, org_id)
@@ -344,6 +353,30 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body = std::str::from_utf8(&bytes).unwrap();
         assert!(!body.contains("SECRETALPHA"), "global context must not leak a non-member project's memory");
+    }
+
+    #[tokio::test]
+    async fn hidden_project_context_returns_404_and_one_denial_audit() {
+        let (store, _super_user_key, org_id) = bootstrap_store();
+        let (admin_key, _) = create_member_with_id(&store, &org_id);
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute("UPDATE users SET role = 'admin' WHERE org_id = ?1 AND role = 'member'", [&org_id]).unwrap();
+            q::create_project(&conn, &org_id, "hidden-project", None, None).unwrap();
+        }
+        let response = app(store.clone()).oneshot(
+            Request::builder().uri("/v1/context/project/hidden-project")
+                .header("Authorization", format!("Bearer {admin_key}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1 AND action = 'resource.hidden_access_denied' AND resource_type = 'project' AND resource_id = 'hidden-project'",
+            [&org_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

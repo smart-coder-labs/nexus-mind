@@ -29,7 +29,7 @@ function SuperuserKeyGate({ onUnlock }: { onUnlock: (key: string) => void }) {
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-full max-w-sm bg-[#1d1d1f] border border-border-primary rounded-[18px] p-8 space-y-5">
+      <div className="w-full max-w-sm border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-8 space-y-5">
         <div className="flex items-center gap-3">
           <Key className="w-5 h-5 text-accent-blue" />
           <h2 className="text-base font-semibold text-text-primary">Superuser access required</h2>
@@ -116,7 +116,7 @@ function CreateOrgModal({ superuserKey, onClose, onSuccess }: CreateOrgModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-5">
+      <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-text-primary">Create organization</h2>
           <button onClick={onClose} className="text-text-tertiary hover:text-text-secondary text-[18px] leading-none">×</button>
@@ -167,7 +167,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 space-y-4">
+      <div className="w-full max-w-md border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-status-success" />
           <h2 className="text-base font-semibold text-text-primary">Organization created</h2>
@@ -178,7 +178,7 @@ function ApiKeyReveal({ org, apiKey, onDone }: { org: Org; apiKey: string; onDon
         </p>
         <div className="space-y-1.5">
           <label className="text-[10px] text-text-quaternary">Admin API key</label>
-          <div className="flex items-center gap-2 bg-[#272729] border border-border-secondary rounded-[11px] px-3 py-2">
+          <div className="flex items-center gap-2 border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-3 py-2">
             <code className="flex-1 text-xs text-text-primary font-mono break-all">{apiKey}</code>
             <button onClick={copy} className="flex-shrink-0 text-text-tertiary hover:text-accent-blue transition-colors">
               {copied ? <Check className="w-4 h-4 text-status-success" /> : <Copy className="w-4 h-4" />}
@@ -235,7 +235,7 @@ export default function Orgs() {
       <div className="border border-border-primary rounded-[18px] overflow-hidden">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-border-secondary bg-[#272729]/50">
+            <tr className="border-b border-border-secondary">
               <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Name</th>
               <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Slug</th>
               <th className="px-4 py-3 text-left text-[10px] text-text-quaternary uppercase tracking-wide font-semibold">Created</th>
@@ -247,7 +247,7 @@ export default function Orgs() {
                 <tr key={i}>
                   {Array.from({ length: 3 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded-[5px] bg-[#272729] animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
+                      <div className="h-4 rounded-[5px] bg-white/[0.06] animate-pulse" style={{ width: `${[60, 40, 50][j]}%` }} />
                     </td>
                   ))}
                 </tr>

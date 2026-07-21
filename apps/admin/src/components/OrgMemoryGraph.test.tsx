@@ -96,7 +96,11 @@ describe('OrgMemoryGraph — family-scoped contract', () => {
 
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem('nexusmind-org-graph-types-test') ?? '[]')
-      expect(stored).not.toContain('Tag')
+      // Design-kit smart toggle: clicking a chip while EVERY type is visible
+      // ISOLATES that type (stores just [type]) rather than removing it. The
+      // persistence contract under test is unchanged — the choice reaches
+      // localStorage.
+      expect(stored).toEqual(['Tag'])
     })
   })
 

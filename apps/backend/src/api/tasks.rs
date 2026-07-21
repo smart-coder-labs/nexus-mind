@@ -67,7 +67,7 @@ fn unknown_spec() -> (StatusCode, Json<ApiError>) {
 }
 
 fn viewer_user_id(auth: &AuthContext) -> Option<&str> {
-    if auth.role.is_privileged() {
+    if auth.role.is_super_user() {
         None
     } else {
         Some(auth.user_id.as_str())
@@ -528,10 +528,7 @@ pub struct ResolveBySpecResponse {
     pub resolved: Vec<String>,
 }
 
-/// Auto-resolves every task in the caller's org linked to `spec_change_name` to `done`.
-/// Org-level `task:write` (not per-project), and NOT scoped by project membership — it may
-/// transition tasks across every project in the org (spec §"Resolve-by-spec requires write
-/// authority, not caller project membership").
+/// Auto-resolves visible tasks linked to `spec_change_name` to `done`.
 pub async fn resolve_by_spec_handler(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -540,7 +537,7 @@ pub async fn resolve_by_spec_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "task:write")?;
-    let resolved = queries::resolve_tasks_by_spec(&conn, &auth.org_id, &input.spec_change_name)
+    let resolved = queries::resolve_tasks_by_spec(&conn, &auth.org_id, &input.spec_change_name, viewer_user_id(&auth))
         .map_err(db_err)?;
     Ok(Json(ResolveBySpecResponse { resolved }))
 }
@@ -759,13 +756,10 @@ mod tests {
     fn add_member_to_project(store: &SqliteStore, org_id: &str, project: &str, user_id: &str) {
         let db = store.conn();
         let conn = db.lock().unwrap();
-        // NOTE: get_or_create_project seeds ALL active org users (including `user_id` if
-        // already created) as members when it first creates the project row — so this must
-        // be idempotent (INSERT OR IGNORE), not a plain INSERT.
         let project_id = q::get_or_create_project(&conn, org_id, project).unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
-             VALUES (?1, ?2, ?3, 'member', datetime('now'))",
+              VALUES (?1, ?2, ?3, 'dev-senior', datetime('now'))",
             rusqlite::params![uuid::Uuid::new_v4().to_string(), project_id, user_id],
         ).unwrap();
     }
@@ -856,6 +850,22 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unassigned_admin_cannot_enumerate_tasks_in_another_project() {
+        let (store, admin_key, org_id) = setup_with_key();
+        let admin_id = admin_user_id(&store, &org_id);
+        add_member_to_project(&store, &org_id, "private-proj", &admin_id);
+        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
+            "project": "private-proj",
+            "title": "Private task"
+        })).await;
+
+        let (other_admin_key, _) = create_member_with_id(&store, &org_id, "admin");
+        let resp = get_req(&store, &other_admin_key, "/v1/tasks").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(json_body(resp).await.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

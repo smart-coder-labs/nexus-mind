@@ -122,7 +122,7 @@ function StatusChip({ project }: { project: CodeProject }) {
     )
   }
   return (
-    <span className="text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 text-text-quaternary bg-[#272729] border-border-secondary">
+    <span className="text-[10px] font-semibold border rounded-[5px] px-1.5 py-0.5 text-text-quaternary bg-white/[0.06] border-white/[0.09]">
       not indexed
     </span>
   )
@@ -131,9 +131,9 @@ function StatusChip({ project }: { project: CodeProject }) {
 function SkeletonRow() {
   return (
     <div className="px-5 py-4 animate-pulse">
-      <div className="h-4 bg-[#272729] rounded-[5px] w-1/3 mb-2" />
-      <div className="h-3 bg-[#272729] rounded-[5px] w-1/2 mb-2" />
-      <div className="h-3 bg-[#272729] rounded-[5px] w-2/3" />
+      <div className="h-4 bg-white/[0.04] rounded-[5px] w-1/3 mb-2" />
+      <div className="h-3 bg-white/[0.04] rounded-[5px] w-1/2 mb-2" />
+      <div className="h-3 bg-white/[0.04] rounded-[5px] w-2/3" />
     </div>
   )
 }
@@ -198,7 +198,7 @@ function ScoreBadge({ score }: { score: number }) {
       ? 'text-status-success bg-status-success/10 border-status-success/20'
       : pct >= 50
       ? 'text-status-warning bg-status-warning/10 border-status-warning/20'
-      : 'text-text-quaternary bg-[#272729] border-border-secondary'
+      : 'text-text-quaternary bg-white/[0.06] border-white/[0.09]'
   return (
     <span className={`text-[10px] font-semibold border rounded-[5px] px-2 py-0.5 shrink-0 ${cls}`}>
       {pct}%
@@ -242,7 +242,7 @@ function SearchResultRow({ result, searchQuery }: { result: CodeSearchResult; se
       </button>
 
       {expanded && (
-        <div className="border-t border-border-secondary bg-[#1d1d1f] rounded-b-[18px]">
+        <div className="border-t border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-b-[18px]">
           <pre className="px-4 py-3 text-[10px] font-mono text-text-secondary leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">
             {highlightCode(result.content, searchQuery)}
           </pre>
@@ -439,11 +439,11 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
                 </button>
 
                 {showSavedDropdown && (
-                  <div className="absolute left-0 top-full mt-1.5 z-20 bg-[#272729] border border-border-primary rounded-[11px] py-1 min-w-[220px] shadow-xl">
+                  <div className="absolute left-0 top-full mt-1.5 z-20 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[12px] p-[5px] min-w-[220px]">
                     {savedSearches.map(s => (
                       <div
                         key={s.id}
-                        className="flex items-center justify-between px-3 py-2 hover:bg-white/[0.04] group cursor-pointer"
+                        className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-[8px] hover:bg-white/[0.06] group cursor-pointer"
                         onClick={() => handleLoadSaved(s)}
                       >
                         <p className="text-[10px] text-text-quaternary uppercase tracking-wide shrink-0">{s.projectId}</p>
@@ -479,7 +479,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
                 </button>
 
                 {showSavePopover && (
-                  <div className="absolute right-0 top-full mt-1.5 z-20 bg-[#272729] border border-border-primary rounded-[11px] p-3 shadow-xl w-56 space-y-2">
+                  <div className="absolute right-0 top-full mt-1.5 z-20 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[11px] p-3 w-56 space-y-2">
                     <div className="flex items-center gap-1.5">
                       <input
                         autoFocus
@@ -864,7 +864,7 @@ function RepositoriesTab({
               onClick={() => showArchived && onToggleArchived()}
               className={`px-3 py-1 text-xs rounded-full transition-colors ${
                 !showArchived
-                  ? 'bg-[#272729] text-text-primary font-semibold shadow-sm'
+                  ? 'bg-white/[0.10] text-text-primary font-semibold shadow-sm'
                   : 'text-text-quaternary'
               }`}
             >
@@ -874,7 +874,7 @@ function RepositoriesTab({
               onClick={() => !showArchived && onToggleArchived()}
               className={`px-3 py-1 text-xs rounded-full transition-colors ${
                 showArchived
-                  ? 'bg-[#272729] text-text-primary font-semibold shadow-sm'
+                  ? 'bg-white/[0.10] text-text-primary font-semibold shadow-sm'
                   : 'text-text-quaternary'
               }`}
             >
@@ -899,7 +899,7 @@ function RepositoriesTab({
               <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-2">
                 Project
               </label>
-              <div className="flex items-center bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 gap-0.5 w-fit mb-3">
+              <div className="flex items-center bg-white/[0.04] border border-white/[0.09] rounded-[11px] px-1 gap-0.5 w-fit mb-3">
                 {(['existing', 'new'] as const).map(mode => (
                   <button
                     key={mode}
@@ -1380,7 +1380,7 @@ export default function Code() {
       </KpiMarquee>
 
       {/* Tab bar */}
-      <div className="flex items-center bg-[#1d1d1f] border border-border-primary rounded-[11px] px-1 gap-0.5 w-fit">
+      <div className="flex items-center bg-white/[0.04] border border-white/[0.09] rounded-[11px] px-1 gap-0.5 w-fit">
         {TABS.map(tab => (
           <button
             key={tab.id}

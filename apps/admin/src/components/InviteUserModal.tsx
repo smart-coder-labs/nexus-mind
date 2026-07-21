@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import type { NexusMindClient } from '../api/client'
 import type { CustomRole, ProjectAccess } from '../types'
+import { Radio } from './ui/Radio'
 
 interface Props {
   open: boolean
@@ -128,7 +129,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
     >
       <div
         ref={modalRef}
-        className="bg-[#1d1d1f] border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md space-y-5"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -147,7 +148,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             <p className="text-xs text-text-tertiary">
               User created. Share this API key — it will only be shown once.
             </p>
-            <div className="flex items-center gap-2 bg-[#272729] rounded-[11px] px-3 py-2">
+            <div className="flex items-center gap-2 border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] px-3 py-2">
               <code className="flex-1 text-xs text-text-secondary break-all">{newKey}</code>
               <button
                 onClick={handleCopy}
@@ -178,7 +179,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                   onChange={set(f.id)}
                   placeholder={f.placeholder}
                   required
-                  className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                  className="w-full bg-white/[0.03] border border-white/[0.09] rounded-[8px] px-3 py-2 text-xs text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/60 transition-colors"
                 />
               </div>
             ))}
@@ -189,7 +190,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
                 id="invite-role"
                 value={form.role}
                 onChange={set('role')}
-                className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
+                className="w-full bg-white/[0.03] border border-white/[0.09] rounded-[8px] px-3 py-2 text-xs text-text-primary focus:outline-none focus:border-accent-blue/60 transition-colors"
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -205,24 +206,21 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
             {/* Project access section */}
             <div className="space-y-2">
               <label className="text-[10px] text-text-quaternary">Project Access</label>
-              <div className="flex gap-3">
+              <div className="flex gap-5">
                 {(['all', 'specific'] as const).map(opt => (
-                  <label key={opt} className="flex items-center gap-1.5 cursor-pointer text-xs text-text-secondary">
-                    <input
-                      type="radio"
-                      name="projectAccess"
-                      value={opt}
-                      checked={projectAccess === opt}
-                      onChange={() => setProjectAccess(opt)}
-                      className="accent-accent-blue"
-                    />
-                    {opt === 'all' ? 'All projects' : 'Specific projects'}
-                  </label>
+                  <Radio
+                    key={opt}
+                    name="projectAccess"
+                    value={opt}
+                    checked={projectAccess === opt}
+                    onChange={v => setProjectAccess(v as 'all' | 'specific')}
+                    label={opt === 'all' ? 'All projects' : 'Specific projects'}
+                  />
                 ))}
               </div>
 
               {projectAccess === 'specific' && (
-                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-border-primary rounded-[11px] p-2 bg-[#272729]">
+                <div className="mt-2 space-y-1 max-h-36 overflow-y-auto border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[11px] p-2">
                   {!projects?.length ? (
                     <p className="text-[10px] text-text-quaternary">No projects found.</p>
                   ) : (
@@ -251,7 +249,7 @@ export function InviteUserModal({ open, client, onClose, onSuccess, roles }: Pro
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 py-2 rounded-full border border-border-primary text-xs text-text-secondary hover:text-text-primary hover:bg-[#272729] transition-colors"
+                className="flex-1 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.10] border border-white/[0.09] text-xs text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>

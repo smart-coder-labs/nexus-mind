@@ -78,7 +78,7 @@ export default function DocumentView<R extends RevisionOption>({
               onClick={() => setViewMode('raw')}
               className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
                 viewMode === 'raw'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
+                  ? 'bg-white/[0.08] text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >
@@ -88,7 +88,7 @@ export default function DocumentView<R extends RevisionOption>({
               onClick={() => setViewMode('preview')}
               className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
                 viewMode === 'preview'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
+                  ? 'bg-white/[0.08] text-text-primary font-semibold'
                   : 'text-text-quaternary hover:text-text-secondary'
               }`}
             >

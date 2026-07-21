@@ -4,6 +4,9 @@ import { BookMarked, Plus, X, Pencil, Archive, RotateCcw, Trash2, Download, Uplo
 import { createClient } from '../api/client'
 import { Markdown } from '../components/ui/Markdown'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { StatTile } from './dashboard/StatTile'
+import { accentFor } from './dashboard/colors'
 import type { Convention, CreateConventionRequest } from '../types'
 
 const client = createClient()
@@ -27,31 +30,6 @@ const CATEGORY_COLORS = [
 function categoryColor(category: string): string {
   const idx = CATEGORIES.findIndex(c => c.value === category)
   return CATEGORY_COLORS[(idx < 0 ? 0 : idx) % CATEGORY_COLORS.length]
-}
-
-interface StatTileProps {
-  label: string
-  value: string
-  sub?: string
-  icon: typeof BookMarked
-}
-
-// Local stat tile matching the mockup's KPI row — kept local to this page.
-function StatTile({ label, value, sub, icon: Icon }: StatTileProps) {
-  return (
-    <div className={`relative flex flex-col gap-2 rounded-[16px] p-4 overflow-hidden ${GLASS_PANEL}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10.5px] font-semibold tracking-[0.06em] uppercase text-text-tertiary truncate">
-          {label}
-        </span>
-        <Icon className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
-      </div>
-      <span className="text-lg font-bold tracking-[-0.02em] text-text-primary leading-none tabular-nums truncate">
-        {value}
-      </span>
-      {sub && <span className="text-[11.5px] text-text-tertiary truncate">{sub}</span>}
-    </div>
-  )
 }
 
 const CONVENTION_TEMPLATES = [
@@ -232,7 +210,7 @@ function MdImportModal({ open, onClose, onImportDone }: MdImportModalProps) {
       onClick={onClose}
     >
       <div
-        className="bg-background-secondary rounded-[18px] border border-border-primary p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
+        className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -359,7 +337,7 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
       onClick={onClose}
     >
       <div
-        className="bg-background-tertiary rounded-[18px] border border-border-primary p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
+        className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -377,13 +355,13 @@ function ConventionModal({ open, onClose, onSave, saving }: ConventionModalProps
                 Templates
               </button>
               {templatesOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-background-tertiary border border-border-primary rounded-[11px] py-1 z-50 min-w-[200px]">
+                <div className="absolute right-0 top-full mt-1 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[12px] p-[5px] z-50 min-w-[200px]">
                   {CONVENTION_TEMPLATES.map(tpl => (
                     <button
                       key={tpl.label}
                       type="button"
                       onClick={() => applyTemplate(tpl)}
-                      className={`w-full text-left px-3 py-2 text-[13px] text-text-secondary hover:bg-white/[0.04] cursor-pointer ${FOCUS}`}
+                      className={`w-full text-left px-[11px] py-[9px] rounded-[8px] text-[12.5px] text-text-secondary hover:bg-white/[0.06] cursor-pointer ${FOCUS}`}
                     >
                       {tpl.label}
                     </button>
@@ -694,27 +672,16 @@ function ConventionCard({
       ) : (
         <>
           {/* Raw / Preview toggle */}
-          <div className="bg-white/[0.04] rounded-full p-0.5 flex items-center mb-2 w-fit">
-            <button
-              onClick={() => setViewMode('raw')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
-                viewMode === 'raw'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-            >
-              Raw
-            </button>
-            <button
-              onClick={() => setViewMode('preview')}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${FOCUS} ${
-                viewMode === 'preview'
-                  ? 'bg-background-tertiary text-text-primary font-semibold'
-                  : 'text-text-quaternary hover:text-text-secondary'
-              }`}
-            >
-              Preview
-            </button>
+          <div className="mb-2">
+            <SegmentedControl<'raw' | 'preview'>
+              size="sm"
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: 'raw', label: 'Raw' },
+                { value: 'preview', label: 'Preview' },
+              ]}
+            />
           </div>
 
           {viewMode === 'raw' ? (
@@ -952,7 +919,7 @@ export default function Conventions() {
         <div className="mb-5">
           <KpiMarquee>
             <div key="conventions" className="w-[232px] flex-none">
-              <StatTile label="Conventions" value={String(stats.total)} sub="active rules" icon={BookMarked} />
+              <StatTile label="Conventions" value={String(stats.total)} sub="active rules" icon={BookMarked} accent={accentFor(0)} />
             </div>
             <div key="top-category" className="w-[232px] flex-none">
               <StatTile
@@ -960,10 +927,11 @@ export default function Conventions() {
                 value={stats.topCategory ? stats.topCategory.name : '—'}
                 sub={stats.topCategory ? `${stats.topCategory.count} rule${stats.topCategory.count === 1 ? '' : 's'}` : undefined}
                 icon={LayoutGrid}
+                accent={accentFor(1)}
               />
             </div>
             <div key="injected" className="w-[232px] flex-none">
-              <StatTile label="Injected" value={String(stats.total)} sub="into every agent context" icon={Zap} />
+              <StatTile label="Injected" value={String(stats.total)} sub="into every agent context" icon={Zap} accent={accentFor(2)} />
             </div>
             <div key="last-updated" className="w-[232px] flex-none">
               <StatTile
@@ -971,6 +939,7 @@ export default function Conventions() {
                 value={stats.lastUpdated ? new Date(stats.lastUpdated.updated_at ?? stats.lastUpdated.created_at).toLocaleDateString() : '—'}
                 sub={stats.lastUpdated?.title}
                 icon={Clock}
+                accent={accentFor(3)}
               />
             </div>
           </KpiMarquee>
@@ -1015,24 +984,15 @@ export default function Conventions() {
               onChange={e => setSearch(e.target.value)}
               className={`rounded-[8px] border border-border-primary bg-white/[0.04] text-[13px] text-text-primary px-3 py-2 focus:outline-none focus:border-accent-blue/60 flex-1 placeholder:text-text-quaternary ${FOCUS}`}
             />
-            <div className="bg-white/[0.04] rounded-full p-0.5 flex shrink-0">
-              <button
-                onClick={() => setSortBy('weight')}
-                className={`${FOCUS} ${sortBy === 'weight'
-                  ? 'bg-background-tertiary text-text-primary font-semibold rounded-full px-3 py-1 text-[13px]'
-                  : 'text-text-quaternary px-3 py-1 text-[13px] rounded-full hover:text-text-secondary transition-colors'}`}
-              >
-                Weight ↓
-              </button>
-              <button
-                onClick={() => setSortBy('recent')}
-                className={`${FOCUS} ${sortBy === 'recent'
-                  ? 'bg-background-tertiary text-text-primary font-semibold rounded-full px-3 py-1 text-[13px]'
-                  : 'text-text-quaternary px-3 py-1 text-[13px] rounded-full hover:text-text-secondary transition-colors'}`}
-              >
-                Recent
-              </button>
-            </div>
+            <SegmentedControl<'weight' | 'recent'>
+              size="sm"
+              value={sortBy}
+              onChange={setSortBy}
+              options={[
+                { value: 'weight', label: 'Weight ↓' },
+                { value: 'recent', label: 'Recent' },
+              ]}
+            />
           </div>
           {isLoading && (
             <div className={`animate-pulse h-24 rounded-[18px] ${GLASS_PANEL}`} />

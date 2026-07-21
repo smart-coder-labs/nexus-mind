@@ -199,7 +199,7 @@ pub async fn list_policies(
     require_permission(&conn, &ctx, None, "policy:read")?;
 
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let viewer = if ctx.role.is_privileged() { None } else { Some(ctx.user_id.as_str()) };
+    let viewer = if ctx.role.is_super_user() { None } else { Some(ctx.user_id.as_str()) };
     let policies = queries::list_policies_visible(&conn, &ctx.org_id, limit, offset, viewer)
         .map_err(internal_error)?;
     Ok(Json(PoliciesResponse { policies }))
@@ -352,7 +352,7 @@ pub async fn check_policy(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let viewer = if ctx.role.is_privileged() { None } else { Some(ctx.user_id.as_str()) };
+    let viewer = if ctx.role.is_super_user() { None } else { Some(ctx.user_id.as_str()) };
     if let (Some(project_id), Some(user_id)) = (req.project.as_deref(), viewer) {
         let is_member = queries::user_is_project_member(&conn, &ctx.org_id, project_id, user_id)
             .map_err(internal_error)?;

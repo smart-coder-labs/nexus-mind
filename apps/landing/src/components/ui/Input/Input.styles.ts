@@ -2,10 +2,15 @@
    INPUT - STYLES
    ======================================== */
 
+/* Glass input recipe: translucent white fill (not the opaque surface-primary
+   tile) so fields read as frosted glass against the page background, with a
+   visible accent-blue ring on focus (keyboard and pointer alike — inputs are
+   the one control where showing the ring on click, not only on tab, is the
+   expected UX). */
 export const baseInputStyles = `
   w-full
-  bg-surface-primary
-  border border-border-primary
+  bg-white/[0.04]
+  border border-white/10
   text-text-primary
   placeholder:text-text-tertiary
   transition-apple

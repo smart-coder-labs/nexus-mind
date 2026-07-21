@@ -233,7 +233,7 @@ function MembersPanel({
   }
 
   return (
-    <div className="bg-[#272729]/40 rounded-b-[18px] border border-t-0 border-border-primary px-5 pb-5 pt-4 space-y-4">
+    <div className="rounded-b-[18px] border border-t-0 border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] px-5 pb-5 pt-4 space-y-4">
       {stats && (
         <div className="flex items-center gap-6 pb-4 mb-4 border-b border-border-secondary/40">
           <div>
@@ -269,10 +269,10 @@ function MembersPanel({
           <div className="pt-1">
             {Array.from({ length: 2 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 py-2.5 border-b border-border-secondary/50">
-                <div className="w-8 h-8 rounded-full bg-[#1d1d1f] animate-pulse shrink-0" />
+                <div className="w-8 h-8 rounded-full bg-white/[0.04] animate-pulse shrink-0" />
                 <div className="flex-1 space-y-1.5">
-                  <div className="h-3 rounded-[5px] bg-[#1d1d1f] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-1/2" />
+                  <div className="h-3 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/2" />
                 </div>
               </div>
             ))}
@@ -307,7 +307,7 @@ function MembersPanel({
                   </div>
 
                   {/* Role badge */}
-                  <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-[#272729] border border-border-secondary text-text-tertiary shrink-0">
+                  <span className="rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold bg-white/[0.06] border border-white/[0.09] text-text-tertiary shrink-0">
                     {member.role}
                   </span>
 
@@ -405,7 +405,7 @@ function MembersPanel({
             <form onSubmit={handleAdd} className="flex items-center gap-2">
               {/* User select */}
               {usersLoading ? (
-                <div className="flex-1 h-9 rounded-[11px] bg-[#1d1d1f] animate-pulse" />
+                <div className="flex-1 h-9 rounded-[11px] bg-white/[0.04] animate-pulse" />
               ) : (
                 <Select value={addUserId} onValueChange={setAddUserId}>
                   <SelectTrigger className="flex-1 h-9 text-xs bg-transparent border border-border-primary rounded-[11px] px-3 focus:outline-none focus:border-accent-blue/60">
@@ -911,7 +911,7 @@ export default function Projects() {
                   onClick={() => handleMemoriesClick(project.id)}
                   aria-label={`View memories for ${project.name}`}
                   title="View memories"
-                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-accent-blue hover:bg-[#272729]/60 transition-colors"
+                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-accent-blue hover:bg-white/[0.10] transition-colors"
                 >
                   <Brain className="w-4 h-4" />
                 </button>
@@ -921,7 +921,7 @@ export default function Projects() {
                   onClick={(e) => { e.stopPropagation(); setEditingProjectId(project.id) }}
                   aria-label={`Settings for ${project.name}`}
                   title="Project settings"
-                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-[#272729]/60 opacity-0 group-hover:opacity-100 transition-all"
+                  className="p-1.5 rounded-[8px] text-text-tertiary hover:text-text-primary hover:bg-white/[0.10] opacity-0 group-hover:opacity-100 transition-all"
                 >
                   <Settings className="w-3 h-3" />
                 </button>
@@ -1095,10 +1095,10 @@ export default function Projects() {
           {projectsLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="p-4 flex items-center gap-3">
-                <div className="w-4 h-4 rounded-[5px] bg-[#1d1d1f] animate-pulse flex-shrink-0" />
+                <div className="w-4 h-4 rounded-[5px] bg-white/[0.04] animate-pulse flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-3.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-1/3" />
-                  <div className="h-2.5 rounded-[5px] bg-[#1d1d1f] animate-pulse w-2/3" />
+                  <div className="h-3.5 rounded-[5px] bg-white/[0.04] animate-pulse w-1/3" />
+                  <div className="h-2.5 rounded-[5px] bg-white/[0.04] animate-pulse w-2/3" />
                 </div>
               </div>
             ))
@@ -1122,7 +1122,7 @@ export default function Projects() {
       {/* Create Project Modal (mockup: header "New Project" trigger) */}
       <Modal open={createOpen} onOpenChange={setCreateOpen}>
         <ModalCloseButton />
-        <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
+        <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
           <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
             <FolderGit className="w-4 h-4 text-accent-blue" />
             Create Project
@@ -1206,7 +1206,7 @@ export default function Projects() {
       <Modal open={!!editingProjectId} onOpenChange={(open) => { if (!open) setEditingProjectId(null) }}>
         <ModalCloseButton />
         {editingProject && (
-          <div className="bg-[#1d1d1f] rounded-[18px] border border-border-primary p-6 w-full max-w-md">
+          <div className="rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6 w-full max-w-md">
             <h2 className="text-xs font-semibold text-text-primary mb-1 flex items-center gap-2">
               <Settings className="w-4 h-4 text-accent-blue" />
               Project Settings
@@ -1337,7 +1337,7 @@ export default function Projects() {
                         className="fixed inset-0 z-40"
                         onClick={() => setAddChildOpen(false)}
                       />
-                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-border-primary bg-[#1d1d1f] z-50 max-h-48 overflow-y-auto shadow-xl">
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] z-50 max-h-48 overflow-y-auto">
                         {filteredChildCandidates.map(p => (
                           <button
                             key={p.id}
@@ -1367,7 +1367,7 @@ export default function Projects() {
                         className="fixed inset-0 z-40"
                         onClick={() => setAddChildOpen(false)}
                       />
-                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-border-primary bg-[#1d1d1f] z-50 px-3 py-2 shadow-xl">
+                      <div className="absolute top-full left-0 right-0 mt-1 rounded-[11px] border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] z-50 px-3 py-2">
                         <p className="text-xs text-text-quaternary">No assignable projects found.</p>
                       </div>
                     </>
@@ -1467,7 +1467,7 @@ export default function Projects() {
                 projectMemories.map(memory => (
                   <div
                     key={memory.id}
-                    className="p-3 border border-border-secondary rounded-[11px] bg-[#272729]/10 space-y-1"
+                    className="p-3 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] space-y-1"
                   >
                     {memory.title && (
                       <div className="text-xs font-semibold text-text-primary">{memory.title}</div>

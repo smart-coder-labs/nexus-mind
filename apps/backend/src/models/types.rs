@@ -57,12 +57,18 @@ pub enum UserRole {
 }
 
 impl UserRole {
+    /// Only super_user has organization-wide resource visibility. `admin` remains
+    /// privileged for permission checks but is membership-scoped for data reads.
+    pub fn is_super_user(&self) -> bool {
+        matches!(self, UserRole::Custom(role) if role == "super_user")
+    }
+
     pub fn is_admin(&self) -> bool {
         matches!(self, UserRole::Standard(Role::Admin))
     }
 
     pub fn is_privileged(&self) -> bool {
-        self.is_admin() || matches!(self, UserRole::Custom(s) if s == "super_user")
+        self.is_admin() || self.is_super_user()
     }
 
     pub fn as_str(&self) -> &str {
@@ -1983,6 +1989,148 @@ pub struct GitHubConnection {
     pub updated_at: String,
 }
 
+// ── Knowledge migration types ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationRunStatus {
+    Staging,
+    InReview,
+    Committing,
+    Completed,
+    Cancelled,
+}
+
+impl fmt::Display for MigrationRunStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Staging => "staging",
+            Self::InReview => "in_review",
+            Self::Committing => "committing",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for MigrationRunStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "staging" => Ok(Self::Staging),
+            "in_review" => Ok(Self::InReview),
+            "committing" => Ok(Self::Committing),
+            "completed" => Ok(Self::Completed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown migration run status: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationCandidateStatus {
+    Staged,
+    Approved,
+    Rejected,
+    Committing,
+    Committed,
+    Skipped,
+    Failed,
+    Cancelled,
+}
+
+impl fmt::Display for MigrationCandidateStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Staged => "staged",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Committing => "committing",
+            Self::Committed => "committed",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for MigrationCandidateStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "staged" => Ok(Self::Staged),
+            "approved" => Ok(Self::Approved),
+            "rejected" => Ok(Self::Rejected),
+            "committing" => Ok(Self::Committing),
+            "committed" => Ok(Self::Committed),
+            "skipped" => Ok(Self::Skipped),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown migration candidate status: {value}")),
+        }
+    }
+}
+
+pub fn can_transition_migration_run(from: MigrationRunStatus, to: MigrationRunStatus) -> bool {
+    use MigrationRunStatus::*;
+    matches!(
+        (from, to),
+        (Staging, InReview | Cancelled)
+            | (InReview, Staging | Committing | Cancelled)
+            | (Committing, InReview | Completed)
+    )
+}
+
+pub fn can_transition_migration_candidate(
+    from: MigrationCandidateStatus,
+    to: MigrationCandidateStatus,
+) -> bool {
+    use MigrationCandidateStatus::*;
+    matches!(
+        (from, to),
+        (Staged, Approved | Rejected | Cancelled)
+            | (Approved, Staged | Committing | Cancelled)
+            | (Committing, Committed | Skipped | Failed | Approved)
+    )
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationReviewItem {
+    pub candidate_id: String,
+    pub expected_version: i64,
+    pub decision: MigrationReviewDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationReviewDecision {
+    Approve,
+    Reject,
+    Cancel,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkMigrationReviewRequest {
+    pub items: Vec<MigrationReviewItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_correlation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationReviewResult {
+    pub candidate_id: String,
+    pub expected_version: i64,
+    pub candidate_status: MigrationCandidateStatus,
+    pub error: Option<String>,
+}
+
 // ── Team Tasks types ─────────────────────────────────────────────────────────
 
 /// Fixed task status set (team-tasks-core / "Fixed Task Status Set"). Custom or
@@ -3646,6 +3794,85 @@ mod tests {
         assert!(!can_transition(Cancelled, InProgress), "cancelled can only reopen to backlog");
         assert!(!can_transition(Backlog, InReview), "backlog cannot jump straight to in_review");
         assert!(!can_transition(Backlog, Done), "backlog cannot jump straight to done");
+    }
+
+    // ── Knowledge migration review state ───────────────────────────────────────
+
+    #[test]
+    fn migration_statuses_round_trip_and_reject_unknown_values() {
+        let runs = [
+            ("staging", MigrationRunStatus::Staging),
+            ("in_review", MigrationRunStatus::InReview),
+            ("committing", MigrationRunStatus::Committing),
+            ("completed", MigrationRunStatus::Completed),
+            ("cancelled", MigrationRunStatus::Cancelled),
+        ];
+        for (wire, status) in runs {
+            assert_eq!(MigrationRunStatus::from_str(wire).unwrap(), status);
+            assert_eq!(status.to_string(), wire);
+        }
+        assert!(MigrationRunStatus::from_str("draft").is_err());
+
+        let candidates = [
+            ("staged", MigrationCandidateStatus::Staged),
+            ("approved", MigrationCandidateStatus::Approved),
+            ("rejected", MigrationCandidateStatus::Rejected),
+            ("committing", MigrationCandidateStatus::Committing),
+            ("committed", MigrationCandidateStatus::Committed),
+            ("skipped", MigrationCandidateStatus::Skipped),
+            ("failed", MigrationCandidateStatus::Failed),
+            ("cancelled", MigrationCandidateStatus::Cancelled),
+        ];
+        for (wire, status) in candidates {
+            assert_eq!(MigrationCandidateStatus::from_str(wire).unwrap(), status);
+            assert_eq!(status.to_string(), wire);
+        }
+        assert!(MigrationCandidateStatus::from_str("pending").is_err());
+    }
+
+    #[test]
+    fn migration_transitions_preserve_terminal_states_and_restage_approval() {
+        assert!(can_transition_migration_run(
+            MigrationRunStatus::Staging,
+            MigrationRunStatus::InReview
+        ));
+        assert!(can_transition_migration_run(
+            MigrationRunStatus::InReview,
+            MigrationRunStatus::Committing
+        ));
+        assert!(can_transition_migration_run(
+            MigrationRunStatus::Committing,
+            MigrationRunStatus::InReview
+        ));
+        assert!(!can_transition_migration_run(
+            MigrationRunStatus::Completed,
+            MigrationRunStatus::InReview
+        ));
+        assert!(!can_transition_migration_run(
+            MigrationRunStatus::Cancelled,
+            MigrationRunStatus::Staging
+        ));
+
+        assert!(can_transition_migration_candidate(
+            MigrationCandidateStatus::Staged,
+            MigrationCandidateStatus::Approved
+        ));
+        assert!(can_transition_migration_candidate(
+            MigrationCandidateStatus::Approved,
+            MigrationCandidateStatus::Staged
+        ));
+        assert!(can_transition_migration_candidate(
+            MigrationCandidateStatus::Committing,
+            MigrationCandidateStatus::Approved
+        ));
+        assert!(!can_transition_migration_candidate(
+            MigrationCandidateStatus::Rejected,
+            MigrationCandidateStatus::Approved
+        ));
+        assert!(!can_transition_migration_candidate(
+            MigrationCandidateStatus::Committed,
+            MigrationCandidateStatus::Staged
+        ));
     }
 
     // ── SDD artifacts ───────────────────────────────────────────────────────

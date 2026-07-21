@@ -13,19 +13,23 @@ const baseStyles = `
 
 const variantStyles: Record<CardVariant, string> = {
     elevated: `
-    bg-[#1d1d1f]
-    border border-border-primary
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
   `,
     glass: `
     glass
-    border border-border-primary
+    border border-white/[0.07]
   `,
     outlined: `
-    bg-[#1d1d1f]
-    border border-border-primary
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
   `,
     flat: `
-    bg-[#272729]
+    border border-white/[0.07]
+    bg-[#0d0f14]/60
+    backdrop-blur-[12px]
   `,
 };
 

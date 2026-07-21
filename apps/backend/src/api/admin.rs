@@ -3,7 +3,7 @@
 #![allow(clippy::items_after_test_module)]
 
 use axum::{extract::State, extract::Path, extract::Query, http::StatusCode, Extension, Json};
-use crate::api::helpers::AppJson;
+use crate::api::helpers::{user_is_visible_to_actor, AppJson};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -54,6 +54,60 @@ fn forbidden() -> (StatusCode, Json<ApiError>) {
             code: "forbidden".to_string(),
         }),
     )
+}
+
+fn require_visible_user(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    user_id: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let Some(user) = queries::get_user_by_id(conn, user_id).map_err(db_err)? else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found".to_string(), code: "not_found".to_string() })));
+    };
+    if user.org_id != auth.org_id {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found".to_string(), code: "not_found".to_string() })));
+    }
+    if user_is_visible_to_actor(conn, auth, user_id).map_err(|e| db_err(e.into()))? {
+        Ok(())
+    } else {
+        Err(forbidden())
+    }
+}
+
+fn project_not_found() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Project not found".to_string(),
+            code: "not_found".to_string(),
+        }),
+    )
+}
+
+fn require_visible_project(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    project_id: &str,
+    method: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if auth.role.is_super_user() {
+        return Ok(());
+    }
+    if queries::get_project_by_id(conn, &auth.org_id, project_id).map_err(db_err)?.is_none() {
+        return Err(project_not_found());
+    }
+    if queries::user_is_project_member(conn, &auth.org_id, project_id, &auth.user_id).map_err(db_err)? {
+        Ok(())
+    } else {
+        Err(crate::api::helpers::hidden_resource_not_found(
+            conn,
+            auth,
+            "project",
+            project_id,
+            method,
+            "projects",
+        ))
+    }
 }
 
 #[derive(Deserialize)]
@@ -323,25 +377,13 @@ pub async fn get_org_settings_api(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_super_user() {
+        return Err(forbidden());
+    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let settings = queries::get_org_settings(&conn, &auth.org_id).map_err(db_err)?;
-    // Least privilege: non-admins may read only the member-facing banner fields
-    // (announcement + logo). Org configuration — custom_instructions, retention_days,
-    // min_password_length, agent event toggles — is stripped for non-admins.
-    if auth.role.is_privileged() {
-        Ok(Json(settings))
-    } else {
-        Ok(Json(OrgSettings {
-            events: Default::default(),
-            retention_days: None,
-            custom_instructions: None,
-            min_password_length: None,
-            announcement: settings.announcement,
-            announcement_type: settings.announcement_type,
-            logo_url: settings.logo_url,
-        }))
-    }
+    Ok(Json(settings))
 }
 
 pub async fn update_org_settings_api(
@@ -349,7 +391,7 @@ pub async fn update_org_settings_api(
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<OrgSettings>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -597,7 +639,7 @@ pub async fn list_projects_api(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<ListProjectsParams>,
 ) -> Result<Json<Vec<Project>>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
+    let is_privileged = auth.role.is_super_user();
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let projects = if is_privileged {
@@ -613,21 +655,9 @@ pub async fn get_project_api(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Project>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    if !is_privileged {
-        let is_member = queries::user_is_project_member(&conn, &auth.org_id, &id, &auth.user_id).map_err(db_err)?;
-        if !is_member {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Project not found".to_string(),
-                    code: "not_found".to_string(),
-                }),
-            ));
-        }
-    }
+    require_visible_project(&conn, &auth, &id, "GET")?;
     match queries::get_project_by_id(&conn, &auth.org_id, &id).map_err(db_err)? {
         Some(project) => Ok(Json(project)),
         None => Err((
@@ -651,7 +681,7 @@ pub async fn create_project_api(
     validate_project_name(&input.name)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let project = queries::create_project(&conn, &auth.org_id, &input.name, input.description.as_deref(), input.parent_id.as_deref())
+    let project = queries::create_project_with_creator_membership(&conn, &auth.org_id, &auth.user_id, &input.name, input.description.as_deref(), input.parent_id.as_deref())
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
                 (
@@ -665,11 +695,6 @@ pub async fn create_project_api(
                 db_err(e)
             }
         })?;
-    // Register the creator as a project member so the project is visible via
-    // list_projects_visible (and accessible via get_project_api, which also
-    // requires membership). Without this, a privileged-but-not-super_user
-    // creator gets a 201 but an empty listing.
-    queries::upsert_project_member(&conn, &project.id, &auth.user_id, "admin").map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(project)))
 }
 
@@ -683,6 +708,7 @@ pub async fn delete_project_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_project(&conn, &auth, &id, "DELETE")?;
     let deleted = queries::delete_project(&conn, &auth.org_id, &id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -707,6 +733,7 @@ pub async fn archive_project_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_project(&conn, &auth, &id, "POST")?;
     let found = queries::archive_project(&conn, &auth.org_id, &id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -731,6 +758,7 @@ pub async fn restore_project_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_project(&conn, &auth, &id, "POST")?;
     let found = queries::restore_project(&conn, &auth.org_id, &id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -756,6 +784,7 @@ pub async fn update_project_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_project(&conn, &auth, &project_id, "PATCH")?;
 
     let found = queries::update_project(&conn, &auth.org_id, &project_id, input.parent_id.as_deref())
         .map_err(|e| {
@@ -804,23 +833,7 @@ pub async fn list_project_members_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    
-    // Security check: ensure the project belongs to the user's org!
-    let project_belongs = conn.query_row(
-        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
-        rusqlite::params![project_id, auth.org_id],
-        |row| row.get::<_, i32>(0),
-    ).map_err(|_| lock_err())? > 0;
-
-    if !project_belongs {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Project not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    }
+    require_visible_project(&conn, &auth, &project_id, "GET")?;
 
     let members = queries::list_project_members(&conn, &auth.org_id, &project_id).map_err(db_err)?;
     Ok(Json(members))
@@ -837,23 +850,7 @@ pub async fn upsert_project_member_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-
-    // Security check: ensure the project belongs to the user's org!
-    let project_belongs = conn.query_row(
-        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
-        rusqlite::params![project_id, auth.org_id],
-        |row| row.get::<_, i32>(0),
-    ).map_err(|_| lock_err())? > 0;
-
-    if !project_belongs {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Project not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    }
+    require_visible_project(&conn, &auth, &project_id, "POST")?;
 
     // Security check: ensure the user to add belongs to the user's org!
     let user_belongs = conn.query_row(
@@ -907,23 +904,7 @@ pub async fn delete_project_member_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-
-    // Security check: ensure the project belongs to the user's org!
-    let project_belongs = conn.query_row(
-        "SELECT count(*) FROM projects WHERE id = ?1 AND org_id = ?2",
-        rusqlite::params![project_id, auth.org_id],
-        |row| row.get::<_, i32>(0),
-    ).map_err(|_| lock_err())? > 0;
-
-    if !project_belongs {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Project not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    }
+    require_visible_project(&conn, &auth, &project_id, "DELETE")?;
 
     let deleted = queries::delete_project_member(&conn, &project_id, &user_id).map_err(db_err)?;
     if deleted {
@@ -949,7 +930,10 @@ pub async fn list_org_keys(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let keys = queries::list_all_org_keys(&conn, &auth.org_id).map_err(db_err)?;
+    let mut keys = queries::list_all_org_keys(&conn, &auth.org_id).map_err(db_err)?;
+    if !auth.role.is_super_user() {
+        keys.retain(|key| user_is_visible_to_actor(&conn, &auth, &key.user_id).unwrap_or(false));
+    }
     Ok(Json(keys))
 }
 
@@ -964,6 +948,10 @@ pub async fn revoke_org_key(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+    };
+    require_visible_user(&conn, &auth, &key.user_id)?;
     let revoked = queries::revoke_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)?;
     if revoked {
         Ok(StatusCode::NO_CONTENT)
@@ -990,7 +978,10 @@ pub async fn get_org_key(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     match queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? {
-        Some(key) => Ok(Json(key)),
+        Some(key) => {
+            require_visible_user(&conn, &auth, &key.user_id)?;
+            Ok(Json(key))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -1031,6 +1022,10 @@ pub async fn update_org_key(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+    };
+    require_visible_user(&conn, &auth, &key.user_id)?;
 
     let found = queries::update_key_admin(
         &conn,
@@ -1080,6 +1075,10 @@ pub async fn rotate_org_key(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+    };
+    require_visible_user(&conn, &auth, &key.user_id)?;
     match queries::rotate_key_by_id(&conn, &auth.org_id, &key_id).map_err(db_err)? {
         Some((key, raw_key)) => {
             let _ = queries::log_audit(
@@ -1114,6 +1113,10 @@ pub async fn revoke_org_key_post(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+    };
+    require_visible_user(&conn, &auth, &key.user_id)?;
     let revoked = queries::revoke_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)?;
     if revoked {
         let _ = queries::log_audit(
@@ -1161,25 +1164,7 @@ pub async fn create_org_key(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-
-    // Verify the user exists in this org.
-    let user_exists: bool = conn
-        .query_row(
-            "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
-            rusqlite::params![body.user_id, auth.org_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(|e| db_err(e.into()))? > 0;
-
-    if !user_exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "User not found in this organization".to_string(),
-                code: "not_found".to_string(),
-            }),
-        ));
-    }
+    require_visible_user(&conn, &auth, &body.user_id)?;
 
     let (key, raw_key) = queries::create_key_admin(
         &conn,
@@ -1212,21 +1197,9 @@ pub async fn get_project_settings_api(
     Extension(ctx): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectEventOverrides>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = matches!(ctx.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    if !is_privileged {
-        let is_member = queries::user_is_project_member(&conn, &ctx.org_id, &project_id, &ctx.user_id).map_err(db_err)?;
-        if !is_member {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Project not found".to_string(),
-                    code: "not_found".to_string(),
-                }),
-            ));
-        }
-    }
+    require_visible_project(&conn, &ctx, &project_id, "GET")?;
     let overrides = queries::get_project_event_overrides(&conn, &ctx.org_id, &project_id)
         .map_err(db_err)?;
     Ok(Json(overrides))
@@ -1245,6 +1218,7 @@ pub async fn update_project_settings_api(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_project(&conn, &ctx, &project_id, "PATCH")?;
     let saved = queries::update_project_event_overrides(&conn, &ctx.org_id, &project_id, body.overrides)
         .map_err(|e| {
             if e.to_string().contains("project not found") {
@@ -1277,6 +1251,7 @@ pub async fn reset_user_key(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_user(&conn, &auth, &user_id)?;
 
     match queries::reset_user_key(&conn, &auth.org_id, &user_id).map_err(db_err)? {
         Ok(new_key) => {
@@ -1840,21 +1815,9 @@ pub async fn get_project_stats_api(
     Extension(auth): Extension<AuthContext>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectStats>, (StatusCode, Json<ApiError>)> {
-    let is_privileged = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    if !is_privileged {
-        let is_member = queries::user_is_project_member(&conn, &auth.org_id, &project_id, &auth.user_id).map_err(db_err)?;
-        if !is_member {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Project not found".to_string(),
-                    code: "not_found".to_string(),
-                }),
-            ));
-        }
-    }
+    require_visible_project(&conn, &auth, &project_id, "GET")?;
     match queries::get_project_stats(&conn, &auth.org_id, &project_id) {
         Ok(stats) => Ok(Json(stats)),
         Err(e) if e.to_string().contains("project_not_found") => Err((
@@ -1938,7 +1901,7 @@ pub async fn export_org_config(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<impl axum::response::IntoResponse, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() {
+    if !auth.role.is_super_user() {
         return Err(forbidden());
     }
     let db = store.conn();
@@ -2101,6 +2064,7 @@ mod tests {
             .route("/v1/admin/stats/trends", get(get_memory_trends_handler))
             .route("/v1/admin/org", get(get_org).patch(update_org))
             .route("/v1/admin/org/settings", get(get_org_settings_api).patch(update_org_settings_api))
+            .route("/v1/admin/export", get(export_org_config))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
         Router::new()
@@ -2122,6 +2086,13 @@ mod tests {
             key
         };
         (store, raw_key)
+    }
+
+    fn promote_admin_to_super_user(store: &SqliteStore) {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", [])
+            .unwrap();
     }
 
     #[tokio::test]
@@ -2326,62 +2297,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn org_settings_admin_reads_full_config() {
+    async fn org_settings_admin_is_denied() {
         let (store, admin_key) = setup_with_admin_key();
-        patch_settings(&store, &admin_key, serde_json::json!({
-            "custom_instructions": "SECRETPROMPT",
-            "retention_days": 30,
-            "min_password_length": 12,
-            "announcement": "PUBLICBANNER",
-            "logo_url": "https://logo",
-        })).await;
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-        let json = get_settings_json(&store, &admin_key).await;
-        assert_eq!(json["custom_instructions"], "SECRETPROMPT");
-        assert_eq!(json["retention_days"], 30);
-        assert_eq!(json["min_password_length"], 12);
-        assert_eq!(json["announcement"], "PUBLICBANNER");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn org_settings_member_reads_only_banner_fields() {
-        let (store, admin_key) = setup_with_admin_key();
-        patch_settings(&store, &admin_key, serde_json::json!({
-            "custom_instructions": "SECRETPROMPT",
-            "retention_days": 30,
-            "min_password_length": 12,
-            "announcement": "PUBLICBANNER",
-            "announcement_type": "info",
-            "logo_url": "https://logo",
-        })).await;
-
-        let admin_json = get_settings_json(&store, &admin_key).await;
-        let member_key = member_key_for(&store, "member");
-        let json = get_settings_json(&store, &member_key).await;
-
-        // Public banner fields are visible and identical to the admin's view.
-        assert_eq!(json["announcement"], "PUBLICBANNER");
-        assert_eq!(json["announcement"], admin_json["announcement"]);
-        assert_eq!(json["logo_url"], admin_json["logo_url"]);
-        // Admin-only config is stripped for members (fields skip serialization when None)…
-        assert!(json.get("custom_instructions").is_none(), "custom_instructions must not leak to members");
-        assert!(json.get("retention_days").is_none(), "retention_days must not leak to members");
-        assert!(json.get("min_password_length").is_none(), "min_password_length must not leak to members");
-        // …while the admin genuinely has that config populated (proves it wasn't just empty).
-        assert_eq!(admin_json["custom_instructions"], "SECRETPROMPT");
-        assert_eq!(admin_json["retention_days"], 30);
-    }
-
-    #[tokio::test]
-    async fn org_settings_update_still_admin_only() {
+    async fn org_settings_member_is_denied_without_config_leak() {
         let (store, _admin_key) = setup_with_admin_key();
         let member_key = member_key_for(&store, "member");
         let resp = app(store)
             .oneshot(
                 Request::builder()
-                    .method("PATCH")
                     .uri("/v1/admin/org/settings")
                     .header("Authorization", format!("Bearer {member_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(!std::str::from_utf8(&body).unwrap().contains("custom_instructions"));
+    }
+
+    #[tokio::test]
+    async fn org_settings_patch_admin_is_denied() {
+        let (store, admin_key) = setup_with_admin_key();
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/admin/org/settings")
+                    .header("Authorization", format!("Bearer {admin_key}"))
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::json!({ "custom_instructions": "x" }).to_string()))
                     .unwrap(),
@@ -2389,6 +2349,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn org_settings_super_user_reads_and_updates_full_config() {
+        let (store, super_user_key) = setup_with_admin_key();
+        promote_admin_to_super_user(&store);
+        patch_settings(&store, &super_user_key, serde_json::json!({
+            "custom_instructions": "SECRETPROMPT",
+            "retention_days": 30,
+            "min_password_length": 12,
+        })).await;
+
+        let json = get_settings_json(&store, &super_user_key).await;
+        assert_eq!(json["custom_instructions"], "SECRETPROMPT");
+        assert_eq!(json["retention_days"], 30);
+        assert_eq!(json["min_password_length"], 12);
+    }
+
+    #[tokio::test]
+    async fn org_export_requires_super_user() {
+        let (store, admin_key) = setup_with_admin_key();
+        let denied = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/export")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        promote_admin_to_super_user(&store);
+        let allowed = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/export")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -2619,6 +2624,7 @@ mod tests {
     #[tokio::test]
     async fn reset_user_key_returns_new_key_different_from_original() {
         let (store, admin_key) = setup_with_admin_key();
+        promote_admin_to_super_user(&store);
 
         // Invite a member user and capture their original key.
         let (member_id, original_key) = {
@@ -2656,6 +2662,7 @@ mod tests {
     async fn reset_user_key_returns_400_for_demo_key() {
         use crate::auth::api_keys;
         let (store, admin_key) = setup_with_admin_key();
+        promote_admin_to_super_user(&store);
 
         // Insert a user with a demo-labelled key directly.
         let demo_user_id = {
@@ -3300,6 +3307,7 @@ mod tests {
     #[tokio::test]
     async fn patch_org_settings_partial_preserves_other_fields() {
         let (store, key) = setup_with_admin_key();
+        promote_admin_to_super_user(&store);
 
         // Send only retention_days — min_password_length must NOT become null.
         let body = serde_json::json!({ "retention_days": 365 });
@@ -3428,6 +3436,220 @@ mod tests {
         let entry = found.unwrap();
         assert_eq!(entry["member_count"], 2, "member_count must be 2");
         assert_eq!(entry["active_user_count"], 2, "active_user_count must be 2");
+    }
+
+    fn project_admin_app(store: SqliteStore) -> Router {
+        use axum::routing::{delete, post};
+
+        Router::new()
+            .route("/v1/projects", get(list_projects_api).post(create_project_api))
+            .route(
+                "/v1/projects/:id",
+                get(get_project_api)
+                    .delete(delete_project_api)
+                    .patch(update_project_api),
+            )
+            .route("/v1/projects/:id/archive", post(archive_project_api))
+            .route("/v1/projects/:id/restore", post(restore_project_api))
+            .route(
+                "/v1/projects/:project_id/members",
+                get(list_project_members_api).post(upsert_project_member_api),
+            )
+            .route(
+                "/v1/projects/:project_id/members/:user_id",
+                delete(delete_project_member_api),
+            )
+            .route(
+                "/v1/projects/:id/settings",
+                get(get_project_settings_api).patch(update_project_settings_api),
+            )
+            .route("/v1/projects/:id/stats", get(get_project_stats_api))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    fn count_hidden_denials(store: &SqliteStore, actor_id: &str, project_id: &str) -> i64 {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs
+             WHERE user_id = ?1 AND resource_id = ?2
+               AND action = 'resource.hidden_access_denied'",
+            rusqlite::params![actor_id, project_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn assigned_admin_is_limited_to_assigned_project_administration() {
+        let (store, _bootstrap_key) = setup_with_admin_key();
+        let (assigned_admin_key, assigned_admin_id, member_id, project_a_id, project_b_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0))
+                .unwrap();
+            let (assigned_admin, assigned_admin_key) =
+                q::invite_user(&conn, &org_id, "assigned@acme.com", "Assigned", "admin").unwrap();
+            let (member, _) =
+                q::invite_user(&conn, &org_id, "member@acme.com", "Member", "member").unwrap();
+            let project_a = q::create_project(&conn, &org_id, "assigned-project", None, None).unwrap();
+            let project_b = q::create_project(&conn, &org_id, "hidden-project", None, None).unwrap();
+            q::upsert_project_member(&conn, &project_a.id, &assigned_admin.id, "admin").unwrap();
+            (assigned_admin_key, assigned_admin.id, member.id, project_a.id, project_b.id)
+        };
+
+        let list = project_admin_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/projects")
+                    .header("Authorization", format!("Bearer {assigned_admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_status = list.status();
+        let list_body = axum::body::to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(list_status, StatusCode::OK, "{}", String::from_utf8_lossy(&list_body));
+        let projects: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+        assert_eq!(projects.as_array().unwrap().len(), 1);
+        assert_eq!(projects[0]["id"], project_a_id);
+
+        let allowed = project_admin_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/projects/{project_a_id}/members"))
+                    .header("Authorization", format!("Bearer {assigned_admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "user_id": member_id, "role": "member" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
+
+        let hidden = project_admin_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/projects/{project_b_id}/members"))
+                    .header("Authorization", format!("Bearer {assigned_admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+        assert_eq!(count_hidden_denials(&store, &assigned_admin_id, &project_b_id), 1);
+
+        let denied_mutation = project_admin_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/projects/{project_b_id}/members"))
+                    .header("Authorization", format!("Bearer {assigned_admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "user_id": member_id, "role": "member" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_mutation.status(), StatusCode::NOT_FOUND);
+        assert_eq!(count_hidden_denials(&store, &assigned_admin_id, &project_b_id), 2);
+
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let hidden_member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+                rusqlite::params![project_b_id, member_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hidden_member_count, 0);
+    }
+
+    #[tokio::test]
+    async fn project_creation_enrolls_only_its_creator() {
+        let (store, admin_key) = setup_with_admin_key();
+        let creator_id = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM users LIMIT 1", [], |row| row.get::<_, String>(0))
+                .unwrap()
+        };
+
+        let response = project_admin_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/projects")
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::json!({ "name": "creator-only" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let project: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let memberships: Vec<String> = conn
+            .prepare("SELECT user_id FROM project_members WHERE project_id = ?1")
+            .unwrap()
+            .query_map([project["id"].as_str().unwrap()], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(memberships, vec![creator_id]);
+    }
+
+    fn key_visibility_app(store: SqliteStore) -> Router {
+        Router::new()
+            .route("/v1/admin/keys", get(list_org_keys))
+            .route("/v1/admin/keys/:key_id", axum::routing::delete(revoke_org_key).get(get_org_key))
+            .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
+            .layer(tower_cookies::CookieManagerLayer::new())
+            .with_state(store)
+    }
+
+    #[tokio::test]
+    async fn scoped_admin_cannot_view_or_revoke_hidden_user_key_but_super_user_can() {
+        let (store, super_user_key) = setup_with_admin_key();
+        let (scoped_admin_key, hidden_key_id) = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", []).unwrap();
+            let org_id: String = conn.query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0)).unwrap();
+            let (scoped_admin, key) = q::invite_user(&conn, &org_id, "key-admin@acme.com", "Key Admin", "admin").unwrap();
+            let (hidden_user, _) = q::invite_user(&conn, &org_id, "key-hidden@acme.com", "Key Hidden", "member").unwrap();
+            let visible = q::create_project(&conn, &org_id, "key-visible", None, None).unwrap();
+            q::upsert_project_member(&conn, &visible.id, &scoped_admin.id, "admin").unwrap();
+            let key_id: String = conn.query_row("SELECT id FROM api_keys WHERE user_id = ?1", [&hidden_user.id], |row| row.get(0)).unwrap();
+            (key, key_id)
+        };
+
+        let listed = key_visibility_app(store.clone()).oneshot(
+            Request::builder().uri("/v1/admin/keys").header("Authorization", format!("Bearer {scoped_admin_key}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let keys: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(keys.as_array().unwrap().iter().all(|key| key["id"] != hidden_key_id));
+
+        let denied = key_visibility_app(store.clone()).oneshot(
+            Request::builder().method("DELETE").uri(format!("/v1/admin/keys/{hidden_key_id}")).header("Authorization", format!("Bearer {scoped_admin_key}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = key_visibility_app(store).oneshot(
+            Request::builder().method("DELETE").uri(format!("/v1/admin/keys/{hidden_key_id}")).header("Authorization", format!("Bearer {super_user_key}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
     }
 }
 
@@ -3774,7 +3996,10 @@ pub async fn list_users_admin(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let users = queries::list_users(&conn, &auth.org_id).map_err(db_err)?;
+    let mut users = queries::list_users(&conn, &auth.org_id).map_err(db_err)?;
+    if !auth.role.is_super_user() {
+        users.retain(|user| user_is_visible_to_actor(&conn, &auth, &user.id).unwrap_or(false));
+    }
     Ok(Json(users))
 }
 
@@ -3791,6 +4016,7 @@ pub async fn update_user_note(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
+    require_visible_user(&conn, &auth, &user_id)?;
 
     let note_str = body.note.as_deref().filter(|s| !s.is_empty());
     let found = queries::update_user_admin_note(&conn, &auth.org_id, &user_id, note_str)

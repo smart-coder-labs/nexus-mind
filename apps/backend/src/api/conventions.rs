@@ -66,7 +66,7 @@ pub async fn list_conventions(
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
     let conventions = queries::list_conventions_visible(
         &conn,
         &auth.org_id,
@@ -87,7 +87,7 @@ pub async fn get_convention(
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
     let convention = queries::get_convention_visible(&conn, &auth.org_id, id, viewer)
         .map_err(db_err)?
         .ok_or_else(not_found)?;

@@ -106,7 +106,7 @@ export function TagAutocomplete({
         autoComplete="off"
       />
       {isOpen && (
-        <div className="bg-[#272729] border border-border-primary rounded-[11px] py-1 shadow-xl absolute z-50 w-full mt-1">
+        <div className="border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[11px] py-1 absolute z-50 w-full mt-1">
           {suggestions.map((stat, i) => (
             <button
               key={stat.name}
@@ -119,8 +119,8 @@ export function TagAutocomplete({
               onMouseEnter={() => setHighlightedIndex(i)}
               className={`w-full px-3 py-1.5 text-xs cursor-pointer flex items-center justify-between text-left ${
                 i === highlightedIndex
-                  ? 'bg-white/[0.06] text-text-primary'
-                  : 'text-text-secondary hover:bg-white/[0.04]'
+                  ? 'bg-accent-blue/10 text-text-primary'
+                  : 'text-text-secondary hover:bg-white/[0.05]'
               }`}
             >
               <span>{stat.name}</span>

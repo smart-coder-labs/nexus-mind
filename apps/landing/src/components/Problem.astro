@@ -5,20 +5,21 @@
 <section class="py-20 px-4" data-reveal>
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-12">
-      <span class="text-xs font-semibold tracking-widest text-red-400 uppercase">El Problema</span>
-      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-white">Tu stack AI está fragmentado</h2>
+      <span class="tile-label" style="color: var(--color-status-error);">El Problema</span>
+      <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-text-primary">Tu stack AI está fragmentado</h2>
       <p class="mt-3 max-w-lg mx-auto" style="color: var(--color-text-secondary);">Cada una funcional por separado. Juntas, un caos sin control.</p>
     </div>
     <div class="grid md:grid-cols-3 gap-6">
       {[
-        { icon: '🧩', title: 'Herramientas Fragmentadas', desc: '5 herramientas AI distintas en tu empresa. Cada una con su login, su factura, su equipo aprendiendo desde cero.' },
-        { icon: '🧠', title: 'Conocimiento Perdido', desc: 'Un developer se va y el contexto del proyecto se va con él. La memoria muere cuando la persona se cambia de equipo.' },
-        { icon: '🔍', title: 'Gobierno Inexistente', desc: 'Sin audit trails, sin data residency, sin RBAC. Tus datos están en servidores que no controlas.' },
+        { icon: '🧩', title: 'Herramientas Fragmentadas', desc: '5 herramientas AI distintas en tu empresa. Cada una con su login, su factura, su equipo aprendiendo desde cero.', accent: 'var(--color-status-error)' },
+        { icon: '🧠', title: 'Conocimiento Perdido', desc: 'Un developer se va y el contexto del proyecto se va con él. La memoria muere cuando la persona se cambia de equipo.', accent: 'var(--color-status-warning)' },
+        { icon: '🔍', title: 'Gobierno Inexistente', desc: 'Sin audit trails, sin data residency, sin RBAC. Tus datos están en servidores que no controlas.', accent: 'var(--color-accent-blue)' },
       ].map((item, i) => (
         <div class="feature-card text-center" data-reveal data-reveal-delay={i * 150}>
-          <div class="text-4xl mb-4">{item.icon}</div>
-          <h3 class="text-lg font-semibold text-white mb-2">{item.title}</h3>
-          <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">{item.desc}</p>
+          <span class="tile-glow" style={`background: ${item.accent}`} aria-hidden="true"></span>
+          <div class="text-4xl mb-4 relative">{item.icon}</div>
+          <h3 class="text-lg font-semibold text-text-primary mb-2 relative">{item.title}</h3>
+          <p class="text-sm leading-relaxed relative" style="color: var(--color-text-secondary);">{item.desc}</p>
         </div>
       ))}
     </div>
@@ -31,19 +32,12 @@
     border: 1px solid var(--color-border-primary);
     border-radius: 1rem;
     padding: 1.75rem;
-    transition: all 0.3s ease;
+    transition: transform 0.3s var(--ease-apple), border-color 0.3s var(--ease-apple);
     position: relative;
     overflow: hidden;
   }
-  .feature-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: linear-gradient(135deg, var(--color-accent-blue-tint), transparent 60%);
-    opacity: 0;
-    transition: opacity 0.4s;
+  .feature-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--color-border-hover);
   }
-  .feature-card:hover::before { opacity: 1; }
-  .feature-card:hover { transform: translateY(-3px); border-color: rgba(10,132,255,0.2); }
 </style>

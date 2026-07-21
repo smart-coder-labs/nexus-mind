@@ -52,7 +52,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 
 const PageFallback = () => (
   <div className="flex-1 p-8">
-    <div className="animate-pulse h-8 bg-[#272729] rounded-[11px] w-48 mb-4" />
+    <div className="animate-pulse h-8 bg-white/[0.04] rounded-[11px] w-48 mb-4" />
   </div>
 )
 

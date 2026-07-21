@@ -13,7 +13,7 @@ export const badgeBaseStyles = `
 // Mirrors the single badge grammar in Badge.tsx (DESIGN_DIRECTION §5):
 // tinted background at ~10% + 20% border; `default` is the neutral surface variant.
 export const badgeVariantStyles: Record<BadgeVariant, string> = {
-    default: 'bg-background-tertiary text-text-secondary border border-border-primary',
+    default: 'bg-white/[0.06] text-text-secondary border border-white/[0.09]',
     primary: 'bg-accent-blue/10 text-accent-blue border border-accent-blue/20',
     success: 'bg-status-success/10 text-status-success border border-status-success/20',
     warning: 'bg-status-warning/10 text-status-warning border border-status-warning/20',

@@ -7,14 +7,16 @@ import { InviteUserModal } from '../components/InviteUserModal'
 import { InviteLinkModal } from '../components/InviteLinkModal'
 import { ConfirmModal } from '../components/ConfirmModal'
 import {
-  UserPlus, Link, X, FileText,
+  UserPlus, Link, X, FileText, Search, KeyRound,
   Users as UsersIcon, UserCheck, Ban, UserMinus, RotateCw, RefreshCcw,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { Badge } from '../components/ui/Badge/Badge'
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '../components/ui/Select'
 import { StatTile } from './dashboard/StatTile'
 import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { cn } from '../lib/utils'
 
 // Keyboard focus indicator (design direction §6): 2px --color-focus-ring outline,
 // 2px offset. Uses outline (not ring) so it isn't clipped by overflow-hidden ancestors.
@@ -33,22 +35,31 @@ function toDate(iso: string): Date {
   return new Date(iso)
 }
 
+// Mockup rule: "just now" only reads green for genuinely fresh activity
+// (< 5 minutes) — everything older uses the neutral secondary/tertiary scale
+// so the green doesn't get diluted across a whole day of activity.
 function relativeTime(dateStr: string | null | undefined): ReactNode {
   if (!dateStr) {
     return <span className="text-[13px] text-text-tertiary">Never</span>
   }
   const now = Date.now()
   const ms = now - toDate(dateStr).getTime()
-  const hours = ms / (1000 * 60 * 60)
+  const minutes = ms / (1000 * 60)
+  const hours = minutes / 60
   const days = hours / 24
 
   let label: string
   let cls: string
 
-  if (hours < 24) {
-    const h = Math.floor(hours)
-    label = h <= 0 ? 'just now' : `${h}h ago`
+  if (minutes < 5) {
+    label = 'just now'
     cls = 'text-status-success'
+  } else if (hours < 1) {
+    label = `${Math.floor(minutes)}m ago`
+    cls = 'text-text-secondary'
+  } else if (hours < 24) {
+    label = `${Math.floor(hours)}h ago`
+    cls = 'text-text-secondary'
   } else if (days <= 30) {
     label = `${Math.floor(days)}d ago`
     cls = 'text-text-secondary'
@@ -58,6 +69,18 @@ function relativeTime(dateStr: string | null | undefined): ReactNode {
   }
 
   return <span className={`text-[13px] ${cls}`}>{label}</span>
+}
+
+// Stable per-user avatar accent: hashes the user's id (falls back to email)
+// so a given user always renders the same color regardless of table sort
+// order or filtering — unlike `accentFor(rowIndex)`, which reshuffled avatar
+// colors every time the visible row order changed.
+function hashString(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0
+  }
+  return Math.abs(h)
 }
 
 // Single source of truth for a user's status — rendered once as a Badge. A
@@ -99,6 +122,10 @@ export default function Users() {
   const [copied, setCopied] = useState(false)
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set())
   const [selectMode, setSelectMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'active' | 'suspended' | 'disabled' | null>(null)
+
+  const isAdmin = session?.user.role === 'admin' || session?.user.role === 'super_user'
 
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
@@ -108,7 +135,16 @@ export default function Users() {
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
-    enabled: (session?.user.role === 'admin' || session?.user.role === 'super_user'),
+    enabled: isAdmin,
+  })
+
+  // Org-wide API keys — admin-only endpoint (see ApiKeys.tsx). Powers the
+  // "API keys" stat tile ONLY when it loads (isAdmin), matching the task's
+  // "omit if the caller can't see it" rule rather than fabricating a count.
+  const { data: orgKeys } = useQuery({
+    queryKey: ['org-api-keys'],
+    queryFn: () => client.listOrgKeys(),
+    enabled: isAdmin,
   })
 
   const [roleSavedFor, setRoleSavedFor] = useState<string | null>(null)
@@ -181,23 +217,68 @@ export default function Users() {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  // Stat tiles are derived strictly from the already-fetched `users` array.
-  // The mockup's "API keys" tile (rotation count) needs audit-log data this
-  // page doesn't fetch, so it's intentionally omitted rather than fabricated.
+  // Stat tiles are derived strictly from the already-fetched `users` (and,
+  // for admins, `orgKeys`) arrays — every sub-caption below is a real
+  // aggregate, never a fabricated figure like the mockup's "8 humans · 11 QA".
   const userList = users ?? []
-  const activeCount = userList.filter(u => !u.disabled_at && u.status === 'active').length
-  const suspendedCount = userList.filter(u => !u.disabled_at && u.status === 'suspended').length
+  const activeUsers = userList.filter(u => !u.disabled_at && u.status === 'active')
+  const suspendedUsers = userList.filter(u => !u.disabled_at && u.status === 'suspended')
+  const activeCount = activeUsers.length
+  const suspendedCount = suspendedUsers.length
   const disabledCount = userList.filter(u => u.disabled_at).length
-  const activeTodayCount = userList.filter(u => {
-    if (u.disabled_at || u.status !== 'active' || !u.last_active) return false
+  const activeTodayCount = activeUsers.filter(u => {
+    if (!u.last_active) return false
     return Date.now() - toDate(u.last_active).getTime() < 24 * 60 * 60 * 1000
   }).length
 
-  const statTiles = [
-    { label: 'Total users', value: String(userList.length), icon: UsersIcon },
-    { label: 'Active', value: String(activeCount), sub: activeTodayCount > 0 ? `${activeTodayCount} active today` : undefined, icon: UserCheck },
-    { label: 'Suspended', value: String(suspendedCount), icon: Ban },
+  // Mockup order: Active, Suspended, Disabled, API keys, Total users.
+  const statTiles: { label: string; value: string; sub?: string; icon: LucideIcon }[] = [
+    {
+      label: 'Active',
+      value: String(activeCount),
+      sub: activeTodayCount > 0 ? `${activeTodayCount} online today` : undefined,
+      icon: UserCheck,
+    },
+    {
+      label: 'Suspended',
+      value: String(suspendedCount),
+      // Exactly one suspended user → name them (matches mockup); otherwise a
+      // real count-based caption instead of a fabricated one.
+      sub: suspendedCount === 1
+        ? suspendedUsers[0].name
+        : suspendedCount > 1 ? `${suspendedCount} users` : undefined,
+      icon: Ban,
+    },
     { label: 'Disabled', value: String(disabledCount), icon: UserMinus },
+  ]
+  if (isAdmin && orgKeys) {
+    const activeKeysCount = orgKeys.filter(k => !k.revoked).length
+    const revokedKeysCount = orgKeys.length - activeKeysCount
+    statTiles.push({
+      label: 'API keys',
+      value: String(activeKeysCount),
+      sub: revokedKeysCount > 0 ? `${revokedKeysCount} revoked` : undefined,
+      icon: KeyRound,
+    })
+  }
+  statTiles.push({ label: 'Total users', value: String(userList.length), icon: UsersIcon })
+
+  // Client-side search (name/email) + status filter, applied to the table only
+  // — the stat tiles above always reflect the full org, per mockup.
+  const filteredUsers = userList.filter(u => {
+    const effectiveStatus = u.disabled_at ? 'disabled' : u.status
+    if (statusFilter && effectiveStatus !== statusFilter) return false
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+    }
+    return true
+  })
+
+  const STATUS_FILTERS: { key: 'active' | 'suspended' | 'disabled'; label: string; dotClass: string; count: number }[] = [
+    { key: 'active', label: 'Active', dotClass: 'bg-status-success', count: activeCount },
+    { key: 'suspended', label: 'Suspended', dotClass: 'bg-status-error', count: suspendedCount },
+    { key: 'disabled', label: 'Disabled', dotClass: 'bg-text-secondary', count: disabledCount },
   ]
 
   return (
@@ -212,7 +293,7 @@ export default function Users() {
             <p className="text-[13px] text-text-secondary mt-1">Manage team members and API keys</p>
           </div>
         </div>
-        {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+        {isAdmin && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => setInviteLinkOpen(true)}
@@ -242,17 +323,54 @@ export default function Users() {
         </KpiMarquee>
       )}
 
+      {/* Search + status filter toolbar (mockup: glass search input, dot
+          filter chips toggling the table below, right-aligned shown count) */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className={`flex items-center gap-2 h-9 w-[280px] px-3.5 rounded-[10px] border border-border-primary bg-[#0d0f14]/60 ${FOCUS}`}>
+          <Search className="w-3.5 h-3.5 text-text-quaternary shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search users…"
+            aria-label="Search users"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-[12.5px] placeholder:text-text-quaternary"
+          />
+        </div>
+        {STATUS_FILTERS.map(f => {
+          const active = statusFilter === f.key
+          return (
+            <button
+              key={f.key}
+              onClick={() => setStatusFilter(prev => (prev === f.key ? null : f.key))}
+              aria-pressed={active}
+              className={cn(
+                'flex items-center gap-1.5 h-8 px-3 rounded-full border text-[12px] font-semibold transition-colors',
+                active ? 'border-white/25 bg-white/[0.07] text-text-primary' : 'border-border-primary bg-[#0d0f14]/60 text-text-secondary hover:border-white/25',
+                FOCUS,
+              )}
+            >
+              <span className={cn('w-[7px] h-[7px] rounded-full', f.dotClass)} />
+              {f.label}
+              <span className="text-[10.5px] text-text-quaternary">{f.count}</span>
+            </button>
+          )
+        })}
+        <div className="flex-1" />
+        <span className="text-[12px] text-text-tertiary">{filteredUsers.length} users</span>
+      </div>
+
       <div className={`rounded-[18px] overflow-hidden overflow-x-auto ${GLASS_PANEL}`}>
         <table className="w-full text-[13px] min-w-[520px]">
           <thead>
             <tr className="border-b border-border-secondary">
-              {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+              {isAdmin && (
                 <th className="px-4 py-3 w-8">
                   <input
                     type="checkbox"
-                    checked={selectedUsers.size === (users?.length ?? 0) && (users?.length ?? 0) > 0}
+                    checked={selectedUsers.size === filteredUsers.length && filteredUsers.length > 0}
                     onChange={e => {
-                      setSelectedUsers(e.target.checked ? new Set(users?.map((u: User) => u.id) ?? []) : new Set())
+                      setSelectedUsers(e.target.checked ? new Set(filteredUsers.map((u: User) => u.id)) : new Set())
                       setSelectMode(e.target.checked)
                     }}
                     className="rounded border-border-primary bg-white/[0.04] accent-accent-blue w-3.5 h-3.5 cursor-pointer"
@@ -270,25 +388,29 @@ export default function Users() {
             {isLoading
               ? Array.from({ length: 4 }).map((_, i) => (
                 <tr key={i}>
-                  {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+                  {isAdmin && (
                     <td className="px-4 py-3 w-8">
-                      <div className="h-3.5 w-3.5 rounded bg-background-tertiary animate-pulse" />
+                      <div className="h-3.5 w-3.5 rounded bg-white/[0.04] animate-pulse" />
                     </td>
                   )}
                   {Array.from({ length: 5 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
-                      <div className="h-4 rounded-[5px] bg-background-tertiary animate-pulse" />
+                      <div className="h-4 rounded-[5px] bg-white/[0.04] animate-pulse" />
                     </td>
                   ))}
                 </tr>
               ))
-              : users?.map((user, index) => (
+              : filteredUsers.map(user => {
+                // Stable per-user accent (see hashString above) — not tied
+                // to row position, so it survives filtering/sorting.
+                const avatarAccent = accentFor(hashString(user.id || user.email))
+                return (
                 <tr
                   key={user.id}
                   className={`hover:bg-accent-blue/[0.05] transition-colors duration-150 cursor-pointer${user.disabled_at ? ' opacity-60' : ''}`}
                   onClick={() => setSelectedUser(user)}
                 >
-                  {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+                  {isAdmin && (
                     <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -308,9 +430,9 @@ export default function Users() {
                       <div
                         className="w-8 h-8 rounded-full border flex items-center justify-center text-[13px] font-semibold shrink-0"
                         style={{
-                          backgroundColor: `color-mix(in srgb, ${accentFor(index)} 15%, transparent)`,
-                          borderColor: `color-mix(in srgb, ${accentFor(index)} 30%, transparent)`,
-                          color: accentFor(index),
+                          backgroundColor: `color-mix(in srgb, ${avatarAccent} 15%, transparent)`,
+                          borderColor: `color-mix(in srgb, ${avatarAccent} 30%, transparent)`,
+                          color: avatarAccent,
                         }}
                       >
                         {user.name[0].toUpperCase()}
@@ -322,7 +444,7 @@ export default function Users() {
                     </div>
                   </td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                    {(session?.user.role === 'admin' || session?.user.role === 'super_user') ? (
+                    {isAdmin ? (
                       <div className="space-y-1">
                         <Select
                           value={user.role}
@@ -359,7 +481,7 @@ export default function Users() {
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       {/* Disable / Enable toggle — admin only, cannot self-disable */}
-                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && session.user.id !== user.id && (
+                      {isAdmin && session.user.id !== user.id && (
                         user.disabled_at ? (
                           <button
                             onClick={() => enableMut.mutate(user.id)}
@@ -379,7 +501,7 @@ export default function Users() {
                         )
                       )}
                       {/* Rotate own key: visible to all roles. Rotate other's key: admin only */}
-                      {((session?.user.role === 'admin' || session?.user.role === 'super_user') || user.id === session?.user.id) && (
+                      {(isAdmin || user.id === session?.user.id) && (
                         <button
                           onClick={() => setRotateTarget(user)}
                           aria-label="Rotate key"
@@ -390,7 +512,7 @@ export default function Users() {
                         </button>
                       )}
                       {/* Reset key: admin-only endpoint — useful when a key is compromised */}
-                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+                      {isAdmin && (
                         <button
                           onClick={() => setResetTarget(user)}
                           aria-label="Reset key"
@@ -400,7 +522,7 @@ export default function Users() {
                           <RefreshCcw className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+                      {isAdmin && (
                         <button
                           onClick={() => setRevokeTarget(user)}
                           aria-label="Revoke"
@@ -413,16 +535,17 @@ export default function Users() {
                     </div>
                   </td>
                 </tr>
-              ))
+                )
+              })
             }
           </tbody>
         </table>
-        {!isLoading && users?.length === 0 && (
+        {!isLoading && userList.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <UserPlus className="w-6 h-6 text-text-quaternary/50" />
             <p className="text-[13px] font-semibold text-text-secondary">No team members yet</p>
             <p className="text-[13px] text-text-tertiary max-w-xs">Invite your first user to start collaborating on memories and projects.</p>
-            {(session?.user.role === 'admin' || session?.user.role === 'super_user') && (
+            {isAdmin && (
               <button
                 onClick={() => setInviteOpen(true)}
                 className={`mt-2 flex items-center gap-2 px-3 py-2 rounded-full bg-accent-blue hover:bg-accent-blue-hover text-white text-[13px] font-semibold transition-colors ${FOCUS}`}
@@ -433,11 +556,18 @@ export default function Users() {
             )}
           </div>
         )}
+        {!isLoading && userList.length > 0 && filteredUsers.length === 0 && (
+          <div className="flex flex-col items-center gap-2 py-16 text-center">
+            <Search className="w-6 h-6 text-text-quaternary/50" />
+            <p className="text-[13px] font-semibold text-text-secondary">No users match your search</p>
+            <p className="text-[13px] text-text-tertiary max-w-xs">Try a different name, email, or clear the status filter.</p>
+          </div>
+        )}
       </div>
 
       {/* Bulk action bar */}
       {selectMode && selectedUsers.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border-primary bg-background-secondary/90 backdrop-blur-sm px-5 py-2.5">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] px-5 py-2.5">
           <span className="text-[13px] text-text-secondary">{selectedUsers.size} selected</span>
           <div className="w-px h-4 bg-border-primary" />
           <button
@@ -490,7 +620,7 @@ export default function Users() {
         onClose={() => setRevokeTarget(null)}
       />
       {revokeMut.isError && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-background-secondary border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
           {(revokeMut.error as Error)?.message ?? 'Failed to revoke user'}
         </div>
       )}
@@ -516,7 +646,7 @@ export default function Users() {
         onClose={() => setResetTarget(null)}
       />
       {resetMut.isError && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-background-secondary border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] border border-status-error/30 rounded-[11px] px-4 py-2 text-[13px] text-status-error/80">
           {(resetMut.error as Error)?.message ?? 'Failed to reset API key'}
         </div>
       )}
@@ -551,7 +681,7 @@ function actionChipCls(action: string): string {
   if (action.startsWith('memory.')) return 'text-accent-blue bg-accent-blue/15 border-accent-blue/30'
   if (action.startsWith('key.') || action.startsWith('invite')) return 'text-status-warning bg-status-warning/10 border-status-warning/30'
   if (action.startsWith('user.') || action === 'revoke') return 'text-status-error bg-status-error/10 border-status-error/30'
-  return 'text-text-tertiary bg-background-tertiary border-border-primary'
+  return 'text-text-tertiary bg-white/[0.06] border-border-primary'
 }
 
 function UserActivityFeed({ userId, client }: { userId: string; client: NexusMindClient }) {
@@ -566,8 +696,8 @@ function UserActivityFeed({ userId, client }: { userId: string; client: NexusMin
       <div className="px-5 py-3 space-y-3">
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="flex items-center gap-3">
-            <div className="h-5 w-20 rounded-[5px] bg-background-tertiary animate-pulse shrink-0" />
-            <div className="h-3.5 flex-1 rounded-[5px] bg-background-tertiary animate-pulse" />
+            <div className="h-5 w-20 rounded-[5px] bg-white/[0.04] animate-pulse shrink-0" />
+            <div className="h-3.5 flex-1 rounded-[5px] bg-white/[0.04] animate-pulse" />
           </div>
         ))}
       </div>
@@ -721,7 +851,7 @@ function UserActivityDrawer({
         role="dialog"
         aria-modal="true"
         aria-label={`Activity for ${user.name || user.email}`}
-        className="fixed right-0 top-0 h-full w-96 bg-background-secondary border-l border-border-primary z-50 flex flex-col shadow-2xl"
+        className="fixed right-0 top-0 h-full w-96 bg-[#0f1117]/[0.94] backdrop-blur-[22px] border-l border-white/10 z-50 flex flex-col shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border-secondary/50">
@@ -806,12 +936,12 @@ function NewKeyModal({ userName, apiKey, copied, onCopy, onClose }: { userName: 
       aria-modal="true"
       aria-label={userName ? `New API key for ${userName}` : 'New API key generated'}
     >
-      <div ref={modalRef} className="bg-background-tertiary border border-border-primary rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
+      <div ref={modalRef} className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 max-w-sm w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
         <p className="text-text-primary font-semibold">
           {userName ? `New API key for ${userName}` : 'New API key generated'}
         </p>
         <p className="text-xs text-status-warning">Copy this key now — it won't be shown again.</p>
-        <div className="font-mono text-xs bg-background-secondary rounded-[11px] p-3 break-all select-all text-text-primary border border-border-secondary flex items-center gap-2">
+        <div className="font-mono text-xs bg-white/[0.03] border border-white/[0.09] rounded-[11px] p-3 break-all select-all text-text-primary flex items-center gap-2">
           <span className="flex-1">{apiKey}</span>
           <button
             onClick={() => onCopy(apiKey)}

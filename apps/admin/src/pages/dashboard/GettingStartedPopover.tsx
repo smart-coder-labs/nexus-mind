@@ -95,9 +95,9 @@ export function GettingStartedPopover({
       </div>
 
       <div className="px-[18px] pb-1.5">
-        <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+        <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
           <div
-            className="h-full rounded-full bg-accent-blue transition-all duration-500"
+            className="h-full rounded-full bg-gradient-to-r from-accent-blue to-accent-blue-hover transition-all duration-500"
             style={{ width: `${totalCount > 0 ? (doneCount / totalCount) * 100 : 0}%` }}
           />
         </div>

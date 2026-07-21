@@ -2,9 +2,12 @@
 import NavbarCTA from './react/NavbarCTA.tsx';
 ---
 
-<nav id="navbar" class="fixed top-0 left-0 w-full z-50 transition-all duration-500">
-  <div class="max-w-6xl mx-auto flex items-center justify-between h-16 px-4">
-    <a href="#" class="text-lg font-bold tracking-tight text-white">
+<nav
+  id="navbar"
+  class="fixed top-3 sm:top-4 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] sm:w-[calc(100%-2rem)] max-w-5xl z-50 rounded-2xl border border-white/[0.09] bg-[#0d0f14]/72 backdrop-blur-[16px] transition-shadow duration-300"
+>
+  <div class="flex items-center justify-between h-14 px-4 sm:px-5">
+    <a href="#" class="text-lg font-bold tracking-tight text-text-primary">
       Nexus<span class="text-accent">Mind</span>
     </a>
     <div class="hidden sm:flex items-center gap-6 text-sm" style="color: var(--color-text-secondary);">
@@ -13,7 +16,7 @@ import NavbarCTA from './react/NavbarCTA.tsx';
       <NavbarCTA client:load />
     </div>
     <!-- Mobile menu button -->
-    <button id="mobileMenuBtn" class="sm:hidden hover:text-white p-2" style="color: var(--color-text-primary);" aria-label="Toggle menu">
+    <button id="mobileMenuBtn" class="sm:hidden hover:text-white p-2 rounded-lg" style="color: var(--color-text-primary);" aria-label="Toggle menu" aria-expanded="false" aria-controls="mobileNav">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <line x1="3" y1="6" x2="21" y2="6"/>
         <line x1="3" y1="12" x2="21" y2="12"/>
@@ -22,11 +25,11 @@ import NavbarCTA from './react/NavbarCTA.tsx';
     </button>
   </div>
   <!-- Mobile nav panel -->
-  <div id="mobileNav" class="sm:hidden backdrop-blur-xl border-t max-h-0 overflow-hidden transition-all duration-300" style="background: var(--color-surface-glass-dark); border-color: var(--color-border-secondary);">
+  <div id="mobileNav" class="sm:hidden border-t max-h-0 overflow-hidden transition-all duration-300 rounded-b-2xl" style="border-color: var(--color-border-secondary);">
     <div class="flex flex-col gap-3 px-4 py-4 text-sm" style="color: var(--color-text-primary);">
       <a href="#features" class="hover:text-white transition-colors py-1">Features</a>
       <a href="#early" class="hover:text-white transition-colors py-1">Early Access</a>
-      <a href="#waitlist" class="bg-accent hover:bg-blue-500 text-white text-center py-2 rounded-full font-medium transition-all">Unirme</a>
+      <a href="#waitlist" class="btn-pill btn-pill-primary text-center py-2">Unirme</a>
     </div>
   </div>
 </nav>
@@ -37,30 +40,28 @@ import NavbarCTA from './react/NavbarCTA.tsx';
   const mobileNav = document.getElementById('mobileNav');
   let mobileOpen = false;
 
-  // Scroll handler: cambia fondo entre transparente y sólido
+  // Scroll handler: the nav is always a floating glass pill; scrolling only
+  // adds a subtle shadow + brighter border so it lifts off the page content
+  // behind it. (Previously this swapped inline background/backdrop-filter
+  // styles directly, which fought with the new persistent glass classes.)
   window.addEventListener('scroll', () => {
-    const scrollY = window.scrollY;
-    if (scrollY > 60) {
-      nav.style.background = 'rgba(0, 0, 0, 0.85)';
-      nav.style.backdropFilter = 'blur(16px)';
-      nav.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
-    } else {
-      nav.style.background = 'transparent';
-      nav.style.backdropFilter = 'none';
-      nav.style.borderBottom = 'none';
-    }
+    if (!nav) return;
+    nav.classList.toggle('shadow-lg', window.scrollY > 60);
+    nav.classList.toggle('border-white/[0.16]', window.scrollY > 60);
   });
 
   mobileBtn?.addEventListener('click', () => {
     mobileOpen = !mobileOpen;
-    mobileNav.style.maxHeight = mobileOpen ? '300px' : '0';
+    if (mobileNav) mobileNav.style.maxHeight = mobileOpen ? '300px' : '0';
+    mobileBtn.setAttribute('aria-expanded', String(mobileOpen));
   });
 
   // Close mobile nav on link click
   mobileNav?.querySelectorAll('a').forEach(a => {
     a.addEventListener('click', () => {
       mobileOpen = false;
-      mobileNav.style.maxHeight = '0';
+      if (mobileNav) mobileNav.style.maxHeight = '0';
+      mobileBtn?.setAttribute('aria-expanded', 'false');
     });
   });
 </script>

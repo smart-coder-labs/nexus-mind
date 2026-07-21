@@ -155,7 +155,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
     >
       <div
         ref={modalRef}
-        className="bg-background-secondary border border-border-primary rounded-[18px] p-6 w-full max-w-md space-y-5"
+        className="border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] rounded-[18px] p-6 w-full max-w-md space-y-5"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -221,7 +221,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
                 id="agent-role"
                 value={role}
                 onChange={e => setRole(e.target.value)}
-                className={`w-full bg-background-secondary border border-border-primary rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
+                className={`w-full bg-white/[0.03] border border-white/[0.09] rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
               >
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
@@ -239,7 +239,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
                 id="agent-expires"
                 value={expires}
                 onChange={e => setExpires(e.target.value as ExpiresOption)}
-                className={`w-full bg-background-secondary border border-border-primary rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
+                className={`w-full bg-white/[0.03] border border-white/[0.09] rounded-[11px] px-3 h-9 text-[13px] text-text-secondary focus:outline-none focus:border-accent-blue/60 transition-colors ${FOCUS_CANVAS}`}
               >
                 {EXPIRES_OPTIONS.map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
@@ -281,7 +281,7 @@ function CreateAgentModal({ open, onClose, onSuccess, roles }: CreateAgentModalP
 
 function SkeletonCard() {
   return (
-    <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5 flex flex-col gap-3">
+    <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between">
         <div className="animate-pulse h-4 bg-white/[0.06] rounded-[8px] w-32" />
         <div className="animate-pulse h-4 bg-white/[0.06] rounded-full w-14" />
@@ -303,7 +303,7 @@ interface AgentCardProps {
 
 function AgentCard({ keyData, onRevoke, onRotate, revoking }: AgentCardProps) {
   return (
-    <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5 flex flex-col gap-3 group relative transition-colors hover:border-white/[0.12]">
+    <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5 flex flex-col gap-3 group relative transition-colors hover:border-white/[0.12]">
       {/* Hover actions */}
       <div className="absolute top-4 right-4 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
@@ -398,7 +398,7 @@ function AgentActivitySection() {
     return (
       <div className="space-y-2">
         {[1, 2, 3].map(i => (
-          <div key={i} className="animate-pulse h-10 bg-background-tertiary rounded-[11px]" />
+          <div key={i} className="animate-pulse h-10 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]" />
         ))}
       </div>
     )
@@ -418,7 +418,7 @@ function AgentActivitySection() {
         {activity.map(item => (
           <div
             key={item.tool}
-            className="flex items-center justify-between px-4 py-2.5 rounded-[11px] bg-background-tertiary border border-border-secondary/50"
+            className="flex items-center justify-between px-4 py-2.5 rounded-[11px] border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]"
           >
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-6 h-6 rounded-full bg-accent-blue/10 flex items-center justify-center shrink-0">
@@ -449,7 +449,7 @@ function AgentActivitySection() {
           <p className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">
             Top agents by requests
           </p>
-          <div className="bg-background-tertiary rounded-[18px] border border-border-primary p-5">
+          <div className="border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px] p-5">
             {topAgents.map((agent, idx) => (
               <div key={agent.name} className="flex items-center justify-between py-1.5 border-b border-border-primary last:border-0">
                 <span className="text-[13px] font-semibold text-text-primary truncate">{idx + 1}. {agent.name}</span>
@@ -571,7 +571,7 @@ export default function Agents() {
           </div>
         ) : !keys?.length ? (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-12 h-12 rounded-full bg-background-tertiary flex items-center justify-center">
+            <div className="w-12 h-12 rounded-full bg-white/[0.06] flex items-center justify-center">
               <Bot className="w-6 h-6 text-text-quaternary" />
             </div>
             <p className="text-[13px] font-semibold text-text-tertiary">No agents yet</p>

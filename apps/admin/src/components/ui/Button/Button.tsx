@@ -16,27 +16,31 @@ const baseStyles = `
   select-none
 `;
 
+// Variant grammar matches the NexusMind UI Kit's four button archetypes:
+// Primary (filled blue + glow), Secondary (glass border), Ghost (borderless
+// muted text), Danger (red border + red text, transparent background).
 const variantStyles: Record<ButtonVariant, string> = {
     primary: `
     bg-accent-blue text-white
+    shadow-md shadow-accent-blue/30
     hover:bg-accent-blue-hover
     active:bg-accent-blue-active
   `,
     secondary: `
     bg-transparent text-text-secondary
     border border-border-primary
-    hover:bg-white/5
+    hover:bg-white/5 hover:border-border-secondary
     active:bg-white/10
   `,
     ghost: `
-    bg-transparent text-accent-blue
-    hover:bg-accent-blue-tint
-    active:bg-accent-blue-tint
+    bg-transparent text-text-tertiary
+    hover:text-text-primary
+    active:text-text-primary
   `,
     subtle: `
-    bg-background-tertiary text-text-primary
-    hover:bg-background-secondary
-    active:bg-background-tertiary
+    bg-white/[0.06] text-text-primary
+    hover:bg-white/[0.10]
+    active:bg-white/[0.06]
   `,
     outline: `
     bg-transparent text-text-primary
@@ -45,9 +49,10 @@ const variantStyles: Record<ButtonVariant, string> = {
     active:bg-white/10
   `,
     destructive: `
-    bg-status-error text-white
-    hover:opacity-90
-    active:opacity-80
+    bg-transparent text-status-error
+    border border-status-error/35
+    hover:bg-status-error/10
+    active:bg-status-error/15
   `,
 };
 

@@ -15,6 +15,16 @@ use crate::{
 
 const EXPORT_HARD_CAP: i64 = 10_000;
 
+fn forbidden() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError {
+            error: "Admin role required".to_string(),
+            code: "forbidden".to_string(),
+        }),
+    )
+}
+
 #[derive(Deserialize)]
 pub struct ExportParams {
     pub user_id: Option<String>,
@@ -85,6 +95,9 @@ pub async fn export(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ExportParams>,
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
+    if !ctx.role.is_super_user() {
+        return Err(forbidden());
+    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "audit:read")?;
@@ -183,6 +196,9 @@ pub async fn query(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Vec<AuditEntry>>, (StatusCode, Json<ApiError>)> {
+    if !ctx.role.is_super_user() {
+        return Err(forbidden());
+    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "audit:read")?;
@@ -384,6 +400,7 @@ mod tests {
             key
         };
 
+        promote_admin_to_super_user(&store);
         let app = app_with_post_audit(store);
 
         let body = serde_json::json!({
@@ -630,6 +647,13 @@ mod tests {
         raw_key
     }
 
+    fn promote_admin_to_super_user(store: &SqliteStore) {
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", [])
+            .unwrap();
+    }
+
     fn setup() -> rusqlite::Connection {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
@@ -688,7 +712,7 @@ mod tests {
     // ── T6: audit role gate (HTTP level) ─────────────────────────────────────
 
     #[tokio::test]
-    async fn audit_admin_returns_200() {
+    async fn audit_admin_returns_403() {
         let store = make_store();
         let admin_key = {
             let db = store.conn();
@@ -702,6 +726,31 @@ mod tests {
                 Request::builder()
                     .uri("/v1/audit")
                     .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn audit_super_user_returns_200() {
+        let store = make_store();
+        let super_user_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            key
+        };
+        promote_admin_to_super_user(&store);
+
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audit")
+                    .header("Authorization", format!("Bearer {super_user_key}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -782,6 +831,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         let resp = app_with_export(store)
             .oneshot(
@@ -808,6 +858,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         let resp = app_with_export(store)
             .oneshot(
@@ -834,6 +885,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         let resp = app_with_export(store)
             .oneshot(
@@ -865,6 +917,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         let resp = app_with_export(store)
             .oneshot(
@@ -891,6 +944,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         let resp = app_with_export(store)
             .oneshot(
@@ -943,6 +997,7 @@ mod tests {
             let (_, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
+        promote_admin_to_super_user(&store);
 
         // With zero rows, X-Export-Truncated must NOT be present.
         let resp = app_with_export(store)
@@ -961,5 +1016,33 @@ mod tests {
             resp.headers().get("x-export-truncated").is_none(),
             "X-Export-Truncated must not be present when rows < cap"
         );
+    }
+
+    #[tokio::test]
+    async fn audit_export_denies_admin_and_member() {
+        let store = make_store();
+        let admin_key = {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let (org, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            drop(conn);
+            let member_key = create_test_user(&store, &org.id, "member");
+            (key, member_key)
+        };
+
+        for key in [admin_key.0, admin_key.1] {
+            let resp = app_with_export(store.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/audit/export?format=csv")
+                        .header("Authorization", format!("Bearer {key}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        }
     }
 }

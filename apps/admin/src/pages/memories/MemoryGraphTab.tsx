@@ -387,7 +387,7 @@ export default function MemoryGraphTab() {
 
             {/* Detail panel — slides in over the right side when a node is selected */}
             {selectedNode && (
-              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] bg-[#16161a]/95 border-l border-border-primary backdrop-blur-sm flex flex-col overflow-hidden">
+              <div className="absolute top-0 right-0 h-full w-[380px] max-w-[70%] border-l border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] flex flex-col overflow-hidden">
                 {/* Panel header */}
                 <div className="flex items-start gap-2 px-4 py-3 border-b border-border-primary shrink-0">
                   <div className="min-w-0 flex-1">

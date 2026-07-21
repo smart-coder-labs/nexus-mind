@@ -4,8 +4,8 @@
 
 export const baseInputStyles = `
   w-full
-  bg-white/[0.04]
-  border border-border-primary
+  bg-white/[0.03]
+  border border-white/[0.09]
   text-text-primary
   placeholder:text-text-quaternary
   transition-apple

@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton'
 import { EmptyState } from '@/components/ui/EmptyState/EmptyState'
 import { Badge } from '@/components/ui/Badge/Badge'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
+import { Switch } from '@/components/ui/Switch/Switch'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -428,24 +429,16 @@ export default function Dashboard() {
                   <LayoutGrid className="w-3 h-3" /> Customize
                 </button>
                 {showCustomize && (
-                  <div className="absolute right-0 top-full mt-2 bg-background-tertiary border border-border-primary rounded-[18px] py-2 min-w-[200px] z-20">
+                  <div className="absolute right-0 top-full mt-2 border border-white/[0.10] bg-[#111319]/[0.95] backdrop-blur-[14px] shadow-[0_10px_34px_rgba(0,0,0,0.6)] rounded-[12px] p-[5px] min-w-[200px] z-20">
                     {ALL_CARDS.map(key => (
-                      <label key={key} className="flex items-center justify-between px-3 py-2 hover:bg-white/[0.04] cursor-pointer">
-                        <span className="text-[13px] text-text-secondary capitalize">{key.replace(/-/g, ' ')}</span>
-                        <button
-                          onClick={() => toggleCard(key)}
-                          className={cn(
-                            'w-8 h-4 rounded-full transition-colors relative shrink-0',
-                            FOCUS_TILE,
-                            isVisible(key) ? 'bg-accent-blue' : 'bg-white/[0.12]'
-                          )}
+                      <label key={key} className="flex items-center justify-between gap-[10px] px-[11px] py-[9px] rounded-[8px] hover:bg-white/[0.06] cursor-pointer">
+                        <span className="text-[12.5px] text-text-secondary capitalize">{key.replace(/-/g, ' ')}</span>
+                        <Switch
+                          size="sm"
+                          checked={isVisible(key)}
+                          onCheckedChange={() => toggleCard(key)}
                           aria-label={`${isVisible(key) ? 'Hide' : 'Show'} ${key} card`}
-                        >
-                          <span className={cn(
-                            'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
-                            isVisible(key) ? 'translate-x-4' : 'translate-x-0.5'
-                          )} />
-                        </button>
+                        />
                       </label>
                     ))}
                   </div>
@@ -956,8 +949,8 @@ export default function Dashboard() {
               {usageLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <div key={i} className="flex items-center justify-between animate-pulse">
-                    <div className="h-3 w-24 rounded-[8px] bg-background-tertiary" />
-                    <div className="h-3 w-10 rounded-[8px] bg-background-tertiary" />
+                    <div className="h-3 w-24 rounded-[8px] bg-white/[0.04]" />
+                    <div className="h-3 w-10 rounded-[8px] bg-white/[0.04]" />
                   </div>
                 ))
               ) : usageStats ? (

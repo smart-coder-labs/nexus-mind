@@ -544,8 +544,9 @@ async fn list_agents_returns_200_not_500() {
 async fn delete_code_project_by_id_removes_only_target() {
     let conn = connection::connect(":memory:").unwrap();
     migrations::run(&conn).unwrap();
-    let (org, _, raw_key) =
+    let (org, admin, raw_key) =
         queries::bootstrap(&conn, "Code Org", "code-org", "code@test.com", "Admin").unwrap();
+    conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
 
     let id_alpha = queries::upsert_code_project(&conn, &org.id, "alpha", "/ws/alpha").unwrap();
     let id_beta = queries::upsert_code_project(&conn, &org.id, "beta", "/ws/beta").unwrap();

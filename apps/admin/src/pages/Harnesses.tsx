@@ -418,7 +418,7 @@ function CreateHarnessModal({ onClose, onFlash }: { onClose: () => void; onFlash
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Create harness" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-border-primary bg-[#1d1d1f] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Create harness" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-xs font-semibold text-text-primary">Create harness</h2>
           <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
@@ -492,7 +492,7 @@ function PublishModal({ harness, onClose, onFlash }: { harness: Harness; onClose
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Publish harness version" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-border-primary bg-[#1d1d1f] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Publish harness version" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-xs font-semibold text-text-primary">Publish harness version</h2>
           <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>
@@ -543,7 +543,7 @@ function ApprovalModal({ harness, onClose, onFlash }: { harness: Harness; onClos
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Approve harness download" className="w-full max-w-lg rounded-[18px] border border-border-primary bg-[#1d1d1f] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Approve harness download" className="w-full max-w-lg rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-4 flex items-center gap-2 text-text-primary">
           <ShieldCheck className="h-4 w-4 text-accent-blue" />
           <h2 className="text-xs font-semibold">Approve harness download</h2>
@@ -870,7 +870,7 @@ function HarnessDetailModal({ harness, onClose }: { harness: Harness; onClose: (
   const version = harness.latest_version
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={`Harness detail ${harness.name}`} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[18px] border border-border-primary bg-[#1d1d1f] p-6" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={`Harness detail ${harness.name}`} className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[18px] border border-white/10 bg-[#0f1117]/[0.94] backdrop-blur-[22px] p-6" onClick={e => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary">{harness.name}</h2>
           <button onClick={onClose} aria-label="Close" className={`rounded-[6px] text-text-tertiary hover:text-text-primary ${FOCUS}`}><X className="h-4 w-4" /></button>

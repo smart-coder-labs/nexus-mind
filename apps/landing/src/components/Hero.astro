@@ -25,8 +25,8 @@ const heroReserved = heroCount + 30;
 ---
 
 <section class="relative min-h-screen flex items-center overflow-hidden" style="background: var(--color-bg-primary);">
+  <canvas id="heroGraph" class="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true"></canvas>
   <div class="absolute inset-0 hero-gradient pointer-events-none"></div>
-  <div class="absolute inset-0 pointer-events-none" style="background-image: radial-gradient(rgba(10,132,255,0.08) 1px, transparent 1px); background-size: 40px 40px;"></div>
 
   <div class="max-w-6xl mx-auto px-4 w-full relative z-10 pt-24 pb-16">
     <div id="heroBadge" class="flex justify-center mb-8" style="opacity:0; transform: translateY(10px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1);">
@@ -36,7 +36,7 @@ const heroReserved = heroCount + 30;
     <div class="text-center max-w-4xl mx-auto">
       <h1 id="heroTitle" class="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.05]" style="opacity:0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;">
         No necesitas otra herramienta AI.<br/>
-        <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-blue-300 to-emerald-300">Necesitas quien las gobierne.</span>
+        <span class="text-gradient-accent">Necesitas quien las gobierne.</span>
       </h1>
       <p id="heroSub" class="mt-6 text-lg sm:text-xl max-w-2xl mx-auto leading-relaxed" style="color: var(--color-text-secondary); opacity:0; transform: translateY(20px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.3s;">
         El control plane universal para tus herramientas AI. Claude Code, Cursor, Copilot, OpenCode — cualquier agente que use tu equipo,
@@ -75,4 +75,118 @@ const heroReserved = heroCount + 30;
       el.style.transform = 'translateY(0)';
     }, i * 120);
   });
+</script>
+
+<script>
+  // Ambient "knowledge graph" background: a dim field of nodes with
+  // connecting lines that drifts very slowly, evoking cross-tool memory.
+  // Pure canvas + vanilla JS (no charting/animation library — none of the
+  // project's deps offer one). Sits behind all hero content (z-index via
+  // DOM order, see markup) and never intercepts pointer events.
+  //
+  // Respects prefers-reduced-motion: reduce by drawing a single static
+  // frame and skipping the animation loop entirely, per the redesign spec's
+  // accessibility floor.
+  (function initHeroGraph() {
+    const canvas = document.getElementById('heroGraph');
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const ACCENT = '0, 102, 204'; // --color-accent-blue as an rgb triple
+
+    /** @type {{ x: number; y: number; vx: number; vy: number; r: number }[]} */
+    let nodes = [];
+    let width = 0;
+    let height = 0;
+    let dpr = 1;
+    let rafId = 0;
+
+    function seedNodes() {
+      const area = width * height;
+      // Roughly one node per ~18,000px² of hero area, clamped to a sane range.
+      const count = Math.max(24, Math.min(70, Math.round(area / 18000)));
+      nodes = Array.from({ length: count }, () => ({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        vx: (Math.random() - 0.5) * 0.12,
+        vy: (Math.random() - 0.5) * 0.12,
+        r: Math.random() * 1.4 + 0.6,
+      }));
+    }
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = rect.width;
+      height = rect.height;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      seedNodes();
+    }
+
+    function drawFrame() {
+      ctx.clearRect(0, 0, width, height);
+
+      // Connections between nearby nodes — the "knowledge graph" lines.
+      const linkDistance = Math.min(160, width / 6);
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < linkDistance) {
+            const opacity = 0.14 * (1 - dist / linkDistance);
+            ctx.strokeStyle = `rgba(${ACCENT}, ${opacity.toFixed(3)})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Nodes on top of their connecting lines.
+      for (const n of nodes) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${ACCENT}, 0.45)`;
+        ctx.fill();
+      }
+    }
+
+    function step() {
+      for (const n of nodes) {
+        n.x += n.vx;
+        n.y += n.vy;
+        if (n.x < 0 || n.x > width) n.vx *= -1;
+        if (n.y < 0 || n.y > height) n.vy *= -1;
+      }
+      drawFrame();
+      rafId = requestAnimationFrame(step);
+    }
+
+    resize();
+    drawFrame();
+
+    if (!prefersReducedMotion) {
+      rafId = requestAnimationFrame(step);
+    }
+
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        cancelAnimationFrame(rafId);
+        resize();
+        drawFrame();
+        if (!prefersReducedMotion) rafId = requestAnimationFrame(step);
+      }, 150);
+    });
+  })();
 </script>

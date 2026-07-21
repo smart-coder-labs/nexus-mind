@@ -19,17 +19,19 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       }}
       className={`
         flex flex-col items-center justify-center text-center p-8
-        bg-[#1d1d1f]/50 rounded-[18px]
+        border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px] rounded-[18px]
         ${className}
       `.trim().replace(/\s+/g, ' ')}
     >
       {icon && (
-        <div className="mb-6 text-text-tertiary">
+        // Icon in a tinted rounded square — matches the NexusMind UI Kit's
+        // empty-state icon treatment (44x44, 13px radius, accent-tinted).
+        <div className="mb-6 w-11 h-11 rounded-[13px] bg-accent-blue/10 flex items-center justify-center shrink-0">
           {React.isValidElement(icon) ? (
             React.cloneElement(icon as React.ReactElement, {
-              size: 48,
-              strokeWidth: 1.5,
-              className: 'w-12 h-12',
+              size: 20,
+              strokeWidth: 1.7,
+              className: 'w-5 h-5 text-accent-blue',
             } as Record<string, unknown>)
           ) : (
             icon
