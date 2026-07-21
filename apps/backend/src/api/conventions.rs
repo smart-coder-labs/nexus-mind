@@ -219,6 +219,14 @@ mod tests {
         (org.id, key)
     }
 
+    fn super_user_key(store: &SqliteStore) -> (String, String) {
+        let (org_id, key) = admin_key(store);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org_id]).unwrap();
+        (org_id, key)
+    }
+
     fn member_key(conn: &rusqlite::Connection, org_id: &str, email: &str) -> (String, String) {
         let (_, key) = queries::invite_user(conn, org_id, email, "Member", "member").unwrap();
         let user_id: String = conn
@@ -309,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn list_scoped_to_project_returns_org_wide_union_project() {
         let store = make_store();
-        let (org_id, key) = admin_key(&store);
+        let (org_id, key) = super_user_key(&store);
 
         let project_a_id = {
             let db = store.conn();
@@ -369,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn list_without_project_returns_everything_for_org() {
         let store = make_store();
-        let (org_id, key) = admin_key(&store);
+        let (org_id, key) = super_user_key(&store);
 
         {
             let db = store.conn();

@@ -427,6 +427,14 @@ mod tests {
         key
     }
 
+    fn super_user_key(store: &SqliteStore) -> String {
+        let key = admin_key(store);
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE users SET role = 'super_user' WHERE email = 'admin@acme.com'", []).unwrap();
+        key
+    }
+
     fn create_user_with_role(store: &SqliteStore, org_id: &str, role: &str) -> String {
         use crate::auth::api_keys;
         use uuid::Uuid;
@@ -1000,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn check_project_scoped_policy_only_applies_to_matching_project() {
         let store = make_store();
-        let key = admin_key(&store);
+        let key = super_user_key(&store);
 
         let (project_a, project_b) = {
             let db = store.conn();

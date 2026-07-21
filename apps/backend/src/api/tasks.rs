@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_by_spec_transitions_across_projects_ignoring_membership() {
+    async fn resolve_by_spec_transitions_member_projects_with_task_write() {
         let (store, admin_key, org_id) = setup_with_key();
         let t1_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj-a", "title": "T1" })).await;
         let t1 = json_body(t1_resp).await["id"].as_str().unwrap().to_string();
@@ -1342,10 +1342,15 @@ mod tests {
             queries::link_task_spec(&conn, &t1, &admin_id, "team-tasks").unwrap();
             queries::link_task_spec(&conn, &t2, &admin_id, "team-tasks").unwrap();
         }
-        let resp = post_json(&store, &admin_key, "/v1/tasks/resolve-by-spec", serde_json::json!({ "spec_change_name": "team-tasks" })).await;
+        // dev-senior explicitly supplies task:write; membership supplies visibility.
+        let (member_key, member_id) = create_member_with_id(&store, &org_id, "dev-senior");
+        add_member_to_project(&store, &org_id, "proj-a", &member_id);
+        add_member_to_project(&store, &org_id, "proj-b", &member_id);
+
+        let resp = post_json(&store, &member_key, "/v1/tasks/resolve-by-spec", serde_json::json!({ "spec_change_name": "team-tasks" })).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
-        assert_eq!(json["resolved"].as_array().unwrap().len(), 2);
+        assert_eq!(json["resolved"], serde_json::json!([t1, t2]));
     }
 
     // ── PR6: sprints ──────────────────────────────────────────────────────
