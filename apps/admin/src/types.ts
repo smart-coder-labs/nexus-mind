@@ -162,6 +162,32 @@ export interface UsageStats {
   code_repos: number
 }
 
+export interface DashboardData {
+  stats: OrgStats
+  usage: UsageStats | null
+  trends: MemoryTrends
+  activity: AuditEntry[]
+  agent_activity: AgentActivity[] | null
+  heatmap: HeatmapDay[] | null
+  contributors: ContributorStat[] | null
+  health: { total_memories: number; duplicate_count: number; stale_count: number; untagged_count: number } | null
+  users: User[] | null
+  onboarding: OnboardingStatus | null
+  conventions: Convention[] | null
+  availability: DashboardAvailability
+}
+
+export interface DashboardAvailability {
+  usage: boolean
+  users: boolean
+  onboarding: boolean
+  agent_activity: boolean
+  health: boolean
+  contributors: boolean
+  heatmap: boolean
+  conventions: boolean
+}
+
 export interface AuditFilters {
   user_id?: string
   action?: string

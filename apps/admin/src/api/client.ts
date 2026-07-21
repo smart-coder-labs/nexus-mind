@@ -40,6 +40,7 @@ import type {
   AgentActivity,
   HeatmapDay,
   ContributorStat,
+  DashboardData,
   MergeMemoriesRequest,
   NotificationItem,
   ProjectStats,
@@ -110,8 +111,8 @@ export class NexusMindClient {
       },
     })
     if (!res.ok) {
-      if (res.status === 403) {
-        window.location.replace('/401')
+      if (res.status === 401) {
+        window.location.replace('/login')
       }
       const body = await res.json().catch(() => ({ error: res.statusText, code: 'unknown' }))
       throw Object.assign(new Error(body.error ?? res.statusText), {
@@ -137,6 +138,10 @@ export class NexusMindClient {
 
   getStats(): Promise<OrgStats> {
     return this.request('/v1/admin/stats')
+  }
+
+  getDashboard(days: 7 | 30 | 90): Promise<DashboardData> {
+    return this.request(`/v1/admin/dashboard?days=${days}`)
   }
 
   getMemoryFacets(): Promise<MemoryFacets> {

@@ -22,7 +22,7 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     config::Config,
     db::queries,
-    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats, UserRole},
+    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, DashboardData, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats, UserRole},
     store::sqlite::SqliteStore,
 };
 
@@ -251,6 +251,18 @@ pub async fn stats(
     let conn = db.lock().map_err(|_| lock_err())?;
     let s = queries::get_stats(&conn, &auth.org_id).map_err(db_err)?;
     Ok(Json(s))
+}
+
+pub async fn dashboard(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<DaysParam>,
+) -> Result<Json<DashboardData>, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_privileged() { return Err(forbidden()); }
+    let days = match params.days.unwrap_or(30) { 7 | 30 | 90 => params.days.unwrap_or(30), _ => return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "days must be one of 7, 30, or 90".to_string(), code: "invalid_period".to_string() }))) };
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    Ok(Json(queries::get_dashboard_data(&conn, &auth.org_id, &auth.user_id, auth.role.is_super_user(), days).map_err(db_err)?))
 }
 
 pub async fn usage_stats(

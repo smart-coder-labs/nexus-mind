@@ -14,7 +14,7 @@ import {
   Brain, Clock, Users, FolderOpen, Code2, UserPlus, FolderPlus, Download, FileText, Zap,
   LayoutGrid, BookMarked, ChevronRight, Search,
 } from 'lucide-react'
-import type { DailyCount, AgentActivity, HeatmapDay, ContributorStat } from '../types'
+import type { DailyCount, AgentActivity, HeatmapDay, ContributorStat, Convention, DashboardAvailability } from '../types'
 import { StatTile } from './dashboard/StatTile'
 import { QuickActionsRow, type QuickAction } from './dashboard/QuickActionsRow'
 import { GettingStartedPopover } from './dashboard/GettingStartedPopover'
@@ -106,6 +106,14 @@ function MemoryHeatmap({ data }: { data: HeatmapDay[] }) {
         </div>
       ))}
     </div>
+  )
+}
+
+function UnavailableState() {
+  return (
+    <p role="status" className="text-[13px] text-text-tertiary text-center py-4">
+      Unavailable for scoped administrators.
+    </p>
   )
 }
 
@@ -208,85 +216,31 @@ export default function Dashboard() {
     return () => document.removeEventListener('mousedown', handler)
   }, [showCustomize])
 
-  const { data: stats, isLoading: statsLoading, isError: statsError } = useQuery({
-    queryKey: ['stats'],
-    queryFn: () => client.getStats(),
+  const { data: dashboardData, isLoading: dashboardLoading, isError: statsError } = useQuery({
+    queryKey: ['dashboard', period],
+    queryFn: () => client.getDashboard(period),
     refetchInterval: 30_000,
     enabled: hasAdminAccess,
   })
-
-  const [activityLimit, setActivityLimit] = useState(20)
-  const { data: activity, isLoading: activityLoading, isFetching: activityFetching } = useQuery({
-    queryKey: ['audit', 'recent', activityLimit],
-    queryFn: () => client.getAuditLog({ limit: activityLimit }),
-    refetchInterval: 30_000,
-    enabled: hasAdminAccess,
-    placeholderData: (prev) => prev,
-  })
-
-  const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => client.listUsers(),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: trends, isLoading: trendsLoading } = useQuery({
-    queryKey: ['memory-trends', period],
-    queryFn: () => client.getMemoryTrends(period),
-    refetchInterval: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: onboarding } = useQuery({
-    queryKey: ['onboarding'],
-    queryFn: () => client.getOnboarding(),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: usageStats, isLoading: usageLoading } = useQuery({
-    queryKey: ['usage-stats'],
-    queryFn: () => client.getUsageStats(),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: agentActivity, isLoading: agentActivityLoading } = useQuery({
-    queryKey: ['agent-activity', period],
-    queryFn: () => client.getAgentActivity(period),
-    refetchInterval: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: heatmapData } = useQuery({
-    queryKey: ['memory-heatmap', period],
-    queryFn: () => client.getMemoryHeatmap(period),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: contributors, isLoading: contributorsLoading } = useQuery({
-    queryKey: ['top-contributors', period],
-    queryFn: () => client.getTopContributors(period),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: conventions } = useQuery({
-    queryKey: ['conventions'],
-    queryFn: () => client.listConventions(),
-    staleTime: 60_000,
-    enabled: hasAdminAccess,
-  })
-
-  const { data: healthData } = useQuery({
-    queryKey: ['memory-health'],
-    queryFn: () => client.getMemoryHealth(),
-    staleTime: 5 * 60_000,
-    enabled: hasAdminAccess,
-    retry: false,
-  })
+  const stats = dashboardData?.stats
+  const activity = dashboardData?.activity
+  const users = dashboardData?.users
+  const trends = dashboardData?.trends
+  const usageStats = dashboardData?.usage
+  const agentActivity = dashboardData?.agent_activity
+  const heatmapData = dashboardData?.heatmap
+  const contributors = dashboardData?.contributors
+  const healthData = dashboardData?.health
+  const onboarding = dashboardData?.onboarding
+  const conventions: Convention[] | null = dashboardData?.conventions ?? null
+  const statsLoading = dashboardLoading
+  const trendsLoading = dashboardLoading
+  const usageLoading = dashboardLoading
+  const activityLoading = dashboardLoading
+  const agentActivityLoading = dashboardLoading
+  const contributorsLoading = dashboardLoading
+  const availability: DashboardAvailability | undefined = dashboardData?.availability
+  const isAvailable = (widget: keyof DashboardAvailability) => availability?.[widget] ?? false
 
   const conventionStats = useMemo(() => {
     if (!conventions) return []
@@ -346,15 +300,15 @@ export default function Dashboard() {
       {
         id: 'sessions',
         label: 'Sessions',
-        value: usageStats ? usageStats.sessions.toLocaleString() : '—',
-        sub: 'All time total',
+        value: usageStats?.sessions.toLocaleString() ?? '—',
+        sub: isAvailable('usage') ? 'All time total' : 'Unavailable for scoped administrators',
         icon: Clock,
       },
       {
         id: 'active-users',
         label: 'Active Users (24h)',
         value: stats.active_users_24h.toLocaleString(),
-        sub: users ? `of ${users.length.toLocaleString()} users` : undefined,
+        sub: isAvailable('users') && users ? `of ${users.length.toLocaleString()} users` : 'Unavailable for scoped administrators',
         icon: Users,
       },
       {
@@ -374,19 +328,21 @@ export default function Dashboard() {
       {
         id: 'conventions',
         label: 'Conventions',
-        value: conventions ? conventions.length.toLocaleString() : '—',
-        sub: conventionStats.length ? `${conventionStats.length} categories` : undefined,
+        value: conventions?.length.toLocaleString() ?? '—',
+        sub: isAvailable('conventions')
+          ? (conventionStats.length ? `${conventionStats.length} categories` : undefined)
+          : 'Unavailable for scoped administrators',
         icon: BookMarked,
       },
     ]
     return tiles
-  }, [stats, trends, usageStats, users, conventions, conventionStats])
+  }, [stats, trends, usageStats, users, conventions, conventionStats, availability])
 
   const quickActions: QuickAction[] = [
     { label: 'Invite user', href: '/users', icon: UserPlus },
     { label: 'New collection', href: '/memories?tab=collections', icon: FolderPlus },
-    { label: 'Export config', icon: Download, onAction: () => client.exportOrgConfig().then(b => downloadBlob(b, 'nexusmind-config.json')) },
-    { label: 'View audit log', href: '/audit', icon: FileText },
+    ...(isSuperUser ? [{ label: 'Export config', icon: Download, onAction: () => client.exportOrgConfig().then(b => downloadBlob(b, 'nexusmind-config.json')) }] : []),
+    ...(isSuperUser ? [{ label: 'View audit log', href: '/audit', icon: FileText }] : []),
     { label: 'Manage webhooks', href: '/settings', icon: Zap },
   ]
 
@@ -491,6 +447,12 @@ export default function Dashboard() {
               onExpand={() => { setGsMinimized(false); localStorage.setItem(GS_MINIMIZED_KEY, 'false') }}
               onNavigate={(href) => navigate(href)}
             />
+          )}
+          {isVisible('onboarding') && !dashboardLoading && !isAvailable('onboarding') && (
+            <div className={`mt-4 rounded-[18px] p-5 ${GLASS_PANEL}`}>
+              <h2 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Getting Started</h2>
+              <UnavailableState />
+            </div>
           )}
         </section>
       )}
@@ -735,18 +697,6 @@ export default function Dashboard() {
                           </div>
                         </div>
                       ))}
-                      {activity.length >= activityLimit && (
-                        <div className="pt-1 pl-5">
-                          <button
-                            type="button"
-                            onClick={() => setActivityLimit(l => l + 20)}
-                            disabled={activityFetching}
-                            className={cn('text-[13px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 rounded-[8px] px-1', FOCUS_TILE)}
-                          >
-                            {activityFetching ? 'Loading…' : 'Show more'}
-                          </button>
-                        </div>
-                      )}
                     </div>
                   )
                 })()}
@@ -821,7 +771,7 @@ export default function Dashboard() {
                   <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Agent Activity</h3>
                   <span className="text-[12px] text-text-tertiary">{period} days</span>
                 </div>
-                {agentActivityLoading ? (
+                {!isAvailable('agent_activity') && !agentActivityLoading ? <UnavailableState /> : agentActivityLoading ? (
                   <div className="space-y-2">
                     {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-[52px] rounded-[12px]" />)}
                   </div>
@@ -873,12 +823,14 @@ export default function Dashboard() {
                   <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Health</h3>
                   <span className="text-[12px] text-text-tertiary">Last 30 days</span>
                 </div>
-                <MemoryHealthCard
-                  total={healthData?.total_memories}
-                  duplicates={healthData?.duplicate_count}
-                  stale={healthData?.stale_count}
-                  untagged={healthData?.untagged_count}
-                />
+                {!isAvailable('health') && !dashboardLoading ? <UnavailableState /> : (
+                  <MemoryHealthCard
+                    total={healthData?.total_memories}
+                    duplicates={healthData?.duplicate_count}
+                    stale={healthData?.stale_count}
+                    untagged={healthData?.untagged_count}
+                  />
+                )}
               </div>
             )}
 
@@ -904,7 +856,7 @@ export default function Dashboard() {
                   <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Top Contributors</h3>
                   <span className="text-[12px] text-text-tertiary">Last {period} days</span>
                 </div>
-                {contributorsLoading ? (
+                {!isAvailable('contributors') && !contributorsLoading ? <UnavailableState /> : contributorsLoading ? (
                   <div className="space-y-3">
                     {Array.from({ length: 3 }).map((_, i) => (
                       <div key={i} className="animate-pulse bg-white/[0.04] rounded-[8px] h-5" />
@@ -953,7 +905,7 @@ export default function Dashboard() {
                     <div className="h-3 w-10 rounded-[8px] bg-white/[0.04]" />
                   </div>
                 ))
-              ) : usageStats ? (
+              ) : !isAvailable('usage') ? <UnavailableState /> : usageStats ? (
                 <>
                   {([
                     { icon: Brain, label: 'Memories', value: usageStats.memories },
@@ -983,18 +935,18 @@ export default function Dashboard() {
                 <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-text-primary">Memory Activity</h3>
                 <span className="text-[12px] text-text-tertiary">Last {period} days</span>
               </div>
-              {heatmapData ? (
+              {!isAvailable('heatmap') && !dashboardLoading ? <UnavailableState /> : heatmapData ? (
                 <MemoryHeatmap data={heatmapData} />
               ) : (
                 <div className="h-[78px] bg-white/[0.04] animate-pulse rounded-[8px]" />
               )}
-              <div className="flex items-center gap-1 mt-3">
+              {isAvailable('heatmap') && <div className="flex items-center gap-1 mt-3">
                 <span className="text-[12px] text-text-tertiary">Less</span>
                 {(['bg-white/[0.04]', 'bg-accent-blue/20', 'bg-accent-blue/40', 'bg-accent-blue/60', 'bg-accent-blue'] as const).map((c, i) => (
                   <div key={i} className={`w-[10px] h-[10px] rounded-[2px] ${c}`} />
                 ))}
                 <span className="text-[12px] text-text-tertiary">More</span>
-              </div>
+              </div>}
             </div>
           )}
 
@@ -1006,13 +958,13 @@ export default function Dashboard() {
                   View all →
                 </a>
               </div>
-              {conventionStats.map(cat => (
+              {!isAvailable('conventions') && !dashboardLoading ? <UnavailableState /> : conventionStats.map(cat => (
                 <div key={cat.category} className="flex items-center justify-between py-1.5 border-b border-border-secondary/20 last:border-0">
                   <span className="text-[13px] text-text-secondary capitalize">{cat.category}</span>
                   <span className="text-[12px] text-text-tertiary">{cat.count}</span>
                 </div>
               ))}
-              {conventionStats.length === 0 && (
+              {isAvailable('conventions') && conventionStats.length === 0 && (
                 <p className="text-[13px] text-text-tertiary">No conventions yet. <a href="/conventions" className={cn('text-accent-blue rounded-[8px]', FOCUS_TILE)}>Add one →</a></p>
               )}
             </div>

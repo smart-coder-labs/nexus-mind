@@ -340,6 +340,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/audit", get(audit::query))
         .route("/v1/audit/export", get(audit::export))
         .route("/v1/audit/log", post(audit::post_audit))
+        .route("/v1/admin/dashboard", get(admin::dashboard))
         .route("/v1/admin/stats", get(admin::stats))
         .route("/v1/admin/stats/memory-facets", get(admin::memory_facets))
         .route(

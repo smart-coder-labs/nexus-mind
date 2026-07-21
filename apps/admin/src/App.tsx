@@ -50,6 +50,14 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function SuperUserRoute({ children }: { children: React.ReactNode }) {
+  const { session, loading } = useAuth()
+  if (loading) return null
+  if (!session) return <Navigate to="/login" replace />
+  if (session.user.role !== 'super_user') return <Navigate to="/401" replace />
+  return <>{children}</>
+}
+
 const PageFallback = () => (
   <div className="flex-1 p-8">
     <div className="animate-pulse h-8 bg-white/[0.04] rounded-[11px] w-48 mb-4" />
@@ -87,7 +95,7 @@ function AppRoutes() {
                 <Route path="/sessions" element={<MaybeDisabled href="/sessions"><Sessions /></MaybeDisabled>} />
                 <Route path="/memories" element={<Memories />} />
                 <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
-                <Route path="/audit"    element={<AdminRoute><AuditLog /></AdminRoute>} />
+                <Route path="/audit"    element={<SuperUserRoute><AuditLog /></SuperUserRoute>} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/backups" element={<AdminRoute><Backups /></AdminRoute>} />
                 <Route path="/harnesses" element={<AdminRoute><Harnesses /></AdminRoute>} />

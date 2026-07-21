@@ -13498,6 +13498,48 @@ pub fn get_memory_health(
     })
 }
 
+pub fn get_dashboard_data(conn: &Connection, org_id: &str, user_id: &str, is_super_user: bool, days: i64) -> Result<crate::models::types::DashboardData> {
+    use crate::models::types::{DashboardAvailability, DashboardData, OrgStats, ToolUsage};
+    if is_super_user {
+        let from = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        return Ok(DashboardData {
+            stats: get_stats(conn, org_id)?, usage: Some(get_usage_stats(conn, org_id)?), trends: get_memory_trends(conn, org_id, days)?,
+            activity: list_audit(conn, org_id, None, None, None, Some(&from), None, None, 20, 0)?,
+            agent_activity: Some(get_agent_activity(conn, org_id, days)?), heatmap: Some(get_memory_heatmap(conn, org_id, days)?), contributors: Some(get_top_contributors(conn, org_id, days)?),
+            health: Some(get_memory_health(conn, org_id)?), users: Some(list_users(conn, org_id)?), onboarding: Some(get_onboarding_status(conn, org_id)?), conventions: Some(list_conventions(conn, org_id, None, None, None, 100, 0)?),
+            availability: DashboardAvailability { usage: true, users: true, onboarding: true, agent_activity: true, health: true, contributors: true, heatmap: true, conventions: true },
+        });
+    }
+    let visible = "m.org_id = ?1 AND EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id WHERE p.org_id = m.org_id AND p.name = m.project AND pm.user_id = ?2)";
+    let total_memories = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
+    let active_users_24h = conn.query_row(&format!("SELECT COUNT(DISTINCT a.user_id) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.timestamp > datetime('now', '-24 hours') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
+    let searches_today = conn.query_row(&format!("SELECT COUNT(*) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.action = 'search' AND a.timestamp > datetime('now', 'start of day') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
+    let mut tools = conn.prepare(&format!("SELECT COALESCE(m.tool, 'unknown'), COUNT(*) FROM memories m WHERE {visible} GROUP BY COALESCE(m.tool, 'unknown') ORDER BY COUNT(*) DESC LIMIT 5"))?;
+    let top_tools = tools.query_map(rusqlite::params![org_id, user_id], |row| Ok(ToolUsage { tool: row.get(0)?, count: row.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut events = conn.prepare(&format!("SELECT a.id, a.org_id, a.user_id, a.timestamp, a.action, a.resource_type, a.resource_id, a.previous_hash, a.current_hash FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.timestamp >= datetime('now', '-' || ?3 || ' days') AND {visible} ORDER BY a.timestamp DESC LIMIT 20"))?;
+    let activity = events.query_map(rusqlite::params![org_id, user_id, days], |row| Ok(crate::models::types::AuditEntry { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, timestamp: row.get(3)?, action: row.get(4)?, resource_type: row.get(5)?, resource_id: row.get(6)?, metadata: serde_json::json!({}), previous_hash: row.get(7)?, current_hash: row.get(8)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(DashboardData {
+        stats: OrgStats { total_memories, active_users_24h, searches_today, top_tools }, trends: scoped_memory_trends(conn, org_id, user_id, days, visible)?, activity,
+        usage: None, agent_activity: None, heatmap: None, contributors: None, health: None, users: None, onboarding: None, conventions: None,
+        availability: DashboardAvailability { usage: false, users: false, onboarding: false, agent_activity: false, health: false, contributors: false, heatmap: false, conventions: false },
+    })
+}
+
+fn scoped_memory_trends(conn: &Connection, org_id: &str, user_id: &str, days: i64, visible: &str) -> Result<crate::models::types::MemoryTrends> {
+    use crate::models::types::{DailyCount, NameCount};
+    let period = "m.created_at >= datetime('now', '-' || ?3 || ' days')";
+    let mut daily = conn.prepare(&format!("SELECT date(m.created_at), COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY date(m.created_at) ORDER BY date(m.created_at)"))?;
+    let daily_counts = daily.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(DailyCount { date: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut types = conn.prepare(&format!("SELECT COALESCE(m.type, 'untyped'), COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY m.type ORDER BY COUNT(*) DESC LIMIT 5"))?;
+    let by_type = types.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(NameCount { name: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut projects = conn.prepare(&format!("SELECT m.project, COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY m.project ORDER BY COUNT(*) DESC LIMIT 5"))?;
+    let by_project = projects.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(NameCount { name: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let total = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND {period}"), rusqlite::params![org_id, user_id, days], |r| r.get(0))?;
+    let this_week = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND m.created_at >= datetime('now', '-7 days')"), rusqlite::params![org_id, user_id], |r| r.get(0))?;
+    let this_month = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND m.created_at >= datetime('now', '-30 days')"), rusqlite::params![org_id, user_id], |r| r.get(0))?;
+    Ok(crate::models::types::MemoryTrends { daily_counts, by_type, by_project, total, this_week, this_month })
+}
+
 /// Merges two memories: appends `merge_id`'s content to `keep_id`'s content (separated by
 /// `\n\n---\n\n`), then deletes `merge_id`. Both must belong to the given org.
 /// Returns the updated `keep_id` memory on success, or an error if either memory is not found.

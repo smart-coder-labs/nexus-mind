@@ -556,6 +556,34 @@ pub struct UsageStats {
     pub code_repos: i64,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct DashboardData {
+    pub stats: OrgStats,
+    pub usage: Option<UsageStats>,
+    pub trends: MemoryTrends,
+    pub activity: Vec<AuditEntry>,
+    pub agent_activity: Option<Vec<AgentActivity>>,
+    pub heatmap: Option<Vec<HeatmapDay>>,
+    pub contributors: Option<Vec<ContributorStat>>,
+    pub health: Option<MemoryHealth>,
+    pub users: Option<Vec<User>>,
+    pub onboarding: Option<OnboardingStatus>,
+    pub conventions: Option<Vec<Convention>>,
+    pub availability: DashboardAvailability,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct DashboardAvailability {
+    pub usage: bool,
+    pub users: bool,
+    pub onboarding: bool,
+    pub agent_activity: bool,
+    pub health: bool,
+    pub contributors: bool,
+    pub heatmap: bool,
+    pub conventions: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Project {
     pub id: String,

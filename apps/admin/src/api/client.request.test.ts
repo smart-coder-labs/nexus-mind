@@ -44,4 +44,22 @@ describe('NexusMindClient request() empty-body handling', () => {
 
     expect(task).toEqual({ id: 'task-1', title: 'Do the thing' })
   })
+
+  it('does not redirect for a feature-level 403', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden', code: 'forbidden' }), { status: 403 }))
+
+    const client = new NexusMindClient('https://api.test')
+
+    await expect(client.getAuditLog()).rejects.toMatchObject({ status: 403 })
+    expect(window.location.replace).not.toHaveBeenCalled()
+  })
+
+  it('redirects to login when the session is unauthenticated', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthenticated', code: 'unauthorized' }), { status: 401 }))
+
+    const client = new NexusMindClient('https://api.test')
+
+    await expect(client.getStats()).rejects.toMatchObject({ status: 401 })
+    expect(window.location.replace).toHaveBeenCalledWith('/login')
+  })
 })
