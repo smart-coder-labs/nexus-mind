@@ -26,8 +26,8 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Worker and Governed Execution
 
-- [ ] 2.1 RED: In `workers/src/claude_code.test.ts`, reject injected argv, shell/path escape, TTY, unpinned extensions, and malformed stream events.
-- [ ] 2.2 GREEN: Create `workers/src/{worker,provider,claude_code,sandbox,events}.ts` with fixed noninteractive invocation, strict settings, caps, redaction, and secret teardown.
+- [x] 2.1 RED: In `workers/src/claude_code.test.ts`, reject injected argv, shell/path escape, TTY, unpinned extensions, and malformed stream events.
+- [x] 2.2 GREEN: Create `workers/src/{worker,provider,claude_code,sandbox,events}.ts` with fixed noninteractive invocation, strict settings, caps, redaction, and secret teardown.
 - [ ] 2.3 RED: Test deterministic manifests, expired/cancelled lease, cost/tool/network cap, and evaluator block in `apps/backend/tests/automation_orchestration.rs`.
 - [ ] 2.4 GREEN: Add `apps/backend/src/automation/leases.rs`, context/gates/evaluation wiring, and `lib.rs`/`config.rs` registration.
 

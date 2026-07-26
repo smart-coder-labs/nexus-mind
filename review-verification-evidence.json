@@ -1,0 +1,16 @@
+{
+  "schema": "gentle-ai.review-verification-evidence/v1",
+  "commands": [
+    {
+      "command": "cargo test --manifest-path apps/backend/Cargo.toml --test automation_policy",
+      "exit_code": 0,
+      "summary": "Passed: 6 tests passed, 0 failed, 0 ignored, 0 measured, 0 filtered out. Cargo warned that sqlx-postgres v0.8.0 will be rejected by a future Rust version."
+    },
+    {
+      "command": "cargo test --manifest-path apps/backend/Cargo.toml --test automation_db",
+      "exit_code": 0,
+      "summary": "Passed: 3 tests passed, 0 failed, 0 ignored, 0 measured, 0 filtered out. Cargo warned that sqlx-postgres v0.8.0 will be rejected by a future Rust version."
+    }
+  ],
+  "conclusion": "PASS: both requested automation test targets passed."
+}
