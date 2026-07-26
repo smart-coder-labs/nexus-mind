@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod api;
+pub mod automation;
 pub mod backup;
 pub mod config;
 pub mod db;

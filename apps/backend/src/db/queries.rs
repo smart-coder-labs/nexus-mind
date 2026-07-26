@@ -1445,6 +1445,111 @@ pub fn log_audit(
     Ok(())
 }
 
+// ── Automation provenance ────────────────────────────────────────────────────
+
+/// Creates a durable automation run. The v57 trigger enforces that an optional
+/// project belongs to the run's organization.
+pub fn create_automation_run(
+    conn: &Connection,
+    id: &str,
+    org_id: &str,
+    project_id: Option<&str>,
+    created_by: &str,
+    profile_version_ref: &str,
+    policy_generation: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO automation_runs
+         (id, org_id, project_id, created_by, profile_version_ref, policy_generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            id,
+            org_id,
+            project_id,
+            created_by,
+            profile_version_ref,
+            policy_generation
+        ],
+    )?;
+    Ok(())
+}
+
+/// Starts an attempt under a durable automation run.
+pub fn create_automation_attempt(conn: &Connection, id: &str, run_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO automation_attempts (id, run_id) VALUES (?1, ?2)",
+        rusqlite::params![id, run_id],
+    )?;
+    Ok(())
+}
+
+/// Records a worker callback as an immutable receipt. A replay with the same
+/// attempt/callback identity is a successful no-op; an inactive, foreign, or
+/// unknown attempt is denied by the database trigger.
+pub fn record_automation_callback(
+    conn: &Connection,
+    org_id: &str,
+    attempt_id: &str,
+    callback_id: &str,
+    payload_hash: &str,
+) -> Result<bool> {
+    let existing_payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_hash FROM automation_receipts WHERE attempt_id = ?1 AND callback_id = ?2",
+            rusqlite::params![attempt_id, callback_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(existing_payload) = existing_payload {
+        if existing_payload == payload_hash {
+            return Ok(false);
+        }
+        anyhow::bail!("automation_callback_payload_mismatch");
+    }
+
+    let affected = conn.execute(
+        "INSERT INTO automation_receipts (id, org_id, attempt_id, callback_id, payload_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(attempt_id, callback_id) DO NOTHING",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            org_id,
+            attempt_id,
+            callback_id,
+            payload_hash
+        ],
+    )?;
+    Ok(affected == 1)
+}
+
+/// Revokes an active attempt and appends its immutable stop evidence.
+pub fn revoke_automation_attempt(
+    conn: &Connection,
+    org_id: &str,
+    attempt_id: &str,
+    reason: &str,
+) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let affected = tx.execute(
+        "UPDATE automation_attempts
+         SET status = 'revoked', revoked_at = datetime('now')
+         WHERE id = ?1 AND status = 'active' AND EXISTS (
+             SELECT 1 FROM automation_runs r
+             WHERE r.id = automation_attempts.run_id AND r.org_id = ?2
+         )",
+        rusqlite::params![attempt_id, org_id],
+    )?;
+    if affected == 1 {
+        tx.execute(
+            "INSERT INTO automation_revocations (id, org_id, attempt_id, reason)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![Uuid::new_v4().to_string(), org_id, attempt_id, reason],
+        )?;
+    }
+    tx.commit()?;
+    Ok(affected == 1)
+}
+
 // ── Harness sharing ───────────────────────────────────────────────────────────
 
 fn harness_hash(manifest: &serde_json::Value) -> Result<String> {

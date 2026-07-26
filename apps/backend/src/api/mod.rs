@@ -1,4 +1,5 @@
 pub mod router;
+pub mod automation;
 pub mod middleware;
 pub mod health;
 pub mod helpers;

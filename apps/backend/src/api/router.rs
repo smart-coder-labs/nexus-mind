@@ -9,7 +9,7 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, backup, code, context, conventions, github_auth, harnesses, health,
+    admin, agents, audit, auth, automation, backup, code, context, conventions, github_auth, harnesses, health,
     internal, memory, middleware as api_mw, policy, rate_limit, search, sdd, sessions, tasks,
     users, webhooks,
 };
@@ -152,6 +152,8 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             patch(policy::update_policy).delete(policy::delete_policy),
         )
         .route("/v1/policy/check", post(policy::check_policy))
+        .route("/v1/automation/profiles", get(automation::list_profiles))
+        .route("/v1/automation/authorize", post(automation::authorize_profile))
         .route(
             "/v1/conventions",
             get(conventions::list_conventions).post(conventions::create_convention),

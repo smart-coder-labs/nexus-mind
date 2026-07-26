@@ -325,9 +325,9 @@ fn migration_idempotency() {
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
 
-    // Verify user_version is the current max (56 after the knowledge migration)
+    // Verify user_version is the current max (57 after automation provenance)
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 56);
+    assert_eq!(version, 57);
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.
