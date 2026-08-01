@@ -28,6 +28,7 @@ const Graph       = lazy(() => import('./pages/Graph'))
 const Harnesses   = lazy(() => import('./pages/Harnesses'))
 const Tasks       = lazy(() => import('./pages/Tasks'))
 const Sdd         = lazy(() => import('./pages/Sdd'))
+const Automation  = lazy(() => import('./pages/Automation'))
 const Unauthorized = lazy(() => import('./pages/Unauthorized'))
 
 /** Redirects to / when the given href is in DISABLED_NAV_HREFS; otherwise renders children. */
@@ -101,6 +102,7 @@ function AppRoutes() {
                 <Route path="/harnesses" element={<AdminRoute><Harnesses /></AdminRoute>} />
                 <Route path="/tasks"    element={<AdminRoute><Tasks /></AdminRoute>} />
                 <Route path="/sdd"      element={<AdminRoute><Sdd /></AdminRoute>} />
+                <Route path="/automation" element={<AdminRoute><Automation /></AdminRoute>} />
                 <Route path="/graph"   element={<Graph />} />
                 <Route path="/401"    element={<Unauthorized />} />
               </Routes>
