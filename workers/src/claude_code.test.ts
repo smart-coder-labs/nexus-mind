@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   buildClaudeCodeInvocation,
@@ -7,7 +10,16 @@ import {
 } from './claude_code'
 import { prepareWorkerAttempt } from './worker'
 
-const sandboxRoot = '/sandbox/attempt-42'
+const sandboxRoot = mkdtempSync(join(tmpdir(), 'nexus-mind-sandbox-'))
+const attemptRoot = join(sandboxRoot, 'attempt-42')
+const worktreePath = join(attemptRoot, 'worktree')
+
+mkdirSync(worktreePath, { recursive: true })
+mkdirSync(join(attemptRoot, '.automation'))
+
+afterAll(() => {
+  rmSync(sandboxRoot, { recursive: true, force: true })
+})
 
 const profile = {
   model: 'claude-sonnet-4-20250514',
@@ -25,9 +37,10 @@ const profile = {
 }
 
 describe('Claude Code managed invocation', () => {
-  it('uses a fixed non-interactive argv and rejects injected arguments, TTY, and sandbox escapes', () => {
+  it('uses a fixed non-interactive argv with an argument boundary and rejects injected arguments and TTY', () => {
     const invocation = buildClaudeCodeInvocation({
       sandboxRoot,
+      worktreePath,
       prompt: 'Inspect the requested change.',
       profile,
     })
@@ -44,12 +57,13 @@ describe('Claude Code managed invocation', () => {
         '12',
         '--strict-mcp-config',
         '--settings',
-        '/sandbox/attempt-42/.automation/settings.json',
+        `${realpathSync(attemptRoot)}/.automation/settings.json`,
         '--mcp-config',
-        '/sandbox/attempt-42/.automation/mcp.json',
+        `${realpathSync(attemptRoot)}/.automation/mcp.json`,
+        '--',
         'Inspect the requested change.',
       ],
-      cwd: '/sandbox/attempt-42/worktree',
+      cwd: realpathSync(worktreePath),
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -57,6 +71,7 @@ describe('Claude Code managed invocation', () => {
     expect(() =>
       buildClaudeCodeInvocation({
         sandboxRoot,
+        worktreePath,
         prompt: 'Inspect',
         profile,
         requestedArgs: ['--dangerously-skip-permissions'],
@@ -66,19 +81,49 @@ describe('Claude Code managed invocation', () => {
     expect(() =>
       buildClaudeCodeInvocation({
         sandboxRoot,
+        worktreePath,
         prompt: 'Inspect',
         profile,
         tty: true,
       }),
     ).toThrow('Interactive TTY execution is forbidden')
 
+    expect(
+      buildClaudeCodeInvocation({
+        sandboxRoot,
+        worktreePath,
+        prompt: '--dangerously-skip-permissions',
+        profile,
+      }).args.slice(-2),
+    ).toEqual(['--', '--dangerously-skip-permissions'])
+  })
+
+  it('accepts only a resolved worktree within the configured sandbox root', () => {
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'nexus-mind-outside-'))
+    const outsideWorktree = join(outsideRoot, 'worktree')
+    mkdirSync(outsideWorktree)
+    const escapedWorktree = join(attemptRoot, 'escaped-worktree')
+    symlinkSync(outsideWorktree, escapedWorktree)
+
     expect(() =>
       buildClaudeCodeInvocation({
-        sandboxRoot: '/sandbox/attempt-42/../host',
+        sandboxRoot,
+        worktreePath: outsideWorktree,
         prompt: 'Inspect',
         profile,
       }),
-    ).toThrow('Sandbox root must be canonical')
+    ).toThrow('Worktree must be contained within the sandbox root')
+
+    expect(() =>
+      buildClaudeCodeInvocation({
+        sandboxRoot,
+        worktreePath: escapedWorktree,
+        prompt: 'Inspect',
+        profile,
+      }),
+    ).toThrow('Worktree must be contained within the sandbox root')
+
+    rmSync(outsideRoot, { recursive: true, force: true })
   })
 
   it('accepts only fully pinned managed extensions', () => {
@@ -93,7 +138,7 @@ describe('Claude Code managed invocation', () => {
     ).toThrow('Extension repo-plugin is not pinned and approved')
   })
 
-  it('normalizes valid stream events and rejects malformed or unknown events', () => {
+  it('normalizes valid stream events using the prepared attempt identity and rejects malformed or unknown events', () => {
     expect(
       parseClaudeStreamEvent(
         JSON.stringify({
@@ -101,22 +146,26 @@ describe('Claude Code managed invocation', () => {
           session_id: 'attempt-42',
           message: { content: [{ type: 'text', text: 'Working.' }] },
         }),
+        'expected-attempt-42',
       ),
     ).toEqual({
       kind: 'assistant',
-      attemptId: 'attempt-42',
+      attemptId: 'expected-attempt-42',
+      sessionId: 'attempt-42',
       text: 'Working.',
     })
 
-    expect(() => parseClaudeStreamEvent('{invalid json')).toThrow('Malformed Claude stream event')
+    expect(() => parseClaudeStreamEvent('{invalid json', 'expected-attempt-42')).toThrow('Malformed Claude stream event')
     expect(() =>
-      parseClaudeStreamEvent(JSON.stringify({ type: 'tool_use', session_id: 'attempt-42' })),
+      parseClaudeStreamEvent(JSON.stringify({ type: 'tool_use', session_id: 'attempt-42' }), 'expected-attempt-42'),
     ).toThrow('Unsupported Claude stream event type: tool_use')
   })
 
   it('creates strict managed settings, redacts ephemeral secrets, and tears them down', () => {
     const attempt = prepareWorkerAttempt({
       sandboxRoot,
+      worktreePath,
+      attemptId: 'expected-attempt-42',
       prompt: 'Inspect the requested change.',
       profile,
       requestedExtensions: profile.approvedExtensions,
@@ -144,12 +193,18 @@ describe('Claude Code managed invocation', () => {
           message: { content: [{ type: 'text', text: 'token=ephemeral-token' }] },
         }),
       ),
-    ).toEqual({ kind: 'assistant', attemptId: 'attempt-42', text: 'token=[REDACTED]' })
+    ).toEqual({
+      kind: 'assistant',
+      attemptId: 'expected-attempt-42',
+      sessionId: 'attempt-42',
+      text: 'token=[REDACTED]',
+    })
 
     attempt.teardown()
     expect(attempt.consumeEvent(JSON.stringify({ type: 'result', session_id: 'attempt-42' }))).toEqual({
       kind: 'result',
-      attemptId: 'attempt-42',
+      attemptId: 'expected-attempt-42',
+      sessionId: 'attempt-42',
       text: undefined,
     })
   })

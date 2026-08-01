@@ -1,3 +1,6 @@
+import { realpathSync } from 'node:fs'
+import { dirname, relative } from 'node:path'
+
 export interface SandboxPaths {
   root: string
   worktree: string
@@ -14,13 +17,16 @@ export interface SecretEnvironment {
   destroy(): void
 }
 
-export function createSandboxPaths(root: string): SandboxPaths {
-  assertCanonicalSandboxRoot(root)
+export function createSandboxPaths(sandboxRoot: string, worktreePath: string): SandboxPaths {
+  const root = realpathSync(sandboxRoot)
+  const worktree = realpathSync(worktreePath)
+
+  assertWorktreeInSandbox(root, worktree)
 
   return {
     root,
-    worktree: `${root}/worktree`,
-    automation: `${root}/.automation`,
+    worktree,
+    automation: `${dirname(worktree)}/.automation`,
   }
 }
 
@@ -37,8 +43,10 @@ export function injectEphemeralSecrets(grants: SecretGrant[]): SecretEnvironment
   }
 }
 
-export function assertCanonicalSandboxRoot(root: string): void {
-  if (!root.startsWith('/') || root.includes('..') || root.endsWith('/')) {
-    throw new Error('Sandbox root must be canonical')
+function assertWorktreeInSandbox(sandboxRoot: string, worktree: string): void {
+  const pathFromSandbox = relative(sandboxRoot, worktree)
+
+  if (!pathFromSandbox || pathFromSandbox === '..' || pathFromSandbox.startsWith('../')) {
+    throw new Error('Worktree must be contained within the sandbox root')
   }
 }

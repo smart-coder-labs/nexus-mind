@@ -1,11 +1,12 @@
 import type { ClaudeInvocation, ManagedExtension, ManagedProfile } from './provider'
 import { parseClaudeStreamEvent } from './events'
-import { assertCanonicalSandboxRoot, createSandboxPaths } from './sandbox'
+import { createSandboxPaths } from './sandbox'
 
 export { parseClaudeStreamEvent } from './events'
 
 interface BuildInvocationInput {
   sandboxRoot: string
+  worktreePath: string
   prompt: string
   profile: ManagedProfile
   requestedArgs?: string[]
@@ -21,8 +22,7 @@ export function buildClaudeCodeInvocation(input: BuildInvocationInput): ClaudeIn
     throw new Error('Interactive TTY execution is forbidden')
   }
 
-  assertCanonicalSandboxRoot(input.sandboxRoot)
-  const sandbox = createSandboxPaths(input.sandboxRoot)
+  const sandbox = createSandboxPaths(input.sandboxRoot, input.worktreePath)
 
   return {
     command: 'claude',
@@ -39,6 +39,7 @@ export function buildClaudeCodeInvocation(input: BuildInvocationInput): ClaudeIn
       `${sandbox.automation}/settings.json`,
       '--mcp-config',
       `${sandbox.automation}/mcp.json`,
+      '--',
       input.prompt,
     ],
     cwd: sandbox.worktree,

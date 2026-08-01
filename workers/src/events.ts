@@ -3,6 +3,7 @@ export type AttemptEventKind = 'started' | 'assistant' | 'tool' | 'usage' | 'res
 export interface AttemptEvent {
   kind: AttemptEventKind
   attemptId: string
+  sessionId?: string
   text?: string
 }
 
@@ -15,7 +16,7 @@ const supportedEventTypes = new Set<AttemptEventKind>([
   'error',
 ])
 
-export function parseClaudeStreamEvent(line: string): AttemptEvent {
+export function parseClaudeStreamEvent(line: string, attemptId: string): AttemptEvent {
   let raw: unknown
 
   try {
@@ -34,7 +35,8 @@ export function parseClaudeStreamEvent(line: string): AttemptEvent {
 
   return {
     kind: raw.type as AttemptEventKind,
-    attemptId: raw.session_id,
+    attemptId,
+    sessionId: raw.session_id,
     text: extractText(raw.message),
   }
 }

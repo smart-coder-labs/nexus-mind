@@ -9,7 +9,9 @@ import type { ManagedExtension, ManagedProfile } from './provider'
 import { injectEphemeralSecrets, type SecretGrant } from './sandbox'
 
 export interface WorkerAttempt {
+  attemptId: string
   sandboxRoot: string
+  worktreePath: string
   prompt: string
   profile: ManagedProfile
   requestedExtensions: ManagedExtension[]
@@ -37,7 +39,7 @@ export function prepareWorkerAttempt(attempt: WorkerAttempt): PreparedAttempt {
     settings: buildStrictSettings(attempt.profile),
     extensions,
     consumeEvent(line) {
-      return redactEvent(parseClaudeStreamEvent(line), secrets.values)
+      return redactEvent(parseClaudeStreamEvent(line, attempt.attemptId), secrets.values)
     },
     teardown() {
       secrets.destroy()
