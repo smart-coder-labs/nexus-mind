@@ -4,10 +4,10 @@ use clap::{Args, Parser};
 pub struct ContextFabricConfig {
     #[arg(long, env = "CONTEXT_FABRIC_ENABLED", default_value_t = false)]
     pub enabled: bool,
-    #[arg(long, env = "CONTEXT_FABRIC_BQ_ENABLED", default_value_t = false)]
-    pub bq_enabled: bool,
-    #[arg(long, env = "CONTEXT_FABRIC_MRL_ENABLED", default_value_t = false)]
-    pub mrl_enabled: bool,
+    #[arg(long, env = "CONTEXT_FABRIC_BQ_ENABLED", default_value = "off")]
+    pub bq_enabled: String,
+    #[arg(long, env = "CONTEXT_FABRIC_MRL_ENABLED", default_value = "off")]
+    pub mrl_enabled: String,
     #[arg(
         long,
         env = "CONTEXT_FABRIC_TOOL_SEARCH_ENABLED",
@@ -40,8 +40,8 @@ impl Default for ContextFabricConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bq_enabled: false,
-            mrl_enabled: false,
+            bq_enabled: "off".into(),
+            mrl_enabled: "off".into(),
             tool_search_enabled: false,
             profile: "nomic-768-f32-baseline".into(),
             generation: "baseline".into(),
@@ -130,8 +130,8 @@ mod tests {
     fn context_fabric_defaults_are_safe_and_baseline_compatible() {
         let config = ContextFabricConfig::default();
         assert!(!config.enabled);
-        assert!(!config.bq_enabled);
-        assert!(!config.mrl_enabled);
+        assert_eq!(config.bq_enabled, "off");
+        assert_eq!(config.mrl_enabled, "off");
         assert!(!config.tool_search_enabled);
         assert_eq!(config.profile, "nomic-768-f32-baseline");
         assert_eq!(config.generation, "baseline");

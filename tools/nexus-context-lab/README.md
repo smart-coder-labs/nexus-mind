@@ -49,8 +49,11 @@ bootstrap metadata with 95% confidence intervals. BQ and MRL default to off.
 ```
 
 Stages A0 FTS5, A1 dense Float32, A2 hybrid/RRF, A3 policy-first/generations,
-A4 Compiler, A5 BQ shadow, and A6 MRL are contracts only. This package does not
-implement real BQ, MRL, Tool Search MCP, or product dataset access.
+A4 Compiler, A5 BQ shadow, and A6 MRL support deterministic synthetic contract
+measurements. They do not access product datasets or claim NX-Gold. BQ/MRL are
+shadow-only, dense Float32 is always the final rescore, and theoretical payload
+reduction must not be read as RSS or end-to-end improvement. Tool Search MCP remains
+out of scope.
 
 ## Tests
 

@@ -20,8 +20,8 @@ Configuration is typed in `apps/backend/src/config.rs` and can be set with:
 | `CONTEXT_FABRIC_TOKEN_BUDGET` | `4096` |
 | `CONTEXT_FABRIC_SOURCE_CAP` | `20` |
 | `CONTEXT_FABRIC_DIAGNOSTICS` | `true` |
-| `CONTEXT_FABRIC_BQ_ENABLED` | `false` |
-| `CONTEXT_FABRIC_MRL_ENABLED` | `false` |
+| `CONTEXT_FABRIC_BQ_ENABLED` | `off` |
+| `CONTEXT_FABRIC_MRL_ENABLED` | `off` |
 | `CONTEXT_FABRIC_TOOL_SEARCH_ENABLED` | `false` |
 
 ## New contract
@@ -74,10 +74,32 @@ BQ, MRL and Tool Search profile names; they do not enable those capabilities.
 Diagnostics expose only active profile/generation, rollout state, cache counters and bounded
 reason codes. They do not expose cached content, keys, memory text or policy configuration.
 
+## Experimental BQ/MRL shadow
+
+`POST /v1/context/lab/shadow` is an explicit laboratory endpoint for authorized synthetic
+or pre-authorized arenas. `CONTEXT_FABRIC_BQ_ENABLED=shadow` or
+`CONTEXT_FABRIC_MRL_ENABLED=shadow` is required; absent, `false`, and every other value are
+rejected. The default remains `off`. The endpoint validates tenant, ACL/policy generation,
+profile, snapshot, model, preprocessing, normalization, tokenizer, and dimension identity.
+It never changes the active profile, ranking lane, or baseline result.
+
+BQ stores sign bits in bytes or u64 words and ranks candidates with XOR/popcount. MRL supports
+prefixes 768, 512, 256, 128, and 64. Both paths use dense Float32 rescoring for the returned
+experimental pool; quantized/prefix ranking is never the final ranking. Metrics report
+CandidateRecall@K, alpha, candidate and dense-rescore latency, theoretical payload bytes and
+theoretical RSS separately, and quality delta. A payload reduction such as 32x is not an RSS
+or end-to-end reduction claim.
+
+Promotion is not automatic. The response remains baseline fallback and reports reason codes;
+promotion eligibility requires recall >= .98, alpha <= 8, zero security/freshness violations,
+and quality delta <= 1pp, plus the existing immutable-manifest/NX-Gold/operator gates. Alpha
+above 8 is diagnostic only. The lab runner uses deterministic synthetic inputs and flags, but
+sample data remains `NX-Gold v0: PENDING` and is never reported as a gold pass.
+
 ## Migration and follow-up
 
 This slice adds no database migration and never auto-applies one at startup. Durable
 profile/generation publication, atomic artifact pointers, user-applied migrations,
-NX-Gold, BQ/MRL, Tool Search, persistent/distributed cache, automatic migration, and large UI
-remain follow-up work. The rollout controls in this slice are operational controls for the
+NX-Gold promotion evidence, Tool Search, persistent/distributed cache, automatic migration,
+and large UI remain follow-up work. BQ/MRL remain laboratory shadow capabilities only. The rollout controls in this slice are operational controls for the
 baseline-compatible Context Fabric only, not a replacement for the legacy APIs.

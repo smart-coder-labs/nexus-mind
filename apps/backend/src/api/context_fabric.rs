@@ -5,7 +5,7 @@ use crate::{
         validate_generation_identity,
         verify_request_generation, AssembleRequest, AssembleResponse, ContextFabricManifest,
         GenerateRequest, GenerationRef, VerifyRequest, VerifyResponse, ClaimStatus,
-        ClaimVerification, GenerationMetadata,
+        ClaimVerification, GenerationMetadata, ShadowRequest, ShadowResponse, run_shadow,
     },
     db::migrations,
     models::types::{ApiError, AuthContext},
@@ -205,6 +205,23 @@ pub async fn diagnostics(State(store): State<SqliteStore>, Extension(auth): Exte
     let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?; require_permission(&conn, &auth, None, "memory:read")?;
     let active = active_manifest(&conn, &auth.org_id).map_err(fabric_error)?; let runtime = store.context_runtime();
     Ok(Json(serde_json::json!({"cache": runtime.stats(), "rollout": runtime.rollout(), "active_profile": active.as_ref().map(|m| &m.profile_id), "active_generation": active.map(|m| m.generation), "reason_codes": ["stale_evidence_excluded", "freshness_unknown_timestamp", "baseline_fallback_required"]})))
+}
+
+/// Laboratory-only BQ/MRL measurement. It never changes the active profile or result lane.
+pub async fn lab_shadow(
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(request): Json<ShadowRequest>,
+) -> Result<Json<ShadowResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "memory:read")?;
+    let capability = request.capability.to_ascii_lowercase();
+    let flag_name = match capability.as_str() { "bq" => "CONTEXT_FABRIC_BQ_ENABLED", "mrl" => "CONTEXT_FABRIC_MRL_ENABLED", _ => return Err(verification_error("unsupported_shadow_capability")) };
+    if std::env::var(flag_name).as_deref() != Ok("shadow") { return Err(verification_error("capability_flag_not_shadow")); }
+    let active = active_manifest(&conn, &auth.org_id).map_err(fabric_error)?.ok_or_else(|| verification_error("no_active_generation"))?;
+    if active.acl_generation != request.baseline_manifest.acl_generation || active.policy_generation != request.baseline_manifest.policy_generation
+        || active.profile_id != request.baseline_manifest.profile_id || active.profile_version != request.baseline_manifest.profile_version
+        || active.generation != request.baseline_manifest.generation { return Err(verification_error("active_profile_generation_mismatch")); }
+    drop(conn);
+    run_shadow(&request, &auth.org_id, "shadow").map(Json).map_err(fabric_error)
 }
 
 fn verify_memory_evidence(

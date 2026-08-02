@@ -86,6 +86,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/context/rollout/promote", post(context_fabric::rollout_promote))
         .route("/v1/context/rollout/rollback", post(context_fabric::rollout_rollback))
         .route("/v1/context/diagnostics", get(context_fabric::diagnostics))
+        .route("/v1/context/lab/shadow", post(context_fabric::lab_shadow))
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/export", get(memory::export))

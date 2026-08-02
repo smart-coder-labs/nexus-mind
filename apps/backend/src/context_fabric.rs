@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, time::Instant};
 
 pub const CONTRACT_VERSION: &str = "context-fabric.v0";
 pub const BASELINE_PROFILE: &str = "baseline-nomic-768-f32-v1";
@@ -697,6 +697,130 @@ pub fn verify_request_generation(
     Ok(())
 }
 
+// Experimental retrieval primitives stay outside the active dense lane. A caller must
+// explicitly request a shadow run and the result is never promoted automatically.
+pub const MRL_DIMENSIONS: &[usize] = &[768, 512, 256, 128, 64];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShadowVector { pub id: String, pub tenant_scope: String, pub dense: Vec<f32>, pub authorized: bool, pub fresh: bool }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShadowRequest {
+    pub capability: String,
+    pub manifest: ContextFabricManifest,
+    pub baseline_manifest: ContextFabricManifest,
+    pub query: Vec<f32>,
+    pub arena: Vec<ShadowVector>,
+    pub k: usize,
+    pub alpha: f32,
+    #[serde(default)] pub prefix_dimension: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShadowMetrics {
+    pub candidate_recall_at_k: f32, pub alpha: f32, pub candidate_latency_ms: f64,
+    pub dense_rescore_latency_ms: f64, pub candidate_payload_bytes: usize,
+    pub dense_payload_bytes: usize, pub theoretical_payload_reduction: f32,
+    pub rss_theoretical_bytes: usize, pub quality_delta: f32,
+    pub security_violations: usize, pub freshness_violations: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShadowResponse {
+    pub capability: String, pub baseline_ids: Vec<String>, pub candidate_ids: Vec<String>,
+    pub rescored_ids: Vec<String>, pub metrics: ShadowMetrics, pub gate_pass: bool,
+    pub promotion: bool, pub fallback: String, pub reason_codes: Vec<String>,
+}
+
+pub fn sign_bit_encode(vector: &[f32]) -> Vec<u8> {
+    vector.chunks(8).map(|chunk| chunk.iter().enumerate().fold(0u8, |word, (bit, value)| word | (((*value).is_sign_positive() as u8) << bit))).collect()
+}
+
+pub fn sign_bit_encode_words(vector: &[f32]) -> Vec<u64> {
+    vector.chunks(64).map(|chunk| chunk.iter().enumerate().fold(0u64, |word, (bit, value)| word | (((*value).is_sign_positive() as u64) << bit))).collect()
+}
+
+pub fn sign_bit_decode(encoded: &[u8], dimension: usize) -> Vec<f32> {
+    (0..dimension).map(|index| if encoded[index / 8] & (1 << (index % 8)) != 0 { 1.0 } else { -1.0 }).collect()
+}
+
+pub fn hamming_distance(left: &[u8], right: &[u8]) -> u32 {
+    left.iter().zip(right).map(|(a, b)| (a ^ b).count_ones()).sum::<u32>() + (left.len().saturating_sub(right.len()) * 8) as u32
+}
+
+pub fn hamming_distance_words(left: &[u64], right: &[u64]) -> u32 {
+    left.iter().zip(right).map(|(a, b)| (a ^ b).count_ones()).sum::<u32>() + (left.len().saturating_sub(right.len()) * 64) as u32
+}
+
+fn dot_distance(left: &[f32], right: &[f32], dimension: usize) -> f32 {
+    let dimensions = dimension.min(left.len()).min(right.len());
+    let (dot, left_norm, right_norm) = (0..dimensions).fold((0.0, 0.0, 0.0), |(dot, ln, rn), i| (dot + left[i] * right[i], ln + left[i] * left[i], rn + right[i] * right[i]));
+    if left_norm == 0.0 || right_norm == 0.0 { 1.0 } else { 1.0 - dot / (left_norm.sqrt() * right_norm.sqrt()) }
+}
+
+fn sorted_ids(mut scored: Vec<(String, f32)>) -> Vec<String> {
+    scored.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    scored.into_iter().map(|(id, _)| id).collect()
+}
+
+fn compatible_shadow_manifests(request: &ShadowRequest) -> Result<usize> {
+    request.manifest.validate()?; request.baseline_manifest.validate()?;
+    if request.manifest.tenant_scope != request.baseline_manifest.tenant_scope
+        || request.manifest.snapshot != request.baseline_manifest.snapshot
+        || request.manifest.source_commit != request.baseline_manifest.source_commit
+        || request.manifest.preprocessing != request.baseline_manifest.preprocessing
+        || request.manifest.chunker != request.baseline_manifest.chunker
+        || request.manifest.normalization != request.baseline_manifest.normalization
+        || request.manifest.tokenizer != request.baseline_manifest.tokenizer
+        || request.manifest.model.hash != request.baseline_manifest.model.hash
+        || request.manifest.acl_generation != request.baseline_manifest.acl_generation
+        || request.manifest.policy_generation != request.baseline_manifest.policy_generation
+        || request.manifest.generation != request.baseline_manifest.generation { return Err(anyhow!("incompatible_manifest_preprocessing_or_generation")); }
+    if request.manifest.dimension != 768 || request.manifest.dtype.to_ascii_lowercase() != "f32" { return Err(anyhow!("shadow_base_dimension_dtype_mismatch")); }
+    let dimension = request.prefix_dimension.unwrap_or(768);
+    if request.capability.eq_ignore_ascii_case("mrl") && !MRL_DIMENSIONS.contains(&dimension) { return Err(anyhow!("unsupported_mrl_prefix_dimension")); }
+    if request.capability.eq_ignore_ascii_case("bq") && dimension != 768 { return Err(anyhow!("bq_dimension_mismatch")); }
+    if !matches!(request.capability.to_ascii_lowercase().as_str(), "bq" | "mrl") { return Err(anyhow!("unsupported_shadow_capability")); }
+    Ok(dimension)
+}
+
+pub fn run_shadow(request: &ShadowRequest, tenant: &str, flag: &str) -> Result<ShadowResponse> {
+    if flag != "shadow" { return Err(anyhow!("capability_flag_not_shadow")); }
+    if request.k == 0 { return Err(anyhow!("invalid_k")); }
+    if !(request.alpha.is_finite() && request.alpha > 0.0 && request.alpha <= 16.0) { return Err(anyhow!("invalid_alpha")); }
+    let dimension = compatible_shadow_manifests(request)?;
+    if request.manifest.tenant_scope != tenant && request.manifest.tenant_scope != "org" { return Err(anyhow!("manifest_tenant_scope_mismatch")); }
+    if request.query.len() != 768 || request.arena.iter().any(|v| v.dense.len() != 768) { return Err(anyhow!("vector_dimension_mismatch")); }
+    if request.arena.iter().any(|v| v.tenant_scope != tenant) { return Err(anyhow!("authorization_isolation_violation")); }
+    if request.arena.iter().any(|v| !v.authorized) { return Err(anyhow!("unauthorized_vector")); }
+    if request.arena.iter().any(|v| !v.fresh) { return Err(anyhow!("stale_vector")); }
+    let baseline_ids = sorted_ids(request.arena.iter().map(|v| (v.id.clone(), dot_distance(&request.query, &v.dense, 768))).collect()).into_iter().take(request.k).collect::<Vec<_>>();
+    let candidate_start = Instant::now();
+    let candidate_ids = if request.capability.eq_ignore_ascii_case("bq") {
+        let query_bits = sign_bit_encode(&request.query);
+        sorted_ids(request.arena.iter().map(|v| (v.id.clone(), hamming_distance(&query_bits, &sign_bit_encode(&v.dense)) as f32)).collect())
+    } else { sorted_ids(request.arena.iter().map(|v| (v.id.clone(), dot_distance(&request.query, &v.dense, dimension))).collect()) };
+    let candidate_count = ((request.k as f32 * request.alpha).ceil() as usize).min(candidate_ids.len());
+    let candidate_ids = candidate_ids.into_iter().take(candidate_count).collect::<Vec<_>>();
+    let candidate_latency_ms = candidate_start.elapsed().as_secs_f64() * 1000.0;
+    let rescore_start = Instant::now();
+    let rescored_ids = sorted_ids(candidate_ids.iter().filter_map(|id| request.arena.iter().find(|v| &v.id == id).map(|v| (id.clone(), dot_distance(&request.query, &v.dense, 768)))).collect()).into_iter().take(request.k).collect::<Vec<_>>();
+    let dense_rescore_latency_ms = rescore_start.elapsed().as_secs_f64() * 1000.0;
+    let denominator = request.k.min(baseline_ids.len()).max(1) as f32;
+    let candidate_recall_at_k = baseline_ids.iter().filter(|id| candidate_ids.contains(id)).count() as f32 / denominator;
+    let quality_delta = 1.0 - baseline_ids.iter().zip(&rescored_ids).filter(|(a, b)| a == b).count() as f32 / denominator;
+    let candidate_payload_bytes = if request.capability.eq_ignore_ascii_case("bq") { sign_bit_encode(&request.query).len() } else { dimension * 4 / 8 } * candidate_ids.len();
+    let dense_payload_bytes = 768 * 4 * candidate_ids.len();
+    let mut reason_codes = Vec::new();
+    if request.alpha > 8.0 { reason_codes.push("alpha_diagnostic_only".into()); }
+    if candidate_recall_at_k < 0.98 { reason_codes.push("candidate_recall_gate_failed".into()); }
+    if request.alpha > 8.0 { reason_codes.push("alpha_gate_failed".into()); }
+    if quality_delta > 0.01 { reason_codes.push("quality_gate_failed".into()); }
+    let gate_pass = candidate_recall_at_k >= 0.98 && request.alpha <= 8.0 && quality_delta <= 0.01;
+    reason_codes.push(if gate_pass { "manual_promotion_required" } else { "baseline_fallback" }.into());
+    Ok(ShadowResponse { capability: request.capability.clone(), baseline_ids, candidate_ids, rescored_ids, metrics: ShadowMetrics { candidate_recall_at_k, alpha: request.alpha, candidate_latency_ms, dense_rescore_latency_ms, candidate_payload_bytes, dense_payload_bytes, theoretical_payload_reduction: dense_payload_bytes as f32 / candidate_payload_bytes.max(1) as f32, rss_theoretical_bytes: candidate_payload_bytes, quality_delta, security_violations: 0, freshness_violations: 0 }, gate_pass, promotion: false, fallback: BASELINE_PROFILE.into(), reason_codes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +982,53 @@ mod tests {
         let mut implicit = manifest("new-profile", "g1", 1);
         implicit.preprocessing.clear();
         assert!(implicit.validate().is_err());
+    }
+
+    fn shadow_request(capability: &str, alpha: f32) -> ShadowRequest {
+        let base = manifest(BASELINE_PROFILE, "g1", 1);
+        let mut candidate = base.clone(); candidate.profile_id = format!("{capability}-shadow");
+        ShadowRequest { capability: capability.into(), manifest: candidate, baseline_manifest: base, query: vec![1.0; 768], arena: vec![
+            ShadowVector { id: "a".into(), tenant_scope: "org".into(), dense: vec![1.0; 768], authorized: true, fresh: true },
+            ShadowVector { id: "b".into(), tenant_scope: "org".into(), dense: vec![-1.0; 768], authorized: true, fresh: true },
+        ], k: 1, alpha, prefix_dimension: Some(768) }
+    }
+
+    #[test]
+    fn sign_encoding_decoding_hamming_and_words_are_deterministic() {
+        let values = vec![1.0, -1.0, 0.0, -0.0, 2.0, -2.0, 3.0, -3.0, 1.0];
+        let encoded = sign_bit_encode(&values);
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(sign_bit_decode(&encoded, values.len())[0], 1.0);
+        assert_eq!(sign_bit_decode(&encoded, values.len())[1], -1.0);
+        assert_eq!(hamming_distance(&encoded, &encoded), 0);
+        assert_eq!(hamming_distance(&[0], &[255]), hamming_distance(&[255], &[0]));
+        assert_eq!(sign_bit_encode_words(&values).len(), 1);
+        assert_eq!(hamming_distance_words(&[0], &[u64::MAX]), 64);
+    }
+
+    #[test]
+    fn mrl_prefixes_invalid_manifests_and_shadow_flags_fail_closed() {
+        for dimension in MRL_DIMENSIONS { let mut request = shadow_request("mrl", 2.0); request.prefix_dimension = Some(*dimension); assert!(run_shadow(&request, "org", "shadow").is_ok()); }
+        let mut invalid = shadow_request("mrl", 2.0); invalid.prefix_dimension = Some(32);
+        assert_eq!(run_shadow(&invalid, "org", "shadow").unwrap_err().to_string(), "unsupported_mrl_prefix_dimension");
+        invalid.prefix_dimension = Some(128); invalid.manifest.preprocessing = "different-v2".into();
+        assert_eq!(run_shadow(&invalid, "org", "shadow").unwrap_err().to_string(), "incompatible_manifest_preprocessing_or_generation");
+        assert_eq!(run_shadow(&shadow_request("bq", 2.0), "org", "off").unwrap_err().to_string(), "capability_flag_not_shadow");
+    }
+
+    #[test]
+    fn shadow_recall_ties_authorization_and_failed_gate_fallback() {
+        let result = run_shadow(&shadow_request("bq", 2.0), "org", "shadow").unwrap();
+        assert_eq!(result.baseline_ids, vec!["a"]); assert_eq!(result.rescored_ids, vec!["a"]);
+        assert_eq!(result.metrics.candidate_recall_at_k, 1.0); assert!(!result.promotion);
+        let mut gate_input = shadow_request("bq", 1.0);
+        gate_input.arena[0].dense = vec![0.01; 768]; gate_input.arena[0].dense[0] = -0.01;
+        gate_input.arena[1].dense = vec![0.0; 768]; gate_input.arena[1].dense[0] = 1.0;
+        let failed = run_shadow(&gate_input, "org", "shadow").unwrap();
+        assert!(failed.reason_codes.contains(&"candidate_recall_gate_failed".into()));
+        assert!(failed.reason_codes.contains(&"baseline_fallback".into()));
+        gate_input.arena[0].tenant_scope = "other-org".into();
+        assert_eq!(run_shadow(&gate_input, "org", "shadow").unwrap_err().to_string(), "authorization_isolation_violation");
     }
 
     #[test]
