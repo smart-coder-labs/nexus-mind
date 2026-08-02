@@ -23,7 +23,7 @@ use crate::{
     config::Config,
     db::queries,
     models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, DashboardData, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats, UserRole},
-    store::sqlite::SqliteStore,
+    store::{sqlite::SqliteStore, MemoryStore},
 };
 
 fn lock_err() -> (StatusCode, Json<ApiError>) {
@@ -1691,9 +1691,7 @@ pub async fn merge_memories(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-
-    queries::merge_memories(&conn, &auth.org_id, &keep_id, &merge_id)
-        .map(Json)
+    let merged = queries::merge_memories(&conn, &auth.org_id, &keep_id, &merge_id)
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("not found") {
@@ -1707,7 +1705,12 @@ pub async fn merge_memories(
             } else {
                 db_err(e)
             }
-        })
+        })?;
+    drop(conn);
+    let runtime = store.context_runtime();
+    runtime.invalidate_memory(&auth.org_id, &keep_id, "memory_merged");
+    runtime.invalidate_memory(&auth.org_id, &merge_id, "memory_merged");
+    Ok(Json(merged))
 }
 
 /// `POST /v1/admin/memories/import` — admin-only batch import.
@@ -1732,7 +1735,6 @@ pub async fn import_memories(
         ));
     }
 
-    let db = store.conn();
     let user_id = auth.user_id.clone();
 
     let mut imported = 0usize;
@@ -1757,15 +1759,7 @@ pub async fn import_memories(
             session_id: mem.session_id,
         };
 
-        let conn = match db.lock() {
-            Ok(c) => c,
-            Err(_) => {
-                errors.push(format!("memory[{}]: database lock error", idx));
-                continue;
-            }
-        };
-
-        match queries::upsert_memory(&conn, &auth.org_id, &user_id, &req) {
+        match store.store(&auth.org_id, &user_id, &req) {
             Ok(_) => imported += 1,
             Err(e) => errors.push(format!("memory[{}]: {}", idx, e)),
         }

@@ -101,6 +101,7 @@ impl Default for RolloutState {
 #[derive(Clone)]
 pub struct ContextFabricRuntime {
     enabled: bool,
+    default_ttl: Duration,
     entries: Arc<Mutex<HashMap<CacheIdentity, CacheRecord>>>,
     stats: Arc<Mutex<CacheStats>>,
     rollout: Arc<Mutex<RolloutState>>,
@@ -108,15 +109,27 @@ pub struct ContextFabricRuntime {
 }
 
 impl ContextFabricRuntime {
-    pub fn new(enabled: bool) -> Self { Self { enabled, entries: Arc::new(Mutex::new(HashMap::new())),
+    pub fn new(enabled: bool) -> Self { Self::with_ttl(enabled, Duration::from_secs(60)) }
+
+    pub fn with_ttl(enabled: bool, default_ttl: Duration) -> Self { Self { enabled, default_ttl, entries: Arc::new(Mutex::new(HashMap::new())),
         stats: Arc::new(Mutex::new(CacheStats { enabled, ..Default::default() })), rollout: Arc::new(Mutex::new(RolloutState::default())), seen_events: Arc::new(Mutex::new(HashSet::new())) } }
 
     pub fn from_env() -> Self {
         let enabled = ["NEXUSMIND_CONTEXT_FABRIC_CACHE", "CONTEXT_FABRIC_ENABLED"]
             .iter().any(|name| std::env::var(name).as_deref() == Ok("true"));
-        Self::new(enabled)
+        let ttl = std::env::var("CONTEXT_FABRIC_CACHE_TTL_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(60);
+        Self::with_ttl(enabled, Duration::from_secs(ttl))
     }
     pub fn enabled(&self) -> bool { self.enabled }
+    pub fn ttl(&self, freshness_window_secs: Option<u64>) -> Duration {
+        let configured = self.default_ttl.as_secs();
+        let seconds = freshness_window_secs.map_or(configured, |window| window.min(configured));
+        Duration::from_secs(seconds)
+    }
 
     pub fn get(&self, identity: &CacheIdentity) -> Option<Vec<u8>> {
         if !self.enabled { return None; }
@@ -152,7 +165,9 @@ impl ContextFabricRuntime {
                 && event.policy_generation.map_or(true, |g| key.policy_generation < g)
                 && event.generation.as_ref().map_or(true, |g| key.captured_generation != *g)
                 && event.profile.as_deref().map_or(true, |p| key.profile == p)
-                && event.memory_id.as_deref().map_or(true, |id| key.source_type == format!("memory:{id}"))
+                && event.memory_id.as_deref().map_or(true, |id| {
+                    key.source_type.split(',').any(|source| source == format!("memory:{id}"))
+                })
         }).map(|(key, _)| key.clone()).collect::<Vec<_>>();
         let count = removed.len();
         for key in removed { entries.remove(&key); }
@@ -173,7 +188,11 @@ impl ContextFabricRuntime {
             memory_id: None, acl_generation: None, policy_generation: None, generation: Some(generation.clone()), profile: None })
     }
     pub fn invalidate_policy(&self, tenant: &str, generation: u64, reason: &str) -> usize {
-        self.invalidate(&InvalidationEvent { event_id: String::new(), tenant: tenant.into(), reason: reason.into(), project: None, memory_id: None, acl_generation: None, policy_generation: Some(generation), generation: None, profile: None })
+        // Policy rows do not expose a monotonic generation in the legacy schema.
+        // A timestamp is not safe to compare with the opaque cache stamp, so
+        // invalidate the tenant rather than risk serving an old authorization.
+        let _ = generation;
+        self.invalidate_all(tenant, reason)
     }
     pub fn invalidate_all(&self, tenant: &str, reason: &str) -> usize {
         self.invalidate(&InvalidationEvent { event_id: String::new(), tenant: tenant.into(), reason: reason.into(), project: None, memory_id: None, acl_generation: None, policy_generation: None, generation: None, profile: None })

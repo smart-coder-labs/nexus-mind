@@ -5,7 +5,7 @@ use crate::{
         validate_generation_identity,
         verify_request_generation, AssembleRequest, AssembleResponse, ContextFabricManifest,
         GenerateRequest, GenerationRef, VerifyRequest, VerifyResponse, ClaimStatus,
-        ClaimVerification, GenerationMetadata, ShadowRequest, ShadowResponse, run_shadow,
+        ClaimVerification, GenerationMetadata, ShadowRequest, ShadowResponse,
     },
     db::migrations,
     models::types::{ApiError, AuthContext},
@@ -16,7 +16,8 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use std::{collections::{HashMap, HashSet}, time::Duration};
+use rusqlite::Connection;
+use std::{collections::{HashMap, HashSet}, hash::{Hash, Hasher}};
 use crate::context_fabric_runtime::{CacheIdentity, CacheStage, RolloutState, CANDIDATE_LANE, BASELINE_LANE};
 
 const VERIFIED_MEMORY_PROVENANCE: &str = "memory-search";
@@ -42,10 +43,12 @@ fn fabric_error(error: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     } else {
         "validation_error"
     };
+    // Never return database/provider text here: it can contain SQL, locators, or
+    // other tenant-owned details. The machine-readable code is the contract.
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(ApiError {
-            error: message,
+            error: "Context Fabric request was rejected".into(),
             code: code.into(),
         }),
     )
@@ -96,7 +99,7 @@ pub async fn publish(
     let result = publish_generation(&conn, &auth.org_id, &auth.user_id, &input.manifest)
         .map_err(fabric_error)?;
     drop(conn);
-    store.context_runtime().invalidate_generation(&auth.org_id, &result.generation, "profile_published");
+    store.context_runtime().invalidate_all(&auth.org_id, "profile_published");
     Ok(Json(result))
 }
 
@@ -130,7 +133,7 @@ pub async fn rollback(
     )
     .map_err(fabric_error)?;
     drop(conn);
-    store.context_runtime().invalidate_generation(&auth.org_id, &result.generation, "generation_rollback");
+    store.context_runtime().invalidate_all(&auth.org_id, "generation_rollback");
     store.context_runtime().set_rollout(RolloutState::default());
     Ok(Json(result))
 }
@@ -147,16 +150,56 @@ pub struct RolloutRequest {
     #[serde(default)] pub canary_enabled: bool,
 }
 
-fn cache_identity(auth: &AuthContext, request: &AssembleRequest, stage: CacheStage, lane: &str) -> CacheIdentity {
-    let ids = request.candidates.iter().map(|candidate| candidate.unit_id.as_str()).collect::<Vec<_>>().join(",");
+fn generation_stamp(conn: &Connection, sql: &str, org_id: &str) -> u64 {
+    let value: String = conn.query_row(sql, [org_id], |row| row.get(0)).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn project_scope(conn: &Connection, auth: &AuthContext, request: &AssembleRequest) -> String {
+    let mut projects = request.candidates.iter().filter_map(|candidate| {
+        conn.query_row(
+            "SELECT COALESCE(project, '') FROM memories WHERE org_id = ?1 AND id = ?2",
+            rusqlite::params![&auth.org_id, &candidate.locator.id],
+            |row| row.get::<_, String>(0),
+        ).ok()
+    }).collect::<Vec<_>>();
+    projects.sort();
+    projects.dedup();
+    if projects.is_empty() { "org".into() } else { projects.join(",") }
+}
+
+fn cache_identity(
+    conn: &Connection,
+    auth: &AuthContext,
+    request: &AssembleRequest,
+    stage: CacheStage,
+    lane: &str,
+    profile: &str,
+) -> CacheIdentity {
+    let mut ids = request.candidates.iter().map(|candidate| candidate.locator.id.clone()).collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    let mut source_type = ids.iter().map(|id| format!("memory:{id}")).collect::<Vec<_>>().join(",");
+    source_type.push(',');
+    source_type.push_str(&request_fingerprint(request));
     CacheIdentity {
         tenant: auth.org_id.clone(), caller_scope: auth.role.to_string(), caller_user: auth.user_id.clone(),
-        project: request.profile_id.clone().unwrap_or_else(|| "org".into()), acl_generation: 0,
-        policy_generation: 0, profile: request.profile_id.clone().unwrap_or_else(|| "baseline".into()),
+        project: project_scope(conn, auth, request),
+        acl_generation: generation_stamp(conn, "SELECT count(*) || ':' || COALESCE(group_concat(pm.role), '') FROM project_members pm JOIN projects p ON p.id = pm.project_id WHERE p.org_id = ?1", &auth.org_id),
+        policy_generation: generation_stamp(conn, "SELECT count(*) || ':' || COALESCE(max(updated_at), '') FROM policies WHERE org_id = ?1", &auth.org_id),
+        profile: profile.into(),
         captured_generation: request.generation.clone(), freshness: request.freshness_window_secs.map(|v| format!("bounded:{v}")).unwrap_or_else(|| "explicit".into()),
-        source_type: format!("context:{stage:?}:{ids}:{}", request.contract_version), contract_version: request.contract_version.clone(), lane: lane.into(),
+        source_type, contract_version: request.contract_version.clone(), lane: lane.into(),
         budget: Some(request.token_budget), tokenizer: Some(request.tokenizer.clone()), stage,
     }
+}
+
+fn request_fingerprint<T: serde::Serialize>(value: &T) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(value).unwrap_or_default().hash(&mut hasher);
+    format!("request:{:016x}", hasher.finish())
 }
 
 fn validate_rollout(input: &RolloutRequest) -> Result<(), &'static str> {
@@ -220,8 +263,9 @@ pub async fn lab_shadow(
     if active.acl_generation != request.baseline_manifest.acl_generation || active.policy_generation != request.baseline_manifest.policy_generation
         || active.profile_id != request.baseline_manifest.profile_id || active.profile_version != request.baseline_manifest.profile_version
         || active.generation != request.baseline_manifest.generation { return Err(verification_error("active_profile_generation_mismatch")); }
-    drop(conn);
-    run_shadow(&request, &auth.org_id, "shadow").map(Json).map_err(fabric_error)
+    let _ = request;
+    let _ = active;
+    Err(verification_error("not_available"))
 }
 
 fn verify_memory_evidence(
@@ -310,12 +354,12 @@ pub async fn assemble(
     verify_request_generation(&conn, &auth.org_id, &request).map_err(fabric_error)?;
     let runtime = store.context_runtime();
     runtime.purge_expired(&auth.org_id);
-    let identity = cache_identity(&auth, &request, CacheStage::Compile, BASELINE_LANE);
+    let identity = cache_identity(&conn, &auth, &request, CacheStage::Compile, BASELINE_LANE, request.profile_id.as_deref().unwrap_or("baseline"));
     if let Some(bytes) = runtime.get(&identity) {
         if let Ok(response) = serde_json::from_slice(&bytes) { return Ok(Json(response)); }
     }
     let response = compile(&request);
-    if !response.abstained { let _ = runtime.put(identity, serde_json::to_vec(&response).unwrap_or_default(), Duration::from_secs(60), true); }
+    if !response.abstained { let _ = runtime.put(identity, serde_json::to_vec(&response).unwrap_or_default(), runtime.ttl(request.freshness_window_secs), true); }
     Ok(Json(response))
 }
 
@@ -380,7 +424,24 @@ pub async fn generate(
     }
     verify_compiled_for_caller(&conn, &auth, &request.contract_version, &request.profile_id,
         request.profile_version, &request.generation, &request.assembled)?;
-    Ok(Json(generate_deterministic(&request)))
+    let runtime = store.context_runtime();
+    runtime.purge_expired(&auth.org_id);
+    let assembled_request = compiled_as_request(
+        &request.contract_version, &request.profile_id, request.profile_version,
+        &request.generation, &request.assembled,
+    );
+    let identity = cache_identity(
+        &conn, &auth, &assembled_request, CacheStage::Generate, BASELINE_LANE,
+        &request.profile_id,
+    );
+    if let Some(bytes) = runtime.get(&identity) {
+        if let Ok(response) = serde_json::from_slice(&bytes) { return Ok(Json(response)); }
+    }
+    let response = generate_deterministic(&request);
+    if !response.abstained {
+        let _ = runtime.put(identity, serde_json::to_vec(&response).unwrap_or_default(), runtime.ttl(None), true);
+    }
+    Ok(Json(response))
 }
 
 pub async fn verify(
@@ -446,6 +507,20 @@ pub async fn verify(
             }, claims: Vec::new(), reason_codes: vec![code],
         }));
     }
+    let runtime = store.context_runtime();
+    runtime.purge_expired(&auth.org_id);
+    let assembled_request = compiled_as_request(
+        &request.contract_version, &request.profile_id, request.profile_version,
+        &request.generation, &request.assembled,
+    );
+    let mut identity = cache_identity(
+        &conn, &auth, &assembled_request, CacheStage::Verify, BASELINE_LANE,
+        &request.profile_id,
+    );
+    identity.source_type = format!("{},{}", identity.source_type, request_fingerprint(&request));
+    if let Some(bytes) = runtime.get(&identity) {
+        if let Ok(response) = serde_json::from_slice(&bytes) { return Ok(Json(response)); }
+    }
     let units: HashMap<&str, &crate::context_fabric::CandidateEvidence> = request.assembled.units.iter()
         .map(|unit| (unit.unit_id.as_str(), unit)).collect();
     let output = request.output.as_deref().unwrap_or("");
@@ -474,13 +549,15 @@ pub async fn verify(
         else if results.iter().any(|claim| claim.status == ClaimStatus::Stale) { ClaimStatus::Stale }
         else if results.iter().any(|claim| claim.status == ClaimStatus::Contradicted) { ClaimStatus::Contradicted }
         else { ClaimStatus::Unsupported };
-    Ok(Json(VerifyResponse {
+    let response = VerifyResponse {
         status,
         metadata: GenerationMetadata { contract_version: request.contract_version, profile_id: request.profile_id,
             profile_version: request.profile_version, generation: request.generation, model: request.model,
             provider: request.provider, budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 }, reason_codes: Vec::new() },
         claims: results, reason_codes: Vec::new(),
-    }))
+    };
+    let _ = runtime.put(identity, serde_json::to_vec(&response).unwrap_or_default(), runtime.ttl(None), true);
+    Ok(Json(response))
 }
 
 #[cfg(test)]

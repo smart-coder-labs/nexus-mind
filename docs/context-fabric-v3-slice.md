@@ -103,3 +103,17 @@ profile/generation publication, atomic artifact pointers, user-applied migration
 NX-Gold promotion evidence, Tool Search, persistent/distributed cache, automatic migration,
 and large UI remain follow-up work. BQ/MRL remain laboratory shadow capabilities only. The rollout controls in this slice are operational controls for the
 baseline-compatible Context Fabric only, not a replacement for the legacy APIs.
+
+Memory-schema-v2 compatibility limit: Context Fabric does not add columns to
+`memories` or create a second memory schema authority. Optional provenance,
+generation, freshness, and lifecycle details are carried by the versioned
+Context Fabric evidence/diagnostic contracts and derived from the existing
+memory row when read. Legacy memory payloads remain unchanged; durable
+provenance columns require a separately user-applied additive migration.
+
+Code graph and SDD/document evidence currently fail closed with
+`unsupported_unverified_source`. Their existing backend APIs remain the
+authorization-owned adapters to implement later; client-supplied content is
+never accepted as a substitute. The BQ/MRL HTTP shadow endpoint likewise
+returns `not_available` until it can source an authorized backend embedding
+arena, while the pure deterministic primitive remains covered by unit tests.

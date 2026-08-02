@@ -633,6 +633,37 @@ export interface MemoryGraphResponse {
   projects: ProjectGraphInfo[]
 }
 
+/** Bounded, content-free Context Fabric operational diagnostics. */
+export interface ContextFabricDiagnostics {
+  cache: {
+    enabled: boolean
+    entries: number
+    hits: number
+    misses: number
+    puts: number
+    invalidations: number
+    expirations: number
+    last_invalidation_reason?: string | null
+    invalidation_events: number
+    reason_codes: string[]
+  }
+  rollout: {
+    shadow_enabled: boolean
+    canary_enabled: boolean
+    promotion_enabled: boolean
+    baseline_fallback: boolean
+    active_lane: string
+    active_profile?: string | null
+    active_generation?: { id: string; version: number } | null
+    approval_operator?: string | null
+    last_manifest_evidence?: string | null
+    last_run_evidence?: string | null
+  }
+  active_profile?: string | null
+  active_generation?: { id: string; version: number } | null
+  reason_codes: string[]
+}
+
 // ── Postgres backups (admin) ──────────────────────────────────────────────────
 
 export type BackupKind = 'manual' | 'scheduled' | string
