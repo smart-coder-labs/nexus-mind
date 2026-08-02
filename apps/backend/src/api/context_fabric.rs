@@ -150,6 +150,60 @@ pub struct RolloutRequest {
     #[serde(default)] pub canary_enabled: bool,
 }
 
+/// Public shadow input. Document vectors and arenas are deliberately not part of this DTO:
+/// the handler builds them from the authorized SQLite embedding rows.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowInput {
+    pub capability: String,
+    pub manifest: ContextFabricManifest,
+    pub baseline_manifest: ContextFabricManifest,
+    #[serde(default)] pub query: Option<Vec<f32>>,
+    #[serde(default)] pub query_text: Option<String>,
+    pub k: usize,
+    pub alpha: f32,
+    #[serde(default)] pub prefix_dimension: Option<usize>,
+}
+
+fn resolve_shadow_query(
+    store: &SqliteStore,
+    query: Option<Vec<f32>>,
+    query_text: Option<String>,
+) -> anyhow::Result<Vec<f32>> {
+    let query = match (query, query_text) {
+        (Some(_), Some(_)) | (None, None) => anyhow::bail!("exactly_one_query_source_required"),
+        (Some(vector), None) => vector,
+        (None, Some(text)) => {
+            let Some(service) = store.embed_service() else {
+                anyhow::bail!("embedding_service_unavailable");
+            };
+            service
+                .embed_one(&text)
+                .map_err(|_| anyhow::anyhow!("embedding_service_unavailable"))?
+        }
+    };
+    if query.len() != 768 { anyhow::bail!("vector_dimension_mismatch"); }
+    Ok(query)
+}
+
+fn load_shadow_arena(
+    conn: &Connection,
+    auth: &AuthContext,
+) -> anyhow::Result<Vec<crate::context_fabric::ShadowVector>> {
+    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
+    let embeddings = crate::db::queries::get_embeddings_for_org_visible(conn, &auth.org_id, viewer)?;
+    embeddings
+        .into_iter()
+        .map(|(id, blob)| {
+            let dense = crate::embed::deserialize(&blob);
+            if dense.len() != 768 { anyhow::bail!("embedding_dimension_mismatch"); }
+            Ok(crate::context_fabric::ShadowVector {
+                id, tenant_scope: auth.org_id.clone(), dense, authorized: true, fresh: true,
+            })
+        })
+        .collect()
+}
+
 fn generation_stamp(conn: &Connection, sql: &str, org_id: &str) -> u64 {
     let value: String = conn.query_row(sql, [org_id], |row| row.get(0)).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -252,20 +306,39 @@ pub async fn diagnostics(State(store): State<SqliteStore>, Extension(auth): Exte
 
 /// Laboratory-only BQ/MRL measurement. It never changes the active profile or result lane.
 pub async fn lab_shadow(
-    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(request): Json<ShadowRequest>,
+    State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(input): Json<ShadowInput>,
 ) -> Result<Json<ShadowResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
     require_permission(&conn, &auth, None, "memory:read")?;
-    let capability = request.capability.to_ascii_lowercase();
+    let capability = input.capability.to_ascii_lowercase();
     let flag_name = match capability.as_str() { "bq" => "CONTEXT_FABRIC_BQ_ENABLED", "mrl" => "CONTEXT_FABRIC_MRL_ENABLED", _ => return Err(verification_error("unsupported_shadow_capability")) };
     if std::env::var(flag_name).as_deref() != Ok("shadow") { return Err(verification_error("capability_flag_not_shadow")); }
     let active = active_manifest(&conn, &auth.org_id).map_err(fabric_error)?.ok_or_else(|| verification_error("no_active_generation"))?;
-    if active.acl_generation != request.baseline_manifest.acl_generation || active.policy_generation != request.baseline_manifest.policy_generation
-        || active.profile_id != request.baseline_manifest.profile_id || active.profile_version != request.baseline_manifest.profile_version
-        || active.generation != request.baseline_manifest.generation { return Err(verification_error("active_profile_generation_mismatch")); }
-    let _ = request;
-    let _ = active;
-    Err(verification_error("not_available"))
+    let acl_generation = generation_stamp(&conn, "SELECT count(*) || ':' || COALESCE(group_concat(pm.role), '') FROM project_members pm JOIN projects p ON p.id = pm.project_id WHERE p.org_id = ?1", &auth.org_id);
+    let policy_generation = generation_stamp(&conn, "SELECT count(*) || ':' || COALESCE(max(updated_at), '') FROM policies WHERE org_id = ?1", &auth.org_id);
+    if active.acl_generation != acl_generation || active.policy_generation != policy_generation
+        || active.acl_generation != input.baseline_manifest.acl_generation
+        || active.policy_generation != input.baseline_manifest.policy_generation
+        || active.profile_id != input.baseline_manifest.profile_id || active.profile_version != input.baseline_manifest.profile_version
+        || active.generation != input.baseline_manifest.generation { return Err(verification_error("active_profile_generation_mismatch")); }
+
+    let query = resolve_shadow_query(&store, input.query, input.query_text)
+        .map_err(|error| verification_error(&error.to_string()))?;
+    let arena = load_shadow_arena(&conn, &auth)
+        .map_err(|error| verification_error(&error.to_string()))?;
+    let request = ShadowRequest {
+        capability: input.capability,
+        manifest: input.manifest,
+        baseline_manifest: input.baseline_manifest,
+        query,
+        arena,
+        k: input.k,
+        alpha: input.alpha,
+        prefix_dimension: input.prefix_dimension,
+    };
+    crate::context_fabric::run_shadow(&request, &auth.org_id, "shadow")
+        .map(Json)
+        .map_err(|error| verification_error(&error.to_string()))
 }
 
 fn verify_memory_evidence(
@@ -678,6 +751,46 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.1 .0.code, "invalid_source_cap");
+    }
+
+    #[test]
+    fn shadow_arena_reads_only_authorized_768d_embeddings() {
+        let (conn, auth, visible_id) = setup();
+        queries::store_embedding(&conn, &visible_id, &crate::embed::serialize(&vec![1.0; 768])).unwrap();
+        let hidden_project = queries::create_project(&conn, &auth.org_id, "hidden-project", None, None).unwrap();
+        let hidden = queries::upsert_memory(
+            &conn,
+            &auth.org_id,
+            &auth.user_id,
+            &StoreMemoryRequest {
+                project: Some(hidden_project.name), tool: "claude".into(), content: "hidden".into(),
+                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+            },
+        ).unwrap();
+        queries::store_embedding(&conn, &hidden.id, &crate::embed::serialize(&vec![2.0; 768])).unwrap();
+
+        let arena = load_shadow_arena(&conn, &auth).unwrap();
+        assert_eq!(arena.len(), 1);
+        assert_eq!(arena[0].id, visible_id);
+        assert_eq!(arena[0].dense.len(), 768);
+    }
+
+    #[test]
+    fn shadow_arena_fails_closed_on_invalid_dimension_and_tenant_isolation() {
+        let (conn, auth, id) = setup();
+        queries::store_embedding(&conn, &id, &[0; 4]).unwrap();
+        assert_eq!(load_shadow_arena(&conn, &auth).unwrap_err().to_string(), "embedding_dimension_mismatch");
+
+        let other_org = "other-org".to_string();
+        assert!(queries::get_embeddings_for_org_visible(&conn, &other_org, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn shadow_query_requires_backend_service_for_text_and_rejects_arbitrary_arena() {
+        let store = SqliteStore::new(connect(":memory:").unwrap());
+        assert_eq!(resolve_shadow_query(&store, None, Some("query".into())).unwrap_err().to_string(), "embedding_service_unavailable");
+        assert!(serde_json::from_value::<ShadowInput>(serde_json::json!({ "arena": [] }))
+            .unwrap_err().to_string().contains("unknown field `arena`"));
     }
 
     #[test]

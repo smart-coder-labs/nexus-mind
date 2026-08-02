@@ -726,10 +726,22 @@ pub struct ShadowMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShadowProvenance {
+    pub source: String,
+    pub tenant: String,
+    pub profile: String,
+    pub profile_version: u32,
+    pub acl_generation: u64,
+    pub policy_generation: u64,
+    pub generation: GenerationRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShadowResponse {
     pub capability: String, pub baseline_ids: Vec<String>, pub candidate_ids: Vec<String>,
     pub rescored_ids: Vec<String>, pub metrics: ShadowMetrics, pub gate_pass: bool,
     pub promotion: bool, pub fallback: String, pub reason_codes: Vec<String>,
+    pub provenance: ShadowProvenance,
 }
 
 pub fn sign_bit_encode(vector: &[f32]) -> Vec<u8> {
@@ -818,7 +830,7 @@ pub fn run_shadow(request: &ShadowRequest, tenant: &str, flag: &str) -> Result<S
     if quality_delta > 0.01 { reason_codes.push("quality_gate_failed".into()); }
     let gate_pass = candidate_recall_at_k >= 0.98 && request.alpha <= 8.0 && quality_delta <= 0.01;
     reason_codes.push(if gate_pass { "manual_promotion_required" } else { "baseline_fallback" }.into());
-    Ok(ShadowResponse { capability: request.capability.clone(), baseline_ids, candidate_ids, rescored_ids, metrics: ShadowMetrics { candidate_recall_at_k, alpha: request.alpha, candidate_latency_ms, dense_rescore_latency_ms, candidate_payload_bytes, dense_payload_bytes, theoretical_payload_reduction: dense_payload_bytes as f32 / candidate_payload_bytes.max(1) as f32, rss_theoretical_bytes: candidate_payload_bytes, quality_delta, security_violations: 0, freshness_violations: 0 }, gate_pass, promotion: false, fallback: BASELINE_PROFILE.into(), reason_codes })
+    Ok(ShadowResponse { capability: request.capability.clone(), baseline_ids, candidate_ids, rescored_ids, metrics: ShadowMetrics { candidate_recall_at_k, alpha: request.alpha, candidate_latency_ms, dense_rescore_latency_ms, candidate_payload_bytes, dense_payload_bytes, theoretical_payload_reduction: dense_payload_bytes as f32 / candidate_payload_bytes.max(1) as f32, rss_theoretical_bytes: candidate_payload_bytes, quality_delta, security_violations: 0, freshness_violations: 0 }, gate_pass, promotion: false, fallback: BASELINE_PROFILE.into(), reason_codes, provenance: ShadowProvenance { source: "sqlite_memory_embeddings".into(), tenant: tenant.into(), profile: request.manifest.profile_id.clone(), profile_version: request.manifest.profile_version, acl_generation: request.manifest.acl_generation, policy_generation: request.manifest.policy_generation, generation: request.manifest.generation.clone() } })
 }
 
 #[cfg(test)]

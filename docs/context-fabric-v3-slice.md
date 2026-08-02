@@ -76,12 +76,18 @@ reason codes. They do not expose cached content, keys, memory text or policy con
 
 ## Experimental BQ/MRL shadow
 
-`POST /v1/context/lab/shadow` is an explicit laboratory endpoint for authorized synthetic
-or pre-authorized arenas. `CONTEXT_FABRIC_BQ_ENABLED=shadow` or
+`POST /v1/context/lab/shadow` is an explicit laboratory endpoint that constructs its arena from
+authorized SQLite `memory_embeddings` rows. `CONTEXT_FABRIC_BQ_ENABLED=shadow` or
 `CONTEXT_FABRIC_MRL_ENABLED=shadow` is required; absent, `false`, and every other value are
 rejected. The default remains `off`. The endpoint validates tenant, ACL/policy generation,
 profile, snapshot, model, preprocessing, normalization, tokenizer, and dimension identity.
 It never changes the active profile, ranking lane, or baseline result.
+
+The real BQ/MRL path requires authorized Float32 embeddings with exactly 768 dimensions and a
+compatible profile/generation manifest. The request may provide one query vector or query text;
+query text is embedded only by the backend `EmbedService`. Client-supplied document vectors,
+arenas, and memory content are rejected. If the service is unavailable, text queries fail closed
+with `embedding_service_unavailable`.
 
 BQ stores sign bits in bytes or u64 words and ranks candidates with XOR/popcount. MRL supports
 prefixes 768, 512, 256, 128, and 64. Both paths use dense Float32 rescoring for the returned
@@ -114,6 +120,6 @@ provenance columns require a separately user-applied additive migration.
 Code graph and SDD/document evidence currently fail closed with
 `unsupported_unverified_source`. Their existing backend APIs remain the
 authorization-owned adapters to implement later; client-supplied content is
-never accepted as a substitute. The BQ/MRL HTTP shadow endpoint likewise
-returns `not_available` until it can source an authorized backend embedding
-arena, while the pure deterministic primitive remains covered by unit tests.
+never accepted as a substitute. BQ/MRL remain shadow-only and the NX-Gold recall, quality,
+security, and freshness gate is still pending; no automatic promotion is performed. The pure
+deterministic primitive remains covered by unit tests.
