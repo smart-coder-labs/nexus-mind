@@ -198,6 +198,191 @@ pub struct AssembleResponse {
     pub diagnostics: CompileDiagnostics,
 }
 
+/// Versioned input to generation. The assembled response is intentionally embedded rather
+/// than accepting raw candidates: generation cannot bypass the Compiler v0 boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateRequest {
+    pub contract_version: String,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub generation: GenerationRef,
+    pub model: String,
+    pub provider: String,
+    pub output_token_budget: usize,
+    pub assembled: AssembleResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Claim {
+    pub id: String,
+    pub text: String,
+    pub unit_id: String,
+    pub locator: Locator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerationMetadata {
+    pub contract_version: String,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub generation: GenerationRef,
+    pub model: String,
+    pub provider: String,
+    pub budgets: BudgetReport,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BudgetReport {
+    pub requested_tokens: usize,
+    pub used_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProvenanceRecord {
+    pub unit_id: String,
+    pub locator: Locator,
+    pub provenance: String,
+    pub generation: GenerationRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerateResponse {
+    pub output: Option<String>,
+    pub metadata: GenerationMetadata,
+    pub provenance: Vec<ProvenanceRecord>,
+    pub claims: Vec<Claim>,
+    pub abstained: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyRequest {
+    pub contract_version: String,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub generation: GenerationRef,
+    pub model: String,
+    pub provider: String,
+    pub assembled: AssembleResponse,
+    pub output: Option<String>,
+    pub claims: Vec<Claim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaimStatus {
+    Verified,
+    Unsupported,
+    Contradicted,
+    Stale,
+    Unauthorized,
+    Abstained,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaimVerification {
+    pub id: String,
+    pub status: ClaimStatus,
+    pub reason_codes: Vec<String>,
+    pub locator: Option<Locator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerifyResponse {
+    pub status: ClaimStatus,
+    pub metadata: GenerationMetadata,
+    pub claims: Vec<ClaimVerification>,
+    pub reason_codes: Vec<String>,
+}
+
+pub const DETERMINISTIC_PROVIDER: &str = "deterministic-extractive-v0";
+
+pub fn generation_metadata(request: &GenerateRequest, used_tokens: usize, reasons: Vec<String>) -> GenerationMetadata {
+    GenerationMetadata {
+        contract_version: request.contract_version.clone(),
+        profile_id: request.profile_id.clone(),
+        profile_version: request.profile_version,
+        generation: request.generation.clone(),
+        model: request.model.clone(),
+        provider: request.provider.clone(),
+        budgets: BudgetReport { requested_tokens: request.output_token_budget, used_tokens },
+        reason_codes: reasons,
+    }
+}
+
+pub fn validate_generation_identity(
+    contract_version: &str,
+    profile_id: &str,
+    profile_version: u32,
+    generation: &GenerationRef,
+    model: &str,
+    provider: &str,
+    assembled: &AssembleResponse,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if contract_version != CONTRACT_VERSION { reasons.push("unsupported_contract_version".into()); }
+    if profile_id.trim().is_empty() { reasons.push("missing_profile".into()); }
+    if profile_version == 0 { reasons.push("invalid_profile_version".into()); }
+    if generation.id.trim().is_empty() || generation.version == 0 { reasons.push("invalid_generation".into()); }
+    if model.trim().is_empty() { reasons.push("missing_model".into()); }
+    if provider.trim().is_empty() { reasons.push("missing_provider".into()); }
+    if assembled.contract_version != contract_version { reasons.push("compiled_contract_mismatch".into()); }
+    if assembled.abstained
+        || assembled.units.is_empty()
+        || assembled.diagnostics.selected_count != assembled.units.len()
+        || !assembled.diagnostics.reason_codes.is_empty()
+    {
+        reasons.push("context_not_compiled".into());
+    }
+    if assembled.units.iter().any(|unit| unit.generation != *generation) { reasons.push("generation_mismatch".into()); }
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+/// Lab-only deterministic provider. It is deliberately extractive and performs no I/O.
+pub fn generate_deterministic(request: &GenerateRequest) -> GenerateResponse {
+    let mut reasons = validate_generation_identity(
+        &request.contract_version, &request.profile_id, request.profile_version,
+        &request.generation, &request.model, &request.provider, &request.assembled,
+    );
+    if request.output_token_budget == 0 { reasons.push("invalid_budget".into()); }
+    if request.provider != DETERMINISTIC_PROVIDER { reasons.push("provider_unavailable".into()); }
+    reasons.sort();
+    reasons.dedup();
+    if !reasons.is_empty() {
+        return GenerateResponse {
+            output: None,
+            metadata: generation_metadata(request, 0, reasons),
+            provenance: Vec::new(),
+            claims: Vec::new(),
+            abstained: true,
+        };
+    }
+
+    let mut used = 0;
+    let mut parts = Vec::new();
+    let mut provenance = Vec::new();
+    let mut claims = Vec::new();
+    for unit in &request.assembled.units {
+        let count = token_count(&unit.content, "whitespace-v0");
+        if used + count > request.output_token_budget { reasons.push("budget_exceeded".into()); break; }
+        used += count;
+        parts.push(unit.content.clone());
+        provenance.push(ProvenanceRecord { unit_id: unit.unit_id.clone(), locator: unit.locator.clone(), provenance: unit.provenance.clone(), generation: unit.generation.clone() });
+        claims.push(Claim { id: unit.unit_id.clone(), text: unit.content.clone(), unit_id: unit.unit_id.clone(), locator: unit.locator.clone() });
+    }
+    if parts.is_empty() || !reasons.is_empty() {
+        reasons.push("abstained".into());
+        reasons.sort();
+        reasons.dedup();
+        return GenerateResponse { output: None, metadata: generation_metadata(request, used, reasons), provenance: Vec::new(), claims: Vec::new(), abstained: true };
+    }
+    GenerateResponse { output: Some(parts.join("\n")), metadata: generation_metadata(request, used, reasons), provenance, claims, abstained: false }
+}
+
 fn token_count(content: &str, tokenizer: &str) -> usize {
     // Explicit tokenizer is part of the contract; whitespace is the deterministic v0
     // fallback until tokenizer implementations become versioned dependencies.

@@ -327,7 +327,8 @@ pub fn search_memories_visible(
                 m.archived_at, m.pinned, m.collection_id, m.admin_note, m.delete_after
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
-         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL",
+         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL
+           AND (m.delete_after IS NULL OR m.delete_after > datetime('now'))",
     );
     let mut params: Vec<Box<dyn rusqlite::ToSql>> =
         vec![Box::new(fts_query), Box::new(org_id.to_string())];
@@ -496,7 +497,8 @@ pub fn list_memories_visible(
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
                 archived_at, pinned, collection_id, admin_note, delete_after
          FROM memories
-         WHERE org_id = ?1",
+         WHERE org_id = ?1
+           AND (delete_after IS NULL OR delete_after > datetime('now'))",
     );
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
@@ -714,7 +716,10 @@ pub fn count_memories_visible(
     collection_id_filter: Option<&str>,
     viewer_user_id: Option<&str>,
 ) -> Result<i64> {
-    let mut sql = String::from("SELECT COUNT(*) FROM memories WHERE org_id = ?1");
+    let mut sql = String::from(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1
+         AND (delete_after IS NULL OR delete_after > datetime('now'))",
+    );
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
 
@@ -801,7 +806,9 @@ pub fn archive_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool>
 /// Returns Ok(true) if the row was updated, Ok(false) if not found / not archived.
 pub fn restore_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
     let affected = conn.execute(
-        "UPDATE memories SET archived_at = NULL WHERE id = ?1 AND org_id = ?2 AND archived_at IS NOT NULL",
+        "UPDATE memories SET archived_at = NULL
+         WHERE id = ?1 AND org_id = ?2 AND archived_at IS NOT NULL
+           AND (delete_after IS NULL OR delete_after > datetime('now'))",
         rusqlite::params![id, org_id],
     )?;
     Ok(affected > 0)
@@ -3349,7 +3356,8 @@ pub fn get_embeddings_for_org_visible(
         "SELECT me.memory_id, me.embedding
          FROM memory_embeddings me
          JOIN memories m ON m.id = me.memory_id
-         WHERE m.org_id = ?1 AND m.archived_at IS NULL",
+         WHERE m.org_id = ?1 AND m.archived_at IS NULL
+           AND (m.delete_after IS NULL OR m.delete_after > datetime('now'))",
     );
     let viewer_owned = viewer_user_id.map(str::to_string);
     if viewer_owned.is_some() {
@@ -3400,7 +3408,9 @@ pub fn get_memories_by_ids_visible(
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
                 archived_at, pinned, collection_id, admin_note, delete_after
          FROM memories
-         WHERE org_id = ?1 AND id IN ({placeholders})"
+          WHERE org_id = ?1 AND id IN ({placeholders})
+            AND archived_at IS NULL
+            AND (delete_after IS NULL OR delete_after > datetime('now'))"
     );
 
     // Viewer id (if any) binds to the next placeholder after org_id + all ids.
@@ -4435,7 +4445,9 @@ pub fn get_memory_by_id_for_org(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
                 archived_at, pinned, collection_id, admin_note, delete_after
-         FROM memories WHERE id = ?1 AND org_id = ?2",
+         FROM memories
+          WHERE id = ?1 AND org_id = ?2 AND archived_at IS NULL
+            AND (delete_after IS NULL OR delete_after > datetime('now'))",
         rusqlite::params![memory_id, org_id],
         |row| {
             let tags_str: String = row.get(6)?;

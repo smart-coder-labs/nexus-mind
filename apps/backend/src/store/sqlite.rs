@@ -62,6 +62,25 @@ impl MemoryStore for SqliteStore {
     fn store(&self, org_id: &str, user_id: &str, req: &StoreMemoryRequest) -> Result<Memory> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
 
+        // Backend write gate: reject invalid input before any upsert, audit, or embedding side effect.
+        if org_id.trim().is_empty() || user_id.trim().is_empty() {
+            let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                serde_json::json!({"reason": "missing_tenant_or_actor"}));
+            anyhow::bail!("write_gate:missing_tenant_or_actor");
+        }
+        if req.content.trim().is_empty() {
+            let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                serde_json::json!({"reason": "empty_content"}));
+            anyhow::bail!("write_gate:empty_content");
+        }
+        if let Some(scope) = req.scope.as_deref() {
+            if !matches!(scope, "project" | "org" | "personal") {
+                let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                    serde_json::json!({"reason": "invalid_scope"}));
+                anyhow::bail!("write_gate:invalid_scope");
+            }
+        }
+
         if let Some(ref sid) = req.session_id {
             let valid = queries::validate_session_ownership(&conn, org_id, sid)?;
             if !valid {

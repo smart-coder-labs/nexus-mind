@@ -1,9 +1,11 @@
 use crate::{
     api::helpers::require_permission,
     context_fabric::{
-        active_manifest, compile, publish_generation, rollback_generation,
+        active_manifest, compile, generate_deterministic, publish_generation, rollback_generation,
+        validate_generation_identity,
         verify_request_generation, AssembleRequest, AssembleResponse, ContextFabricManifest,
-        GenerationRef,
+        GenerateRequest, GenerationRef, VerifyRequest, VerifyResponse, ClaimStatus,
+        ClaimVerification, GenerationMetadata,
     },
     db::migrations,
     models::types::{ApiError, AuthContext},
@@ -212,6 +214,169 @@ pub async fn assemble(
     let request = verify_memory_evidence(&conn, &auth, request)?;
     verify_request_generation(&conn, &auth.org_id, &request).map_err(fabric_error)?;
     Ok(Json(compile(&request)))
+}
+
+fn compiled_as_request(
+    contract_version: &str,
+    profile_id: &str,
+    profile_version: u32,
+    generation: &GenerationRef,
+    assembled: &AssembleResponse,
+) -> AssembleRequest {
+    AssembleRequest {
+        contract_version: contract_version.to_string(),
+        tokenizer: "whitespace-v0".into(),
+        token_budget: usize::MAX,
+        source_cap: usize::MAX,
+        excluded_sources: Vec::new(),
+        required_sources: Vec::new(),
+        generation: generation.clone(),
+        profile_id: Some(profile_id.to_string()),
+        profile_version: Some(profile_version),
+        candidates: assembled.units.clone(),
+    }
+}
+
+fn verify_compiled_for_caller(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    contract_version: &str,
+    profile_id: &str,
+    profile_version: u32,
+    generation: &GenerationRef,
+    assembled: &AssembleResponse,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let request = compiled_as_request(contract_version, profile_id, profile_version, generation, assembled);
+    verify_memory_evidence(conn, auth, request).map(|_| ())
+}
+
+pub async fn generate(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(request): Json<GenerateRequest>,
+) -> Result<Json<crate::context_fabric::GenerateResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "memory:read")?;
+    let reasons = validate_generation_identity(
+        &request.contract_version, &request.profile_id, request.profile_version,
+        &request.generation, &request.model, &request.provider, &request.assembled,
+    );
+    if reasons.iter().any(|r| r == "context_not_compiled") {
+        return Ok(Json(crate::context_fabric::GenerateResponse {
+            output: None,
+            metadata: GenerationMetadata {
+                contract_version: request.contract_version.clone(), profile_id: request.profile_id.clone(),
+                profile_version: request.profile_version, generation: request.generation.clone(),
+                model: request.model.clone(), provider: request.provider.clone(),
+                budgets: crate::context_fabric::BudgetReport { requested_tokens: request.output_token_budget, used_tokens: 0 },
+                reason_codes: reasons,
+            }, provenance: Vec::new(), claims: Vec::new(), abstained: true,
+        }))
+    }
+    verify_compiled_for_caller(&conn, &auth, &request.contract_version, &request.profile_id,
+        request.profile_version, &request.generation, &request.assembled)?;
+    Ok(Json(generate_deterministic(&request)))
+}
+
+pub async fn verify(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Json(request): Json<VerifyRequest>,
+) -> Result<Json<VerifyResponse>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "memory:read")?;
+    let identity_reasons = validate_generation_identity(
+        &request.contract_version, &request.profile_id, request.profile_version,
+        &request.generation, &request.model, &request.provider, &request.assembled,
+    );
+    if request.assembled.abstained || request.output.as_deref().unwrap_or("").is_empty() {
+        return Ok(Json(VerifyResponse {
+            status: ClaimStatus::Abstained,
+            metadata: GenerationMetadata {
+                contract_version: request.contract_version.clone(), profile_id: request.profile_id.clone(),
+                profile_version: request.profile_version, generation: request.generation.clone(),
+                model: request.model.clone(), provider: request.provider.clone(),
+                budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 },
+                reason_codes: vec!["abstained".into()],
+            }, claims: Vec::new(), reason_codes: vec!["abstained".into()],
+        }));
+    }
+    if !identity_reasons.is_empty() {
+        return Ok(Json(VerifyResponse {
+            status: ClaimStatus::Contradicted,
+            metadata: GenerationMetadata {
+                contract_version: request.contract_version.clone(), profile_id: request.profile_id.clone(),
+                profile_version: request.profile_version, generation: request.generation.clone(),
+                model: request.model.clone(), provider: request.provider.clone(),
+                budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 },
+                reason_codes: identity_reasons.clone(),
+            }, claims: Vec::new(), reason_codes: identity_reasons,
+        }));
+    }
+    if request.provider != crate::context_fabric::DETERMINISTIC_PROVIDER {
+        let reason = "provider_unavailable".to_string();
+        return Ok(Json(VerifyResponse {
+            status: ClaimStatus::Abstained,
+            metadata: GenerationMetadata {
+                contract_version: request.contract_version, profile_id: request.profile_id,
+                profile_version: request.profile_version, generation: request.generation,
+                model: request.model, provider: request.provider,
+                budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 },
+                reason_codes: vec![reason.clone()],
+            }, claims: Vec::new(), reason_codes: vec![reason],
+        }));
+    }
+    if let Err((_, error)) = verify_compiled_for_caller(&conn, &auth, &request.contract_version,
+        &request.profile_id, request.profile_version, &request.generation, &request.assembled) {
+        let code = error.0.code.clone();
+        let status = if code == "evidence_not_found" { ClaimStatus::Unauthorized } else { ClaimStatus::Contradicted };
+        return Ok(Json(VerifyResponse {
+            status, metadata: GenerationMetadata {
+                contract_version: request.contract_version, profile_id: request.profile_id,
+                profile_version: request.profile_version, generation: request.generation,
+                model: request.model, provider: request.provider,
+                budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 },
+                reason_codes: vec![code.clone()],
+            }, claims: Vec::new(), reason_codes: vec![code],
+        }));
+    }
+    let units: HashMap<&str, &crate::context_fabric::CandidateEvidence> = request.assembled.units.iter()
+        .map(|unit| (unit.unit_id.as_str(), unit)).collect();
+    let output = request.output.as_deref().unwrap_or("");
+    let mut results = Vec::new();
+    for claim in &request.claims {
+        let Some(unit) = units.get(claim.unit_id.as_str()) else {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Unauthorized, reason_codes: vec!["claim_unit_not_allowed".into()], locator: None });
+            continue;
+        };
+        if claim.locator != unit.locator {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Unauthorized, reason_codes: vec!["locator_mismatch".into()], locator: None });
+        } else if unit.generation != request.generation {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Stale, reason_codes: vec!["generation_mismatch".into()], locator: None });
+        } else if !unit.fresh {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Stale, reason_codes: vec!["stale_evidence".into()], locator: None });
+        } else if unit.content.contains(&claim.text) {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Verified, reason_codes: Vec::new(), locator: Some(unit.locator.clone()) });
+        } else if output.contains(&claim.text) {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Contradicted, reason_codes: vec!["claim_not_supported_by_unit".into()], locator: None });
+        } else {
+            results.push(ClaimVerification { id: claim.id.clone(), status: ClaimStatus::Unsupported, reason_codes: vec!["claim_not_found".into()], locator: None });
+        }
+    }
+    let status = if results.iter().all(|claim| claim.status == ClaimStatus::Verified) { ClaimStatus::Verified }
+        else if results.iter().any(|claim| claim.status == ClaimStatus::Unauthorized) { ClaimStatus::Unauthorized }
+        else if results.iter().any(|claim| claim.status == ClaimStatus::Stale) { ClaimStatus::Stale }
+        else if results.iter().any(|claim| claim.status == ClaimStatus::Contradicted) { ClaimStatus::Contradicted }
+        else { ClaimStatus::Unsupported };
+    Ok(Json(VerifyResponse {
+        status,
+        metadata: GenerationMetadata { contract_version: request.contract_version, profile_id: request.profile_id,
+            profile_version: request.profile_version, generation: request.generation, model: request.model,
+            provider: request.provider, budgets: crate::context_fabric::BudgetReport { requested_tokens: 0, used_tokens: 0 }, reason_codes: Vec::new() },
+        claims: results, reason_codes: Vec::new(),
+    }))
 }
 
 #[cfg(test)]

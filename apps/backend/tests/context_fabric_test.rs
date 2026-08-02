@@ -8,8 +8,11 @@ use nexusmind::{
     api::router,
     config::Config,
     context_fabric::{
-        AssembleRequest, CandidateEvidence, GenerationRef, Locator, CONTRACT_VERSION,
+        AssembleRequest, AssembleResponse, CandidateEvidence, Claim, CompileDiagnostics,
+        GenerateRequest, GenerationRef, Locator, VerifyRequest, CONTRACT_VERSION,
+        DETERMINISTIC_PROVIDER,
     },
+    store::{sqlite::SqliteStore, MemoryStore},
 };
 use tower::util::ServiceExt;
 
@@ -181,6 +184,31 @@ async fn post_assemble(
     (status, serde_json::from_slice(&body).unwrap())
 }
 
+async fn post_json(app: axum::Router, key: &str, uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let response = app.oneshot(
+        Request::builder().method("POST").uri(uri)
+            .header("Authorization", format!("Bearer {key}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap(),
+    ).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+fn compiled(unit: CandidateEvidence, abstained: bool) -> AssembleResponse {
+    AssembleResponse {
+        contract_version: CONTRACT_VERSION.into(), abstained, units: if abstained { vec![] } else { vec![unit] },
+        diagnostics: CompileDiagnostics { reason_codes: vec![], candidate_count: 1, selected_count: 1, omitted_sources: vec![], coverage: vec!["memory".into()] },
+    }
+}
+
+fn generate_request(assembled: AssembleResponse, provider: &str, budget: usize) -> GenerateRequest {
+    GenerateRequest { contract_version: CONTRACT_VERSION.into(), profile_id: "lab-profile".into(), profile_version: 1,
+        generation: GenerationRef { id: "g1".into(), version: 1 }, model: "lab-model".into(), provider: provider.into(),
+        output_token_budget: budget, assembled }
+}
+
 #[tokio::test]
 async fn http_assemble_accepts_backend_verified_memory() {
     let (app, key, id, _, _) = http_setup();
@@ -259,4 +287,110 @@ async fn http_assemble_rejects_invisible_memory_and_invalid_source_cap() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["code"], "invalid_source_cap");
+}
+
+#[tokio::test]
+async fn generation_is_versioned_local_only_and_budgeted() {
+    let (app, key, id, _, _) = http_setup();
+    let request = assemble_request(&id, "backend verified content", "memory", "memory-search", 1);
+    let assembled = compiled(request.candidates[0].clone(), false);
+    let (status, body) = post_json(app, &key, "/v1/context/generate", serde_json::to_value(generate_request(assembled.clone(), "unknown-provider", 20)).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["abstained"], true);
+    assert!(body["metadata"]["reason_codes"].as_array().unwrap().iter().any(|r| r == "provider_unavailable"));
+
+    let (app, key, id, _, _) = http_setup();
+    let budget_request = assemble_request(&id, "backend verified content", "memory", "memory-search", 1);
+    let (status, body) = post_json(app, &key, "/v1/context/generate", serde_json::to_value(generate_request(compiled(budget_request.candidates[0].clone(), false), DETERMINISTIC_PROVIDER, 1)).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["abstained"], true);
+    assert!(body["metadata"]["reason_codes"].as_array().unwrap().iter().any(|r| r == "budget_exceeded"));
+}
+
+#[tokio::test]
+async fn generation_rejects_uncompiled_context_and_verify_fails_closed() {
+    let (app, key, id, _, _) = http_setup();
+    let request = assemble_request(&id, "backend verified content", "memory", "memory-search", 1);
+    let (status, body) = post_json(app, &key, "/v1/context/generate", serde_json::to_value(generate_request(compiled(request.candidates[0].clone(), true), DETERMINISTIC_PROVIDER, 20)).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["abstained"], true);
+    assert!(body["metadata"]["reason_codes"].as_array().unwrap().iter().any(|r| r == "context_not_compiled"));
+
+    let (verify_app, verify_key, _, secret_id, _) = http_setup();
+    let mut unauthorized = assemble_request(&secret_id, "secret backend content", "memory", "memory-search", 1).candidates[0].clone();
+    unauthorized.generation = GenerationRef { id: "g1".into(), version: 1 };
+    let verify = VerifyRequest { contract_version: CONTRACT_VERSION.into(), profile_id: "lab-profile".into(), profile_version: 1,
+        generation: GenerationRef { id: "g1".into(), version: 1 }, model: "lab-model".into(), provider: DETERMINISTIC_PROVIDER.into(),
+        assembled: compiled(unauthorized.clone(), false), output: Some(unauthorized.content.clone()),
+        claims: vec![Claim { id: "c1".into(), text: unauthorized.content.clone(), unit_id: unauthorized.unit_id.clone(), locator: unauthorized.locator.clone() }] };
+    let (status, body) = post_json(verify_app, &verify_key, "/v1/context/verify", serde_json::to_value(verify).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "unauthorized");
+}
+
+#[tokio::test]
+async fn verify_reports_supported_and_unsupported_claims_without_evidence_leak() {
+    let (app, key, id, _, _) = http_setup();
+    let candidate = assemble_request(&id, "backend verified content", "memory", "memory-search", 1).candidates[0].clone();
+    let base = VerifyRequest { contract_version: CONTRACT_VERSION.into(), profile_id: "lab-profile".into(), profile_version: 1,
+        generation: GenerationRef { id: "g1".into(), version: 1 }, model: "lab-model".into(), provider: DETERMINISTIC_PROVIDER.into(),
+        assembled: compiled(candidate.clone(), false), output: Some(candidate.content.clone()), claims: vec![Claim {
+            id: "supported".into(), text: "verified".into(), unit_id: candidate.unit_id.clone(), locator: candidate.locator.clone(),
+        }] };
+    let (status, body) = post_json(app, &key, "/v1/context/verify", serde_json::to_value(base).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "verified");
+    assert_eq!(body["claims"][0]["status"], "verified");
+
+    let (app, key, id, _, _) = http_setup();
+    let candidate = assemble_request(&id, "backend verified content", "memory", "memory-search", 1).candidates[0].clone();
+    let mut unsupported = VerifyRequest { contract_version: CONTRACT_VERSION.into(), profile_id: "lab-profile".into(), profile_version: 1,
+        generation: GenerationRef { id: "g1".into(), version: 1 }, model: "lab-model".into(), provider: DETERMINISTIC_PROVIDER.into(),
+        assembled: compiled(candidate.clone(), false), output: Some(candidate.content.clone()), claims: vec![Claim {
+            id: "unsupported".into(), text: "not in memory".into(), unit_id: candidate.unit_id.clone(), locator: candidate.locator.clone(),
+        }] };
+    let (status, body) = post_json(app, &key, "/v1/context/verify", serde_json::to_value(&mut unsupported).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "unsupported");
+}
+
+#[test]
+fn memory_write_gate_is_atomic_and_expired_rows_are_not_retrievable() {
+    let conn = connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    let (org, user, _) = queries::bootstrap(&conn, "Gate Org", "gate-org", "gate@test", "Admin").unwrap();
+    let store = SqliteStore::new(conn);
+    let invalid = nexusmind::models::types::StoreMemoryRequest {
+        project: None, tool: "test".into(), content: " ".into(), tags: None, title: None,
+        memory_type: None, scope: Some("invalid".into()), topic_key: None, session_id: None,
+    };
+    assert!(store.store(&org.id, &user.id, &invalid).is_err());
+    let db = store.conn();
+    let conn = db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+
+    let memory = queries::upsert_memory(&conn, &org.id, &user.id, &nexusmind::models::types::StoreMemoryRequest {
+        project: None, tool: "test".into(), content: "expires soon".into(), tags: None, title: None,
+        memory_type: None, scope: None, topic_key: None, session_id: None,
+    }).unwrap();
+    conn.execute("UPDATE memories SET delete_after = datetime('now', '-1 day') WHERE id = ?1", [&memory.id]).unwrap();
+    assert!(queries::list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap().is_empty());
+}
+
+#[test]
+fn archive_restore_lifecycle_revalidates_visibility_and_retention() {
+    let conn = connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    let (org, user, _) = queries::bootstrap(&conn, "Lifecycle Org", "lifecycle-org", "life@test", "Admin").unwrap();
+    let req = nexusmind::models::types::StoreMemoryRequest {
+        project: None, tool: "test".into(), content: "lifecycle content".into(), tags: None, title: None,
+        memory_type: None, scope: None, topic_key: None, session_id: None,
+    };
+    let memory = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
+    assert!(queries::archive_memory(&conn, &org.id, &memory.id).unwrap());
+    assert!(queries::list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap().is_empty());
+    assert!(queries::restore_memory(&conn, &org.id, &memory.id).unwrap());
+    assert!(!queries::list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap().is_empty());
+    conn.execute("UPDATE memories SET archived_at = datetime('now'), delete_after = datetime('now', '-1 day') WHERE id = ?1", [&memory.id]).unwrap();
+    assert!(!queries::restore_memory(&conn, &org.id, &memory.id).unwrap());
 }

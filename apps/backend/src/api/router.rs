@@ -75,6 +75,8 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
 
     let protected = Router::new()
         .route("/v1/context/assemble", post(context_fabric::assemble))
+        .route("/v1/context/generate", post(context_fabric::generate))
+        .route("/v1/context/verify", post(context_fabric::verify))
         .route("/v1/context/migrations", get(context_fabric::migration_status).post(context_fabric::apply_migration))
         .route("/v1/context/profiles/:profile_id/generations", post(context_fabric::publish))
         .route("/v1/context/generations/active", get(context_fabric::active))
