@@ -760,6 +760,7 @@ pub async fn update(
 
             match updated {
                 Some(m) => {
+                    store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_updated");
                     let _ = db_queries::log_audit(
                         &conn,
                         &auth.org_id,
@@ -814,6 +815,7 @@ pub async fn archive(
         .map_err(store_err)?;
 
     if updated {
+        store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_archived");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((
@@ -855,6 +857,7 @@ pub async fn restore(
         .map_err(store_err)?;
 
     if updated {
+        store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_restored");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((

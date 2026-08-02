@@ -9,7 +9,7 @@ pub const CONTRACT_VERSION: &str = "context-fabric.v0";
 pub const BASELINE_PROFILE: &str = "baseline-nomic-768-f32-v1";
 pub const CONTEXT_FABRIC_SCHEMA_VERSION: i32 = 58;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GenerationRef {
     pub id: String,
     pub version: u64,
@@ -161,6 +161,8 @@ pub struct CandidateEvidence {
     pub generation: GenerationRef,
     pub fresh: bool,
     pub required: bool,
+    #[serde(default)]
+    pub captured_at_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +181,8 @@ pub struct AssembleRequest {
     #[serde(default)]
     pub profile_version: Option<u32>,
     pub candidates: Vec<CandidateEvidence>,
+    #[serde(default)]
+    pub freshness_window_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -420,8 +424,16 @@ pub fn compile(request: &AssembleRequest) -> AssembleResponse {
     let mut units = Vec::new();
     let mut used_tokens = 0;
     let mut budget_omissions = 0;
+    let mut freshness_omissions = false;
 
     for candidate in &request.candidates {
+        if let Some(window) = request.freshness_window_secs {
+            let fresh = candidate.captured_at_unix.map(|captured| {
+                let now = chrono::Utc::now().timestamp();
+                captured <= now && now.saturating_sub(captured) <= window as i64
+            }).unwrap_or(false);
+            if !fresh { freshness_omissions = true; continue; }
+        }
         if excluded.contains(candidate.source.as_str())
             || candidate.generation != request.generation
             || !candidate.fresh
@@ -470,6 +482,12 @@ pub fn compile(request: &AssembleRequest) -> AssembleResponse {
     }
     if request.candidates.iter().any(|c| !c.fresh) {
         reasons.push("stale_evidence_excluded".into());
+    }
+    if freshness_omissions {
+        reasons.push("stale_evidence_excluded".into());
+    }
+    if request.freshness_window_secs.is_some() && request.candidates.iter().any(|c| c.captured_at_unix.is_none()) {
+        reasons.push("freshness_unknown_timestamp".into());
     }
     reasons.sort();
     reasons.dedup();
@@ -702,6 +720,7 @@ mod tests {
             generation: generation(),
             fresh: true,
             required: false,
+            captured_at_unix: None,
         }
     }
     fn request(candidates: Vec<CandidateEvidence>) -> AssembleRequest {
@@ -716,6 +735,7 @@ mod tests {
             profile_id: None,
             profile_version: None,
             candidates,
+            freshness_window_secs: None,
         }
     }
     #[test]
@@ -771,6 +791,22 @@ mod tests {
             .reason_codes
             .contains(&"unsupported_unverified_source".into()));
         assert!(result.units.is_empty());
+    }
+
+    #[test]
+    fn compiler_fails_closed_at_freshness_boundaries_and_unknown_timestamps() {
+        let mut unknown = request(vec![candidate("unknown", "memory", "one")]);
+        unknown.freshness_window_secs = Some(60);
+        let result = compile(&unknown);
+        assert!(result.abstained);
+        assert!(result.diagnostics.reason_codes.contains(&"freshness_unknown_timestamp".into()));
+
+        let mut boundary = request(vec![candidate("boundary", "memory", "one")]);
+        boundary.freshness_window_secs = Some(60);
+        boundary.candidates[0].captured_at_unix = Some(chrono::Utc::now().timestamp() - 61);
+        let result = compile(&boundary);
+        assert!(result.abstained);
+        assert!(result.diagnostics.reason_codes.contains(&"stale_evidence_excluded".into()));
     }
 
     fn manifest(profile_id: &str, generation: &str, version: u64) -> ContextFabricManifest {

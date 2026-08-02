@@ -20,6 +20,7 @@ use crate::{
 pub struct SqliteStore {
     db:    Arc<Mutex<Connection>>,
     embed: Option<Arc<EmbedService>>,
+    context_runtime: Arc<crate::context_fabric_runtime::ContextFabricRuntime>,
 }
 
 impl SqliteStore {
@@ -27,6 +28,7 @@ impl SqliteStore {
         SqliteStore {
             db:    Arc::new(Mutex::new(conn)),
             embed: None,
+            context_runtime: Arc::new(crate::context_fabric_runtime::ContextFabricRuntime::from_env()),
         }
     }
 
@@ -44,6 +46,10 @@ impl SqliteStore {
     /// Returns a clone of the optional embed service, for handlers that drive embedding directly.
     pub fn embed_service(&self) -> Option<Arc<EmbedService>> {
         self.embed.clone()
+    }
+
+    pub fn context_runtime(&self) -> Arc<crate::context_fabric_runtime::ContextFabricRuntime> {
+        Arc::clone(&self.context_runtime)
     }
 
     /// Returns `true` when `search()` would silently downgrade the given mode to
@@ -89,6 +95,9 @@ impl MemoryStore for SqliteStore {
         }
 
         let memory = queries::upsert_memory(&conn, org_id, user_id, req)?;
+        // A write event is emitted at the store boundary so direct callers and HTTP callers
+        // share the same deterministic invalidation behavior.
+        self.context_runtime.invalidate_memory(org_id, &memory.id, "memory_written");
 
         let _ = queries::log_audit(
             &conn,
@@ -275,6 +284,7 @@ impl MemoryStore for SqliteStore {
         let deleted = queries::delete_memory(&conn, org_id, memory_id)?;
 
         if deleted {
+            self.context_runtime.invalidate_memory(org_id, memory_id, "memory_deleted");
             let _ = queries::log_audit(
                 &conn,
                 org_id,

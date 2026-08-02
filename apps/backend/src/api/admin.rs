@@ -903,6 +903,7 @@ pub async fn upsert_project_member_api(
     }
 
     queries::upsert_project_member(&conn, &project_id, &input.user_id, &input.role).map_err(db_err)?;
+    store.context_runtime().invalidate_all(&auth.org_id, "acl_membership_changed");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -920,6 +921,7 @@ pub async fn delete_project_member_api(
 
     let deleted = queries::delete_project_member(&conn, &project_id, &user_id).map_err(db_err)?;
     if deleted {
+        store.context_runtime().invalidate_all(&auth.org_id, "acl_membership_deleted");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((

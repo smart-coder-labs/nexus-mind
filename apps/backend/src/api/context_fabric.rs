@@ -16,7 +16,8 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, time::Duration};
+use crate::context_fabric_runtime::{CacheIdentity, CacheStage, RolloutState, CANDIDATE_LANE, BASELINE_LANE};
 
 const VERIFIED_MEMORY_PROVENANCE: &str = "memory-search";
 
@@ -92,9 +93,11 @@ pub async fn publish(
     if input.manifest.profile_id != profile_id {
         return Err(verification_error("profile_path_mismatch"));
     }
-    publish_generation(&conn, &auth.org_id, &auth.user_id, &input.manifest)
-        .map(Json)
-        .map_err(fabric_error)
+    let result = publish_generation(&conn, &auth.org_id, &auth.user_id, &input.manifest)
+        .map_err(fabric_error)?;
+    drop(conn);
+    store.context_runtime().invalidate_generation(&auth.org_id, &result.generation, "profile_published");
+    Ok(Json(result))
 }
 
 pub async fn active(
@@ -117,7 +120,7 @@ pub async fn rollback(
     let db = store.conn();
     let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
     require_permission(&conn, &auth, None, "settings:write")?;
-    rollback_generation(
+    let result = rollback_generation(
         &conn,
         &auth.org_id,
         &GenerationRef {
@@ -125,8 +128,83 @@ pub async fn rollback(
             version: generation_version,
         },
     )
-    .map(Json)
-    .map_err(fabric_error)
+    .map_err(fabric_error)?;
+    drop(conn);
+    store.context_runtime().invalidate_generation(&auth.org_id, &result.generation, "generation_rollback");
+    store.context_runtime().set_rollout(RolloutState::default());
+    Ok(Json(result))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RolloutRequest {
+    pub profile_id: String,
+    pub generation: GenerationRef,
+    pub manifest_evidence: String,
+    pub run_evidence: String,
+    pub approval_operator: String,
+    #[serde(default)] pub fallback_baseline: bool,
+    #[serde(default)] pub shadow_enabled: bool,
+    #[serde(default)] pub canary_enabled: bool,
+}
+
+fn cache_identity(auth: &AuthContext, request: &AssembleRequest, stage: CacheStage, lane: &str) -> CacheIdentity {
+    let ids = request.candidates.iter().map(|candidate| candidate.unit_id.as_str()).collect::<Vec<_>>().join(",");
+    CacheIdentity {
+        tenant: auth.org_id.clone(), caller_scope: auth.role.to_string(), caller_user: auth.user_id.clone(),
+        project: request.profile_id.clone().unwrap_or_else(|| "org".into()), acl_generation: 0,
+        policy_generation: 0, profile: request.profile_id.clone().unwrap_or_else(|| "baseline".into()),
+        captured_generation: request.generation.clone(), freshness: request.freshness_window_secs.map(|v| format!("bounded:{v}")).unwrap_or_else(|| "explicit".into()),
+        source_type: format!("context:{stage:?}:{ids}:{}", request.contract_version), contract_version: request.contract_version.clone(), lane: lane.into(),
+        budget: Some(request.token_budget), tokenizer: Some(request.tokenizer.clone()), stage,
+    }
+}
+
+fn validate_rollout(input: &RolloutRequest) -> Result<(), &'static str> {
+    let profile = input.profile_id.to_ascii_lowercase();
+    if profile.contains("bq") || profile.contains("mrl") || profile.contains("tool-search") {
+        return Err("unsupported_rollout_capability");
+    }
+    if input.profile_id.trim().is_empty() || input.generation.id.trim().is_empty() { return Err("missing_rollout_identity"); }
+    if input.manifest_evidence.trim().is_empty() { return Err("missing_manifest_evidence"); }
+    if input.run_evidence.trim().is_empty() { return Err("missing_run_evidence"); }
+    if input.approval_operator.trim().is_empty() { return Err("missing_approval_operator"); }
+    if !input.manifest_evidence.starts_with("manifest:") { return Err("invalid_manifest_evidence"); }
+    if !input.run_evidence.starts_with("run:") { return Err("invalid_run_evidence"); }
+    Ok(())
+}
+
+fn rollout_error(code: &'static str) -> (StatusCode, Json<ApiError>) { verification_error(code) }
+
+pub async fn rollout_shadow(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(input): Json<RolloutRequest>) -> Result<Json<RolloutState>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?; validate_rollout(&input).map_err(rollout_error)?;
+    let mut state = store.context_runtime().rollout(); state.shadow_enabled = input.shadow_enabled; state.active_profile = Some(input.profile_id); state.active_generation = Some(input.generation); state.approval_operator = Some(input.approval_operator); state.last_manifest_evidence = Some(input.manifest_evidence); state.last_run_evidence = Some(input.run_evidence); store.context_runtime().set_rollout(state.clone()); Ok(Json(state))
+}
+
+pub async fn rollout_canary(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(input): Json<RolloutRequest>) -> Result<Json<RolloutState>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?; validate_rollout(&input).map_err(rollout_error)?; if !input.shadow_enabled { return Err(rollout_error("shadow_gate_required")); }
+    let mut state = store.context_runtime().rollout(); state.canary_enabled = input.canary_enabled; state.active_lane = CANDIDATE_LANE.into(); state.active_profile = Some(input.profile_id); state.active_generation = Some(input.generation); state.approval_operator = Some(input.approval_operator); state.last_manifest_evidence = Some(input.manifest_evidence); state.last_run_evidence = Some(input.run_evidence); store.context_runtime().set_rollout(state.clone()); Ok(Json(state))
+}
+
+pub async fn rollout_promote(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>, Json(input): Json<RolloutRequest>) -> Result<Json<RolloutState>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?; validate_rollout(&input).map_err(rollout_error)?;
+    if !input.fallback_baseline { return Err(verification_error("baseline_fallback_required")); }
+    if !store.context_runtime().rollout().canary_enabled { return Err(verification_error("canary_gate_required")); }
+    let mut state = store.context_runtime().rollout(); state.promotion_enabled = true; state.baseline_fallback = input.fallback_baseline; state.active_lane = CANDIDATE_LANE.into(); state.active_profile = Some(input.profile_id); state.active_generation = Some(input.generation); state.approval_operator = Some(input.approval_operator); state.last_manifest_evidence = Some(input.manifest_evidence); state.last_run_evidence = Some(input.run_evidence); store.context_runtime().set_rollout(state.clone()); Ok(Json(state))
+}
+
+pub async fn rollout_rollback(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>) -> Result<Json<RolloutState>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?; drop(conn);
+    let runtime = store.context_runtime(); runtime.set_rollout(RolloutState::default()); runtime.invalidate_all(&auth.org_id, "rollout_rollback"); Ok(Json(runtime.rollout()))
+}
+
+pub async fn diagnostics(State(store): State<SqliteStore>, Extension(auth): Extension<AuthContext>) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn(); let conn = db.lock().map_err(|_| verification_error("db_lock"))?; require_permission(&conn, &auth, None, "memory:read")?;
+    let active = active_manifest(&conn, &auth.org_id).map_err(fabric_error)?; let runtime = store.context_runtime();
+    Ok(Json(serde_json::json!({"cache": runtime.stats(), "rollout": runtime.rollout(), "active_profile": active.as_ref().map(|m| &m.profile_id), "active_generation": active.map(|m| m.generation), "reason_codes": ["stale_evidence_excluded", "freshness_unknown_timestamp", "baseline_fallback_required"]})))
 }
 
 fn verify_memory_evidence(
@@ -213,7 +291,15 @@ pub async fn assemble(
     require_permission(&conn, &auth, None, "memory:read")?;
     let request = verify_memory_evidence(&conn, &auth, request)?;
     verify_request_generation(&conn, &auth.org_id, &request).map_err(fabric_error)?;
-    Ok(Json(compile(&request)))
+    let runtime = store.context_runtime();
+    runtime.purge_expired(&auth.org_id);
+    let identity = cache_identity(&auth, &request, CacheStage::Compile, BASELINE_LANE);
+    if let Some(bytes) = runtime.get(&identity) {
+        if let Ok(response) = serde_json::from_slice(&bytes) { return Ok(Json(response)); }
+    }
+    let response = compile(&request);
+    if !response.abstained { let _ = runtime.put(identity, serde_json::to_vec(&response).unwrap_or_default(), Duration::from_secs(60), true); }
+    Ok(Json(response))
 }
 
 fn compiled_as_request(
@@ -234,6 +320,7 @@ fn compiled_as_request(
         profile_id: Some(profile_id.to_string()),
         profile_version: Some(profile_version),
         candidates: assembled.units.clone(),
+        freshness_window_secs: None,
     }
 }
 
@@ -450,7 +537,9 @@ mod tests {
                 },
                 fresh: true,
                 required: false,
+                captured_at_unix: None,
             }],
+            freshness_window_secs: None,
         }
     }
 
@@ -495,5 +584,22 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.1 .0.code, "invalid_source_cap");
+    }
+
+    #[test]
+    fn rollout_requires_gate_evidence_and_rejects_lab_capabilities() {
+        let base = RolloutRequest {
+            profile_id: "candidate".into(), generation: GenerationRef { id: "g2".into(), version: 2 },
+            manifest_evidence: "manifest:sha256:ok".into(), run_evidence: "run:ok".into(),
+            approval_operator: "operator".into(), fallback_baseline: false, shadow_enabled: false, canary_enabled: false,
+        };
+        assert_eq!(validate_rollout(&base), Ok(()));
+        let mut missing = base;
+        missing.manifest_evidence = "".into();
+        assert_eq!(validate_rollout(&missing), Err("missing_manifest_evidence"));
+        let mut lab = missing;
+        lab.manifest_evidence = "manifest:ok".into();
+        lab.profile_id = "bq-candidate".into();
+        assert_eq!(validate_rollout(&lab), Err("unsupported_rollout_capability"));
     }
 }

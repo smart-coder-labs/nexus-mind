@@ -4,6 +4,7 @@ pub mod automation;
 pub mod backup;
 pub mod config;
 pub mod context_fabric;
+pub mod context_fabric_runtime;
 pub mod db;
 pub mod embed;
 pub mod email;

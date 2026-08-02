@@ -156,7 +156,9 @@ fn assemble_request(
             },
             fresh: true,
             required: false,
+            captured_at_unix: None,
         }],
+        freshness_window_secs: None,
     }
 }
 
