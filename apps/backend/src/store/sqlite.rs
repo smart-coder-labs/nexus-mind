@@ -286,7 +286,7 @@ impl SqliteStore {
 
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_org_visible(&conn, org_id, viewer_user_id)?
         };
 
         let mut scored: Vec<(String, f32)> = pairs
@@ -317,7 +317,7 @@ impl SqliteStore {
         // FTS5 results (rank = position in result list, 1-based)
         let fts_ids: Vec<String> = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::search_memories(&conn, org_id, query, fetch_n)?
+            queries::search_memories_visible(&conn, org_id, query, fetch_n, viewer_user_id)?
                 .into_iter()
                 .map(|m| m.id)
                 .collect()
@@ -326,7 +326,7 @@ impl SqliteStore {
         // Semantic KNN results
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_org_visible(&conn, org_id, viewer_user_id)?
         };
 
         let mut sem_scored: Vec<(String, f32)> = pairs

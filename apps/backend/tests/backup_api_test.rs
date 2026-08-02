@@ -24,6 +24,7 @@ fn build_app_without_backup_pool() -> axum::Router {
     let conn = connection::connect(":memory:").expect("connect");
     nexusmind::db::migrations::run(&conn).expect("migrations");
     let cfg = Config {
+        context_fabric: Default::default(),
         port: 0,
         db_path: ":memory:".to_string(),
         log_level: "info".to_string(),

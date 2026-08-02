@@ -3336,20 +3336,35 @@ pub fn store_embedding(conn: &Connection, memory_id: &str, embedding: &[u8]) -> 
 /// Load all (memory_id, embedding_blob) pairs for an org.
 /// Used for in-process cosine KNN during semantic search.
 pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut stmt = conn.prepare(
+    get_embeddings_for_org_visible(conn, org_id, None)
+}
+
+/// Load only authorized embeddings before semantic scoring and candidate truncation.
+pub fn get_embeddings_for_org_visible(
+    conn: &Connection,
+    org_id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut sql = String::from(
         "SELECT me.memory_id, me.embedding
          FROM memory_embeddings me
          JOIN memories m ON m.id = me.memory_id
          WHERE m.org_id = ?1 AND m.archived_at IS NULL",
-    )?;
-    let rows = stmt.query_map([org_id], |row| {
+    );
+    let viewer_owned = viewer_user_id.map(str::to_string);
+    if viewer_owned.is_some() {
+        sql.push_str(" AND (m.project_id IS NULL OR m.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?2))");
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(viewer) = viewer_owned {
+        params.push(Box::new(viewer));
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
-    let mut pairs = Vec::new();
-    for r in rows {
-        pairs.push(r?);
-    }
-    Ok(pairs)
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 /// Fetch memories by a list of IDs, preserving the order of `ids`.

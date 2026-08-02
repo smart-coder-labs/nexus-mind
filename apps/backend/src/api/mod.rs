@@ -23,3 +23,4 @@ pub mod agents;
 pub mod harnesses;
 pub mod sdd;
 pub mod tasks;
+pub mod context_fabric;

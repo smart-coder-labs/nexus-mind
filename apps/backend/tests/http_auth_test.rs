@@ -21,6 +21,7 @@ const ADMIN_PASSWORD: &str = "testpass1";
 /// permissive CORS origin so the router parses without panic).
 fn test_config() -> Config {
     Config {
+        context_fabric: Default::default(),
         port: 8080,
         db_path: ":memory:".into(),
         log_level: "error".into(),
