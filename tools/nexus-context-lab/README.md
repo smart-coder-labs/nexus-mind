@@ -32,7 +32,32 @@ and evidence are loaded.
 The validator also rejects invalid tenant isolation, leakage, scenario counts,
 split totals, missing annotations/adjudication, and missing evidence contracts.
 
-## Offline run
+## Offline M1 local run
+
+The local M1 benchmark is isolated and synthetic. It is not the 32GB promotion gate:
+every run reports `synthetic_corpus=true`, `nx_gold_status=pending`, and
+`promotion=false`. It never downloads a dataset or contacts the network.
+
+Generate a deterministic corpus (the default is 10,000 chunks, three fictitious
+tenants, projects, ACLs, metadata, and Float32 embeddings):
+
+```sh
+python3 ../../scripts/generate_synthetic_corpus.py --output /tmp/nexus-context-lab-corpus --chunks 10000
+```
+
+Run the reproducible quick validation on 10,000 chunks:
+
+```sh
+python3 scripts/run_benchmark.py --corpus /tmp/nexus-context-lab-corpus --quick --window 4 --run-root runs
+```
+
+The full local protocol uses the configured warmup/window/restarts and can be run
+with `--protocol`; choose `--concurrency 1`, `2`, or `4`. `--enable-bq` and
+`--enable-mrl` are shadow-only. Each run stores inputs, config, results, gates, and
+manifest under `runs/<run-id>/`, including p50/p95 stage latency, candidate recall,
+quality delta, theoretical bytes, and process RSS when stdlib exposes it.
+
+## NX-Gold run
 
 ```sh
 ./scripts/run_nx_gold.py --dataset fixtures/nx_gold_sample.json --run-root runs
@@ -44,16 +69,10 @@ supports independent A0-A6 stage contracts, deterministic seeds, AB/BA ordering,
 warmup/window/restarts/concurrency/read-update parameters, and 10,000-sample grouped
 bootstrap metadata with 95% confidence intervals. BQ and MRL default to off.
 
-```sh
-./scripts/run_benchmark.py --run-root runs --dataset fixtures/nx_gold_sample.json
-```
-
-Stages A0 FTS5, A1 dense Float32, A2 hybrid/RRF, A3 policy-first/generations,
-A4 Compiler, A5 BQ shadow, and A6 MRL support deterministic synthetic contract
-measurements. They do not access product datasets or claim NX-Gold. BQ/MRL are
-shadow-only, dense Float32 is always the final rescore, and theoretical payload
-reduction must not be read as RSS or end-to-end improvement. Tool Search MCP remains
-out of scope.
+Stages A0 FTS5-ish lexical, A1 dense Float32, A2 hybrid/RRF, A3 policy-first,
+A4 compiler contract, A5 BQ shadow, and A6 MRL shadow execute over the local corpus.
+The baseline fallback remains active and theoretical bytes are deliberately separate
+from RSS/process measurements. Tool Search MCP remains out of scope.
 
 ## Tests
 

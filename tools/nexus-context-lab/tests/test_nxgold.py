@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,12 +8,43 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nxgold import canonical_hash, evaluate_gates, load_json, preflight, run_dir, validate_dataset, write_json
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from generate_synthetic_corpus import generate
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "nx_gold_sample.json"
 
 
 class NxGoldContractTests(unittest.TestCase):
+    def test_synthetic_corpus_counts_and_deterministic_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first = Path(temp) / "first"
+            second = Path(temp) / "second"
+            manifest_a = generate(first, chunks=30, seed=7)
+            manifest_b = generate(second, chunks=30, seed=7)
+            self.assertEqual(manifest_a["corpus_sha256"], manifest_b["corpus_sha256"])
+            self.assertEqual(manifest_a["tenants"], ["tenant-fable", "tenant-orbit", "tenant-pine"])
+            payload = json.loads((first / "corpus.json").read_text())
+            self.assertEqual(len(payload["records"]), 30)
+            self.assertEqual({item["tenant"] for item in payload["records"]}, set(manifest_a["tenants"]))
+            self.assertGreater(manifest_a["files"]["sqlite"]["bytes"], 0)
+
+    def test_runner_quick_writes_pending_local_artifacts(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_benchmark.py"
+        with tempfile.TemporaryDirectory() as temp:
+            output = subprocess.check_output([
+                sys.executable, str(runner), "--synthetic-chunks", "40", "--quick", "--window", "2",
+                "--run-root", temp,
+            ], text=True).strip()
+            run_path = Path(output)
+            results = json.loads((run_path / "results.json").read_text())
+            self.assertTrue(results["synthetic_corpus"])
+            self.assertEqual(results["nx_gold_status"], "pending")
+            self.assertFalse(results["promotion"])
+            self.assertEqual({p.name for p in run_path.iterdir()}, {
+                "config.json", "gates.json", "inputs.json", "manifest.json", "results.json", "synthetic-corpus",
+            })
+
     def test_sample_rejected_and_reports_pending(self):
         errors = validate_dataset(load_json(FIXTURE))
         self.assertTrue(errors)
