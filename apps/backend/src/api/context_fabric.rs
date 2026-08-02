@@ -1,10 +1,19 @@
 use crate::{
     api::helpers::require_permission,
-    context_fabric::{compile, AssembleRequest, AssembleResponse},
+    context_fabric::{
+        active_manifest, compile, publish_generation, rollback_generation,
+        verify_request_generation, AssembleRequest, AssembleResponse, ContextFabricManifest,
+        GenerationRef,
+    },
+    db::migrations,
     models::types::{ApiError, AuthContext},
     store::sqlite::SqliteStore,
 };
-use axum::{extract::State, http::StatusCode, Extension, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Extension, Json,
+};
 use std::collections::{HashMap, HashSet};
 
 const VERIFIED_MEMORY_PROVENANCE: &str = "memory-search";
@@ -17,6 +26,105 @@ fn verification_error(code: &str) -> (StatusCode, Json<ApiError>) {
             code: code.into(),
         }),
     )
+}
+
+fn fabric_error(error: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+    let message = error.to_string();
+    let code = if message.contains("not found") || message.contains("QueryReturnedNoRows") {
+        "not_found"
+    } else if message.contains("pending") {
+        "migration_pending"
+    } else if message.contains("UNIQUE") {
+        "conflict"
+    } else {
+        "validation_error"
+    };
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ApiError {
+            error: message,
+            code: code.into(),
+        }),
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PublishRequest {
+    pub manifest: ContextFabricManifest,
+}
+
+pub async fn apply_migration(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?;
+    migrations::apply_context_fabric(&conn).map_err(fabric_error)?;
+    migrations::verify_context_fabric(&conn).map_err(fabric_error)?;
+    Ok(Json(
+        serde_json::json!({"schema_version": 58, "status": "applied"}),
+    ))
+}
+
+pub async fn migration_status(
+    State(store): State<SqliteStore>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    let pending = migrations::context_fabric_pending(&conn).map_err(fabric_error)?;
+    Ok(Json(
+        serde_json::json!({"schema_version": 58, "pending": pending}),
+    ))
+}
+
+pub async fn publish(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(profile_id): Path<String>,
+    Json(input): Json<PublishRequest>,
+) -> Result<Json<ContextFabricManifest>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?;
+    if input.manifest.profile_id != profile_id {
+        return Err(verification_error("profile_path_mismatch"));
+    }
+    publish_generation(&conn, &auth.org_id, &auth.user_id, &input.manifest)
+        .map(Json)
+        .map_err(fabric_error)
+}
+
+pub async fn active(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Option<ContextFabricManifest>>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "memory:read")?;
+    active_manifest(&conn, &auth.org_id)
+        .map(Json)
+        .map_err(fabric_error)
+}
+
+pub async fn rollback(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path((generation_id, generation_version)): Path<(String, u64)>,
+) -> Result<Json<ContextFabricManifest>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?;
+    rollback_generation(
+        &conn,
+        &auth.org_id,
+        &GenerationRef {
+            id: generation_id,
+            version: generation_version,
+        },
+    )
+    .map(Json)
+    .map_err(fabric_error)
 }
 
 fn verify_memory_evidence(
@@ -102,6 +210,7 @@ pub async fn assemble(
     })?;
     require_permission(&conn, &auth, None, "memory:read")?;
     let request = verify_memory_evidence(&conn, &auth, request)?;
+    verify_request_generation(&conn, &auth.org_id, &request).map_err(fabric_error)?;
     Ok(Json(compile(&request)))
 }
 
@@ -158,6 +267,8 @@ mod tests {
                 id: "g1".into(),
                 version: 1,
             },
+            profile_id: None,
+            profile_version: None,
             candidates: vec![crate::context_fabric::CandidateEvidence {
                 unit_id: id.into(),
                 source: "memory".into(),

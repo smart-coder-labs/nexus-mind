@@ -135,6 +135,8 @@ fn assemble_request(
             id: "g1".into(),
             version: 1,
         },
+        profile_id: None,
+        profile_version: None,
         candidates: vec![CandidateEvidence {
             unit_id: id.into(),
             source: source.into(),

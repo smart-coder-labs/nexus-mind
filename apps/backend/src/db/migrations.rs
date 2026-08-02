@@ -63,6 +63,83 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Context Fabric v58 is deliberately user-applied and is not called by run_all.
+pub fn context_fabric_pending(conn: &Connection) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cf_manifests')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(!exists)
+}
+
+pub fn apply_context_fabric(conn: &Connection) -> Result<()> {
+    if !context_fabric_pending(conn)? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS cf_manifests (
+             org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             profile_id TEXT NOT NULL,
+             profile_version INTEGER NOT NULL CHECK(profile_version > 0),
+             generation_id TEXT NOT NULL,
+             generation_version INTEGER NOT NULL CHECK(generation_version > 0),
+             tenant_scope TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('pending', 'private', 'committed', 'active', 'retired')),
+             manifest_json TEXT NOT NULL,
+             commit_marker TEXT,
+             created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY(org_id, profile_id, profile_version, generation_id, generation_version)
+         );
+         CREATE INDEX IF NOT EXISTS idx_cf_manifests_generation
+             ON cf_manifests(org_id, generation_id, generation_version, status);
+         CREATE TABLE IF NOT EXISTS cf_active_pointers (
+             org_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+             profile_id TEXT NOT NULL,
+             profile_version INTEGER NOT NULL,
+             generation_id TEXT NOT NULL,
+             generation_version INTEGER NOT NULL,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         PRAGMA user_version = 58;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+pub fn verify_context_fabric(conn: &Connection) -> Result<()> {
+    for table in ["cf_manifests", "cf_active_pointers"] {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("missing_context_fabric_table:{table}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod context_fabric_migration_tests {
+    use super::*;
+    use crate::db::connection::connect;
+
+    #[test]
+    fn context_fabric_migration_is_pending_until_explicitly_applied_and_idempotent() {
+        let conn = connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        assert!(context_fabric_pending(&conn).unwrap());
+        apply_context_fabric(&conn).unwrap();
+        apply_context_fabric(&conn).unwrap();
+        assert!(!context_fabric_pending(&conn).unwrap());
+        verify_context_fabric(&conn).unwrap();
+    }
+}
+
 /// Migration v57: automation run provenance and immutable worker receipts.
 ///
 /// This is deliberately limited to durable scope, attempts, receipt replay
