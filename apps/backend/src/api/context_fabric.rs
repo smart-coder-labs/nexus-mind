@@ -758,19 +758,22 @@ fn verify_resolved_source_evidence(
     let resolved = crate::context_fabric_evidence::resolve(conn, auth, &resolve_request)
         .map_err(verification_error)?;
     if resolved.len() != request.candidates.len()
-        || resolved.iter().zip(&request.candidates).any(|(stored, supplied)| {
-            stored.content != supplied.content
-                || stored.locator != supplied.locator
-                || stored.provenance != supplied.provenance
-                || stored.generation != supplied.generation
-                || stored.fresh != supplied.fresh
-                || stored.content_hash != supplied.content_hash
-                || stored.snapshot != supplied.snapshot
-                || stored.source_generation != supplied.source_generation
-                || stored.tenant_scope != supplied.tenant_scope
-                || stored.acl_generation != supplied.acl_generation
-                || stored.policy_generation != supplied.policy_generation
-        })
+        || resolved
+            .iter()
+            .zip(&request.candidates)
+            .any(|(stored, supplied)| {
+                stored.content != supplied.content
+                    || stored.locator != supplied.locator
+                    || stored.provenance != supplied.provenance
+                    || stored.generation != supplied.generation
+                    || stored.fresh != supplied.fresh
+                    || stored.content_hash != supplied.content_hash
+                    || stored.snapshot != supplied.snapshot
+                    || stored.source_generation != supplied.source_generation
+                    || stored.tenant_scope != supplied.tenant_scope
+                    || stored.acl_generation != supplied.acl_generation
+                    || stored.policy_generation != supplied.policy_generation
+            })
     {
         return Err(verification_error("evidence_integrity_mismatch"));
     }
@@ -782,7 +785,11 @@ fn verify_request_evidence(
     auth: &AuthContext,
     request: AssembleRequest,
 ) -> Result<AssembleRequest, (StatusCode, Json<ApiError>)> {
-    if request.candidates.iter().any(|candidate| candidate.source == "memory") {
+    if request
+        .candidates
+        .iter()
+        .any(|candidate| candidate.source == "memory")
+    {
         let memory_candidates = request
             .candidates
             .iter()
@@ -793,7 +800,11 @@ fn verify_request_evidence(
         memory_request.candidates = memory_candidates;
         verify_memory_evidence(conn, auth, memory_request)?;
     }
-    if request.candidates.iter().any(|candidate| candidate.source != "memory") {
+    if request
+        .candidates
+        .iter()
+        .any(|candidate| candidate.source != "memory")
+    {
         verify_resolved_source_evidence(conn, auth, &request)?;
     }
     Ok(request)
@@ -929,25 +940,9 @@ pub async fn generate(
         &request.assembled,
     );
     if reasons.iter().any(|r| r == "context_not_compiled") {
-        return Ok(Json(crate::context_fabric::GenerateResponse {
-            output: None,
-            metadata: GenerationMetadata {
-                contract_version: request.contract_version.clone(),
-                profile_id: request.profile_id.clone(),
-                profile_version: request.profile_version,
-                generation: request.generation.clone(),
-                model: request.model.clone(),
-                provider: request.provider.clone(),
-                budgets: crate::context_fabric::BudgetReport {
-                    requested_tokens: request.output_token_budget,
-                    used_tokens: 0,
-                },
-                reason_codes: reasons,
-            },
-            provenance: Vec::new(),
-            claims: Vec::new(),
-            abstained: true,
-        }));
+        return Ok(Json(crate::context_fabric::generate_deterministic(
+            &request,
+        )));
     }
     verify_compiled_for_caller(
         &conn,

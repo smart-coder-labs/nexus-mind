@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import sqlite3
 import struct
 import sys
@@ -18,7 +19,7 @@ from time import perf_counter
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from generate_synthetic_corpus import generate
-from nxgold import STAGES, base_manifest, canonical_hash, run_dir, write_json
+from nxgold import STAGES, base_manifest, run_dir, validate_clean_room, validate_run_artifacts, write_json
 
 
 def percentile(values, fraction):
@@ -40,6 +41,24 @@ def rss_bytes():
         return None
 
 
+def grouped_bootstrap(groups, samples=10_000, seed=20260802):
+    rng = random.Random(seed)
+    names = sorted(groups)
+    values = [groups[name] for name in names]
+    estimates = []
+    for _ in range(samples):
+        estimates.append(sum(values[rng.randrange(len(values))] for _ in values) / len(values))
+    estimates.sort()
+    return {"method": "grouped", "samples": samples, "seed": seed, "groups": names,
+            "ci95": [round(estimates[int(samples * .025)], 6), round(estimates[int(samples * .975) - 1], 6)]}
+
+
+def run_read_update(records, query_indexes, read_percent, seed):
+    rng = random.Random(seed)
+    return [{"kind": "read", "id": records[index]["id"]} if rng.randrange(100) < read_percent
+            else {"kind": "update", "id": records[index]["id"], "persisted": False} for index in query_indexes]
+
+
 def load_corpus(path):
     if path.suffix == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -51,7 +70,7 @@ def load_corpus(path):
     records = [{"id": row["id"], "tenant": row["tenant"], "project": row["project"], "text": row["text"],
                 "embedding": list(struct.unpack(f"<{len(row['embedding']) // 4}f", row["embedding"])),
                 "metadata": json.loads(row["metadata_json"])} for row in rows]
-    return {"schema": "nexus-synthetic-corpus-v1", "chunks": len(records), "records": records}, connection
+    return {"schema": "nexus-synthetic-corpus-v1", "synthetic_corpus": True, "chunks": len(records), "records": records}, connection
 
 
 def lexical(records, query):
@@ -127,6 +146,7 @@ def main():
     parser.add_argument("--protocol", action="store_true", help="full configured protocol")
     parser.add_argument("--enable-bq", action="store_true", help="run BQ shadow only")
     parser.add_argument("--enable-mrl", action="store_true", help="run MRL shadow only")
+    parser.add_argument("--stages", default=",".join(STAGES), help="comma-separated independent stages")
     args = parser.parse_args()
     try:
         reads, updates = (int(part) for part in args.read_update.split("/"))
@@ -145,14 +165,27 @@ def main():
         generate(corpus_path, args.synthetic_chunks, args.seed)
     payload, connection = load_corpus(corpus_path)
     records = payload["records"]
+    if (clean_room_errors := validate_clean_room(payload, require_synthetic=True)):
+        raise SystemExit("clean-room rejected: " + "; ".join(clean_room_errors))
     if not records or len(records) != args.synthetic_chunks and args.corpus is None:
         raise SystemExit("corpus chunk count does not match requested synthetic chunks")
     base_query_indexes = [((index * 7919) + args.seed) % len(records) for index in range(args.window)]
     query_indexes = base_query_indexes * max(1, args.restarts)
+    requested_stages = [stage.strip() for stage in args.stages.split(",") if stage.strip()]
+    unknown_stages = sorted(set(requested_stages) - set(STAGES))
+    if unknown_stages:
+        raise SystemExit("unknown stages: " + ", ".join(unknown_stages))
+    if args.enable_bq and "A5" not in requested_stages:
+        requested_stages.append("A5")
+    if args.enable_mrl and "A6" not in requested_stages:
+        requested_stages.append("A6")
+    read_update_operations = run_read_update(records, query_indexes, reads, args.seed)
     config = {"seed": args.seed, "synthetic_chunks": len(records), "warmup": args.warmup, "window": args.window,
               "restarts": args.restarts, "concurrency": args.concurrency, "read_update": args.read_update,
               "read_percent": reads, "update_percent": updates,
-              "order": args.order, "quick": args.quick, "protocol": args.protocol, "bq": args.enable_bq, "mrl": args.enable_mrl}
+              "order": args.order, "ab_ba": {"sequence": ["baseline", "candidate"] if args.order == "AB" else ["candidate", "baseline"]},
+              "quick": args.quick, "protocol": args.protocol, "bq": args.enable_bq, "mrl": args.enable_mrl,
+              "stages": requested_stages, "read_update_operations": read_update_operations}
     stages = {}
     stage_order = list(STAGES)
     if args.order == "BA":
@@ -160,6 +193,9 @@ def main():
     for _ in range(args.warmup):
         query_records(records, None, query_indexes[0], enable_bq=args.enable_bq, enable_mrl=args.enable_mrl)
     for stage in stage_order:
+        if stage not in requested_stages:
+            stages[stage] = {"enabled": False, "status": "off"}
+            continue
         if stage in ("A5", "A6") and not ((stage == "A5" and args.enable_bq) or (stage == "A6" and args.enable_mrl)):
             stages[stage] = {"enabled": False, "status": "off"}
             continue
@@ -169,20 +205,31 @@ def main():
         connection.close()
     corpus_manifest = corpus_path / "manifest.json" if corpus_path.is_dir() else corpus_path.with_name("manifest.json")
     corpus_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    manifest = base_manifest(out.name, corpus_hash, "m1-local-synthetic", model="none")
+    manifest = base_manifest(out.name, corpus_hash, "m1-local-synthetic", model="none", resource_id="lab-synthetic")
+    manifest["run_metadata"].update({"workspace": str(out.parent.resolve()), "egress_enabled": False,
+                                     "order": args.order, "restarts": args.restarts, "concurrency": args.concurrency})
+    bootstrap = {}
+    for stage, data in stages.items():
+        if data.get("enabled"):
+            data["bootstrap"] = grouped_bootstrap({tenant: data["candidate_recall_at_k"] for tenant in sorted({r["tenant"] for r in records})}, seed=args.seed)
+            bootstrap[stage] = data["bootstrap"]
     manifest.update({"synthetic_corpus": True, "nx_gold_status": "pending", "promotion": False,
                      "dataset_status": "synthetic-not-gold", "stages": stages,
                      "experimental_flags": {"CONTEXT_FABRIC_BQ_ENABLED": "shadow" if args.enable_bq else "off",
                                              "CONTEXT_FABRIC_MRL_ENABLED": "shadow" if args.enable_mrl else "off"},
-                     "benchmark": config, "corpus_manifest": str(corpus_manifest)})
+                      "benchmark": config, "bootstrap": bootstrap, "corpus_manifest": str(corpus_manifest)})
     gates = {"status": "pending", "promotion": False, "fallback": "baseline", "nx_gold_status": "pending",
              "synthetic_corpus": True, "reason": "real NX-Gold v0 remains pending"}
-    write_json(out / "inputs.json", {"corpus": str(corpus_path), "corpus_sha256": corpus_hash, "query_indexes": query_indexes})
-    write_json(out / "config.json", config)
+    gates["missing_stages"] = [stage for stage in STAGES if stages[stage].get("status") == "off"]
+    write_json(out / "inputs.json", {"schema": "nexus-context-m1-inputs-v1", "corpus": str(corpus_path), "corpus_sha256": corpus_hash, "query_indexes": query_indexes})
+    write_json(out / "config.json", {"schema": "nexus-context-m1-config-v1", **config})
     write_json(out / "results.json", {"schema": "nexus-context-m1-v1", "synthetic_corpus": True, "nx_gold_status": "pending",
                                        "promotion": False, "fallback": "baseline", "stages": stages})
     write_json(out / "gates.json", gates)
     write_json(out / "manifest.json", manifest)
+    artifact_errors = validate_run_artifacts(out)
+    if artifact_errors:
+        raise SystemExit("incomplete run artifacts: " + "; ".join(artifact_errors))
     print(out)
 
 

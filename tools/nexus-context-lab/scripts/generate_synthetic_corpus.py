@@ -87,7 +87,7 @@ def generate(output: Path, chunks: int = 10_000, seed: int = 20260802, dimension
         connection.close()
 
     json_path.write_text(json.dumps({
-        "schema": "nexus-synthetic-corpus-v1", "seed": seed, "chunks": chunks,
+        "schema": "nexus-synthetic-corpus-v1", "synthetic_corpus": True, "seed": seed, "chunks": chunks,
         "dimension": dimension, "tenants": list(TENANTS), "records": records,
     }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     files = {"sqlite": {"path": db_path.name, "bytes": db_path.stat().st_size, "sha256": _hash_file(db_path)},

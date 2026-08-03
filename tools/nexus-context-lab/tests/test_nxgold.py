@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nxgold import canonical_hash, evaluate_gates, load_json, preflight, run_dir, validate_dataset, write_json
+from nxgold import canonical_hash, evaluate_gates, file_sha256, install_operator, load_json, preflight, run_dir, validate_clean_room, validate_dataset, validate_run_artifacts, write_json
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from generate_synthetic_corpus import generate
 
@@ -84,6 +84,22 @@ class NxGoldContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "pending")
         self.assertFalse(result["promotion"])
 
+    def test_missing_stage_is_fail_closed(self):
+        result = evaluate_gates({"stages": {"A0": {"status": "measured"}}}, {})
+        self.assertEqual(result["status"], "pending")
+        self.assertIn("A6", result["missing_stages"])
+
+    def test_clean_room_rejects_product_data(self):
+        self.assertTrue(validate_clean_room({"synthetic_corpus": True, "text": "production database"}))
+
+    def test_install_receipt_is_offline_and_hashed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); workspace = root / "workspace"; workspace.mkdir(); model = root / "model.bin"; model.write_bytes(b"fake model")
+            env = {"NEXUS_LAB_WORKSPACE": str(workspace), "NEXUS_LAB_RESOURCE_ID": "lab-test", "LOOPBACK_URL": "http://127.0.0.1:8787", "CORS_ALLOWLIST": "http://127.0.0.1:8787", "FAKE_API_KEY": "fake-key", "FAKE_DATABASE_URL": "sqlite:///fake.db", "MODEL_PATH": str(model), "MODEL_SHA256": file_sha256(model), "MODEL_PREFETCHED": "true", "EGRESS_ENABLED": "false", "MIN_FREE_BYTES": "0", "MIN_RAM_BYTES": "0", "MIN_CPU_COUNT": "0"}
+            receipt = install_operator(env, root / "repo")
+            self.assertTrue(receipt["installed"])
+            self.assertFalse(receipt["egress_enabled"])
+
     def test_run_artifact_completeness_shape(self):
         with tempfile.TemporaryDirectory() as temp:
             out = run_dir(Path(temp))
@@ -93,6 +109,7 @@ class NxGoldContractTests(unittest.TestCase):
             self.assertEqual({p.name for p in out.iterdir()}, {"manifest.json", "results.json", "gates.json"})
             for path in out.iterdir():
                 self.assertEqual(json.loads(path.read_text())["schema"] if path.name != "gates.json" else json.loads(path.read_text())["promotion"], "NX-Gold v0" if path.name != "gates.json" else False)
+            self.assertTrue(validate_run_artifacts(out))
 
 
 if __name__ == "__main__":

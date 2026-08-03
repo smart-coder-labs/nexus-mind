@@ -3,7 +3,11 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::{Hash, Hasher},
+    time::Instant,
+};
 
 pub const CONTRACT_VERSION: &str = "context-fabric.v0";
 pub const BASELINE_PROFILE: &str = "baseline-nomic-768-f32-v1";
@@ -239,6 +243,8 @@ pub struct AssembleResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateRequest {
+    #[serde(default)]
+    pub request_version: Option<String>,
     pub contract_version: String,
     pub profile_id: String,
     pub profile_version: u32,
@@ -246,6 +252,10 @@ pub struct GenerateRequest {
     pub model: String,
     pub provider: String,
     pub output_token_budget: usize,
+    #[serde(default)]
+    pub output_byte_budget: Option<usize>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     pub assembled: AssembleResponse,
 }
 
@@ -285,11 +295,17 @@ pub struct ProvenanceRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GenerateResponse {
+    pub response_version: String,
     pub output: Option<String>,
     pub metadata: GenerationMetadata,
+    pub retrieval: RetrievalMetadata,
+    pub compile: CompileMetadata,
+    pub run: GenerationRunMetadata,
     pub provenance: Vec<ProvenanceRecord>,
     pub claims: Vec<Claim>,
     pub abstained: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<GenerationFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -334,8 +350,68 @@ pub struct VerifyResponse {
 }
 
 pub const DETERMINISTIC_PROVIDER: &str = "deterministic-extractive-v0";
+pub const GENERATION_REQUEST_VERSION: &str = "context-generation.request.v1";
+pub const GENERATION_RESPONSE_VERSION: &str = "context-generation.response.v1";
 
-pub fn generation_metadata(request: &GenerateRequest, used_tokens: usize, reasons: Vec<String>) -> GenerationMetadata {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelProfile {
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelProfile {
+    pub fn validate(&self) -> Result<()> {
+        if self.provider != DETERMINISTIC_PROVIDER {
+            return Err(anyhow!("unsupported_provider"));
+        }
+        if self.model.trim().is_empty() {
+            return Err(anyhow!("missing_model"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetrievalMetadata {
+    pub generation: GenerationRef,
+    pub profile_id: String,
+    pub profile_version: u32,
+    pub permitted_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompileMetadata {
+    pub candidate_count: usize,
+    pub selected_count: usize,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerationRunMetadata {
+    pub run_id: String,
+    pub request_version: String,
+    pub response_version: String,
+    pub model_profile: ModelProfile,
+    pub output_token_budget: usize,
+    pub output_byte_budget: Option<usize>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationFailure {
+    UnsupportedProvider,
+    InvalidProfile,
+    Timeout,
+    BudgetExceeded,
+    OutputOverflow,
+}
+
+pub fn generation_metadata(
+    request: &GenerateRequest,
+    used_tokens: usize,
+    reasons: Vec<String>,
+) -> GenerationMetadata {
     GenerationMetadata {
         contract_version: request.contract_version.clone(),
         profile_id: request.profile_id.clone(),
@@ -343,8 +419,66 @@ pub fn generation_metadata(request: &GenerateRequest, used_tokens: usize, reason
         generation: request.generation.clone(),
         model: request.model.clone(),
         provider: request.provider.clone(),
-        budgets: BudgetReport { requested_tokens: request.output_token_budget, used_tokens },
+        budgets: BudgetReport {
+            requested_tokens: request.output_token_budget,
+            used_tokens,
+        },
         reason_codes: reasons,
+    }
+}
+
+fn generation_response_base(
+    request: &GenerateRequest,
+    used_tokens: usize,
+    reasons: Vec<String>,
+    failure: Option<GenerationFailure>,
+) -> GenerateResponse {
+    let mut permitted_sources = request
+        .assembled
+        .units
+        .iter()
+        .map(|unit| unit.source.clone())
+        .collect::<Vec<_>>();
+    permitted_sources.sort();
+    permitted_sources.dedup();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(request)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    GenerateResponse {
+        response_version: GENERATION_RESPONSE_VERSION.into(),
+        output: None,
+        metadata: generation_metadata(request, used_tokens, reasons),
+        retrieval: RetrievalMetadata {
+            generation: request.generation.clone(),
+            profile_id: request.profile_id.clone(),
+            profile_version: request.profile_version,
+            permitted_sources,
+        },
+        compile: CompileMetadata {
+            candidate_count: request.assembled.diagnostics.candidate_count,
+            selected_count: request.assembled.diagnostics.selected_count,
+            reason_codes: request.assembled.diagnostics.reason_codes.clone(),
+        },
+        run: GenerationRunMetadata {
+            run_id: format!("run:{:016x}", hasher.finish()),
+            request_version: request
+                .request_version
+                .clone()
+                .unwrap_or_else(|| GENERATION_REQUEST_VERSION.into()),
+            response_version: GENERATION_RESPONSE_VERSION.into(),
+            model_profile: ModelProfile {
+                provider: request.provider.clone(),
+                model: request.model.clone(),
+            },
+            output_token_budget: request.output_token_budget,
+            output_byte_budget: request.output_byte_budget,
+            timeout_ms: request.timeout_ms,
+        },
+        provenance: Vec::new(),
+        claims: Vec::new(),
+        abstained: true,
+        failure,
     }
 }
 
@@ -358,13 +492,27 @@ pub fn validate_generation_identity(
     assembled: &AssembleResponse,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
-    if contract_version != CONTRACT_VERSION { reasons.push("unsupported_contract_version".into()); }
-    if profile_id.trim().is_empty() { reasons.push("missing_profile".into()); }
-    if profile_version == 0 { reasons.push("invalid_profile_version".into()); }
-    if generation.id.trim().is_empty() || generation.version == 0 { reasons.push("invalid_generation".into()); }
-    if model.trim().is_empty() { reasons.push("missing_model".into()); }
-    if provider.trim().is_empty() { reasons.push("missing_provider".into()); }
-    if assembled.contract_version != contract_version { reasons.push("compiled_contract_mismatch".into()); }
+    if contract_version != CONTRACT_VERSION {
+        reasons.push("unsupported_contract_version".into());
+    }
+    if profile_id.trim().is_empty() {
+        reasons.push("missing_profile".into());
+    }
+    if profile_version == 0 {
+        reasons.push("invalid_profile_version".into());
+    }
+    if generation.id.trim().is_empty() || generation.version == 0 {
+        reasons.push("invalid_generation".into());
+    }
+    if model.trim().is_empty() {
+        reasons.push("missing_model".into());
+    }
+    if provider.trim().is_empty() {
+        reasons.push("missing_provider".into());
+    }
+    if assembled.contract_version != contract_version {
+        reasons.push("compiled_contract_mismatch".into());
+    }
     if assembled.abstained
         || assembled.units.is_empty()
         || assembled.diagnostics.selected_count != assembled.units.len()
@@ -372,7 +520,13 @@ pub fn validate_generation_identity(
     {
         reasons.push("context_not_compiled".into());
     }
-    if assembled.units.iter().any(|unit| unit.generation != *generation) { reasons.push("generation_mismatch".into()); }
+    if assembled
+        .units
+        .iter()
+        .any(|unit| unit.generation != *generation)
+    {
+        reasons.push("generation_mismatch".into());
+    }
     reasons.sort();
     reasons.dedup();
     reasons
@@ -381,21 +535,45 @@ pub fn validate_generation_identity(
 /// Lab-only deterministic provider. It is deliberately extractive and performs no I/O.
 pub fn generate_deterministic(request: &GenerateRequest) -> GenerateResponse {
     let mut reasons = validate_generation_identity(
-        &request.contract_version, &request.profile_id, request.profile_version,
-        &request.generation, &request.model, &request.provider, &request.assembled,
+        &request.contract_version,
+        &request.profile_id,
+        request.profile_version,
+        &request.generation,
+        &request.model,
+        &request.provider,
+        &request.assembled,
     );
-    if request.output_token_budget == 0 { reasons.push("invalid_budget".into()); }
-    if request.provider != DETERMINISTIC_PROVIDER { reasons.push("provider_unavailable".into()); }
+    if request.output_token_budget == 0 {
+        reasons.push("invalid_budget".into());
+    }
+    if request
+        .request_version
+        .as_deref()
+        .is_some_and(|version| version != GENERATION_REQUEST_VERSION)
+    {
+        reasons.push("unsupported_request_version".into());
+    }
+    let mut failure = None;
+    let profile = ModelProfile {
+        provider: request.provider.clone(),
+        model: request.model.clone(),
+    };
+    if profile.validate().is_err() && request.provider != DETERMINISTIC_PROVIDER {
+        reasons.push("provider_unavailable".into());
+        failure = Some(GenerationFailure::UnsupportedProvider);
+    } else if profile.validate().is_err() {
+        reasons.push("missing_model".into());
+        failure = Some(GenerationFailure::InvalidProfile);
+    } else if request.timeout_ms == Some(0) {
+        reasons.push("provider_timeout".into());
+        failure = Some(GenerationFailure::Timeout);
+    } else if request.output_token_budget == 0 {
+        failure = Some(GenerationFailure::BudgetExceeded);
+    }
     reasons.sort();
     reasons.dedup();
     if !reasons.is_empty() {
-        return GenerateResponse {
-            output: None,
-            metadata: generation_metadata(request, 0, reasons),
-            provenance: Vec::new(),
-            claims: Vec::new(),
-            abstained: true,
-        };
+        return generation_response_base(request, 0, reasons, failure);
     }
 
     let mut used = 0;
@@ -404,19 +582,49 @@ pub fn generate_deterministic(request: &GenerateRequest) -> GenerateResponse {
     let mut claims = Vec::new();
     for unit in &request.assembled.units {
         let count = token_count(&unit.content, "whitespace-v0");
-        if used + count > request.output_token_budget { reasons.push("budget_exceeded".into()); break; }
+        if used + count > request.output_token_budget {
+            reasons.push("budget_exceeded".into());
+            break;
+        }
         used += count;
         parts.push(unit.content.clone());
-        provenance.push(ProvenanceRecord { unit_id: unit.unit_id.clone(), locator: unit.locator.clone(), provenance: unit.provenance.clone(), generation: unit.generation.clone() });
-        claims.push(Claim { id: unit.unit_id.clone(), text: unit.content.clone(), unit_id: unit.unit_id.clone(), locator: unit.locator.clone() });
+        provenance.push(ProvenanceRecord {
+            unit_id: unit.unit_id.clone(),
+            locator: unit.locator.clone(),
+            provenance: unit.provenance.clone(),
+            generation: unit.generation.clone(),
+        });
+        claims.push(Claim {
+            id: unit.unit_id.clone(),
+            text: unit.content.clone(),
+            unit_id: unit.unit_id.clone(),
+            locator: unit.locator.clone(),
+        });
+    }
+    let output = parts.join("\n");
+    let output_overflow = request
+        .output_byte_budget
+        .is_some_and(|budget| output.len() > budget);
+    if output_overflow {
+        reasons.push("output_overflow".into());
     }
     if parts.is_empty() || !reasons.is_empty() {
+        if output_overflow {
+            failure = Some(GenerationFailure::OutputOverflow);
+        } else if reasons.iter().any(|reason| reason == "budget_exceeded") {
+            failure = Some(GenerationFailure::BudgetExceeded);
+        }
         reasons.push("abstained".into());
         reasons.sort();
         reasons.dedup();
-        return GenerateResponse { output: None, metadata: generation_metadata(request, used, reasons), provenance: Vec::new(), claims: Vec::new(), abstained: true };
+        return generation_response_base(request, used, reasons, failure);
     }
-    GenerateResponse { output: Some(parts.join("\n")), metadata: generation_metadata(request, used, reasons), provenance, claims, abstained: false }
+    let mut response = generation_response_base(request, used, reasons, None);
+    response.output = Some(output);
+    response.provenance = provenance;
+    response.claims = claims;
+    response.abstained = false;
+    response
 }
 
 fn token_count(content: &str, tokenizer: &str) -> usize {
@@ -466,11 +674,17 @@ pub fn compile(request: &AssembleRequest) -> AssembleResponse {
 
     for candidate in &request.candidates {
         if let Some(window) = request.freshness_window_secs {
-            let fresh = candidate.captured_at_unix.map(|captured| {
-                let now = chrono::Utc::now().timestamp();
-                captured <= now && now.saturating_sub(captured) <= window as i64
-            }).unwrap_or(false);
-            if !fresh { freshness_omissions = true; continue; }
+            let fresh = candidate
+                .captured_at_unix
+                .map(|captured| {
+                    let now = chrono::Utc::now().timestamp();
+                    captured <= now && now.saturating_sub(captured) <= window as i64
+                })
+                .unwrap_or(false);
+            if !fresh {
+                freshness_omissions = true;
+                continue;
+            }
         }
         if excluded.contains(candidate.source.as_str())
             || candidate.generation != request.generation
@@ -524,7 +738,12 @@ pub fn compile(request: &AssembleRequest) -> AssembleResponse {
     if freshness_omissions {
         reasons.push("stale_evidence_excluded".into());
     }
-    if request.freshness_window_secs.is_some() && request.candidates.iter().any(|c| c.captured_at_unix.is_none()) {
+    if request.freshness_window_secs.is_some()
+        && request
+            .candidates
+            .iter()
+            .any(|c| c.captured_at_unix.is_none())
+    {
         reasons.push("freshness_unknown_timestamp".into());
     }
     reasons.sort();
@@ -740,7 +959,13 @@ pub fn verify_request_generation(
 pub const MRL_DIMENSIONS: &[usize] = &[768, 512, 256, 128, 64];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ShadowVector { pub id: String, pub tenant_scope: String, pub dense: Vec<f32>, pub authorized: bool, pub fresh: bool }
+pub struct ShadowVector {
+    pub id: String,
+    pub tenant_scope: String,
+    pub dense: Vec<f32>,
+    pub authorized: bool,
+    pub fresh: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShadowRequest {
@@ -751,16 +976,23 @@ pub struct ShadowRequest {
     pub arena: Vec<ShadowVector>,
     pub k: usize,
     pub alpha: f32,
-    #[serde(default)] pub prefix_dimension: Option<usize>,
+    #[serde(default)]
+    pub prefix_dimension: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShadowMetrics {
-    pub candidate_recall_at_k: f32, pub alpha: f32, pub candidate_latency_ms: f64,
-    pub dense_rescore_latency_ms: f64, pub candidate_payload_bytes: usize,
-    pub dense_payload_bytes: usize, pub theoretical_payload_reduction: f32,
-    pub rss_theoretical_bytes: usize, pub quality_delta: f32,
-    pub security_violations: usize, pub freshness_violations: usize,
+    pub candidate_recall_at_k: f32,
+    pub alpha: f32,
+    pub candidate_latency_ms: f64,
+    pub dense_rescore_latency_ms: f64,
+    pub candidate_payload_bytes: usize,
+    pub dense_payload_bytes: usize,
+    pub theoretical_payload_reduction: f32,
+    pub rss_theoretical_bytes: usize,
+    pub quality_delta: f32,
+    pub security_violations: usize,
+    pub freshness_violations: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -776,36 +1008,82 @@ pub struct ShadowProvenance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShadowResponse {
-    pub capability: String, pub baseline_ids: Vec<String>, pub candidate_ids: Vec<String>,
-    pub rescored_ids: Vec<String>, pub metrics: ShadowMetrics, pub gate_pass: bool,
-    pub promotion: bool, pub fallback: String, pub reason_codes: Vec<String>,
+    pub capability: String,
+    pub baseline_ids: Vec<String>,
+    pub candidate_ids: Vec<String>,
+    pub rescored_ids: Vec<String>,
+    pub metrics: ShadowMetrics,
+    pub gate_pass: bool,
+    pub promotion: bool,
+    pub fallback: String,
+    pub reason_codes: Vec<String>,
     pub provenance: ShadowProvenance,
 }
 
 pub fn sign_bit_encode(vector: &[f32]) -> Vec<u8> {
-    vector.chunks(8).map(|chunk| chunk.iter().enumerate().fold(0u8, |word, (bit, value)| word | (((*value).is_sign_positive() as u8) << bit))).collect()
+    vector
+        .chunks(8)
+        .map(|chunk| {
+            chunk.iter().enumerate().fold(0u8, |word, (bit, value)| {
+                word | (((*value).is_sign_positive() as u8) << bit)
+            })
+        })
+        .collect()
 }
 
 pub fn sign_bit_encode_words(vector: &[f32]) -> Vec<u64> {
-    vector.chunks(64).map(|chunk| chunk.iter().enumerate().fold(0u64, |word, (bit, value)| word | (((*value).is_sign_positive() as u64) << bit))).collect()
+    vector
+        .chunks(64)
+        .map(|chunk| {
+            chunk.iter().enumerate().fold(0u64, |word, (bit, value)| {
+                word | (((*value).is_sign_positive() as u64) << bit)
+            })
+        })
+        .collect()
 }
 
 pub fn sign_bit_decode(encoded: &[u8], dimension: usize) -> Vec<f32> {
-    (0..dimension).map(|index| if encoded[index / 8] & (1 << (index % 8)) != 0 { 1.0 } else { -1.0 }).collect()
+    (0..dimension)
+        .map(|index| {
+            if encoded[index / 8] & (1 << (index % 8)) != 0 {
+                1.0
+            } else {
+                -1.0
+            }
+        })
+        .collect()
 }
 
 pub fn hamming_distance(left: &[u8], right: &[u8]) -> u32 {
-    left.iter().zip(right).map(|(a, b)| (a ^ b).count_ones()).sum::<u32>() + (left.len().saturating_sub(right.len()) * 8) as u32
+    left.iter()
+        .zip(right)
+        .map(|(a, b)| (a ^ b).count_ones())
+        .sum::<u32>()
+        + (left.len().saturating_sub(right.len()) * 8) as u32
 }
 
 pub fn hamming_distance_words(left: &[u64], right: &[u64]) -> u32 {
-    left.iter().zip(right).map(|(a, b)| (a ^ b).count_ones()).sum::<u32>() + (left.len().saturating_sub(right.len()) * 64) as u32
+    left.iter()
+        .zip(right)
+        .map(|(a, b)| (a ^ b).count_ones())
+        .sum::<u32>()
+        + (left.len().saturating_sub(right.len()) * 64) as u32
 }
 
 fn dot_distance(left: &[f32], right: &[f32], dimension: usize) -> f32 {
     let dimensions = dimension.min(left.len()).min(right.len());
-    let (dot, left_norm, right_norm) = (0..dimensions).fold((0.0, 0.0, 0.0), |(dot, ln, rn), i| (dot + left[i] * right[i], ln + left[i] * left[i], rn + right[i] * right[i]));
-    if left_norm == 0.0 || right_norm == 0.0 { 1.0 } else { 1.0 - dot / (left_norm.sqrt() * right_norm.sqrt()) }
+    let (dot, left_norm, right_norm) = (0..dimensions).fold((0.0, 0.0, 0.0), |(dot, ln, rn), i| {
+        (
+            dot + left[i] * right[i],
+            ln + left[i] * left[i],
+            rn + right[i] * right[i],
+        )
+    });
+    if left_norm == 0.0 || right_norm == 0.0 {
+        1.0
+    } else {
+        1.0 - dot / (left_norm.sqrt() * right_norm.sqrt())
+    }
 }
 
 fn sorted_ids(mut scored: Vec<(String, f32)>) -> Vec<String> {
@@ -814,7 +1092,8 @@ fn sorted_ids(mut scored: Vec<(String, f32)>) -> Vec<String> {
 }
 
 fn compatible_shadow_manifests(request: &ShadowRequest) -> Result<usize> {
-    request.manifest.validate()?; request.baseline_manifest.validate()?;
+    request.manifest.validate()?;
+    request.baseline_manifest.validate()?;
     if request.manifest.tenant_scope != request.baseline_manifest.tenant_scope
         || request.manifest.snapshot != request.baseline_manifest.snapshot
         || request.manifest.source_commit != request.baseline_manifest.source_commit
@@ -825,50 +1104,192 @@ fn compatible_shadow_manifests(request: &ShadowRequest) -> Result<usize> {
         || request.manifest.model.hash != request.baseline_manifest.model.hash
         || request.manifest.acl_generation != request.baseline_manifest.acl_generation
         || request.manifest.policy_generation != request.baseline_manifest.policy_generation
-        || request.manifest.generation != request.baseline_manifest.generation { return Err(anyhow!("incompatible_manifest_preprocessing_or_generation")); }
-    if request.manifest.dimension != 768 || request.manifest.dtype.to_ascii_lowercase() != "f32" { return Err(anyhow!("shadow_base_dimension_dtype_mismatch")); }
+        || request.manifest.generation != request.baseline_manifest.generation
+    {
+        return Err(anyhow!("incompatible_manifest_preprocessing_or_generation"));
+    }
+    if request.manifest.dimension != 768 || request.manifest.dtype.to_ascii_lowercase() != "f32" {
+        return Err(anyhow!("shadow_base_dimension_dtype_mismatch"));
+    }
     let dimension = request.prefix_dimension.unwrap_or(768);
-    if request.capability.eq_ignore_ascii_case("mrl") && !MRL_DIMENSIONS.contains(&dimension) { return Err(anyhow!("unsupported_mrl_prefix_dimension")); }
-    if request.capability.eq_ignore_ascii_case("bq") && dimension != 768 { return Err(anyhow!("bq_dimension_mismatch")); }
-    if !matches!(request.capability.to_ascii_lowercase().as_str(), "bq" | "mrl") { return Err(anyhow!("unsupported_shadow_capability")); }
+    if request.capability.eq_ignore_ascii_case("mrl") && !MRL_DIMENSIONS.contains(&dimension) {
+        return Err(anyhow!("unsupported_mrl_prefix_dimension"));
+    }
+    if request.capability.eq_ignore_ascii_case("bq") && dimension != 768 {
+        return Err(anyhow!("bq_dimension_mismatch"));
+    }
+    if !matches!(
+        request.capability.to_ascii_lowercase().as_str(),
+        "bq" | "mrl"
+    ) {
+        return Err(anyhow!("unsupported_shadow_capability"));
+    }
     Ok(dimension)
 }
 
 pub fn run_shadow(request: &ShadowRequest, tenant: &str, flag: &str) -> Result<ShadowResponse> {
-    if flag != "shadow" { return Err(anyhow!("capability_flag_not_shadow")); }
-    if request.k == 0 { return Err(anyhow!("invalid_k")); }
-    if !(request.alpha.is_finite() && request.alpha > 0.0 && request.alpha <= 16.0) { return Err(anyhow!("invalid_alpha")); }
+    if flag != "shadow" {
+        return Err(anyhow!("capability_flag_not_shadow"));
+    }
+    if request.k == 0 {
+        return Err(anyhow!("invalid_k"));
+    }
+    if !(request.alpha.is_finite() && request.alpha > 0.0 && request.alpha <= 16.0) {
+        return Err(anyhow!("invalid_alpha"));
+    }
     let dimension = compatible_shadow_manifests(request)?;
-    if request.manifest.tenant_scope != tenant && request.manifest.tenant_scope != "org" { return Err(anyhow!("manifest_tenant_scope_mismatch")); }
-    if request.query.len() != 768 || request.arena.iter().any(|v| v.dense.len() != 768) { return Err(anyhow!("vector_dimension_mismatch")); }
-    if request.arena.iter().any(|v| v.tenant_scope != tenant) { return Err(anyhow!("authorization_isolation_violation")); }
-    if request.arena.iter().any(|v| !v.authorized) { return Err(anyhow!("unauthorized_vector")); }
-    if request.arena.iter().any(|v| !v.fresh) { return Err(anyhow!("stale_vector")); }
-    let baseline_ids = sorted_ids(request.arena.iter().map(|v| (v.id.clone(), dot_distance(&request.query, &v.dense, 768))).collect()).into_iter().take(request.k).collect::<Vec<_>>();
+    if request.manifest.tenant_scope != tenant && request.manifest.tenant_scope != "org" {
+        return Err(anyhow!("manifest_tenant_scope_mismatch"));
+    }
+    if request.query.len() != 768 || request.arena.iter().any(|v| v.dense.len() != 768) {
+        return Err(anyhow!("vector_dimension_mismatch"));
+    }
+    if request.arena.iter().any(|v| v.tenant_scope != tenant) {
+        return Err(anyhow!("authorization_isolation_violation"));
+    }
+    if request.arena.iter().any(|v| !v.authorized) {
+        return Err(anyhow!("unauthorized_vector"));
+    }
+    if request.arena.iter().any(|v| !v.fresh) {
+        return Err(anyhow!("stale_vector"));
+    }
+    let baseline_ids = sorted_ids(
+        request
+            .arena
+            .iter()
+            .map(|v| (v.id.clone(), dot_distance(&request.query, &v.dense, 768)))
+            .collect(),
+    )
+    .into_iter()
+    .take(request.k)
+    .collect::<Vec<_>>();
     let candidate_start = Instant::now();
     let candidate_ids = if request.capability.eq_ignore_ascii_case("bq") {
         let query_bits = sign_bit_encode(&request.query);
-        sorted_ids(request.arena.iter().map(|v| (v.id.clone(), hamming_distance(&query_bits, &sign_bit_encode(&v.dense)) as f32)).collect())
-    } else { sorted_ids(request.arena.iter().map(|v| (v.id.clone(), dot_distance(&request.query, &v.dense, dimension))).collect()) };
-    let candidate_count = ((request.k as f32 * request.alpha).ceil() as usize).min(candidate_ids.len());
-    let candidate_ids = candidate_ids.into_iter().take(candidate_count).collect::<Vec<_>>();
+        sorted_ids(
+            request
+                .arena
+                .iter()
+                .map(|v| {
+                    (
+                        v.id.clone(),
+                        hamming_distance(&query_bits, &sign_bit_encode(&v.dense)) as f32,
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        sorted_ids(
+            request
+                .arena
+                .iter()
+                .map(|v| {
+                    (
+                        v.id.clone(),
+                        dot_distance(&request.query, &v.dense, dimension),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let candidate_count =
+        ((request.k as f32 * request.alpha).ceil() as usize).min(candidate_ids.len());
+    let candidate_ids = candidate_ids
+        .into_iter()
+        .take(candidate_count)
+        .collect::<Vec<_>>();
     let candidate_latency_ms = candidate_start.elapsed().as_secs_f64() * 1000.0;
     let rescore_start = Instant::now();
-    let rescored_ids = sorted_ids(candidate_ids.iter().filter_map(|id| request.arena.iter().find(|v| &v.id == id).map(|v| (id.clone(), dot_distance(&request.query, &v.dense, 768)))).collect()).into_iter().take(request.k).collect::<Vec<_>>();
+    let rescored_ids = sorted_ids(
+        candidate_ids
+            .iter()
+            .filter_map(|id| {
+                request
+                    .arena
+                    .iter()
+                    .find(|v| &v.id == id)
+                    .map(|v| (id.clone(), dot_distance(&request.query, &v.dense, 768)))
+            })
+            .collect(),
+    )
+    .into_iter()
+    .take(request.k)
+    .collect::<Vec<_>>();
     let dense_rescore_latency_ms = rescore_start.elapsed().as_secs_f64() * 1000.0;
     let denominator = request.k.min(baseline_ids.len()).max(1) as f32;
-    let candidate_recall_at_k = baseline_ids.iter().filter(|id| candidate_ids.contains(id)).count() as f32 / denominator;
-    let quality_delta = 1.0 - baseline_ids.iter().zip(&rescored_ids).filter(|(a, b)| a == b).count() as f32 / denominator;
-    let candidate_payload_bytes = if request.capability.eq_ignore_ascii_case("bq") { sign_bit_encode(&request.query).len() } else { dimension * 4 / 8 } * candidate_ids.len();
+    let candidate_recall_at_k = baseline_ids
+        .iter()
+        .filter(|id| candidate_ids.contains(id))
+        .count() as f32
+        / denominator;
+    let quality_delta = 1.0
+        - baseline_ids
+            .iter()
+            .zip(&rescored_ids)
+            .filter(|(a, b)| a == b)
+            .count() as f32
+            / denominator;
+    let candidate_payload_bytes = if request.capability.eq_ignore_ascii_case("bq") {
+        sign_bit_encode(&request.query).len()
+    } else {
+        dimension * 4 / 8
+    } * candidate_ids.len();
     let dense_payload_bytes = 768 * 4 * candidate_ids.len();
     let mut reason_codes = Vec::new();
-    if request.alpha > 8.0 { reason_codes.push("alpha_diagnostic_only".into()); }
-    if candidate_recall_at_k < 0.98 { reason_codes.push("candidate_recall_gate_failed".into()); }
-    if request.alpha > 8.0 { reason_codes.push("alpha_gate_failed".into()); }
-    if quality_delta > 0.01 { reason_codes.push("quality_gate_failed".into()); }
+    if request.alpha > 8.0 {
+        reason_codes.push("alpha_diagnostic_only".into());
+    }
+    if candidate_recall_at_k < 0.98 {
+        reason_codes.push("candidate_recall_gate_failed".into());
+    }
+    if request.alpha > 8.0 {
+        reason_codes.push("alpha_gate_failed".into());
+    }
+    if quality_delta > 0.01 {
+        reason_codes.push("quality_gate_failed".into());
+    }
     let gate_pass = candidate_recall_at_k >= 0.98 && request.alpha <= 8.0 && quality_delta <= 0.01;
-    reason_codes.push(if gate_pass { "manual_promotion_required" } else { "baseline_fallback" }.into());
-    Ok(ShadowResponse { capability: request.capability.clone(), baseline_ids, candidate_ids, rescored_ids, metrics: ShadowMetrics { candidate_recall_at_k, alpha: request.alpha, candidate_latency_ms, dense_rescore_latency_ms, candidate_payload_bytes, dense_payload_bytes, theoretical_payload_reduction: dense_payload_bytes as f32 / candidate_payload_bytes.max(1) as f32, rss_theoretical_bytes: candidate_payload_bytes, quality_delta, security_violations: 0, freshness_violations: 0 }, gate_pass, promotion: false, fallback: BASELINE_PROFILE.into(), reason_codes, provenance: ShadowProvenance { source: "sqlite_memory_embeddings".into(), tenant: tenant.into(), profile: request.manifest.profile_id.clone(), profile_version: request.manifest.profile_version, acl_generation: request.manifest.acl_generation, policy_generation: request.manifest.policy_generation, generation: request.manifest.generation.clone() } })
+    reason_codes.push(
+        if gate_pass {
+            "manual_promotion_required"
+        } else {
+            "baseline_fallback"
+        }
+        .into(),
+    );
+    Ok(ShadowResponse {
+        capability: request.capability.clone(),
+        baseline_ids,
+        candidate_ids,
+        rescored_ids,
+        metrics: ShadowMetrics {
+            candidate_recall_at_k,
+            alpha: request.alpha,
+            candidate_latency_ms,
+            dense_rescore_latency_ms,
+            candidate_payload_bytes,
+            dense_payload_bytes,
+            theoretical_payload_reduction: dense_payload_bytes as f32
+                / candidate_payload_bytes.max(1) as f32,
+            rss_theoretical_bytes: candidate_payload_bytes,
+            quality_delta,
+            security_violations: 0,
+            freshness_violations: 0,
+        },
+        gate_pass,
+        promotion: false,
+        fallback: BASELINE_PROFILE.into(),
+        reason_codes,
+        provenance: ShadowProvenance {
+            source: "sqlite_memory_embeddings".into(),
+            tenant: tenant.into(),
+            profile: request.manifest.profile_id.clone(),
+            profile_version: request.manifest.profile_version,
+            acl_generation: request.manifest.acl_generation,
+            policy_generation: request.manifest.policy_generation,
+            generation: request.manifest.generation.clone(),
+        },
+    })
 }
 
 #[cfg(test)]
@@ -980,14 +1401,20 @@ mod tests {
         unknown.freshness_window_secs = Some(60);
         let result = compile(&unknown);
         assert!(result.abstained);
-        assert!(result.diagnostics.reason_codes.contains(&"freshness_unknown_timestamp".into()));
+        assert!(result
+            .diagnostics
+            .reason_codes
+            .contains(&"freshness_unknown_timestamp".into()));
 
         let mut boundary = request(vec![candidate("boundary", "memory", "one")]);
         boundary.freshness_window_secs = Some(60);
         boundary.candidates[0].captured_at_unix = Some(chrono::Utc::now().timestamp() - 61);
         let result = compile(&boundary);
         assert!(result.abstained);
-        assert!(result.diagnostics.reason_codes.contains(&"stale_evidence_excluded".into()));
+        assert!(result
+            .diagnostics
+            .reason_codes
+            .contains(&"stale_evidence_excluded".into()));
     }
 
     fn manifest(profile_id: &str, generation: &str, version: u64) -> ContextFabricManifest {
@@ -1043,11 +1470,33 @@ mod tests {
 
     fn shadow_request(capability: &str, alpha: f32) -> ShadowRequest {
         let base = manifest(BASELINE_PROFILE, "g1", 1);
-        let mut candidate = base.clone(); candidate.profile_id = format!("{capability}-shadow");
-        ShadowRequest { capability: capability.into(), manifest: candidate, baseline_manifest: base, query: vec![1.0; 768], arena: vec![
-            ShadowVector { id: "a".into(), tenant_scope: "org".into(), dense: vec![1.0; 768], authorized: true, fresh: true },
-            ShadowVector { id: "b".into(), tenant_scope: "org".into(), dense: vec![-1.0; 768], authorized: true, fresh: true },
-        ], k: 1, alpha, prefix_dimension: Some(768) }
+        let mut candidate = base.clone();
+        candidate.profile_id = format!("{capability}-shadow");
+        ShadowRequest {
+            capability: capability.into(),
+            manifest: candidate,
+            baseline_manifest: base,
+            query: vec![1.0; 768],
+            arena: vec![
+                ShadowVector {
+                    id: "a".into(),
+                    tenant_scope: "org".into(),
+                    dense: vec![1.0; 768],
+                    authorized: true,
+                    fresh: true,
+                },
+                ShadowVector {
+                    id: "b".into(),
+                    tenant_scope: "org".into(),
+                    dense: vec![-1.0; 768],
+                    authorized: true,
+                    fresh: true,
+                },
+            ],
+            k: 1,
+            alpha,
+            prefix_dimension: Some(768),
+        }
     }
 
     #[test]
@@ -1058,34 +1507,69 @@ mod tests {
         assert_eq!(sign_bit_decode(&encoded, values.len())[0], 1.0);
         assert_eq!(sign_bit_decode(&encoded, values.len())[1], -1.0);
         assert_eq!(hamming_distance(&encoded, &encoded), 0);
-        assert_eq!(hamming_distance(&[0], &[255]), hamming_distance(&[255], &[0]));
+        assert_eq!(
+            hamming_distance(&[0], &[255]),
+            hamming_distance(&[255], &[0])
+        );
         assert_eq!(sign_bit_encode_words(&values).len(), 1);
         assert_eq!(hamming_distance_words(&[0], &[u64::MAX]), 64);
     }
 
     #[test]
     fn mrl_prefixes_invalid_manifests_and_shadow_flags_fail_closed() {
-        for dimension in MRL_DIMENSIONS { let mut request = shadow_request("mrl", 2.0); request.prefix_dimension = Some(*dimension); assert!(run_shadow(&request, "org", "shadow").is_ok()); }
-        let mut invalid = shadow_request("mrl", 2.0); invalid.prefix_dimension = Some(32);
-        assert_eq!(run_shadow(&invalid, "org", "shadow").unwrap_err().to_string(), "unsupported_mrl_prefix_dimension");
-        invalid.prefix_dimension = Some(128); invalid.manifest.preprocessing = "different-v2".into();
-        assert_eq!(run_shadow(&invalid, "org", "shadow").unwrap_err().to_string(), "incompatible_manifest_preprocessing_or_generation");
-        assert_eq!(run_shadow(&shadow_request("bq", 2.0), "org", "off").unwrap_err().to_string(), "capability_flag_not_shadow");
+        for dimension in MRL_DIMENSIONS {
+            let mut request = shadow_request("mrl", 2.0);
+            request.prefix_dimension = Some(*dimension);
+            assert!(run_shadow(&request, "org", "shadow").is_ok());
+        }
+        let mut invalid = shadow_request("mrl", 2.0);
+        invalid.prefix_dimension = Some(32);
+        assert_eq!(
+            run_shadow(&invalid, "org", "shadow")
+                .unwrap_err()
+                .to_string(),
+            "unsupported_mrl_prefix_dimension"
+        );
+        invalid.prefix_dimension = Some(128);
+        invalid.manifest.preprocessing = "different-v2".into();
+        assert_eq!(
+            run_shadow(&invalid, "org", "shadow")
+                .unwrap_err()
+                .to_string(),
+            "incompatible_manifest_preprocessing_or_generation"
+        );
+        assert_eq!(
+            run_shadow(&shadow_request("bq", 2.0), "org", "off")
+                .unwrap_err()
+                .to_string(),
+            "capability_flag_not_shadow"
+        );
     }
 
     #[test]
     fn shadow_recall_ties_authorization_and_failed_gate_fallback() {
         let result = run_shadow(&shadow_request("bq", 2.0), "org", "shadow").unwrap();
-        assert_eq!(result.baseline_ids, vec!["a"]); assert_eq!(result.rescored_ids, vec!["a"]);
-        assert_eq!(result.metrics.candidate_recall_at_k, 1.0); assert!(!result.promotion);
+        assert_eq!(result.baseline_ids, vec!["a"]);
+        assert_eq!(result.rescored_ids, vec!["a"]);
+        assert_eq!(result.metrics.candidate_recall_at_k, 1.0);
+        assert!(!result.promotion);
         let mut gate_input = shadow_request("bq", 1.0);
-        gate_input.arena[0].dense = vec![0.01; 768]; gate_input.arena[0].dense[0] = -0.01;
-        gate_input.arena[1].dense = vec![0.0; 768]; gate_input.arena[1].dense[0] = 1.0;
+        gate_input.arena[0].dense = vec![0.01; 768];
+        gate_input.arena[0].dense[0] = -0.01;
+        gate_input.arena[1].dense = vec![0.0; 768];
+        gate_input.arena[1].dense[0] = 1.0;
         let failed = run_shadow(&gate_input, "org", "shadow").unwrap();
-        assert!(failed.reason_codes.contains(&"candidate_recall_gate_failed".into()));
+        assert!(failed
+            .reason_codes
+            .contains(&"candidate_recall_gate_failed".into()));
         assert!(failed.reason_codes.contains(&"baseline_fallback".into()));
         gate_input.arena[0].tenant_scope = "other-org".into();
-        assert_eq!(run_shadow(&gate_input, "org", "shadow").unwrap_err().to_string(), "authorization_isolation_violation");
+        assert_eq!(
+            run_shadow(&gate_input, "org", "shadow")
+                .unwrap_err()
+                .to_string(),
+            "authorization_isolation_violation"
+        );
     }
 
     #[test]
