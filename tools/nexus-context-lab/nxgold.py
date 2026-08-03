@@ -15,10 +15,10 @@ from typing import Any, Dict, Iterable, List
 SCHEMA = "NX-Gold v0"
 SNAPSHOTS = {"nexusmind": "cf0378f...", "mcp": "d2fe..."}
 PLANES = {"memory": 75, "code": 75, "sdd": 60, "policy": 45, "conversation": 45}
-LANGUAGES = {"es": 45, "en": 35, "pt": 20}
-ANSWERABILITY = {"answerable": 80, "unanswerable": 20}
-EVALUATIONS = {"exact": 35, "semantic": 40, "multihop": 25}
-SPLITS = {"train": 60, "dev": 20, "test": 20}
+LANGUAGES = {"es": 135, "en": 105, "pt": 60}
+ANSWERABILITY = {"answerable": 240, "unanswerable": 60}
+EVALUATIONS = {"exact": 105, "semantic": 120, "multihop": 75}
+SPLITS = {"train": 180, "dev": 60, "test": 60}
 STAGES = {f"A{i}": name for i, name in enumerate(("fts5", "dense_float32", "hybrid_rrf", "policy_first_generations", "compiler", "bq_shadow", "mrl"))}
 RUN_ARTIFACTS = ("inputs.json", "config.json", "results.json", "gates.json", "manifest.json")
 FORBIDDEN_MARKERS = ("nexus-local-qa", "production", "productivo", "nexusmind-data", "qa-db", "prod-db")
@@ -55,7 +55,7 @@ def validate_clean_room(value: Any, require_synthetic: bool = False) -> List[str
     return errors
 
 
-def validate_dataset(dataset: Dict[str, Any]) -> List[str]:
+def validate_structure(dataset: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     errors.extend(validate_clean_room(dataset))
     if dataset.get("schema") != SCHEMA:
@@ -114,8 +114,31 @@ def validate_dataset(dataset: Dict[str, Any]) -> List[str]:
     required_contract = {"required_evidence", "prohibited_evidence", "locator", "relevance", "tools", "abstention"}
     if not isinstance(contract, dict) or not required_contract.issubset(set(contract.get("required", []))):
         errors.append("evidence_contract is incomplete")
+    fixture_hash = dataset.get("fixture_sha256")
+    if fixture_hash:
+        unhashed = dict(dataset)
+        unhashed.pop("fixture_sha256", None)
+        if fixture_hash != canonical_hash(unhashed):
+            errors.append("fixture_sha256 does not match the canonical fixture")
+    return errors
+
+
+def validate_dataset(dataset: Dict[str, Any]) -> List[str]:
+    """Legacy strict validation: structure plus real-dataset completeness."""
+    errors = validate_structure(dataset)
     if dataset.get("status") != "complete":
         errors.append("dataset status is sample/pending; real NX-Gold v0 must be complete")
+    return errors
+
+
+def validate_promotion(dataset: Dict[str, Any]) -> List[str]:
+    """Return fail-closed promotion errors after independent structural validation."""
+    errors = validate_structure(dataset)
+    if dataset.get("status") != "complete":
+        errors.append("promotion requires status=complete")
+    metadata = dataset.get("metadata") if isinstance(dataset.get("metadata"), dict) else {}
+    if dataset.get("synthetic_corpus") is True or metadata.get("synthetic_corpus") is True:
+        errors.append("synthetic fixtures are never eligible for promotion")
     return errors
 
 

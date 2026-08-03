@@ -7,15 +7,43 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nxgold import canonical_hash, evaluate_gates, file_sha256, install_operator, load_json, preflight, run_dir, validate_clean_room, validate_dataset, validate_run_artifacts, write_json
+from nxgold import canonical_hash, evaluate_gates, file_sha256, install_operator, load_json, preflight, run_dir, validate_clean_room, validate_dataset, validate_promotion, validate_run_artifacts, validate_structure, write_json
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from generate_synthetic_corpus import generate
+from run_benchmark import PROTOCOL_DEFAULTS
+from generate_nx_gold_fixture import generate_fixture
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "nx_gold_sample.json"
 
 
 class NxGoldContractTests(unittest.TestCase):
+    def test_protocol_defaults_are_explicit(self):
+        self.assertEqual(PROTOCOL_DEFAULTS, {
+            "warmup": 60, "window": 180, "restarts": 20,
+            "concurrency": 1, "read_update": "95/5",
+        })
+
+    def test_short_protocol_overrides_write_window_restart_evidence(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_benchmark.py"
+        with tempfile.TemporaryDirectory() as temp:
+            output = subprocess.check_output([
+                sys.executable, str(runner), "--protocol", "--warmup", "0", "--window", "0",
+                "--restarts", "1", "--stages", "A0", "--synthetic-chunks", "20", "--run-root", temp,
+            ], text=True).strip()
+            run_path = Path(output)
+            config = json.loads((run_path / "config.json").read_text())
+            manifest = json.loads((run_path / "manifest.json").read_text())
+            stage = manifest["stages"]["A0"]
+            self.assertEqual(config["read_update"], "95/5")
+            self.assertEqual(config["warmup"], 0)
+            self.assertEqual(config["window"], 0)
+            self.assertEqual(config["restarts"], 1)
+            self.assertEqual(stage["windows"][0]["restart_id"], "r01")
+            self.assertEqual(stage["windows"][0]["window_id"], "w01")
+            self.assertIn("bootstrap", stage)
+            self.assertEqual(stage["bootstrap"]["samples"], 10_000)
+
     def test_synthetic_corpus_counts_and_deterministic_hash(self):
         with tempfile.TemporaryDirectory() as temp:
             first = Path(temp) / "first"
@@ -50,6 +78,22 @@ class NxGoldContractTests(unittest.TestCase):
         self.assertTrue(errors)
         self.assertTrue(any("300 scenarios" in error for error in errors))
         self.assertTrue(any("sample/pending" in error for error in errors))
+
+    def test_complete_synthetic_fixture_is_structural_but_not_promotable(self):
+        fixture = generate_fixture()
+        self.assertEqual(validate_structure(fixture), [])
+        promotion_errors = validate_promotion(fixture)
+        self.assertTrue(any("synthetic" in error for error in promotion_errors))
+        self.assertTrue(any("status=complete" in error for error in promotion_errors))
+
+    def test_fixture_shape_and_hash_are_deterministic(self):
+        first = generate_fixture(17)
+        second = generate_fixture(17)
+        self.assertEqual(first["fixture_sha256"], second["fixture_sha256"])
+        self.assertEqual(len(first["scenarios"]), 300)
+        self.assertEqual(len(first["executions"]), 900)
+        self.assertEqual(len(first["annotations"]["adjudications"]), 300)
+        self.assertTrue(all(3 <= len(item["negatives"]) <= 5 for item in first["scenarios"]))
 
     def test_expected_distributions_are_explicit(self):
         data = load_json(FIXTURE)

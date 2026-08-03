@@ -19,7 +19,9 @@ from time import perf_counter
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from generate_synthetic_corpus import generate
-from nxgold import STAGES, base_manifest, run_dir, validate_clean_room, validate_run_artifacts, write_json
+from nxgold import RUN_ARTIFACTS, STAGES, base_manifest, run_dir, validate_clean_room, validate_run_artifacts, write_json
+
+PROTOCOL_DEFAULTS = {"warmup": 60, "window": 180, "restarts": 20, "concurrency": 1, "read_update": "95/5"}
 
 
 def percentile(values, fraction):
@@ -110,24 +112,45 @@ def query_records(records, index, query_index, k=10, alpha=.5, enable_bq=False, 
     return result
 
 
-def measure_stage(records, query_indexes, stage, concurrency, enable_bq, enable_mrl):
+def measure_stage(records, query_indexes, stage, concurrency, enable_bq, enable_mrl, duration_seconds=0):
+    started_window = perf_counter()
+    samples = []
+    batch = list(query_indexes) or [0]
+    cursor = 0
+
     def one(index):
         started = perf_counter()
         output = query_records(records, None, index, enable_bq=enable_bq, enable_mrl=enable_mrl)
         latency = (perf_counter() - started) * 1000
         return latency, output
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-        results = list(pool.map(one, query_indexes))
-    latencies = [item[0] for item in results]
-    outputs = [item[1] for item in results]
+    while True:
+        indexes = batch[cursor:] + batch[:cursor]
+        cursor = (cursor + len(indexes)) % len(batch)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+            results = list(pool.map(one, indexes))
+        samples.extend(results)
+        if duration_seconds <= 0 or perf_counter() - started_window >= duration_seconds:
+            break
+    latencies = [item[0] for item in samples]
+    outputs = [item[1] for item in samples]
     def stage_ids(item):
         value = item[stage]
         return value["evidence"] if isinstance(value, dict) else value
     recalls = [len(set(item["oracle"]) & set(stage_ids(item))) / len(item["oracle"]) for item in outputs]
     return {"latency": timings(latencies), "candidate_recall_at_k": round(sum(recalls) / len(recalls), 6),
             "quality_delta": round(1 - sum(recalls) / len(recalls), 6), "alpha": 0.5,
-            "theoretical_bytes": len(query_indexes) * 10 * len(records[0]["embedding"]) * 4,
-            "rss_process_bytes": rss_bytes()}
+            "theoretical_bytes": len(samples) * 10 * len(records[0]["embedding"]) * 4,
+            "rss_process_bytes": rss_bytes(),
+            "duration_seconds": round(perf_counter() - started_window, 6),
+            "samples": len(samples)}
+
+
+def run_warmup(records, query_indexes, seconds, concurrency, enable_bq, enable_mrl):
+    started = perf_counter()
+    if seconds <= 0:
+        return {"requested_seconds": seconds, "duration_seconds": 0.0, "status": "skipped"}
+    measure_stage(records, query_indexes, "A0", concurrency, enable_bq, enable_mrl, seconds)
+    return {"requested_seconds": seconds, "duration_seconds": round(perf_counter() - started, 6), "status": "complete"}
 
 
 def main():
@@ -136,11 +159,11 @@ def main():
     parser.add_argument("--synthetic-chunks", type=int, default=10_000)
     parser.add_argument("--run-root", type=Path, default=Path("runs"))
     parser.add_argument("--seed", type=int, default=20260802)
-    parser.add_argument("--warmup", type=int, default=2)
-    parser.add_argument("--window", type=int, default=30)
-    parser.add_argument("--restarts", type=int, default=3)
+    parser.add_argument("--warmup", type=int, help="protocol warmup seconds; override for tests")
+    parser.add_argument("--window", type=int, help="protocol window seconds; override for tests")
+    parser.add_argument("--restarts", type=int, help="protocol cold restarts; override for tests")
     parser.add_argument("--concurrency", type=int, choices=(1, 2, 4), default=1)
-    parser.add_argument("--read-update", default="80/20")
+    parser.add_argument("--read-update", help="read/update percentages; protocol defaults to 95/5")
     parser.add_argument("--order", choices=("AB", "BA"), default="AB")
     parser.add_argument("--quick", action="store_true", help="small validation protocol; still uses 10k chunks by default")
     parser.add_argument("--protocol", action="store_true", help="full configured protocol")
@@ -148,17 +171,28 @@ def main():
     parser.add_argument("--enable-mrl", action="store_true", help="run MRL shadow only")
     parser.add_argument("--stages", default=",".join(STAGES), help="comma-separated independent stages")
     args = parser.parse_args()
+    if args.quick:
+        args.warmup = 0
+        args.window = min(args.window if args.window is not None else 30, 4)
+        args.restarts = 1
+        args.read_update = args.read_update or "80/20"
+    elif args.protocol:
+        args.warmup = args.warmup if args.warmup is not None else PROTOCOL_DEFAULTS["warmup"]
+        args.window = args.window if args.window is not None else PROTOCOL_DEFAULTS["window"]
+        args.restarts = args.restarts if args.restarts is not None else PROTOCOL_DEFAULTS["restarts"]
+        args.read_update = args.read_update or PROTOCOL_DEFAULTS["read_update"]
+    else:
+        args.quick = True
+        args.warmup, args.window, args.restarts = 0, min(args.window if args.window is not None else 30, 4), 1
+        args.read_update = args.read_update or "80/20"
     try:
         reads, updates = (int(part) for part in args.read_update.split("/"))
         if reads < 0 or updates < 0 or reads + updates != 100:
             raise ValueError
-    except ValueError:
-        parser.error("--read-update must be a percentage such as 80/20")
-    if args.quick:
-        args.warmup, args.window, args.restarts = 0, min(args.window, 4), 1
-    if not args.quick and not args.protocol:
-        args.quick = True
-        args.warmup, args.window, args.restarts = 0, min(args.window, 4), 1
+    except (TypeError, ValueError):
+        parser.error("--read-update must be a percentage such as 95/5")
+    if min(args.warmup, args.window, args.restarts) < 0:
+        parser.error("--warmup, --window and --restarts must be non-negative")
     out = run_dir(args.run_root, "benchmark")
     corpus_path = args.corpus or (out / "synthetic-corpus")
     if args.corpus is None:
@@ -169,8 +203,8 @@ def main():
         raise SystemExit("clean-room rejected: " + "; ".join(clean_room_errors))
     if not records or len(records) != args.synthetic_chunks and args.corpus is None:
         raise SystemExit("corpus chunk count does not match requested synthetic chunks")
-    base_query_indexes = [((index * 7919) + args.seed) % len(records) for index in range(args.window)]
-    query_indexes = base_query_indexes * max(1, args.restarts)
+    sample_count = max(1, min(args.window, 180))
+    query_indexes = [((index * 7919) + args.seed) % len(records) for index in range(sample_count)]
     requested_stages = [stage.strip() for stage in args.stages.split(",") if stage.strip()]
     unknown_stages = sorted(set(requested_stages) - set(STAGES))
     if unknown_stages:
@@ -187,20 +221,54 @@ def main():
               "quick": args.quick, "protocol": args.protocol, "bq": args.enable_bq, "mrl": args.enable_mrl,
               "stages": requested_stages, "read_update_operations": read_update_operations}
     stages = {}
+    interrupted = None
+    try:
+        warmup = run_warmup(records, query_indexes, args.warmup, args.concurrency, args.enable_bq, args.enable_mrl)
+    except (Exception, KeyboardInterrupt) as error:
+        warmup = {"requested_seconds": args.warmup, "duration_seconds": 0.0, "status": "error",
+                  "error": f"warmup: {type(error).__name__}: {error}"}
+        interrupted = warmup["error"]
     stage_order = list(STAGES)
     if args.order == "BA":
         stage_order.reverse()
-    for _ in range(args.warmup):
-        query_records(records, None, query_indexes[0], enable_bq=args.enable_bq, enable_mrl=args.enable_mrl)
     for stage in stage_order:
+        if interrupted:
+            break
         if stage not in requested_stages:
             stages[stage] = {"enabled": False, "status": "off"}
             continue
         if stage in ("A5", "A6") and not ((stage == "A5" and args.enable_bq) or (stage == "A6" and args.enable_mrl)):
             stages[stage] = {"enabled": False, "status": "off"}
             continue
-        stages[stage] = {"enabled": True, "status": "shadow" if stage in ("A5", "A6") else "measured",
-                         **measure_stage(records, query_indexes, stage, args.concurrency, args.enable_bq, args.enable_mrl)}
+        stage_data = {"enabled": True, "status": "shadow" if stage in ("A5", "A6") else "measured", "windows": []}
+        try:
+            for restart_id in range(1, args.restarts + 1):
+                for window_id in range(1, 2 if not args.protocol else 6):
+                    metrics = measure_stage(records, query_indexes, stage, args.concurrency, args.enable_bq, args.enable_mrl,
+                                            args.window if args.protocol else 0)
+                    stage_data["windows"].append({
+                        "restart_id": f"r{restart_id:02d}", "window_id": f"w{window_id:02d}",
+                        "duration_seconds": metrics["duration_seconds"],
+                        "requested_duration_seconds": args.window if args.protocol else 0,
+                        "metrics": metrics,
+                    })
+        except (Exception, KeyboardInterrupt) as error:
+            interrupted = f"{stage}: {type(error).__name__}: {error}"
+            stage_data["status"] = "error"
+            stage_data["error"] = interrupted
+        completed_metrics = [item["metrics"] for item in stage_data["windows"]]
+        if completed_metrics:
+            stage_data.update({
+                "latency": timings([value for metric in completed_metrics for value in [metric["latency"]["p50_ms"]]]),
+                "candidate_recall_at_k": round(sum(metric["candidate_recall_at_k"] for metric in completed_metrics) / len(completed_metrics), 6),
+                "quality_delta": round(sum(metric["quality_delta"] for metric in completed_metrics) / len(completed_metrics), 6),
+                "alpha": completed_metrics[0]["alpha"],
+                "theoretical_bytes": sum(metric["theoretical_bytes"] for metric in completed_metrics),
+                "rss_process_bytes": max((metric["rss_process_bytes"] or 0) for metric in completed_metrics),
+            })
+        stages[stage] = stage_data
+        if interrupted:
+            break
     if connection:
         connection.close()
     corpus_manifest = corpus_path / "manifest.json" if corpus_path.is_dir() else corpus_path.with_name("manifest.json")
@@ -208,23 +276,30 @@ def main():
     manifest = base_manifest(out.name, corpus_hash, "m1-local-synthetic", model="none", resource_id="lab-synthetic")
     manifest["run_metadata"].update({"workspace": str(out.parent.resolve()), "egress_enabled": False,
                                      "order": args.order, "restarts": args.restarts, "concurrency": args.concurrency})
+    manifest["generation"]["seed"] = args.seed
+    manifest["concurrency"].update({"workers": args.concurrency, "read_update_ratio": args.read_update})
     bootstrap = {}
     for stage, data in stages.items():
-        if data.get("enabled"):
+        if data.get("enabled") and "candidate_recall_at_k" in data:
             data["bootstrap"] = grouped_bootstrap({tenant: data["candidate_recall_at_k"] for tenant in sorted({r["tenant"] for r in records})}, seed=args.seed)
             bootstrap[stage] = data["bootstrap"]
     manifest.update({"synthetic_corpus": True, "nx_gold_status": "pending", "promotion": False,
                      "dataset_status": "synthetic-not-gold", "stages": stages,
                      "experimental_flags": {"CONTEXT_FABRIC_BQ_ENABLED": "shadow" if args.enable_bq else "off",
                                              "CONTEXT_FABRIC_MRL_ENABLED": "shadow" if args.enable_mrl else "off"},
-                      "benchmark": config, "bootstrap": bootstrap, "corpus_manifest": str(corpus_manifest)})
+                      "benchmark": config, "bootstrap": bootstrap, "warmup": warmup,
+                      "interrupted": interrupted, "artifact_completeness": {"required": list(RUN_ARTIFACTS), "complete": True},
+                      "corpus_manifest": str(corpus_manifest)})
     gates = {"status": "pending", "promotion": False, "fallback": "baseline", "nx_gold_status": "pending",
              "synthetic_corpus": True, "reason": "real NX-Gold v0 remains pending"}
-    gates["missing_stages"] = [stage for stage in STAGES if stages[stage].get("status") == "off"]
+    gates["missing_stages"] = [stage for stage in STAGES if stage not in stages or stages[stage].get("status") in ("off", "missing", "error")]
+    gates["interrupted"] = interrupted
+    if interrupted:
+        gates["reason"] = "benchmark interrupted; baseline remains active"
     write_json(out / "inputs.json", {"schema": "nexus-context-m1-inputs-v1", "corpus": str(corpus_path), "corpus_sha256": corpus_hash, "query_indexes": query_indexes})
     write_json(out / "config.json", {"schema": "nexus-context-m1-config-v1", **config})
     write_json(out / "results.json", {"schema": "nexus-context-m1-v1", "synthetic_corpus": True, "nx_gold_status": "pending",
-                                       "promotion": False, "fallback": "baseline", "stages": stages})
+                                        "promotion": False, "fallback": "baseline", "stages": stages})
     write_json(out / "gates.json", gates)
     write_json(out / "manifest.json", manifest)
     artifact_errors = validate_run_artifacts(out)

@@ -21,16 +21,29 @@ contacts a service and never starts Docker.
 
 `schema/nx_gold_v0.schema.json` describes the complete 300-scenario/900-execution
 contract. `fixtures/nx_gold_sample.json` is a deliberately incomplete `sample`; it
-must never be treated as gold. The validator rejects it as incomplete and reports
-`NX-Gold v0: PENDING` until the real 300 scenarios, annotations, canaries, splits,
-and evidence are loaded.
+must never be treated as gold. The deterministic generator creates a complete
+structural fixture, but it remains synthetic and can never be promotion evidence.
 
 ```sh
 ./scripts/validate_nx_gold.py fixtures/nx_gold_sample.json
+./scripts/validate_nx_gold.py --mode structural fixtures/nx_gold_synthetic_fixture.json
+./scripts/validate_nx_gold.py --mode promotion fixtures/nx_gold_synthetic_fixture.json
 ```
 
-The validator also rejects invalid tenant isolation, leakage, scenario counts,
-split totals, missing annotations/adjudication, and missing evidence contracts.
+Structural validation is independent from promotion validation. Promotion is
+fail-closed for `synthetic_corpus=true`, even when all counts, annotations,
+canaries, splits, hashes, and evidence fields are complete.
+
+Generate the offline fixture without network or datasets:
+
+```sh
+python3 scripts/generate_nx_gold_fixture.py --output fixtures/nx_gold_synthetic_fixture.json
+```
+
+The fixture contains exactly 300 scenarios, three executions per scenario,
+three fictitious tenants, 3-5 hard negatives, two annotators, one auditable
+adjudication record per scenario, and the full evidence contract. Its canonical
+SHA-256 is stored in `fixture_sha256`.
 
 ## Offline M1 local run
 
@@ -51,11 +64,24 @@ Run the reproducible quick validation on 10,000 chunks:
 python3 scripts/run_benchmark.py --corpus /tmp/nexus-context-lab-corpus --quick --window 4 --run-root runs
 ```
 
-The full local protocol uses the configured warmup/window/restarts and can be run
-with `--protocol`; choose `--concurrency 1`, `2`, or `4`. `--enable-bq` and
-`--enable-mrl` are shadow-only. Each run stores inputs, config, results, gates, and
-manifest under `runs/<run-id>/`, including p50/p95 stage latency, candidate recall,
-quality delta, theoretical bytes, and process RSS when stdlib exposes it.
+The full local protocol uses these defaults with `--protocol`: a 60-second warmup,
+five 180-second windows, 20 cold restarts, concurrency 1, AB ordering, and a 95/5
+read/update load. Use `--warmup`, `--window`, and `--restarts` as duration/restart
+overrides for short validation runs; `--concurrency 1`, `2`, or `4`, `--order AB` or
+`BA`, and `--read-update READ/UPDATE` are configurable. For example, this exercises
+one stage without waiting hours:
+
+```sh
+python3 scripts/run_benchmark.py --protocol --warmup 0 --window 0 --restarts 1 \
+  --stages A0 --synthetic-chunks 40 --run-root runs
+```
+
+Quick mode remains the small validation protocol and keeps its existing behavior.
+`--enable-bq` and `--enable-mrl` are shadow-only and both are off by default. Each
+stage runs independently and records actual duration, window/restart IDs, stage
+metrics, deterministic seed, artifact completeness, and grouped 10,000-sample
+bootstrap metadata with IC95 under `runs/<run-id>/`. Missing stages or interruptions
+produce baseline gates; no promotion is activated.
 
 ## NX-Gold run
 
