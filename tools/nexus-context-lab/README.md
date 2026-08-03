@@ -42,7 +42,7 @@ Generate a deterministic corpus (the default is 10,000 chunks, three fictitious
 tenants, projects, ACLs, metadata, and Float32 embeddings):
 
 ```sh
-python3 ../../scripts/generate_synthetic_corpus.py --output /tmp/nexus-context-lab-corpus --chunks 10000
+python3 scripts/generate_synthetic_corpus.py --output /tmp/nexus-context-lab-corpus --chunks 10000
 ```
 
 Run the reproducible quick validation on 10,000 chunks:
