@@ -1,13 +1,14 @@
-pub mod auth;
 pub mod api;
+pub mod auth;
 pub mod automation;
 pub mod backup;
 pub mod config;
 pub mod context_fabric;
 pub mod context_fabric_runtime;
+pub mod context_fabric_sidecar;
 pub mod db;
-pub mod embed;
 pub mod email;
+pub mod embed;
 pub mod indexer;
 pub mod models;
 pub mod policy;

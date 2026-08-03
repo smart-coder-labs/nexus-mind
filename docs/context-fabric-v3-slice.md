@@ -76,12 +76,14 @@ reason codes. They do not expose cached content, keys, memory text or policy con
 
 ## Experimental BQ/MRL shadow
 
-`POST /v1/context/lab/shadow` is an explicit laboratory endpoint that constructs its arena from
-authorized SQLite `memory_embeddings` rows. `CONTEXT_FABRIC_BQ_ENABLED=shadow` or
+`POST /v1/context/lab/shadow` remains the in-memory laboratory endpoint. The persistent sidecar
+path is `POST /v1/context/sidecar/shadow`; it reads only sidecars built from authorized SQLite
+`memory_embeddings` rows. `CONTEXT_FABRIC_BQ_ENABLED=shadow` or
 `CONTEXT_FABRIC_MRL_ENABLED=shadow` is required; absent, `false`, and every other value are
 rejected. The default remains `off`. The endpoint validates tenant, ACL/policy generation,
 profile, snapshot, model, preprocessing, normalization, tokenizer, and dimension identity.
-It never changes the active profile, ranking lane, or baseline result.
+It never changes the active profile, ranking lane, or baseline result. Missing or incompatible
+sidecars return `sidecar_unavailable` with the dense baseline IDs as fallback.
 
 The real BQ/MRL path requires authorized Float32 embeddings with exactly 768 dimensions and a
 compatible profile/generation manifest. The request may provide one query vector or query text;
@@ -104,10 +106,10 @@ sample data remains `NX-Gold v0: PENDING` and is never reported as a gold pass.
 
 ## Migration and follow-up
 
-This slice adds no database migration and never auto-applies one at startup. Durable
+This slice adds user-applied migration v60 and never auto-applies it at startup. Durable
 profile/generation publication, atomic artifact pointers, user-applied migrations,
 NX-Gold promotion evidence, Tool Search, persistent/distributed cache, automatic migration,
-and large UI remain follow-up work. BQ/MRL remain laboratory shadow capabilities only. The rollout controls in this slice are operational controls for the
+and large UI remain follow-up work. The v60 BQ/MRL sidecar remains shadow-only. The rollout controls in this slice are operational controls for the
 baseline-compatible Context Fabric only, not a replacement for the legacy APIs.
 
 Memory-schema-v2 compatibility limit: Context Fabric does not add columns to
@@ -123,3 +125,6 @@ authorization-owned adapters to implement later; client-supplied content is
 never accepted as a substitute. BQ/MRL remain shadow-only and the NX-Gold recall, quality,
 security, and freshness gate is still pending; no automatic promotion is performed. The pure
 deterministic primitive remains covered by unit tests.
+
+RSS, end-to-end, and NX-Gold gates remain pending. This implementation intentionally does not
+claim those gates or run large benchmarks.

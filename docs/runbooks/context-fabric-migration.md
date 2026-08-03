@@ -53,6 +53,28 @@ explicit in an immutable manifest. No profile is inferred from mutable runtime
 defaults, and no generation model calls, caches, BQ/MRL, NX-Gold, or Tool Search
 are enabled by this migration.
 
-This slice does not implement a BQ sidecar, advanced retrieval techniques, or
-real NX-Gold evaluation. Provenance remains descriptive until backend evidence
-and generation checks mark it verified.
+## v60 BQ/MRL sidecar
+
+Migration `v60` is additive and user-applied after v59. Check
+`GET /v1/context/migrations/sidecar`, apply with
+`POST /v1/context/migrations/sidecar`, and verify with
+`POST /v1/context/migrations/sidecar/verify`; write operations require
+`settings:write`.
+
+The sidecar stores only sign bits and identity metadata associated with `memory_id`, profile,
+generation, dimension/bits, source hash, ACL/policy generations, build manifest/checksum, and
+status. It never replaces `memory_embeddings` Float32 or duplicates memory content. Rebuild is
+explicit with `POST /v1/context/sidecar/rebuild`; it uses authorized 768-dimension Float32 rows
+without model loading or network access. Repeating a generation is idempotent and
+`POST /v1/context/sidecar/rebuild/cancel` cancels that generation.
+
+Status, verification, and tombstone cleanup are exposed through
+`/v1/context/sidecar/status`, `/verify`, and `/cleanup`. Memory update/delete/archive/restore
+tombstones sidecars, and shadow queries never serve a stale, unauthorized, incompatible, or
+cross-generation row.
+
+`POST /v1/context/sidecar/shadow` is enabled only when the capability flag is exactly `shadow`.
+It filters tenant/ACL/policy and generation identity before Hamming candidate generation, then
+rescoring uses authorized dense Float32 vectors. It always reports baseline fallback and never
+promotes automatically. RSS, end-to-end, and NX-Gold gates remain pending; no large benchmark is
+claimed here.
