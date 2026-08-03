@@ -12,6 +12,7 @@ use nexusmind::{
         GenerateRequest, GenerationRef, Locator, VerifyRequest, CONTRACT_VERSION,
         DETERMINISTIC_PROVIDER,
     },
+    models::types::ContextFabricMetadata,
     store::{sqlite::SqliteStore, MemoryStore},
 };
 use tower::util::ServiceExt;
@@ -41,6 +42,7 @@ fn policy_scope_is_applied_before_embedding_and_fts_candidate_limits() {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         },
     )
     .unwrap();
@@ -58,6 +60,7 @@ fn policy_scope_is_applied_before_embedding_and_fts_candidate_limits() {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         },
     )
     .unwrap();
@@ -95,6 +98,7 @@ fn http_setup() -> (axum::Router, String, String, String, String) {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         },
     )
     .unwrap();
@@ -113,6 +117,7 @@ fn http_setup() -> (axum::Router, String, String, String, String) {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         },
     )
     .unwrap();
@@ -364,7 +369,7 @@ fn memory_write_gate_is_atomic_and_expired_rows_are_not_retrievable() {
     let store = SqliteStore::new(conn);
     let invalid = nexusmind::models::types::StoreMemoryRequest {
         project: None, tool: "test".into(), content: " ".into(), tags: None, title: None,
-        memory_type: None, scope: Some("invalid".into()), topic_key: None, session_id: None,
+        memory_type: None, scope: Some("invalid".into()), topic_key: None, session_id: None, context_fabric_metadata: None,
     };
     assert!(store.store(&org.id, &user.id, &invalid).is_err());
     let db = store.conn();
@@ -373,10 +378,62 @@ fn memory_write_gate_is_atomic_and_expired_rows_are_not_retrievable() {
 
     let memory = queries::upsert_memory(&conn, &org.id, &user.id, &nexusmind::models::types::StoreMemoryRequest {
         project: None, tool: "test".into(), content: "expires soon".into(), tags: None, title: None,
-        memory_type: None, scope: None, topic_key: None, session_id: None,
+        memory_type: None, scope: None, topic_key: None, session_id: None, context_fabric_metadata: None,
     }).unwrap();
     conn.execute("UPDATE memories SET delete_after = datetime('now', '-1 day') WHERE id = ?1", [&memory.id]).unwrap();
     assert!(queries::list_memories(&conn, &org.id, None, None, None, None, None, None, 10, 0, false, None, None, None).unwrap().is_empty());
+}
+
+#[test]
+fn provenance_roundtrip_is_allow_listed_untrusted_and_tenant_scoped() {
+    let conn = connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    migrations::apply_context_fabric(&conn).unwrap();
+    migrations::apply_context_fabric_provenance(&conn).unwrap();
+    let (org, user, _) = queries::bootstrap(&conn, "Provenance Org", "provenance-org", "p@test", "Admin").unwrap();
+    let metadata = ContextFabricMetadata {
+        schema_version: 3,
+        source_type: "memory-search".into(),
+        source_id: "source-1".into(),
+        source_version: Some("7".into()),
+        profile: Some("baseline".into()),
+        generation: Some("generation-1:2".into()),
+        snapshot: Some("sha256:snapshot".into()),
+        freshness: Some("fresh".into()),
+        observed_at: Some("2026-08-02T00:00:00Z".into()),
+        trust: Some("backend-evidence".into()),
+        locator: Some("memory:source-1".into()),
+        sensitivity: "internal".into(),
+        trusted: true,
+        verified: true,
+    };
+    let memory = queries::upsert_memory(&conn, &org.id, &user.id, &nexusmind::models::types::StoreMemoryRequest {
+        project: None, tool: "claude".into(), content: "provenance content".into(), tags: None,
+        title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+        context_fabric_metadata: Some(metadata),
+    }).unwrap();
+    assert_eq!(memory.context_fabric_metadata.as_ref().unwrap().source_id, "source-1");
+    assert!(!memory.context_fabric_metadata.as_ref().unwrap().trusted);
+    assert!(!memory.context_fabric_metadata.as_ref().unwrap().verified);
+    let raw: String = conn.query_row("SELECT context_fabric_metadata FROM memories WHERE id = ?1", [&memory.id], |row| row.get(0)).unwrap();
+    assert!(!raw.contains("provenance content"));
+    assert!(queries::get_memory_by_id_for_org(&conn, "wrong-org", &memory.id).unwrap().is_none());
+
+    let invalid = ContextFabricMetadata {
+        schema_version: 2, source_type: "memory-search".into(), source_id: "source-1".into(),
+        source_version: None, profile: None, generation: None, snapshot: None, freshness: None,
+        observed_at: None, trust: None, locator: None, sensitivity: "internal".into(),
+        trusted: false, verified: false,
+    };
+    let before: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0)).unwrap();
+    let result = queries::upsert_memory(&conn, &org.id, &user.id, &nexusmind::models::types::StoreMemoryRequest {
+        project: None, tool: "claude".into(), content: "must not persist".into(), tags: None,
+        title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+        context_fabric_metadata: Some(invalid),
+    });
+    assert!(result.is_err());
+    let after: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0)).unwrap();
+    assert_eq!(before, after);
 }
 
 #[test]
@@ -386,7 +443,7 @@ fn archive_restore_lifecycle_revalidates_visibility_and_retention() {
     let (org, user, _) = queries::bootstrap(&conn, "Lifecycle Org", "lifecycle-org", "life@test", "Admin").unwrap();
     let req = nexusmind::models::types::StoreMemoryRequest {
         project: None, tool: "test".into(), content: "lifecycle content".into(), tags: None, title: None,
-        memory_type: None, scope: None, topic_key: None, session_id: None,
+        memory_type: None, scope: None, topic_key: None, session_id: None, context_fabric_metadata: None,
     };
     let memory = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
     assert!(queries::archive_memory(&conn, &org.id, &memory.id).unwrap());

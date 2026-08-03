@@ -84,6 +84,38 @@ pub async fn migration_status(
     ))
 }
 
+pub async fn apply_provenance_migration(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?;
+    migrations::apply_context_fabric_provenance(&conn).map_err(fabric_error)?;
+    migrations::verify_context_fabric_provenance(&conn).map_err(fabric_error)?;
+    Ok(Json(serde_json::json!({"schema_version": 59, "status": "applied"})))
+}
+
+pub async fn provenance_migration_status(
+    State(store): State<SqliteStore>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    let pending = migrations::context_fabric_provenance_pending(&conn).map_err(fabric_error)?;
+    Ok(Json(serde_json::json!({"schema_version": 59, "pending": pending})))
+}
+
+pub async fn verify_provenance_migration(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+    require_permission(&conn, &auth, None, "settings:write")?;
+    migrations::verify_context_fabric_provenance(&conn).map_err(fabric_error)?;
+    Ok(Json(serde_json::json!({"schema_version": 59, "status": "verified"})))
+}
+
 pub async fn publish(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -401,6 +433,10 @@ fn verify_memory_evidence(
         {
             return Err(verification_error("evidence_integrity_mismatch"));
         }
+        let generation = format!("{}:{}", request.generation.id, request.generation.version);
+        let _ = crate::db::queries::mark_context_fabric_metadata_verified(
+            conn, &auth.org_id, &memory.id, &generation,
+        );
     }
 
     Ok(request)
@@ -660,6 +696,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -764,7 +801,7 @@ mod tests {
             &auth.user_id,
             &StoreMemoryRequest {
                 project: Some(hidden_project.name), tool: "claude".into(), content: "hidden".into(),
-                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None, context_fabric_metadata: None,
             },
         ).unwrap();
         queries::store_embedding(&conn, &hidden.id, &crate::embed::serialize(&vec![2.0; 768])).unwrap();

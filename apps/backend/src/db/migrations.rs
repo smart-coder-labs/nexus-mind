@@ -123,6 +123,35 @@ pub fn verify_context_fabric(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Context Fabric v3 provenance is additive and deliberately operator-applied.
+/// It extends the existing `memories` authority instead of creating a sidecar.
+pub fn context_fabric_provenance_pending(conn: &Connection) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('memories') WHERE name = 'context_fabric_metadata')",
+        [], |row| row.get(0),
+    )?;
+    Ok(!exists)
+}
+
+pub fn apply_context_fabric_provenance(conn: &Connection) -> Result<()> {
+    verify_context_fabric(conn)?;
+    if !context_fabric_provenance_pending(conn)? { return Ok(()); }
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         ALTER TABLE memories ADD COLUMN context_fabric_metadata TEXT;
+         PRAGMA user_version = 59;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+pub fn verify_context_fabric_provenance(conn: &Connection) -> Result<()> {
+    if context_fabric_provenance_pending(conn)? {
+        anyhow::bail!("missing_context_fabric_metadata_column");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod context_fabric_migration_tests {
     use super::*;
@@ -137,6 +166,18 @@ mod context_fabric_migration_tests {
         apply_context_fabric(&conn).unwrap();
         assert!(!context_fabric_pending(&conn).unwrap());
         verify_context_fabric(&conn).unwrap();
+    }
+
+    #[test]
+    fn provenance_migration_is_pending_until_explicitly_applied_and_idempotent() {
+        let conn = connect(":memory:").unwrap();
+        run_all(&conn).unwrap();
+        apply_context_fabric(&conn).unwrap();
+        assert!(context_fabric_provenance_pending(&conn).unwrap());
+        apply_context_fabric_provenance(&conn).unwrap();
+        apply_context_fabric_provenance(&conn).unwrap();
+        assert!(!context_fabric_provenance_pending(&conn).unwrap());
+        verify_context_fabric_provenance(&conn).unwrap();
     }
 }
 

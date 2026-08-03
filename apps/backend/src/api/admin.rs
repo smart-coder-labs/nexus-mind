@@ -1757,6 +1757,7 @@ pub async fn import_memories(
             scope: mem.scope,
             topic_key: None,
             session_id: mem.session_id,
+            context_fabric_metadata: None,
         };
 
         match store.store(&auth.org_id, &user_id, &req) {
@@ -2568,6 +2569,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
 
             q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
@@ -2580,6 +2582,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -2891,6 +2894,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
 
             let merge = q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
@@ -2903,6 +2907,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
 
             (keep.id, merge.id)
@@ -2964,6 +2969,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
             mem.id
         };
@@ -3015,6 +3021,7 @@ mod tests {
                     scope: None,
                     topic_key: None,
                     session_id: None,
+                    context_fabric_metadata: None,
                 }).unwrap();
             }
             q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
@@ -3027,6 +3034,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -3241,6 +3249,7 @@ mod tests {
                     scope: None,
                     topic_key: None,
                     session_id: None,
+                    context_fabric_metadata: None,
                 }).unwrap();
             }
         }

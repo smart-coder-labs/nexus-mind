@@ -731,6 +731,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: Some(session_id.clone()),
+                context_fabric_metadata: None,
             };
             let db = store.conn();
             let conn = db.lock().unwrap();
