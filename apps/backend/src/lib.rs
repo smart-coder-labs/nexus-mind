@@ -10,6 +10,7 @@ pub mod context_fabric_sidecar;
 pub mod db;
 pub mod email;
 pub mod embed;
+pub mod generation_provider;
 pub mod indexer;
 pub mod models;
 pub mod policy;

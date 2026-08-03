@@ -405,6 +405,9 @@ pub enum GenerationFailure {
     Timeout,
     BudgetExceeded,
     OutputOverflow,
+    MissingConfig,
+    HttpError,
+    MalformedResponse,
 }
 
 pub fn generation_metadata(
@@ -427,7 +430,7 @@ pub fn generation_metadata(
     }
 }
 
-fn generation_response_base(
+pub(crate) fn generation_response_base(
     request: &GenerateRequest,
     used_tokens: usize,
     reasons: Vec<String>,
@@ -627,7 +630,7 @@ pub fn generate_deterministic(request: &GenerateRequest) -> GenerateResponse {
     response
 }
 
-fn token_count(content: &str, tokenizer: &str) -> usize {
+pub(crate) fn token_count(content: &str, tokenizer: &str) -> usize {
     // Explicit tokenizer is part of the contract; whitespace is the deterministic v0
     // fallback until tokenizer implementations become versioned dependencies.
     let _ = tokenizer;

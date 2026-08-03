@@ -2,6 +2,7 @@ use crate::context_fabric_runtime::{
     CacheIdentity, CacheStage, RolloutState, BASELINE_LANE, CANDIDATE_LANE,
 };
 use crate::context_fabric_sidecar::{self, SidecarBuildRequest, SidecarShadowRequest};
+use crate::generation_provider::{generate_deepseek, is_deepseek};
 use crate::{
     api::helpers::require_permission,
     context_fabric::{
@@ -927,6 +928,45 @@ pub async fn generate(
     Extension(auth): Extension<AuthContext>,
     Json(request): Json<GenerateRequest>,
 ) -> Result<Json<crate::context_fabric::GenerateResponse>, (StatusCode, Json<ApiError>)> {
+    if is_deepseek(&request.provider) {
+        let context_not_compiled = {
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
+            require_permission(&conn, &auth, None, "memory:read")?;
+            let reasons = validate_generation_identity(
+                &request.contract_version,
+                &request.profile_id,
+                request.profile_version,
+                &request.generation,
+                &request.model,
+                &request.provider,
+                &request.assembled,
+            );
+            if reasons
+                .iter()
+                .any(|reason| reason == "context_not_compiled")
+            {
+                true
+            } else {
+                verify_compiled_for_caller(
+                    &conn,
+                    &auth,
+                    &request.contract_version,
+                    &request.profile_id,
+                    request.profile_version,
+                    &request.generation,
+                    &request.assembled,
+                )?;
+                false
+            }
+        };
+        if context_not_compiled {
+            return Ok(Json(crate::context_fabric::generate_deterministic(
+                &request,
+            )));
+        }
+        return Ok(Json(generate_deepseek(&request).await));
+    }
     let db = store.conn();
     let conn = db.lock().map_err(|_| verification_error("db_lock"))?;
     require_permission(&conn, &auth, None, "memory:read")?;
