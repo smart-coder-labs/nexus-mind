@@ -8256,6 +8256,32 @@ pub fn get_sdd_artifact(
     Ok(Some(artifact_detail_from(conn, artifact, project, change_name)?))
 }
 
+/// Metadata-only artifact lookup for callers that must evaluate project ACLs
+/// before reading an immutable revision's content.
+pub fn get_sdd_artifact_metadata(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<(SddArtifact, String, String)>> {
+    let found = conn
+        .query_row(
+            "SELECT a.id, a.change_id, a.kind, a.capability, a.path, a.latest_revision, a.created_at, a.updated_at,
+                    c.project, c.name
+             FROM sdd_artifacts a JOIN sdd_changes c ON c.id = a.change_id
+             WHERE a.id = ?1 AND c.org_id = ?2",
+            rusqlite::params![id, org_id],
+            |row| {
+                Ok((
+                    map_sdd_artifact_row(row)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(found)
+}
+
 /// Natural-key lookup behind `GET /v1/sdd/artifacts?project=&change_name=&kind=&capability=`.
 /// A kind with no artifact yields `Ok(None)` — never an artifact with empty content.
 pub fn get_sdd_artifact_by_kind(

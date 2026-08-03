@@ -9,7 +9,7 @@ use nexusmind::{
     config::Config,
     context_fabric::{
         AssembleRequest, AssembleResponse, CandidateEvidence, Claim, CompileDiagnostics,
-        GenerateRequest, GenerationRef, Locator, VerifyRequest, CONTRACT_VERSION,
+        EvidenceReference, GenerateRequest, GenerationRef, Locator, VerifyRequest, CONTRACT_VERSION,
         DETERMINISTIC_PROVIDER,
     },
     models::types::ContextFabricMetadata,
@@ -162,7 +162,31 @@ fn assemble_request(
             fresh: true,
             required: false,
             captured_at_unix: None,
+            content_hash: None,
+            snapshot: None,
+            source_generation: None,
+            tenant_scope: None,
+            acl_generation: None,
+            policy_generation: None,
         }],
+        references: vec![],
+        freshness_window_secs: None,
+    }
+}
+
+fn references_request(references: Vec<EvidenceReference>) -> AssembleRequest {
+    AssembleRequest {
+        contract_version: CONTRACT_VERSION.into(),
+        tokenizer: "whitespace-v0".into(),
+        token_budget: 40,
+        source_cap: 5,
+        excluded_sources: vec![],
+        required_sources: vec![],
+        generation: GenerationRef { id: "g1".into(), version: 1 },
+        profile_id: None,
+        profile_version: None,
+        candidates: vec![],
+        references,
         freshness_window_secs: None,
     }
 }
@@ -234,6 +258,30 @@ async fn http_assemble_accepts_backend_verified_memory() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["abstained"], false);
     assert_eq!(body["units"][0]["content"], "backend verified content");
+}
+
+#[tokio::test]
+async fn http_assemble_resolves_visible_code_chunk_without_client_content() {
+    let conn = connect(":memory:").unwrap();
+    migrations::run(&conn).unwrap();
+    let (org, _admin, _) = queries::bootstrap(&conn, "Code Org", "code-org", "a@code.test", "Admin").unwrap();
+    let (member, member_key) = queries::invite_user(&conn, &org.id, "m@code.test", "Member", "member").unwrap();
+    let canonical = queries::create_project(&conn, &org.id, "shared", None, None).unwrap();
+    queries::upsert_project_member(&conn, &canonical.id, &member.id, "member").unwrap();
+    let project_id = queries::upsert_code_project(&conn, &org.id, "shared", "/repo").unwrap();
+    queries::set_code_project_success(&conn, project_id, 1, "2026-08-02T00:00:00Z").unwrap();
+    let chunk_id = queries::insert_code_chunk(&conn, project_id, "src/lib.rs", "sha-code", Some("rust"), Some("visible"), 1, 3, "fn visible() {}", None).unwrap();
+    let app = router::build(conn, Config::parse_from(["context-fabric-test"]));
+    let request = references_request(vec![EvidenceReference {
+        source: "code".into(),
+        locator: Locator { source: "code".into(), id: chunk_id.to_string(), reference: Some("visible".into()) },
+        expected_hash: Some("sha-code".into()),
+        expected_generation: None,
+    }]);
+    let (status, body) = post_assemble(app, &member_key, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["units"][0]["content"], "fn visible() {}");
+    assert_eq!(body["units"][0]["provenance"], "code-knowledge-graph");
 }
 
 #[tokio::test]

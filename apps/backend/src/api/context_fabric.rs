@@ -7,8 +7,9 @@ use crate::{
     context_fabric::{
         active_manifest, compile, generate_deterministic, publish_generation, rollback_generation,
         validate_generation_identity, verify_request_generation, AssembleRequest, AssembleResponse,
-        ClaimStatus, ClaimVerification, ContextFabricManifest, GenerateRequest, GenerationMetadata,
-        GenerationRef, ShadowRequest, ShadowResponse, VerifyRequest, VerifyResponse,
+        ClaimStatus, ClaimVerification, ContextFabricManifest, EvidenceReference, GenerateRequest,
+        GenerationMetadata, GenerationRef, ShadowRequest, ShadowResponse, VerifyRequest,
+        VerifyResponse,
     },
     db::migrations,
     models::types::{ApiError, AuthContext},
@@ -730,6 +731,97 @@ fn verify_memory_evidence(
     Ok(request)
 }
 
+fn verify_resolved_source_evidence(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    request: &AssembleRequest,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let mut references = Vec::with_capacity(request.candidates.len());
+    for candidate in &request.candidates {
+        if !matches!(candidate.source.as_str(), "code" | "sdd")
+            || candidate.locator.source != candidate.source
+            || candidate.content_hash.is_none()
+            || candidate.source_generation.is_none()
+            || candidate.tenant_scope.as_deref() != Some(auth.org_id.as_str())
+        {
+            return Err(verification_error("unsupported_unverified_source"));
+        }
+        references.push(EvidenceReference {
+            source: candidate.source.clone(),
+            locator: candidate.locator.clone(),
+            expected_hash: candidate.content_hash.clone(),
+            expected_generation: candidate.source_generation.clone(),
+        });
+    }
+    let mut resolve_request = request.clone();
+    resolve_request.references = references;
+    let resolved = crate::context_fabric_evidence::resolve(conn, auth, &resolve_request)
+        .map_err(verification_error)?;
+    if resolved.len() != request.candidates.len()
+        || resolved.iter().zip(&request.candidates).any(|(stored, supplied)| {
+            stored.content != supplied.content
+                || stored.locator != supplied.locator
+                || stored.provenance != supplied.provenance
+                || stored.generation != supplied.generation
+                || stored.fresh != supplied.fresh
+                || stored.content_hash != supplied.content_hash
+                || stored.snapshot != supplied.snapshot
+                || stored.source_generation != supplied.source_generation
+                || stored.tenant_scope != supplied.tenant_scope
+                || stored.acl_generation != supplied.acl_generation
+                || stored.policy_generation != supplied.policy_generation
+        })
+    {
+        return Err(verification_error("evidence_integrity_mismatch"));
+    }
+    Ok(())
+}
+
+fn verify_request_evidence(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    request: AssembleRequest,
+) -> Result<AssembleRequest, (StatusCode, Json<ApiError>)> {
+    if request.candidates.iter().any(|candidate| candidate.source == "memory") {
+        let memory_candidates = request
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.source == "memory")
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut memory_request = request.clone();
+        memory_request.candidates = memory_candidates;
+        verify_memory_evidence(conn, auth, memory_request)?;
+    }
+    if request.candidates.iter().any(|candidate| candidate.source != "memory") {
+        verify_resolved_source_evidence(conn, auth, &request)?;
+    }
+    Ok(request)
+}
+
+fn resolve_references(
+    conn: &rusqlite::Connection,
+    auth: &AuthContext,
+    mut request: AssembleRequest,
+) -> Result<AssembleRequest, (StatusCode, Json<ApiError>)> {
+    if request.references.is_empty() {
+        return Ok(request);
+    }
+    for reference in &request.references {
+        let permission = match reference.source.as_str() {
+            "code" => "memory:search",
+            "sdd" => "sdd:read",
+            _ => return Err(verification_error("unsupported_unverified_source")),
+        };
+        require_permission(conn, auth, None, permission)?;
+    }
+    let resolved = crate::context_fabric_evidence::resolve(conn, auth, &request)
+        .map_err(verification_error)?;
+    request.candidates.extend(resolved);
+    request.references.clear();
+    Ok(request)
+}
+
 /// Read-only Compiler v0 boundary. Retrieval and authorization remain backend-owned.
 pub async fn assemble(
     State(store): State<SqliteStore>,
@@ -747,7 +839,8 @@ pub async fn assemble(
         )
     })?;
     require_permission(&conn, &auth, None, "memory:read")?;
-    let request = verify_memory_evidence(&conn, &auth, request)?;
+    let request = resolve_references(&conn, &auth, request)?;
+    let request = verify_request_evidence(&conn, &auth, request)?;
     verify_request_generation(&conn, &auth.org_id, &request).map_err(fabric_error)?;
     let runtime = store.context_runtime();
     runtime.purge_expired(&auth.org_id);
@@ -794,6 +887,7 @@ fn compiled_as_request(
         profile_id: Some(profile_id.to_string()),
         profile_version: Some(profile_version),
         candidates: assembled.units.clone(),
+        references: Vec::new(),
         freshness_window_secs: None,
     }
 }
@@ -814,7 +908,7 @@ fn verify_compiled_for_caller(
         generation,
         assembled,
     );
-    verify_memory_evidence(conn, auth, request).map(|_| ())
+    verify_request_evidence(conn, auth, request).map(|_| ())
 }
 
 pub async fn generate(
@@ -1218,7 +1312,14 @@ mod tests {
                 fresh: true,
                 required: false,
                 captured_at_unix: None,
+                content_hash: None,
+                snapshot: None,
+                source_generation: None,
+                tenant_scope: None,
+                acl_generation: None,
+                policy_generation: None,
             }],
+            references: vec![],
             freshness_window_secs: None,
         }
     }

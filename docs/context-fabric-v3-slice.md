@@ -27,11 +27,18 @@ Configuration is typed in `apps/backend/src/config.rs` and can be set with:
 ## New contract
 
 `POST /v1/context/assemble` is an authenticated, read-only Compiler v0 boundary.
-This first slice accepts only `memory` evidence that the backend can verify. Every
-locator/id is resolved through the caller's tenant and project visibility policy;
-content must match the backend memory and provenance must be `memory-search`.
-Unverified sources return `unsupported_unverified_source` and are reserved for future
-backend adapters. The endpoint also rejects `source_cap=0` deterministically. After
+The legacy `candidates` shape still accepts only backend-verifiable `memory` evidence.
+Additive `references` resolve `code` and `sdd` locators inside the backend; clients send
+IDs/locators and never content. Code chunk IDs are resolved through `code_projects` and
+`code_chunks` after `memory:search` and project visibility checks. SDD references use
+`locator.id = artifact_id` and `locator.reference = revision number`, after `sdd:read`
+and SDD project visibility checks. Both adapters compare the stored hash and source
+generation, and return tenant, snapshot, ACL/policy generation, provenance, and freshness
+metadata on the resulting `CandidateEvidence`.
+Unverified sources return `unsupported_unverified_source`; missing or cross-tenant/hidden
+locators return `evidence_not_found`, without echoing IDs or provider details. Hash and
+generation assertions return stable integrity/generation reason codes. The endpoint also
+rejects `source_cap=0` deterministically. After
 verification, the compiler deduplicates complete units, applies source caps and a hard
 budget, and returns deterministic diagnostics or abstention. It does not retrieve data
 or change profile/generation state.
@@ -119,10 +126,11 @@ Context Fabric evidence/diagnostic contracts and derived from the existing
 memory row when read. Legacy memory payloads remain unchanged; durable
 provenance columns require a separately user-applied additive migration.
 
-Code graph and SDD/document evidence currently fail closed with
-`unsupported_unverified_source`. Their existing backend APIs remain the
-authorization-owned adapters to implement later; client-supplied content is
-never accepted as a substitute. BQ/MRL remain shadow-only and the NX-Gold recall, quality,
+Code graph and SDD artifact revisions are now supported only through the
+`references` variant of `POST /v1/context/assemble`; no arbitrary symbol/file source,
+tool result, document upload, or client content is supported. The existing `GET /v1/code/*`
+and `GET /v1/sdd/*` permission surfaces remain the source-of-truth query/policy layers.
+Memory legacy requests remain unchanged. BQ/MRL remain shadow-only and the NX-Gold recall, quality,
 security, and freshness gate is still pending; no automatic promotion is performed. The pure
 deterministic primitive remains covered by unit tests.
 

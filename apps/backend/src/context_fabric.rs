@@ -163,6 +163,34 @@ pub struct CandidateEvidence {
     pub required: bool,
     #[serde(default)]
     pub captured_at_unix: Option<i64>,
+    /// Backend-owned integrity and visibility metadata. Legacy memory callers may omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_generation: Option<GenerationRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acl_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_generation: Option<u64>,
+}
+
+/// A client may identify evidence, but never provide its content or provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceReference {
+    pub source: String,
+    pub locator: Locator,
+    /// For code this is the indexed file hash; for SDD this is the revision hash.
+    #[serde(default)]
+    pub expected_hash: Option<String>,
+    /// Optional source generation assertion. The resolver compares it with the
+    /// generation stored/derived by the backend before reading content.
+    #[serde(default)]
+    pub expected_generation: Option<GenerationRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +209,10 @@ pub struct AssembleRequest {
     #[serde(default)]
     pub profile_version: Option<u32>,
     pub candidates: Vec<CandidateEvidence>,
+    /// Backend-resolved references. This is additive; an empty list preserves the
+    /// original memory-only request shape and behavior.
+    #[serde(default)]
+    pub references: Vec<EvidenceReference>,
     #[serde(default)]
     pub freshness_window_secs: Option<u64>,
 }
@@ -409,7 +441,13 @@ pub fn compile(request: &AssembleRequest) -> AssembleResponse {
     if request.source_cap == 0 {
         reasons.push("invalid_source_cap".into());
     }
-    if request.candidates.iter().any(|c| c.source != "memory") {
+    if request.candidates.iter().any(|c| {
+        c.source != "memory"
+            && (c.source != "code" && c.source != "sdd"
+                || c.content_hash.is_none()
+                || c.source_generation.is_none()
+                || c.tenant_scope.is_none())
+    }) {
         reasons.push("unsupported_unverified_source".into());
     }
 
@@ -857,6 +895,12 @@ mod tests {
             fresh: true,
             required: false,
             captured_at_unix: None,
+            content_hash: None,
+            snapshot: None,
+            source_generation: None,
+            tenant_scope: None,
+            acl_generation: None,
+            policy_generation: None,
         }
     }
     fn request(candidates: Vec<CandidateEvidence>) -> AssembleRequest {
@@ -871,6 +915,7 @@ mod tests {
             profile_id: None,
             profile_version: None,
             candidates,
+            references: vec![],
             freshness_window_secs: None,
         }
     }
