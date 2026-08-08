@@ -24,6 +24,10 @@ COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 # Note it reads the openspec/ tree from --root, so that tree must be reachable
 # (bind-mounted, or a checkout inside the container). See docs/RUNNING.md.
 COPY --from=builder /app/target/release/import-sdd /app/import-sdd
+# Backfill is a user-run operation needed when a restored SQLite database has
+# no embeddings. Keep it out of the server startup path, but ship the binary
+# in the same runtime image so Docker restores can be reindexed in place.
+COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embeddings
 # Seeder, for bringing a fresh volume up with demo data:
 #   nexusmind-seed /data/nexusmind.db
 COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed

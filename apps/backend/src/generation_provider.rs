@@ -228,6 +228,13 @@ pub async fn generate_deepseek(request: &GenerateRequest) -> GenerateResponse {
             return failure_response(request, GenerationFailure::MissingConfig, "missing_config")
         }
     };
+    generate_deepseek_with_config(request, config).await
+}
+
+async fn generate_deepseek_with_config(
+    request: &GenerateRequest,
+    config: DeepSeekConfig,
+) -> GenerateResponse {
     let timeout = request
         .timeout_ms
         .map(Duration::from_millis)
@@ -272,8 +279,13 @@ pub async fn generate_deepseek(request: &GenerateRequest) -> GenerateResponse {
 mod tests {
     use super::*;
     use crate::context_fabric::{
-        AssembleResponse, CompileDiagnostics, GenerationRef, CONTRACT_VERSION,
+        AssembleResponse, CandidateEvidence, CompileDiagnostics, GenerationRef, Locator,
+        CONTRACT_VERSION,
     };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
 
     fn request() -> GenerateRequest {
         GenerateRequest {
@@ -293,16 +305,120 @@ mod tests {
             assembled: AssembleResponse {
                 contract_version: CONTRACT_VERSION.into(),
                 abstained: false,
-                units: vec![],
+                units: vec![CandidateEvidence {
+                    unit_id: "u1".into(),
+                    source: "test".into(),
+                    content: "compiled evidence".into(),
+                    locator: Locator {
+                        source: "test".into(),
+                        id: "u1".into(),
+                        reference: None,
+                    },
+                    provenance: "unverified-test-provenance".into(),
+                    generation: GenerationRef {
+                        id: "g".into(),
+                        version: 1,
+                    },
+                    fresh: true,
+                    required: false,
+                    captured_at_unix: None,
+                    content_hash: None,
+                    snapshot: None,
+                    source_generation: None,
+                    tenant_scope: None,
+                    acl_generation: None,
+                    policy_generation: None,
+                }],
                 diagnostics: CompileDiagnostics {
                     reason_codes: vec![],
                     candidate_count: 0,
-                    selected_count: 0,
+                    selected_count: 1,
                     omitted_sources: vec![],
                     coverage: vec![],
                 },
             },
         }
+    }
+
+    fn local_server(status: &str, body: &str, delay: Option<Duration>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let status = status.to_owned();
+        let body = body.to_owned();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+            let mut request_bytes = [0; 4096];
+            let _ = stream.read(&mut request_bytes);
+            if let Some(delay) = delay {
+                thread::sleep(delay);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (address, handle)
+    }
+
+    fn local_config(api_url: String, timeout_ms: u64) -> DeepSeekConfig {
+        DeepSeekConfig::from_values(
+            Some(api_url),
+            Some("test-model".into()),
+            Some("test-only-key".into()),
+            Some(timeout_ms.to_string()),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn local_200_response_produces_output_with_unverified_provenance() {
+        let (api_url, server) = local_server(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"generated answer"}}]}"#,
+            None,
+        );
+        let response = generate_deepseek_with_config(&request(), local_config(api_url, 1_000)).await;
+        server.join().unwrap();
+
+        assert_eq!(response.output.as_deref(), Some("generated answer"));
+        assert!(!response.abstained);
+        assert!(response.failure.is_none());
+        assert_eq!(response.provenance.len(), 1);
+        assert_eq!(response.provenance[0].provenance, "unverified-test-provenance");
+    }
+
+    #[tokio::test]
+    async fn local_non_2xx_response_is_http_error_and_abstains() {
+        let (api_url, server) = local_server("503 Service Unavailable", "{}", None);
+        let response = generate_deepseek_with_config(&request(), local_config(api_url, 1_000)).await;
+        server.join().unwrap();
+
+        assert_eq!(response.failure, Some(GenerationFailure::HttpError));
+        assert!(response.abstained);
+        assert!(response.output.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_timeout_is_typed_and_abstains() {
+        let (api_url, server) = local_server("200 OK", "{}", Some(Duration::from_millis(150)));
+        let response = generate_deepseek_with_config(&request(), local_config(api_url, 25)).await;
+        server.join().unwrap();
+
+        assert_eq!(response.failure, Some(GenerationFailure::Timeout));
+        assert!(response.abstained);
+    }
+
+    #[tokio::test]
+    async fn local_malformed_body_is_typed_and_abstains() {
+        let (api_url, server) = local_server("200 OK", "not-json", None);
+        let response = generate_deepseek_with_config(&request(), local_config(api_url, 1_000)).await;
+        server.join().unwrap();
+
+        assert_eq!(response.failure, Some(GenerationFailure::MalformedResponse));
+        assert!(response.abstained);
+        assert!(response.output.is_none());
     }
 
     #[test]
