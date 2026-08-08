@@ -146,6 +146,7 @@ fn seed_org(
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         })?;
     }
 

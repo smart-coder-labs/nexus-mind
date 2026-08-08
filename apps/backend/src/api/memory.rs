@@ -218,6 +218,12 @@ pub enum MemoryPageResponse {
 
 fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     let msg = e.to_string();
+    if msg.starts_with("invalid_context_fabric_") || msg.starts_with("context_fabric_metadata_") {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError { error: "Invalid Context Fabric metadata".into(), code: "validation_error".into() }));
+    }
+    if msg == "context_fabric_provenance_migration_pending" {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError { error: "Context Fabric provenance migration is pending".into(), code: "migration_pending".into() }));
+    }
     if msg.starts_with("invalid_session_id:") {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -721,7 +727,7 @@ pub async fn update(
     }
 
     // At least one field must be present
-    if input.content.is_none() && input.title.is_none() {
+    if input.content.is_none() && input.title.is_none() && input.context_fabric_metadata.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
@@ -749,17 +755,22 @@ pub async fn update(
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
 
+            let metadata = input.context_fabric_metadata.as_ref();
+            db_queries::validate_context_fabric_metadata(&conn, metadata).map_err(store_err)?;
+
             let updated = db_queries::update_memory_fields(
                 &conn,
                 &auth.org_id,
                 &id,
                 input.content.as_deref(),
                 input.title.as_deref(),
+                metadata,
             )
             .map_err(store_err)?;
 
             match updated {
                 Some(m) => {
+                    store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_updated");
                     let _ = db_queries::log_audit(
                         &conn,
                         &auth.org_id,
@@ -814,6 +825,7 @@ pub async fn archive(
         .map_err(store_err)?;
 
     if updated {
+        store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_archived");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((
@@ -855,6 +867,7 @@ pub async fn restore(
         .map_err(store_err)?;
 
     if updated {
+        store.context_runtime().invalidate_memory(&auth.org_id, &id, "memory_restored");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((

@@ -9,9 +9,9 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, automation, backup, code, context, conventions, github_auth, harnesses, health,
-    internal, memory, middleware as api_mw, policy, rate_limit, search, sdd, sessions, tasks,
-    users, webhooks,
+    admin, agents, audit, auth, automation, backup, code, context, context_fabric, conventions,
+    github_auth, harnesses, health, internal, memory, middleware as api_mw, policy, rate_limit,
+    sdd, search, sessions, tasks, users, webhooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -74,6 +74,85 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
     let rate_state = rate_limit::RateLimitState::new(store.conn());
 
     let protected = Router::new()
+        .route("/v1/context/assemble", post(context_fabric::assemble))
+        .route("/v1/context/generate", post(context_fabric::generate))
+        .route("/v1/context/verify", post(context_fabric::verify))
+        .route(
+            "/v1/context/migrations",
+            get(context_fabric::migration_status).post(context_fabric::apply_migration),
+        )
+        .route(
+            "/v1/context/migrations/provenance",
+            get(context_fabric::provenance_migration_status)
+                .post(context_fabric::apply_provenance_migration),
+        )
+        .route(
+            "/v1/context/migrations/provenance/verify",
+            post(context_fabric::verify_provenance_migration),
+        )
+        .route(
+            "/v1/context/migrations/sidecar",
+            get(context_fabric::sidecar_migration_status)
+                .post(context_fabric::apply_sidecar_migration),
+        )
+        .route(
+            "/v1/context/migrations/sidecar/verify",
+            post(context_fabric::verify_sidecar_migration),
+        )
+        .route(
+            "/v1/context/sidecar/status",
+            get(context_fabric::sidecar_status),
+        )
+        .route(
+            "/v1/context/sidecar/rebuild",
+            post(context_fabric::sidecar_rebuild),
+        )
+        .route(
+            "/v1/context/sidecar/rebuild/cancel",
+            post(context_fabric::sidecar_cancel),
+        )
+        .route(
+            "/v1/context/sidecar/verify",
+            post(context_fabric::sidecar_verify),
+        )
+        .route(
+            "/v1/context/sidecar/cleanup",
+            post(context_fabric::sidecar_cleanup),
+        )
+        .route(
+            "/v1/context/sidecar/shadow",
+            post(context_fabric::sidecar_shadow),
+        )
+        .route(
+            "/v1/context/profiles/:profile_id/generations",
+            post(context_fabric::publish),
+        )
+        .route(
+            "/v1/context/generations/active",
+            get(context_fabric::active),
+        )
+        .route(
+            "/v1/context/generations/:generation_id/:generation_version/rollback",
+            post(context_fabric::rollback),
+        )
+        .route(
+            "/v1/context/rollout/shadow",
+            post(context_fabric::rollout_shadow),
+        )
+        .route(
+            "/v1/context/rollout/canary",
+            post(context_fabric::rollout_canary),
+        )
+        .route(
+            "/v1/context/rollout/promote",
+            post(context_fabric::rollout_promote),
+        )
+        .route(
+            "/v1/context/rollout/rollback",
+            post(context_fabric::rollout_rollback),
+        )
+        .route("/v1/context/diagnostics", get(context_fabric::diagnostics))
+        .route("/v1/context/lab/shadow", post(context_fabric::lab_shadow))
         .route("/v1/memory/store", post(memory::store))
         .route("/v1/memory/search", post(memory::search))
         .route("/v1/memory/export", get(memory::export))
@@ -153,7 +232,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route("/v1/policy/check", post(policy::check_policy))
         .route("/v1/automation/profiles", get(automation::list_profiles))
-        .route("/v1/automation/authorize", post(automation::authorize_profile))
+        .route(
+            "/v1/automation/authorize",
+            post(automation::authorize_profile),
+        )
         .route(
             "/v1/conventions",
             get(conventions::list_conventions).post(conventions::create_convention),
@@ -231,33 +313,63 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(sdd::get_artifact_by_key_handler).put(sdd::put_artifact_handler),
         )
         .route("/v1/sdd/artifacts/:id", get(sdd::get_artifact_handler))
-        .route("/v1/sdd/artifacts/:id/revisions", get(sdd::list_artifact_revisions_handler))
+        .route(
+            "/v1/sdd/artifacts/:id/revisions",
+            get(sdd::list_artifact_revisions_handler),
+        )
         // GET only, deliberately: revisions are immutable, so PUT/PATCH/DELETE here must 405.
-        .route("/v1/sdd/artifacts/:id/revisions/:rev", get(sdd::get_artifact_revision_handler))
-        .route("/v1/sdd/changes", get(sdd::list_changes_handler).post(sdd::create_change_handler))
+        .route(
+            "/v1/sdd/artifacts/:id/revisions/:rev",
+            get(sdd::get_artifact_revision_handler),
+        )
+        .route(
+            "/v1/sdd/changes",
+            get(sdd::list_changes_handler).post(sdd::create_change_handler),
+        )
         .route(
             "/v1/sdd/changes/:id",
             get(sdd::get_change_handler)
                 .patch(sdd::patch_change_handler)
                 .delete(sdd::delete_change_handler),
         )
-        .route("/v1/sdd/changes/:id/artifacts", get(sdd::list_change_artifacts_handler))
-        .route("/v1/sdd/changes/:id/tasks", get(sdd::list_change_tasks_handler))
-        .route("/v1/sdd/changes/:id/memories", post(sdd::link_change_memory_handler))
+        .route(
+            "/v1/sdd/changes/:id/artifacts",
+            get(sdd::list_change_artifacts_handler),
+        )
+        .route(
+            "/v1/sdd/changes/:id/tasks",
+            get(sdd::list_change_tasks_handler),
+        )
+        .route(
+            "/v1/sdd/changes/:id/memories",
+            post(sdd::link_change_memory_handler),
+        )
         .route(
             "/v1/sdd/changes/:id/memories/:memory_id",
             delete(sdd::unlink_change_memory_handler),
         )
         // Which living specifications this change has merged its deltas into.
-        .route("/v1/sdd/changes/:id/specs", get(sdd::list_change_specs_handler))
+        .route(
+            "/v1/sdd/changes/:id/specs",
+            get(sdd::list_change_specs_handler),
+        )
         // ── The living specification: openspec/specs/{capability}/spec.md ──
         // Same ordering rule: the static /v1/sdd/specs collection is registered BEFORE
         // /v1/sdd/specs/:id, or ":id" would swallow it.
-        .route("/v1/sdd/specs", get(sdd::get_specs_handler).put(sdd::put_spec_handler))
+        .route(
+            "/v1/sdd/specs",
+            get(sdd::get_specs_handler).put(sdd::put_spec_handler),
+        )
         .route("/v1/sdd/specs/:id", get(sdd::get_spec_handler))
-        .route("/v1/sdd/specs/:id/revisions", get(sdd::list_spec_revisions_handler))
+        .route(
+            "/v1/sdd/specs/:id/revisions",
+            get(sdd::list_spec_revisions_handler),
+        )
         // GET only, deliberately: spec revisions are immutable, so a write here must 405.
-        .route("/v1/sdd/specs/:id/revisions/:rev", get(sdd::get_spec_revision_handler))
+        .route(
+            "/v1/sdd/specs/:id/revisions/:rev",
+            get(sdd::get_spec_revision_handler),
+        )
         .route(
             "/v1/tasks/resolve-by-spec",
             post(tasks::resolve_by_spec_handler),

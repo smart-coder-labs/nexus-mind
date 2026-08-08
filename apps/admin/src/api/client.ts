@@ -57,6 +57,7 @@ import type {
   CreateConventionRequest,
   UpdateConventionRequest,
   MemoryGraphResponse,
+  ContextFabricDiagnostics,
   Backup,
   BackupDetail,
   BackupRestoreSummary,
@@ -1150,6 +1151,11 @@ export class NexusMindClient {
   /** Which living specifications this change has merged its deltas into. */
   getSddChangeSpecs(id: string): Promise<SddSpecMerge[]> {
     return this.request<SddSpecMerge[]>(`/v1/sdd/changes/${encodeURIComponent(id)}/specs`)
+  }
+
+  /** Read-only, bounded diagnostics; the backend remains the authorization authority. */
+  getContextFabricDiagnostics(): Promise<ContextFabricDiagnostics> {
+    return this.request<ContextFabricDiagnostics>('/v1/context/diagnostics')
   }
 
   /** Curation (A7). Accepts ONLY title/status/phase/sprint_id — the backend

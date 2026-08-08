@@ -1,0 +1,8 @@
+[project]
+name = "nexus-context-lab"
+version = "0.1.0"
+description = "Offline NX-Gold v0 reproducibility harness"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

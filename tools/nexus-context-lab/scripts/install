@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Offline operator install: validate and write a local receipt only."""
+import argparse
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from nxgold import ValidationError, install_operator
+
+parser = argparse.ArgumentParser(description="Install the isolated offline context lab")
+parser.add_argument("--env", type=Path, required=True)
+args = parser.parse_args()
+env = {}
+for line in args.env.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+try:
+    receipt = install_operator(env, Path.cwd())
+except (OSError, ValidationError) as error:
+    print(f"INSTALL: REJECTED\n- {error}")
+    raise SystemExit(1)
+print(f"INSTALL: PASS (offline)\n{receipt['workspace']}/install-receipt.json")

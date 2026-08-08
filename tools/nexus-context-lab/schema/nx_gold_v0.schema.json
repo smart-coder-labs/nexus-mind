@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nx-gold-v0",
+  "title": "NX-Gold v0 scenario contract",
+  "type": "object",
+  "required": ["schema", "status", "scenarios", "executions", "annotations", "canaries", "evidence_contract"],
+  "properties": {
+    "schema": {"const": "NX-Gold v0"},
+    "status": {"enum": ["sample", "complete"]},
+    "scenarios": {"type": "array", "minItems": 300},
+    "executions": {"type": "array", "minItems": 900},
+    "annotations": {"type": "object"},
+    "canaries": {"type": "array", "minItems": 3},
+    "evidence_contract": {"type": "object"}
+  }
+}

@@ -333,7 +333,7 @@ mod tests {
                 project: Some("proj-secret".to_string()),
                 tool: "claude".to_string(),
                 content: "SECRETALPHA in context".to_string(),
-                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None,
+                tags: None, title: None, memory_type: None, scope: None, topic_key: None, session_id: None, context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -439,6 +439,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -533,6 +534,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -662,6 +664,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             }).unwrap();
         }
 
@@ -734,6 +737,7 @@ mod tests {
                     scope: None,
                     topic_key: None,
                     session_id: None,
+                    context_fabric_metadata: None,
                 }).unwrap();
             }
         }

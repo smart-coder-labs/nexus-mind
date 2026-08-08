@@ -1,0 +1,31 @@
+{
+  "schema": "NX-Gold v0",
+  "status": "sample",
+  "scenarios": [
+    {
+      "id": "sample-001",
+      "tenant": "tenant-canary-a",
+      "language": "es",
+      "plane": "memory",
+      "answerability": "answerable",
+      "evaluation": "exact",
+      "negatives": ["sample-negative-001", "sample-negative-002", "sample-negative-003"],
+      "split": "train",
+      "gold": {"answer": "SAMPLE ONLY", "required_evidence": ["sample-doc-001"], "prohibited_evidence": ["tenant-canary-b"]},
+      "locator": {"document_id": "sample-doc-001", "chunk_id": "sample-chunk-001"},
+      "relevance": {"graded": 3},
+      "tools": {"allowed": ["retrieval"], "expected": []},
+      "abstention": {"allowed": false}
+    }
+  ],
+  "executions": [
+    {"scenario_id": "sample-001", "execution": 1, "split": "train"}
+  ],
+  "annotations": {"annotators": ["sample-a", "sample-b"], "adjudications": []},
+  "canaries": [
+    {"id": "tenant-canary-a", "tenant": "tenant-a", "content": "SYNTHETIC_CANARY_A"},
+    {"id": "tenant-canary-b", "tenant": "tenant-b", "content": "SYNTHETIC_CANARY_B"},
+    {"id": "tenant-canary-c", "tenant": "tenant-c", "content": "SYNTHETIC_CANARY_C"}
+  ],
+  "evidence_contract": {"required": ["required_evidence", "prohibited_evidence", "locator", "relevance", "tools", "abstention"]}
+}

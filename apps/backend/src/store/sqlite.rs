@@ -20,6 +20,7 @@ use crate::{
 pub struct SqliteStore {
     db:    Arc<Mutex<Connection>>,
     embed: Option<Arc<EmbedService>>,
+    context_runtime: Arc<crate::context_fabric_runtime::ContextFabricRuntime>,
 }
 
 impl SqliteStore {
@@ -27,6 +28,7 @@ impl SqliteStore {
         SqliteStore {
             db:    Arc::new(Mutex::new(conn)),
             embed: None,
+            context_runtime: Arc::new(crate::context_fabric_runtime::ContextFabricRuntime::from_env()),
         }
     }
 
@@ -46,6 +48,10 @@ impl SqliteStore {
         self.embed.clone()
     }
 
+    pub fn context_runtime(&self) -> Arc<crate::context_fabric_runtime::ContextFabricRuntime> {
+        Arc::clone(&self.context_runtime)
+    }
+
     /// Returns `true` when `search()` would silently downgrade the given mode to
     /// `Keyword` because no embed service is configured. Single source of truth
     /// for the fallback predicate, shared by `search()` itself and by callers
@@ -62,6 +68,25 @@ impl MemoryStore for SqliteStore {
     fn store(&self, org_id: &str, user_id: &str, req: &StoreMemoryRequest) -> Result<Memory> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
 
+        // Backend write gate: reject invalid input before any upsert, audit, or embedding side effect.
+        if org_id.trim().is_empty() || user_id.trim().is_empty() {
+            let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                serde_json::json!({"reason": "missing_tenant_or_actor"}));
+            anyhow::bail!("write_gate:missing_tenant_or_actor");
+        }
+        if req.content.trim().is_empty() {
+            let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                serde_json::json!({"reason": "empty_content"}));
+            anyhow::bail!("write_gate:empty_content");
+        }
+        if let Some(scope) = req.scope.as_deref() {
+            if !matches!(scope, "project" | "org" | "personal") {
+                let _ = queries::log_audit(&conn, org_id, user_id, "store.denied", "memory", None,
+                    serde_json::json!({"reason": "invalid_scope"}));
+                anyhow::bail!("write_gate:invalid_scope");
+            }
+        }
+
         if let Some(ref sid) = req.session_id {
             let valid = queries::validate_session_ownership(&conn, org_id, sid)?;
             if !valid {
@@ -69,7 +94,18 @@ impl MemoryStore for SqliteStore {
             }
         }
 
+        if let Err(error) = queries::validate_context_fabric_metadata(&conn, req.context_fabric_metadata.as_ref()) {
+            let _ = queries::log_audit(
+                &conn, org_id, user_id, "store.denied", "memory", None,
+                serde_json::json!({"reason": "invalid_context_fabric_metadata"}),
+            );
+            return Err(error);
+        }
+
         let memory = queries::upsert_memory(&conn, org_id, user_id, req)?;
+        // A write event is emitted at the store boundary so direct callers and HTTP callers
+        // share the same deterministic invalidation behavior.
+        self.context_runtime.invalidate_memory(org_id, &memory.id, "memory_written");
 
         let _ = queries::log_audit(
             &conn,
@@ -181,74 +217,7 @@ impl MemoryStore for SqliteStore {
 
     fn get(&self, org_id: &str, memory_id: &str) -> Result<Option<Memory>> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-        let result = conn.query_row(
-            "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                    title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                    archived_at, pinned, collection_id, admin_note, delete_after
-             FROM memories WHERE id = ?1 AND org_id = ?2",
-            rusqlite::params![memory_id, org_id],
-            |row| {
-                let tags_str: String = row.get(6)?;
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    tags_str,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                    row.get::<_, Option<i64>>(13)?,
-                    row.get::<_, Option<String>>(14)?,
-                    row.get::<_, Option<String>>(15)?,
-                    row.get::<_, Option<String>>(16)?,
-                    row.get::<_, i64>(17).unwrap_or(0),
-                    row.get::<_, Option<String>>(18)?,
-                    row.get::<_, Option<String>>(19)?,
-                    row.get::<_, Option<String>>(20)?,
-                ))
-            },
-        );
-
-        match result {
-            Ok((id, org_id, user_id, project, tool, content, tags_str, created_at,
-                title, memory_type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                archived_at, pinned_i64, collection_id, admin_note, delete_after)) => {
-                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-                let status = if archived_at.is_some() { "archived".to_string() } else { "active".to_string() };
-                Ok(Some(Memory {
-                    id,
-                    org_id,
-                    user_id,
-                    project,
-                    tool,
-                    content,
-                    tags,
-                    created_at,
-                    title,
-                    memory_type,
-                    scope: scope.unwrap_or_else(|| "project".to_string()),
-                    topic_key,
-                    session_id,
-                    revision_count: revision_count.unwrap_or(1),
-                    normalized_hash,
-                    project_id,
-                    archived_at,
-                    pinned: pinned_i64 != 0,
-                    collection_id,
-                    admin_note,
-                    delete_after,
-                    status,
-                }))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        queries::get_memory_by_id_for_org(&conn, org_id, memory_id)
     }
 
     fn delete(&self, org_id: &str, user_id: &str, memory_id: &str) -> Result<bool> {
@@ -256,6 +225,7 @@ impl MemoryStore for SqliteStore {
         let deleted = queries::delete_memory(&conn, org_id, memory_id)?;
 
         if deleted {
+            self.context_runtime.invalidate_memory(org_id, memory_id, "memory_deleted");
             let _ = queries::log_audit(
                 &conn,
                 org_id,
@@ -286,7 +256,7 @@ impl SqliteStore {
 
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_org_visible(&conn, org_id, viewer_user_id)?
         };
 
         let mut scored: Vec<(String, f32)> = pairs
@@ -317,7 +287,7 @@ impl SqliteStore {
         // FTS5 results (rank = position in result list, 1-based)
         let fts_ids: Vec<String> = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::search_memories(&conn, org_id, query, fetch_n)?
+            queries::search_memories_visible(&conn, org_id, query, fetch_n, viewer_user_id)?
                 .into_iter()
                 .map(|m| m.id)
                 .collect()
@@ -326,7 +296,7 @@ impl SqliteStore {
         // Semantic KNN results
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_org_visible(&conn, org_id, viewer_user_id)?
         };
 
         let mut sem_scored: Vec<(String, f32)> = pairs
@@ -395,6 +365,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         }
     }
 

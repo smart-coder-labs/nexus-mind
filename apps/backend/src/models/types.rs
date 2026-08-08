@@ -292,6 +292,10 @@ pub struct Memory {
     /// Derived status: "active" or "archived" (based on archived_at).
     #[serde(default = "default_active_status")]
     pub status: String,
+    /// Optional Context Fabric v3 provenance. This is metadata only; it never
+    /// contains a copy of memory content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_fabric_metadata: Option<ContextFabricMetadata>,
 }
 
 fn default_revision_count() -> i64 {
@@ -371,6 +375,39 @@ pub struct StoreMemoryRequest {
     pub scope: Option<String>,
     pub topic_key: Option<String>,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub context_fabric_metadata: Option<ContextFabricMetadata>,
+}
+
+/// Versioned, allow-listed provenance attached to a memory. `trusted` and
+/// `verified` are assigned by the backend and are never accepted as claims.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ContextFabricMetadata {
+    pub schema_version: u32,
+    pub source_type: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<String>,
+    pub sensitivity: String,
+    #[serde(default)]
+    pub trusted: bool,
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// A session groups a set of memories under a logical work unit.
@@ -1128,6 +1165,8 @@ pub struct OnboardingStatus {
 pub struct UpdateMemoryRequest {
     pub content: Option<String>,
     pub title: Option<String>,
+    #[serde(default)]
+    pub context_fabric_metadata: Option<ContextFabricMetadata>,
 }
 
 /// Returned by `POST /v1/admin/users/:user_id/reset-key`.
@@ -3129,6 +3168,7 @@ mod tests {
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            context_fabric_metadata: None,
             status: "active".to_string(),
         };
         assert!(m.tags.is_empty());
@@ -3425,6 +3465,7 @@ mod tests {
             collection_id: None,
             admin_note: None,
             delete_after: None,
+            context_fabric_metadata: None,
             status: "active".to_string(),
         };
         let json_val: serde_json::Value = serde_json::to_value(&m).unwrap();

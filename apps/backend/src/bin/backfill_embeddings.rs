@@ -19,6 +19,9 @@ struct Args {
 
     #[arg(long, default_value = "32", help = "Batch size for embedding")]
     batch_size: usize,
+
+    #[arg(long, help = "Only process the first N memories; useful for staged restores")]
+    limit: Option<usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -35,9 +38,13 @@ fn main() -> anyhow::Result<()> {
          ORDER BY created_at ASC",
     )?;
 
-    let rows: Vec<(String, String)> = stmt
+    let mut rows: Vec<(String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
+
+    if let Some(limit) = args.limit {
+        rows.truncate(limit);
+    }
 
     let total = rows.len();
     if total == 0 {

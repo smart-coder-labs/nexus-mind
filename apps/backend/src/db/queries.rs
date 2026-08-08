@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::auth::api_keys;
 use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
 use crate::models::types::{
+    ContextFabricMetadata,
     validate_typed_harness_manifest, Agent, AgentAssignment, ApiKeyWithUser, AuditEntry,
     AuthContext, CodeChunk, CodeProject, Convention, CreateAgentRequest, CreateConventionRequest,
     CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
@@ -246,6 +247,88 @@ pub fn bootstrap(
 
 // ── Memory queries ────────────────────────────────────────────────────────────
 
+fn context_fabric_metadata_available(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('memories') WHERE name = 'context_fabric_metadata')",
+        [], |row| row.get(0),
+    ).unwrap_or(false)
+}
+
+fn memory_metadata_select(conn: &Connection) -> &'static str {
+    if context_fabric_metadata_available(conn) { "context_fabric_metadata" } else { "NULL" }
+}
+
+fn memory_metadata_select_qualified(conn: &Connection, qualifier: &str) -> String {
+    if context_fabric_metadata_available(conn) {
+        format!("{qualifier}.context_fabric_metadata")
+    } else {
+        "NULL".into()
+    }
+}
+
+fn parse_context_fabric_metadata(raw: Option<String>) -> Option<ContextFabricMetadata> {
+    raw.and_then(|value| serde_json::from_str(&value).ok())
+}
+
+pub fn validate_context_fabric_metadata(
+    conn: &Connection,
+    metadata: Option<&ContextFabricMetadata>,
+) -> Result<Option<ContextFabricMetadata>> {
+    let Some(input) = metadata else { return Ok(None); };
+    if !context_fabric_metadata_available(conn) {
+        anyhow::bail!("context_fabric_provenance_migration_pending");
+    }
+    let valid_token = |value: &str| !value.trim().is_empty() && value.len() <= 256 && !value.contains('\0');
+    if input.schema_version != 3 || !valid_token(&input.source_type) || !valid_token(&input.source_id)
+        || !matches!(input.sensitivity.as_str(), "public" | "internal" | "confidential" | "restricted" | "pii") {
+        anyhow::bail!("invalid_context_fabric_metadata_shape");
+    }
+    for value in [input.source_version.as_deref(), input.profile.as_deref(), input.snapshot.as_deref(), input.freshness.as_deref(), input.observed_at.as_deref(), input.trust.as_deref(), input.locator.as_deref(), input.generation.as_deref()].into_iter().flatten() {
+        if !valid_token(value) { anyhow::bail!("invalid_context_fabric_metadata_value"); }
+    }
+    if let Some(generation) = input.generation.as_deref() {
+        let (id, version) = generation.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("invalid_context_fabric_generation"))?;
+        if !valid_token(id) || version.parse::<u64>().ok().filter(|v| *v > 0).is_none() {
+            anyhow::bail!("invalid_context_fabric_generation");
+        }
+    }
+    let encoded = serde_json::to_vec(input)?;
+    if encoded.len() > 8192 { anyhow::bail!("context_fabric_metadata_too_large"); }
+    let mut trusted = input.clone();
+    // Client claims are retained only as descriptive provenance. Trust is a
+    // backend fact and must be earned by compiler/evidence verification.
+    trusted.trusted = false;
+    trusted.verified = false;
+    Ok(Some(trusted))
+}
+
+/// Elevates provenance only after the backend has matched the evidence bytes,
+/// tenant visibility, locator and generation. Client-provided trust flags are
+/// never used for this transition.
+pub fn mark_context_fabric_metadata_verified(
+    conn: &Connection,
+    org_id: &str,
+    memory_id: &str,
+    generation: &str,
+) -> Result<bool> {
+    if !context_fabric_metadata_available(conn) { return Ok(false); }
+    let raw: Option<String> = conn.query_row(
+        "SELECT context_fabric_metadata FROM memories WHERE id = ?1 AND org_id = ?2 AND archived_at IS NULL",
+        rusqlite::params![memory_id, org_id], |row| row.get(0),
+    ).optional()?;
+    let Some(raw) = raw else { return Ok(false); };
+    let Some(mut metadata) = parse_context_fabric_metadata(Some(raw)) else { return Ok(false); };
+    if metadata.generation.as_deref() != Some(generation) { return Ok(false); }
+    metadata.trusted = true;
+    metadata.verified = true;
+    metadata.trust = Some("backend-evidence".into());
+    let changed = conn.execute(
+        "UPDATE memories SET context_fabric_metadata = ?1 WHERE id = ?2 AND org_id = ?3 AND archived_at IS NULL",
+        rusqlite::params![serde_json::to_string(&metadata)?, memory_id, org_id],
+    )?;
+    Ok(changed > 0)
+}
+
 /// Sanitize a user query for FTS5 MATCH.
 ///
 /// FTS5 treats many characters as operators (+, -, *, :, ^, ", (, )).
@@ -321,13 +404,14 @@ pub fn search_memories_visible(
         None => return Ok(Vec::new()),
     };
 
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT m.id, m.org_id, m.user_id, m.project, m.tool, m.content, m.tags, m.created_at,
                 m.title, m.type, m.scope, m.topic_key, m.session_id, m.revision_count, m.normalized_hash, m.project_id,
-                m.archived_at, m.pinned, m.collection_id, m.admin_note, m.delete_after
+                m.archived_at, m.pinned, m.collection_id, m.admin_note, m.delete_after, {}
          FROM memories m
          JOIN memories_fts fts ON fts.rowid = m.rowid
-         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL",
+         WHERE memories_fts MATCH ?1 AND m.org_id = ?2 AND m.archived_at IS NULL
+           AND (m.delete_after IS NULL OR m.delete_after > datetime('now'))", memory_metadata_select_qualified(conn, "m")
     );
     let mut params: Vec<Box<dyn rusqlite::ToSql>> =
         vec![Box::new(fts_query), Box::new(org_id.to_string())];
@@ -368,6 +452,7 @@ pub fn search_memories_visible(
             row.get::<_, Option<String>>(18)?,
             row.get::<_, Option<String>>(19)?,
             row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(21)?,
         ))
     })?;
 
@@ -395,6 +480,7 @@ pub fn search_memories_visible(
             collection_id,
             admin_note,
             delete_after,
+            context_fabric_metadata,
         ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         let status = if archived_at.is_some() {
@@ -425,6 +511,7 @@ pub fn search_memories_visible(
             admin_note,
             delete_after,
             status,
+            context_fabric_metadata: parse_context_fabric_metadata(context_fabric_metadata),
         });
     }
     Ok(memories)
@@ -491,12 +578,13 @@ pub fn list_memories_visible(
     collection_id_filter: Option<&str>,
     viewer_user_id: Option<&str>,
 ) -> Result<Vec<Memory>> {
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
-                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                archived_at, pinned, collection_id, admin_note, delete_after
-         FROM memories
-         WHERE org_id = ?1",
+                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
+                 archived_at, pinned, collection_id, admin_note, delete_after, {}
+          FROM memories
+           WHERE org_id = ?1
+             AND (delete_after IS NULL OR delete_after > datetime('now'))", memory_metadata_select(conn)
     );
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
@@ -600,6 +688,7 @@ pub fn list_memories_visible(
             row.get::<_, Option<String>>(18)?,
             row.get::<_, Option<String>>(19)?,
             row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(21)?,
         ))
     })?;
 
@@ -627,6 +716,7 @@ pub fn list_memories_visible(
             collection_id,
             admin_note,
             delete_after,
+            context_fabric_metadata,
         ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         let status = if archived_at.is_some() {
@@ -657,6 +747,7 @@ pub fn list_memories_visible(
             admin_note,
             delete_after,
             status,
+            context_fabric_metadata: parse_context_fabric_metadata(context_fabric_metadata),
         });
     }
     Ok(memories)
@@ -714,7 +805,10 @@ pub fn count_memories_visible(
     collection_id_filter: Option<&str>,
     viewer_user_id: Option<&str>,
 ) -> Result<i64> {
-    let mut sql = String::from("SELECT COUNT(*) FROM memories WHERE org_id = ?1");
+    let mut sql = String::from(
+        "SELECT COUNT(*) FROM memories WHERE org_id = ?1
+         AND (delete_after IS NULL OR delete_after > datetime('now'))",
+    );
     let mut param_idx = 2usize;
     let mut extra_params: Vec<String> = Vec::new();
 
@@ -801,7 +895,9 @@ pub fn archive_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool>
 /// Returns Ok(true) if the row was updated, Ok(false) if not found / not archived.
 pub fn restore_memory(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
     let affected = conn.execute(
-        "UPDATE memories SET archived_at = NULL WHERE id = ?1 AND org_id = ?2 AND archived_at IS NOT NULL",
+        "UPDATE memories SET archived_at = NULL
+         WHERE id = ?1 AND org_id = ?2 AND archived_at IS NOT NULL
+           AND (delete_after IS NULL OR delete_after > datetime('now'))",
         rusqlite::params![id, org_id],
     )?;
     Ok(affected > 0)
@@ -2854,6 +2950,8 @@ pub fn upsert_memory(
     let tags_json = serde_json::to_string(req.tags.as_deref().unwrap_or(&[]))?;
     let scope = req.scope.as_deref().unwrap_or("project");
     let normalized_hash = compute_normalized_hash(&req.content);
+    let context_fabric_metadata = validate_context_fabric_metadata(conn, req.context_fabric_metadata.as_ref())?;
+    let context_fabric_json = context_fabric_metadata.as_ref().map(serde_json::to_string).transpose()?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     if let Some(topic_key) = &req.topic_key {
@@ -2868,10 +2966,11 @@ pub fn upsert_memory(
             Ok((existing_id, revision_count, created_at)) => {
                 // UPDATE the existing row
                 let new_revision = revision_count + 1;
-                conn.execute(
+                if context_fabric_metadata_available(conn) {
+                    conn.execute(
                     "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
-                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8
-                     WHERE id = ?9",
+                     normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8,
+                     context_fabric_metadata = ?9 WHERE id = ?10",
                     rusqlite::params![
                         req.content,
                         req.title,
@@ -2881,9 +2980,17 @@ pub fn upsert_memory(
                         new_revision,
                         tags_json,
                         &project_id,
+                        context_fabric_json,
                         existing_id
                     ],
                 )?;
+                } else {
+                    conn.execute(
+                        "UPDATE memories SET content = ?1, title = ?2, type = ?3, scope = ?4,
+                         normalized_hash = ?5, revision_count = ?6, tags = ?7, project_id = ?8 WHERE id = ?9",
+                        rusqlite::params![req.content, req.title, req.memory_type, scope, normalized_hash, new_revision, tags_json, &project_id, existing_id],
+                    )?;
+                }
                 let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
                 return Ok(Memory {
                     id: existing_id,
@@ -2908,6 +3015,7 @@ pub fn upsert_memory(
                     admin_note: None,
                     delete_after: None,
                     status: "active".to_string(),
+                    context_fabric_metadata,
                 });
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -2919,15 +3027,25 @@ pub fn upsert_memory(
 
     // INSERT new row
     let id = Uuid::new_v4().to_string();
-    conn.execute(
+    if context_fabric_metadata_available(conn) {
+        conn.execute(
         "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at,
-                               title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15)",
+                                title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id, context_fabric_metadata)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15, ?16)",
         rusqlite::params![
             id, org_id, user_id, project, req.tool, req.content, tags_json, now,
-            req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash, &project_id
+            req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash, &project_id, context_fabric_json
         ],
     )?;
+    } else {
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at,
+             title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15)",
+            rusqlite::params![id, org_id, user_id, project, req.tool, req.content, tags_json, now,
+                req.title, req.memory_type, scope, req.topic_key, req.session_id, normalized_hash, &project_id],
+        )?;
+    }
 
     let tags = req.tags.as_deref().unwrap_or(&[]).to_vec();
     Ok(Memory {
@@ -2953,6 +3071,7 @@ pub fn upsert_memory(
         admin_note: None,
         delete_after: None,
         status: "active".to_string(),
+        context_fabric_metadata,
     })
 }
 
@@ -3336,20 +3455,36 @@ pub fn store_embedding(conn: &Connection, memory_id: &str, embedding: &[u8]) -> 
 /// Load all (memory_id, embedding_blob) pairs for an org.
 /// Used for in-process cosine KNN during semantic search.
 pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut stmt = conn.prepare(
+    get_embeddings_for_org_visible(conn, org_id, None)
+}
+
+/// Load only authorized embeddings before semantic scoring and candidate truncation.
+pub fn get_embeddings_for_org_visible(
+    conn: &Connection,
+    org_id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut sql = String::from(
         "SELECT me.memory_id, me.embedding
          FROM memory_embeddings me
          JOIN memories m ON m.id = me.memory_id
-         WHERE m.org_id = ?1 AND m.archived_at IS NULL",
-    )?;
-    let rows = stmt.query_map([org_id], |row| {
+         WHERE m.org_id = ?1 AND m.archived_at IS NULL
+           AND (m.delete_after IS NULL OR m.delete_after > datetime('now'))",
+    );
+    let viewer_owned = viewer_user_id.map(str::to_string);
+    if viewer_owned.is_some() {
+        sql.push_str(" AND (m.project_id IS NULL OR m.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?2))");
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(viewer) = viewer_owned {
+        params.push(Box::new(viewer));
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
-    let mut pairs = Vec::new();
-    for r in rows {
-        pairs.push(r?);
-    }
-    Ok(pairs)
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 /// Fetch memories by a list of IDs, preserving the order of `ids`.
@@ -3383,10 +3518,12 @@ pub fn get_memories_by_ids_visible(
     let mut sql = format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                archived_at, pinned, collection_id, admin_note, delete_after
+                archived_at, pinned, collection_id, admin_note, delete_after, {}
          FROM memories
-         WHERE org_id = ?1 AND id IN ({placeholders})"
-    );
+          WHERE org_id = ?1 AND id IN ({placeholders})
+            AND archived_at IS NULL
+            AND (delete_after IS NULL OR delete_after > datetime('now'))"
+    , memory_metadata_select(conn));
 
     // Viewer id (if any) binds to the next placeholder after org_id + all ids.
     let viewer_owned = viewer_user_id.map(|v| v.to_string());
@@ -3429,6 +3566,7 @@ pub fn get_memories_by_ids_visible(
             row.get::<_, Option<String>>(18)?,
             row.get::<_, Option<String>>(19)?,
             row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(21)?,
         ))
     })?;
 
@@ -3457,6 +3595,7 @@ pub fn get_memories_by_ids_visible(
             collection_id,
             admin_note,
             delete_after,
+            context_fabric_metadata,
         ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         let status = if archived_at.is_some() {
@@ -3489,6 +3628,7 @@ pub fn get_memories_by_ids_visible(
                 admin_note,
                 delete_after,
                 status,
+                context_fabric_metadata: parse_context_fabric_metadata(context_fabric_metadata),
             },
         );
     }
@@ -4417,10 +4557,12 @@ pub fn get_memory_by_id_for_org(
     memory_id: &str,
 ) -> Result<Option<Memory>> {
     let result = conn.query_row(
-        "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
+        &format!("SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                archived_at, pinned, collection_id, admin_note, delete_after
-         FROM memories WHERE id = ?1 AND org_id = ?2",
+                archived_at, pinned, collection_id, admin_note, delete_after, {}
+         FROM memories
+           WHERE id = ?1 AND org_id = ?2 AND archived_at IS NULL
+             AND (delete_after IS NULL OR delete_after > datetime('now'))", memory_metadata_select(conn)),
         rusqlite::params![memory_id, org_id],
         |row| {
             let tags_str: String = row.get(6)?;
@@ -4445,7 +4587,8 @@ pub fn get_memory_by_id_for_org(
                 row.get::<_, i64>(17).unwrap_or(0),
                 row.get::<_, Option<String>>(18)?,
                 row.get::<_, Option<String>>(19)?,
-                row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(21)?,
             ))
         },
     );
@@ -4473,6 +4616,7 @@ pub fn get_memory_by_id_for_org(
             collection_id,
             admin_note,
             delete_after,
+            context_fabric_metadata,
         )) => {
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
             let status = if archived_at.is_some() {
@@ -4503,6 +4647,7 @@ pub fn get_memory_by_id_for_org(
                 admin_note,
                 delete_after,
                 status,
+                context_fabric_metadata: parse_context_fabric_metadata(context_fabric_metadata),
             }))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -4537,19 +4682,44 @@ pub fn update_memory_fields(
     memory_id: &str,
     content: Option<&str>,
     title: Option<&str>,
+    context_fabric_metadata: Option<&ContextFabricMetadata>,
 ) -> Result<Option<Memory>> {
+    let metadata = validate_context_fabric_metadata(conn, context_fabric_metadata)?;
+    let metadata_json = metadata.as_ref().map(serde_json::to_string).transpose()?;
+    if metadata.is_some() && !context_fabric_metadata_available(conn) {
+        anyhow::bail!("context_fabric_provenance_migration_pending");
+    }
+    if !context_fabric_metadata_available(conn) {
+        let rows_changed = match (content, title) {
+            (Some(c), Some(t)) => conn.execute(
+                "UPDATE memories SET content = ?1, title = ?2, revision_count = revision_count + 1 WHERE id = ?3 AND org_id = ?4",
+                rusqlite::params![c, t, memory_id, org_id],
+            )?,
+            (Some(c), None) => conn.execute(
+                "UPDATE memories SET content = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
+                rusqlite::params![c, memory_id, org_id],
+            )?,
+            (None, Some(t)) => conn.execute(
+                "UPDATE memories SET title = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
+                rusqlite::params![t, memory_id, org_id],
+            )?,
+            (None, None) => return Err(anyhow::anyhow!("no fields to update")),
+        };
+        if rows_changed == 0 { return Ok(None); }
+        return get_memory_by_id_for_org(conn, org_id, memory_id);
+    }
     let rows_changed = match (content, title) {
         (Some(c), Some(t)) => conn.execute(
-            "UPDATE memories SET content = ?1, title = ?2, revision_count = revision_count + 1 WHERE id = ?3 AND org_id = ?4",
-            rusqlite::params![c, t, memory_id, org_id],
+            "UPDATE memories SET content = ?1, title = ?2, context_fabric_metadata = COALESCE(?3, context_fabric_metadata), revision_count = revision_count + 1 WHERE id = ?4 AND org_id = ?5",
+            rusqlite::params![c, t, metadata_json, memory_id, org_id],
         )?,
         (Some(c), None) => conn.execute(
-            "UPDATE memories SET content = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
-            rusqlite::params![c, memory_id, org_id],
+            "UPDATE memories SET content = ?1, context_fabric_metadata = COALESCE(?2, context_fabric_metadata), revision_count = revision_count + 1 WHERE id = ?3 AND org_id = ?4",
+            rusqlite::params![c, metadata_json, memory_id, org_id],
         )?,
         (None, Some(t)) => conn.execute(
-            "UPDATE memories SET title = ?1, revision_count = revision_count + 1 WHERE id = ?2 AND org_id = ?3",
-            rusqlite::params![t, memory_id, org_id],
+            "UPDATE memories SET title = ?1, context_fabric_metadata = COALESCE(?2, context_fabric_metadata), revision_count = revision_count + 1 WHERE id = ?3 AND org_id = ?4",
+            rusqlite::params![t, metadata_json, memory_id, org_id],
         )?,
         (None, None) => return Err(anyhow::anyhow!("no fields to update")),
     };
@@ -4603,15 +4773,15 @@ pub fn get_project_context(
     project: &str,
 ) -> Result<crate::models::types::ProjectContext> {
     // Query 1: recent memories (last 20, DESC) — exclude archived.
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, org_id, user_id, project, tool, content, tags, created_at,
                 title, type, scope, topic_key, session_id, revision_count, normalized_hash, project_id,
-                archived_at, pinned
+                archived_at, pinned, {}
          FROM memories
          WHERE org_id = ?1 AND project = ?2 AND archived_at IS NULL
          ORDER BY pinned DESC, created_at DESC
-         LIMIT 20",
-    )?;
+          LIMIT 20", memory_metadata_select(conn)
+    ))?;
     let rows = stmt.query_map(rusqlite::params![org_id, project], |row| {
         let tags_str: String = row.get(6)?;
         Ok((
@@ -4633,6 +4803,7 @@ pub fn get_project_context(
             row.get::<_, Option<String>>(15)?,
             row.get::<_, Option<String>>(16)?,
             row.get::<_, i64>(17).unwrap_or(0),
+            row.get::<_, Option<String>>(18)?,
         ))
     })?;
 
@@ -4657,6 +4828,7 @@ pub fn get_project_context(
             project_id,
             archived_at,
             pinned_i64,
+            context_fabric_metadata,
         ) = row?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         let status = if archived_at.is_some() {
@@ -4687,6 +4859,7 @@ pub fn get_project_context(
             admin_note: None,
             delete_after: None,
             status,
+            context_fabric_metadata: parse_context_fabric_metadata(context_fabric_metadata),
         });
     }
 
@@ -8083,6 +8256,32 @@ pub fn get_sdd_artifact(
     Ok(Some(artifact_detail_from(conn, artifact, project, change_name)?))
 }
 
+/// Metadata-only artifact lookup for callers that must evaluate project ACLs
+/// before reading an immutable revision's content.
+pub fn get_sdd_artifact_metadata(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<(SddArtifact, String, String)>> {
+    let found = conn
+        .query_row(
+            "SELECT a.id, a.change_id, a.kind, a.capability, a.path, a.latest_revision, a.created_at, a.updated_at,
+                    c.project, c.name
+             FROM sdd_artifacts a JOIN sdd_changes c ON c.id = a.change_id
+             WHERE a.id = ?1 AND c.org_id = ?2",
+            rusqlite::params![id, org_id],
+            |row| {
+                Ok((
+                    map_sdd_artifact_row(row)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(found)
+}
+
 /// Natural-key lookup behind `GET /v1/sdd/artifacts?project=&change_name=&kind=&capability=`.
 /// A kind with no artifact yields `Ok(None)` — never an artifact with empty content.
 pub fn get_sdd_artifact_by_kind(
@@ -9786,6 +9985,7 @@ mod tests {
             scope: None,
             topic_key: Some("arch/auth-model".into()),
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         let mem = upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
@@ -9809,6 +10009,7 @@ mod tests {
             scope: None,
             topic_key: Some("arch/auth-model".into()),
             session_id: None,
+            context_fabric_metadata: None,
         };
         let mem1 = upsert_memory(&conn, &org.id, &user.id, &req1).unwrap();
         assert_eq!(mem1.revision_count, 1);
@@ -9823,6 +10024,7 @@ mod tests {
             scope: None,
             topic_key: Some("arch/auth-model".into()),
             session_id: None,
+            context_fabric_metadata: None,
         };
         let mem2 = upsert_memory(&conn, &org.id, &user.id, &req2).unwrap();
         assert_eq!(
@@ -9871,6 +10073,7 @@ mod tests {
             scope: None,
             topic_key: Some("shared-key".into()),
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         let req2 = crate::models::types::StoreMemoryRequest {
@@ -9883,6 +10086,7 @@ mod tests {
             scope: None,
             topic_key: Some("shared-key".into()),
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         let mem1 = upsert_memory(&conn, &org1.id, &user1.id, &req).unwrap();
@@ -9911,6 +10115,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
@@ -9941,6 +10146,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         let req_b = crate::models::types::StoreMemoryRequest {
             project: None,
@@ -9952,6 +10158,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         let mem_a = upsert_memory(&conn, &org.id, &user.id, &req_a).unwrap();
@@ -10050,6 +10257,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         let req_decision = crate::models::types::StoreMemoryRequest {
             project: None,
@@ -10061,6 +10269,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         upsert_memory(&conn, &org.id, &user.id, &req_bugfix).unwrap();
@@ -10102,6 +10311,7 @@ mod tests {
             scope: Some("personal".into()),
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         let req_project = crate::models::types::StoreMemoryRequest {
             project: None,
@@ -10113,6 +10323,7 @@ mod tests {
             scope: Some("project".into()),
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
 
         upsert_memory(&conn, &org.id, &user.id, &req_personal).unwrap();
@@ -10182,6 +10393,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: Some(session_id.into()),
+            context_fabric_metadata: None,
         };
         let req_without_session = crate::models::types::StoreMemoryRequest {
             project: None,
@@ -10193,6 +10405,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         upsert_memory(&conn, &org.id, &user.id, &req_with_session).unwrap();
         upsert_memory(&conn, &org.id, &user.id, &req_without_session).unwrap();
@@ -10242,6 +10455,7 @@ mod tests {
                 scope: Some("project".into()),
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10260,6 +10474,7 @@ mod tests {
                 scope: Some("personal".into()),
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10278,6 +10493,7 @@ mod tests {
                 scope: Some("project".into()),
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10325,6 +10541,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10373,6 +10590,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10401,6 +10619,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -10437,6 +10656,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         upsert_memory(conn, org_id, user_id, &req).unwrap()
     }
@@ -12421,6 +12641,7 @@ mod tests {
                     scope: None,
                     topic_key: None,
                     session_id: None,
+                    context_fabric_metadata: None,
                 },
             )
             .unwrap();
@@ -12439,6 +12660,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -12475,6 +12697,7 @@ mod tests {
                 scope: Some("personal".into()),
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -12492,6 +12715,7 @@ mod tests {
                 scope: Some("project".into()),
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -12546,6 +12770,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -12563,6 +12788,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -13011,6 +13237,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
 
@@ -13048,6 +13275,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             };
             upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
         }
@@ -13110,6 +13338,7 @@ mod tests {
             scope: None,
             topic_key: None,
             session_id: None,
+            context_fabric_metadata: None,
         };
         upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
 
@@ -13303,6 +13532,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -13343,6 +13573,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -13387,6 +13618,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -13404,6 +13636,7 @@ mod tests {
                 scope: None,
                 topic_key: None,
                 session_id: None,
+                context_fabric_metadata: None,
             },
         )
         .unwrap();
@@ -13527,6 +13760,7 @@ fn list_memories_by_hash(conn: &Connection, org_id: &str, hash: &str) -> Result<
             admin_note: None,
             delete_after: None,
             status,
+            context_fabric_metadata: None,
         });
     }
     Ok(memories)

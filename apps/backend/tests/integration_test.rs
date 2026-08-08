@@ -69,6 +69,7 @@ fn legacy_store(
         scope: None,
         topic_key: None,
         session_id: None,
+        context_fabric_metadata: None,
     };
     queries::upsert_memory(conn, org_id, user_id, &req).unwrap()
 }
@@ -243,6 +244,7 @@ fn legacy_request_succeeds_with_defaults() {
         scope: None,
         topic_key: None,
         session_id: None,
+        context_fabric_metadata: None,
     };
     let mem = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
 
@@ -268,6 +270,7 @@ fn full_v2_request_persists_all_fields() {
         scope: Some("personal".into()),
         topic_key: Some("arch/v2-test".into()),
         session_id: None,
+        context_fabric_metadata: None,
     };
     let mem = queries::upsert_memory(&conn, &org.id, &user.id, &req).unwrap();
 
@@ -295,6 +298,7 @@ fn upsert_on_topic_key_increments_revision() {
         scope: None,
         topic_key: Some("topic/test".into()),
         session_id: None,
+        context_fabric_metadata: None,
     };
     let mem1 = queries::upsert_memory(&conn, &org.id, &user.id, &req1).unwrap();
     assert_eq!(mem1.revision_count, 1);
@@ -309,6 +313,7 @@ fn upsert_on_topic_key_increments_revision() {
         scope: None,
         topic_key: Some("topic/test".into()),
         session_id: None,
+        context_fabric_metadata: None,
     };
     let mem2 = queries::upsert_memory(&conn, &org.id, &user.id, &req2).unwrap();
     assert_eq!(mem2.revision_count, 2, "second store must increment revision_count to 2");

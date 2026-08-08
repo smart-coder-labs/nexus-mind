@@ -45,6 +45,25 @@ describe('NexusMindClient request() empty-body handling', () => {
     expect(task).toEqual({ id: 'task-1', title: 'Do the thing' })
   })
 
+  it('reads bounded Context Fabric diagnostics without exposing cache content', async () => {
+    const diagnostics = {
+      cache: { enabled: false, entries: 0, hits: 0, misses: 0, puts: 0, invalidations: 0, expirations: 0, invalidation_events: 0, reason_codes: [] },
+      rollout: { shadow_enabled: false, canary_enabled: false, promotion_enabled: false, baseline_fallback: true, active_lane: 'baseline' },
+      active_profile: null,
+      active_generation: null,
+      reason_codes: ['baseline_fallback_required'],
+    }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(diagnostics), { status: 200 }))
+
+    const client = new NexusMindClient('https://api.test')
+
+    await expect(client.getContextFabricDiagnostics()).resolves.toEqual(diagnostics)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.test/v1/context/diagnostics',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
   it('does not redirect for a feature-level 403', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden', code: 'forbidden' }), { status: 403 }))
 

@@ -250,6 +250,7 @@ pub async fn create_policy(
         req.project_id.as_deref(),
     )
     .map_err(internal_error)?;
+    store.context_runtime().invalidate_policy(&ctx.org_id, chrono::Utc::now().timestamp() as u64, "policy_created");
 
     Ok((StatusCode::CREATED, Json(policy)))
 }
@@ -316,6 +317,8 @@ pub async fn update_policy(
     .map_err(internal_error)?
     .ok_or_else(not_found)?;
 
+    store.context_runtime().invalidate_policy(&ctx.org_id, chrono::Utc::now().timestamp() as u64, "policy_updated");
+
     Ok(Json(updated))
 }
 
@@ -332,6 +335,7 @@ pub async fn delete_policy(
 
     let deleted = queries::delete_policy(&conn, &id, &ctx.org_id).map_err(internal_error)?;
     if deleted {
+        store.context_runtime().invalidate_policy(&ctx.org_id, chrono::Utc::now().timestamp() as u64, "policy_deleted");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(not_found())
