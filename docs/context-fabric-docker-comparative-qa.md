@@ -52,6 +52,8 @@ The restored baseline generation was published locally as
 | Migrations v58–v60 | PASS locally |
 | Nomic embedding initialization | PASS |
 | Semantic/hybrid memory search | PASS with partial embedding coverage |
+| BQ shadow A5 | PASS; recall 0.30, promotion blocked |
+| MRL+BQ shadow A6 | PASS; recall 0.225, promotion blocked |
 | Code semantic search | PASS for `design-system` |
 | Code graph/AST skeleton | PASS |
 
@@ -79,6 +81,14 @@ Memory search modes all returned HTTP 200:
 The full memory backfill did not finish within ten minutes. Only a partial set
 of 32 memory embeddings was available, so no recall or quality conclusion is
 valid for the complete memory corpus.
+
+The isolated synthetic lab shadow run enabled both BQ and MRL:
+
+- A5 BQ recall: `0.30`, quality delta `0.70`.
+- A6 MRL+BQ recall: `0.225`, quality delta `0.775`.
+- Both remained `status=shadow`, `fallback=baseline`, `promotion=false`.
+- These results are diagnostic only: the corpus uses 64d synthetic vectors and
+  is not valid 768d NX-Gold promotion evidence.
 
 The `design-system` project was reindexed successfully and semantic code search
 returned scored results for component, accessibility and theme queries.
@@ -112,6 +122,8 @@ AST/graph checks returned:
 - End-to-end Context Fabric latency is higher than legacy lexical search.
 - Full memory semantic recall is unmeasured because backfill is incomplete.
 - BQ/MRL recall, memory reduction and quality gates were not measured.
+- BQ/MRL shadow measurements were below the SDD promotion threshold in the
+  synthetic diagnostic run and therefore did not alter defaults.
 - The full NX-Gold long protocol was not run.
 - DeepSeek live generation was not tested; only offline transport tests exist.
 - Private code reindex requires an authorized GitHub token.

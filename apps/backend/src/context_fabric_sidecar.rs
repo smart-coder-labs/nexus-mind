@@ -118,16 +118,6 @@ fn source_hash(blob: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(blob)))
 }
 
-fn checksum(manifest: &str, source: &str, bits: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(manifest.as_bytes());
-    hasher.update([0x1f]);
-    hasher.update(source.as_bytes());
-    hasher.update([0x1f]);
-    hasher.update(bits);
-    format!("sha256:{}", hex::encode(hasher.finalize()))
-}
-
 fn cancelled(conn: &Connection, org: &str, request: &SidecarBuildRequest) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT status='cancelled' FROM cf_bq_mrl_rebuilds WHERE org_id=?1 AND profile_id=?2 AND profile_version=?3 AND generation_id=?4 AND generation_version=?5",
@@ -200,13 +190,13 @@ pub fn rebuild(
                 value.truncate(prefix_dimension.div_ceil(8));
                 value
             };
-            let row_checksum = checksum(&request.build_manifest, &source, &sidecar);
-            // A caller-provided checksum binds the entire build, not content.
+            // The manifest checksum binds the build; source_hash plus the
+            // deterministic sidecar encoding bind each derived row.
             conn.execute(
                 "INSERT INTO cf_bq_mrl_sidecars (org_id,memory_id,capability,profile_id,profile_version,generation_id,generation_version,dimension,bits,prefix_dimension,source_hash,acl_generation,policy_generation,build_manifest,build_checksum,sidecar,status,updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'active',datetime('now'))
                  ON CONFLICT(org_id,memory_id,capability,profile_id,profile_version,generation_id,generation_version) DO UPDATE SET dimension=excluded.dimension,bits=excluded.bits,prefix_dimension=excluded.prefix_dimension,source_hash=excluded.source_hash,acl_generation=excluded.acl_generation,policy_generation=excluded.policy_generation,build_manifest=excluded.build_manifest,build_checksum=excluded.build_checksum,sidecar=excluded.sidecar,status='active',updated_at=datetime('now')",
-                rusqlite::params![org, memory_id, capability, request.profile_id, request.profile_version, request.generation_id, request.generation_version, DIMENSION as i64, BITS, if capability == "mrl" { Some(prefix_dimension as i64) } else { None }, source, request.acl_generation as i64, request.policy_generation as i64, request.build_manifest, row_checksum, sidecar],
+                 rusqlite::params![org, memory_id, capability, request.profile_id, request.profile_version, request.generation_id, request.generation_version, DIMENSION as i64, BITS, if capability == "mrl" { Some(prefix_dimension as i64) } else { None }, source, request.acl_generation as i64, request.policy_generation as i64, request.build_manifest, request.build_checksum, sidecar],
             )?;
             built += 1;
         }
@@ -324,13 +314,17 @@ pub fn shadow(
         })
         .collect::<Vec<_>>();
     for row in rows {
-        let (id, bits, source, row_checksum, manifest, dimension, row_prefix) = row?;
+        let (id, bits, source, _row_checksum, manifest, dimension, row_prefix) = row?;
         let Some(vector) = dense.get(&id) else {
             continue;
         };
+        let mut expected_sidecar = crate::context_fabric::sign_bit_encode(vector);
+        if request.capability.eq_ignore_ascii_case("mrl") {
+            expected_sidecar.truncate(prefix.div_ceil(8));
+        }
         if dimension != DIMENSION as i64
             || (request.capability.eq_ignore_ascii_case("mrl") && row_prefix != Some(prefix as i64))
-            || row_checksum != checksum(&manifest, &source, &bits)
+            || bits != expected_sidecar
             || manifest != request.build_manifest
             || format!(
                 "sha256:{}",
@@ -557,5 +551,47 @@ mod tests {
         .unwrap();
         assert_eq!(response.reason_codes, vec!["sidecar_unavailable"]);
         assert_eq!(response.fallback, crate::context_fabric::BASELINE_PROFILE);
+    }
+
+    #[test]
+    fn shadow_uses_bq_and_mrl_sidecars_after_rebuild() {
+        let (conn, org, user, memory) = setup();
+        let build = request();
+        rebuild(&conn, &org, Some(&user), &build).unwrap();
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT embedding FROM memory_embeddings WHERE memory_id=?1",
+                [&memory],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let query = crate::embed::deserialize(&blob);
+        for (capability, prefix_dimension) in [("bq", None), ("mrl", Some(128))] {
+            let response = shadow(
+                &conn,
+                &org,
+                Some(&user),
+                &SidecarShadowRequest {
+                    capability: capability.into(),
+                    profile_id: build.profile_id.clone(),
+                    profile_version: build.profile_version,
+                    generation_id: build.generation_id.clone(),
+                    generation_version: build.generation_version,
+                    acl_generation: build.acl_generation,
+                    policy_generation: build.policy_generation,
+                    build_manifest: build.build_manifest.clone(),
+                    build_checksum: build.build_checksum.clone(),
+                    query: query.clone(),
+                    k: 1,
+                    alpha: 0.5,
+                    prefix_dimension,
+                },
+            )
+            .unwrap();
+            assert_eq!(response.fallback, crate::context_fabric::BASELINE_PROFILE);
+            assert!(response.reason_codes.contains(&"shadow_only".to_string()));
+            assert_eq!(response.sidecar_count, 1);
+            assert_eq!(response.rescored_ids, vec![memory.clone()]);
+        }
     }
 }
