@@ -13,6 +13,8 @@ const AuditLog  = lazy(() => import('./pages/AuditLog'))
 const Settings  = lazy(() => import('./pages/Settings'))
 const Roles     = lazy(() => import('./pages/Roles'))
 const Projects  = lazy(() => import('./pages/Projects'))
+const Clients   = lazy(() => import('./pages/Clients'))
+const Usage     = lazy(() => import('./pages/Usage'))
 const Code      = lazy(() => import('./pages/Code'))
 const ApiKeys   = lazy(() => import('./pages/ApiKeys'))
 const Agents      = lazy(() => import('./pages/Agents'))
@@ -84,6 +86,8 @@ function AppRoutes() {
                 <Route path="/users"    element={<AdminRoute><Users /></AdminRoute>} />
                 <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
                 <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
+                <Route path="/clients"  element={<AdminRoute><Clients /></AdminRoute>} />
+                <Route path="/usage"    element={<AdminRoute><Usage /></AdminRoute>} />
                 <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
                 <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
                 <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />

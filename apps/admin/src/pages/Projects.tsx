@@ -20,6 +20,11 @@ import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import type { ProjectMember, ProjectEventOverrides, User as UserType, Convention } from '../types'
 
+// Sentinel for the "Internal (no client)" filter option — a project with a
+// null `client_id` is internal work, which the backend `client_id` query param
+// cannot express, so that case is filtered client-side.
+const INTERNAL_CLIENT = '__internal__'
+
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
 // imported to avoid pulling the SDD page module graph into the Projects page.
 const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
@@ -524,6 +529,9 @@ export default function Projects() {
   // Archived toggle
   const [showArchived, setShowArchived] = useState(false)
 
+  // Client filter: '' = all, INTERNAL_CLIENT = internal-only, else a client id
+  const [clientFilter, setClientFilter] = useState('')
+
   // Create Project modal (header trigger, matches mockup)
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -542,13 +550,34 @@ export default function Projects() {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [parentId, setParentId] = useState('')
+  const [createClientId, setCreateClientId] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
   // Queries
   const { data: projects, isLoading: projectsLoading } = useQuery({
-    queryKey: ['projects', showArchived],
-    queryFn: () => client.listProjects({ include_archived: showArchived }),
+    queryKey: ['projects', showArchived, clientFilter],
+    queryFn: () => {
+      // A specific client uses the backend `client_id` filter param; the
+      // "Internal" pseudo-filter has no backend equivalent, so it fetches all
+      // and narrows to null-client projects client-side.
+      const backendClientId = clientFilter && clientFilter !== INTERNAL_CLIENT ? clientFilter : undefined
+      return client.listProjects({ include_archived: showArchived, client_id: backendClientId })
+        .then(list =>
+          clientFilter === INTERNAL_CLIENT ? list.filter(p => !p.client_id) : list,
+        )
+    },
   })
+
+  const { data: clients } = useQuery({
+    queryKey: ['clients'],
+    queryFn: () => client.listClients(),
+    enabled: isAdmin,
+  })
+
+  const clientsById = useMemo(
+    () => new Map((clients ?? []).map(c => [c.id, c])),
+    [clients],
+  )
 
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['users'],
@@ -699,13 +728,14 @@ export default function Projects() {
   const [projectCreated, setProjectCreated] = useState(false)
 
   const createProjectMut = useMutation({
-    mutationFn: (data: { name: string; description?: string; parent_id?: string }) =>
+    mutationFn: (data: { name: string; description?: string; parent_id?: string; client_id?: string }) =>
       client.createProject(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects'] })
       setName('')
       setDescription('')
       setParentId('')
+      setCreateClientId('')
       setErrorMsg('')
       setProjectCreated(true)
       setCreateOpen(false)
@@ -801,6 +831,7 @@ export default function Projects() {
       name: name.trim().toLowerCase().replace(/\s+/g, '-'),
       description: description.trim() || undefined,
       parent_id: parentId || undefined,
+      client_id: createClientId || undefined,
     })
   }
 
@@ -870,6 +901,17 @@ export default function Projects() {
               )}
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <span className="text-[10px] text-text-tertiary">{new Date(project.created_at).toLocaleDateString()}</span>
+                {/* Owning client — "Internal" when null (not unassigned). */}
+                <span
+                  className={cn(
+                    'text-[10px] rounded-[5px] px-1.5 py-0.5 border',
+                    project.client_id
+                      ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/20'
+                      : 'bg-white/[0.06] text-text-tertiary border-white/[0.09]',
+                  )}
+                >
+                  {project.client_id ? (clientsById.get(project.client_id)?.name ?? 'Client') : 'Internal'}
+                </span>
                 {isArchived && (
                   <span className="text-[10px] bg-status-warning/10 text-status-warning border border-status-warning/20 rounded-[5px] px-1.5 py-0.5">
                     archived
@@ -1040,6 +1082,20 @@ export default function Projects() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div className="w-44">
+            <Select value={clientFilter} onValueChange={setClientFilter}>
+              <SelectTrigger className="h-8 text-xs" aria-label="Filter by client">
+                <SelectValue placeholder="All clients" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All clients</SelectItem>
+                <SelectItem value={INTERNAL_CLIENT}>Internal (no client)</SelectItem>
+                {(clients ?? []).map(c => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <button
             onClick={() => setShowArchived(v => !v)}
             className={cn(
@@ -1176,6 +1232,23 @@ export default function Projects() {
                   <SelectItem value="">— None (root) —</SelectItem>
                   {(projects ?? []).map(p => (
                     <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px]">
+                Client
+              </label>
+              <Select value={createClientId} onValueChange={setCreateClientId}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="— Internal (no client) —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">— Internal (no client) —</SelectItem>
+                  {(clients ?? []).map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

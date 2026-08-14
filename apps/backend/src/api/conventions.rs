@@ -73,6 +73,11 @@ pub async fn list_conventions(
         params.category.as_deref(),
         params.include_archived,
         params.project.as_deref(),
+        params
+            .project
+            .as_deref()
+            .and_then(|p| queries::get_project_client_id(&conn, &auth.org_id, p).ok().flatten())
+            .as_deref(),
         limit,
         offset,
         viewer,

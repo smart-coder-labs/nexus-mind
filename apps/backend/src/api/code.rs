@@ -6,56 +6,10 @@ use axum::{
 use serde::Deserialize;
 use chrono::Utc;
 
-// ── Token cipher (AES-256-GCM) ────────────────────────────────────────────────
-//
-// Env var NEXUSMIND_TOKEN_ENCRYPTION_KEY must be a 64-char hex string (32 bytes).
-// If not set, `encrypt_pat` returns None and the token is NOT persisted for reindex;
-// it is still used for the current index operation.
-
-mod token_cipher {
-    use aes_gcm::{
-        aead::{Aead, AeadCore, KeyInit, OsRng},
-        Aes256Gcm,
-    };
-
-    const KEY_ENV: &str = "NEXUSMIND_TOKEN_ENCRYPTION_KEY";
-
-    fn cipher() -> Option<Aes256Gcm> {
-        let key_hex = std::env::var(KEY_ENV).ok()?;
-        let key_bytes = hex::decode(key_hex.trim()).ok()?;
-        if key_bytes.len() != 32 {
-            tracing::warn!(
-                "{KEY_ENV} must be 64 hex chars (32 bytes); token will not be persisted"
-            );
-            return None;
-        }
-        Aes256Gcm::new_from_slice(&key_bytes).ok()
-    }
-
-    /// Encrypt `plaintext` with AES-256-GCM. Returns hex(nonce || ciphertext).
-    /// Returns None if NEXUSMIND_TOKEN_ENCRYPTION_KEY is not configured or invalid.
-    pub fn encrypt(plaintext: &str) -> Option<String> {
-        let c = cipher()?;
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ct = c.encrypt(&nonce, plaintext.as_bytes()).ok()?;
-        let mut blob = nonce.to_vec();
-        blob.extend_from_slice(&ct);
-        Some(hex::encode(blob))
-    }
-
-    /// Decrypt a blob produced by `encrypt`. Returns None on any failure.
-    pub fn decrypt(blob: &str) -> Option<String> {
-        let c = cipher()?;
-        let bytes = hex::decode(blob).ok()?;
-        if bytes.len() < 12 {
-            return None;
-        }
-        let (nonce_bytes, ct) = bytes.split_at(12);
-        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
-        let plain = c.decrypt(nonce, ct).ok()?;
-        String::from_utf8(plain).ok()
-    }
-}
+// Token cipher lives in `crate::crypto` — it is used by the code index, the
+// GitHub connection queries and migration v58, so it is not an HTTP concern.
+// Aliased here so the existing call sites read unchanged.
+use crate::crypto as token_cipher;
 
 use crate::{
     api::helpers::hidden_resource_not_found,

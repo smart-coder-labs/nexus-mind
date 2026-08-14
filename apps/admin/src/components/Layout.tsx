@@ -29,6 +29,8 @@ import {
   Boxes,
   ListTodo,
   FileStack,
+  Building2,
+  BarChart3,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -144,6 +146,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Search',      href: '/search',      icon: Search },
       { label: 'Dashboard',   href: '/',            icon: LayoutDashboard },
+      { label: 'Usage',       href: '/usage',       icon: BarChart3,     adminOnly: true },
     ],
   },
   {
@@ -162,6 +165,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Code',
     items: [
+      { label: 'Clients',     href: '/clients',     icon: Building2,     adminOnly: true, requiredPermission: 'client:read' },
       { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true, requiredPermission: 'project:read' },
       { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
       { label: 'Harnesses',   href: '/harnesses',   icon: Boxes,         adminOnly: true, requiredPermission: 'harness:read' },

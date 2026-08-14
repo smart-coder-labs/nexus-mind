@@ -15,6 +15,9 @@ import type {
   Project,
   ProjectMember,
   ProjectAccess,
+  Client,
+  ClientMember,
+  ClientStatus,
   ProjectEventOverrides,
   UpdateProjectEventOverridesRequest,
   CodeProject,
@@ -34,6 +37,8 @@ import type {
   OnboardingStatus,
   WebhookTestResult,
   UsageStats,
+  UsageLevel,
+  UsageSummaryResponse,
   InviteLinkResponse,
   ImportMemory,
   ImportMemoriesResponse,
@@ -283,9 +288,12 @@ export class NexusMindClient {
     })
   }
 
-  listProjects(params: { include_archived?: boolean } = {}): Promise<Project[]> {
-    const qs = params.include_archived ? '?include_archived=true' : ''
-    return this.request(`/v1/projects${qs}`)
+  listProjects(params: { include_archived?: boolean; client_id?: string } = {}): Promise<Project[]> {
+    const qs = new URLSearchParams()
+    if (params.include_archived) qs.set('include_archived', 'true')
+    if (params.client_id) qs.set('client_id', params.client_id)
+    const q = qs.toString()
+    return this.request(`/v1/projects${q ? `?${q}` : ''}`)
   }
 
   archiveProject(id: string): Promise<void> {
@@ -296,7 +304,7 @@ export class NexusMindClient {
     return this.request(`/v1/projects/${id}/restore`, { method: 'POST' })
   }
 
-  createProject(data: { name: string; description?: string; parent_id?: string }): Promise<Project> {
+  createProject(data: { name: string; description?: string; parent_id?: string; client_id?: string }): Promise<Project> {
     return this.request('/v1/projects', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -339,6 +347,53 @@ export class NexusMindClient {
       method: 'PATCH',
       body: JSON.stringify(body),
     })
+  }
+
+  // ── Clients (consultancy grouping) ──────────────────────────────────────────
+  //
+  // `createClientEntity` is named to avoid colliding with the `createClient()`
+  // factory exported at the bottom of this module.
+
+  listClients(includeArchived = false): Promise<Client[]> {
+    const qs = includeArchived ? '?include_archived=true' : ''
+    return this.request(`/v1/clients${qs}`)
+  }
+
+  createClientEntity(data: { name: string; slug: string; status: ClientStatus }): Promise<Client> {
+    return this.request('/v1/clients', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  updateClient(id: string, data: { name?: string; status?: ClientStatus }): Promise<Client> {
+    return this.request(`/v1/clients/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  archiveClient(id: string): Promise<void> {
+    return this.request(`/v1/clients/${id}/archive`, { method: 'POST' })
+  }
+
+  deleteClient(id: string): Promise<void> {
+    return this.request(`/v1/clients/${id}`, { method: 'DELETE' })
+  }
+
+  listClientMembers(id: string): Promise<ClientMember[]> {
+    return this.request(`/v1/clients/${id}/members`)
+  }
+
+  addClientMember(id: string, userId: string, role: string): Promise<void> {
+    return this.request(`/v1/clients/${id}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, role }),
+    })
+  }
+
+  removeClientMember(id: string, userId: string): Promise<void> {
+    return this.request(`/v1/clients/${id}/members/${userId}`, { method: 'DELETE' })
   }
 
   async listMemories(filters: MemoryFilters = {}): Promise<Memory[]> {
@@ -599,6 +654,30 @@ export class NexusMindClient {
 
   getUsageStats(): Promise<UsageStats> {
     return this.request('/v1/admin/stats/usage')
+  }
+
+  // ── Usage metrics (tokens + execution time) ─────────────────────────────────
+  //
+  // Privileged read (admin/super_user); the backend scopes rows to the caller's
+  // visible projects. `runUsageBackfill` is super_user-only server-side.
+
+  getUsageSummary(params: {
+    level: UsageLevel
+    from?: string
+    to?: string
+    client_id?: string
+    project_id?: string
+  }): Promise<UsageSummaryResponse> {
+    const qs = new URLSearchParams({ level: params.level })
+    if (params.from) qs.set('from', params.from)
+    if (params.to) qs.set('to', params.to)
+    if (params.client_id) qs.set('client_id', params.client_id)
+    if (params.project_id) qs.set('project_id', params.project_id)
+    return this.request<UsageSummaryResponse>(`/v1/usage/summary?${qs}`)
+  }
+
+  runUsageBackfill(): Promise<{ inserted: number }> {
+    return this.request('/v1/usage/backfill', { method: 'POST' })
   }
 
   createInviteLink(role = 'user'): Promise<InviteLinkResponse> {

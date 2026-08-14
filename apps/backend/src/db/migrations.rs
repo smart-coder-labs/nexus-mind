@@ -60,6 +60,261 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v55(conn)?;
     run_v56(conn)?;
     run_v57(conn)?;
+    run_v58(conn)?;
+    run_v59(conn)?;
+    Ok(())
+}
+
+/// Migration v59: usage telemetry — token counts and execution time per event,
+/// rolled up task → project → client → org.
+///
+/// `usage_events` is append-mostly telemetry. Every optional foreign key is
+/// `ON DELETE SET NULL` and is stored as NULL when it cannot be resolved at
+/// ingest, rather than rejecting the row: telemetry must never 500 a caller and
+/// losing an org's project row must never drop its usage history. The one hard
+/// scope is `org_id`.
+///
+/// The partial-unique index `idx_usage_backfill_session` is what makes the
+/// sessions backfill idempotent — at most one `source='backfill'` row per
+/// session, so re-running `backfill_from_sessions` with `INSERT OR IGNORE` is a
+/// no-op. It is partial (`WHERE source='backfill'`) so explicit ingest events,
+/// which may legitimately share a `session_id`, are never constrained.
+///
+/// Same idempotent idiom as `run_v58`: `CREATE TABLE/INDEX IF NOT EXISTS`, safe
+/// to re-run against an already-migrated database.
+pub fn run_v59(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 59 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS usage_events (
+            id          TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
+            client_id   TEXT REFERENCES clients(id) ON DELETE SET NULL,
+            project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+            session_id  TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            model       TEXT,
+            tokens_in   INTEGER NOT NULL DEFAULT 0,
+            tokens_out  INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            source      TEXT NOT NULL DEFAULT 'ingest',
+            event_ts    TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_usage_events_org_ts  ON usage_events(org_id, event_ts);
+         CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project_id);
+         CREATE INDEX IF NOT EXISTS idx_usage_events_client  ON usage_events(client_id);
+         CREATE INDEX IF NOT EXISTS idx_usage_events_task    ON usage_events(task_id);
+         CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_backfill_session
+             ON usage_events(session_id) WHERE source='backfill';
+
+         PRAGMA user_version = 59;",
+    )?;
+    Ok(())
+}
+
+/// Migration v58: consultancy client model.
+///
+/// Inserts one grouping level between organization and project, so a software
+/// consultancy can hold several clients — each owning one or more projects —
+/// alongside its own internal work.
+///
+/// `projects.client_id IS NULL` is load-bearing: it means "internal project",
+/// not "unset". It must never be backfilled to a sentinel client row.
+///
+/// This is stage 1 only: additive tables, columns and indexes. The
+/// `github_connections` primary-key rebuild and the token encryption that goes
+/// with it land in a separate step of the same change, because that one cannot
+/// be expressed additively — SQLite has no ALTER PRIMARY KEY.
+pub fn run_v58(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 58 {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS clients (
+            id          TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name        TEXT NOT NULL,
+            slug        TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active', 'paused', 'offboarded')),
+            archived_at TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, slug)
+         );
+         CREATE INDEX IF NOT EXISTS idx_clients_org_status ON clients(org_id, status);
+
+         CREATE TABLE IF NOT EXISTS client_members (
+            id         TEXT PRIMARY KEY,
+            client_id  TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role       TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(client_id, user_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_client_members_user ON client_members(user_id);",
+    )?;
+
+    // Each ALTER TABLE must be its own statement in SQLite, and re-running the
+    // migration against a database that already carries the column raises
+    // "duplicate column name" — ignored, matching the established pattern.
+    for stmt in [
+        "ALTER TABLE projects      ADD COLUMN client_id     TEXT REFERENCES clients(id) ON DELETE RESTRICT",
+        "ALTER TABLE code_projects ADD COLUMN project_id    TEXT REFERENCES projects(id)",
+        "ALTER TABLE conventions   ADD COLUMN client_id     TEXT REFERENCES clients(id) ON DELETE CASCADE",
+        "ALTER TABLE policies      ADD COLUMN client_id     TEXT REFERENCES clients(id) ON DELETE CASCADE",
+        "ALTER TABLE memories      ADD COLUMN promoted_from TEXT REFERENCES memories(id)",
+    ] {
+        let _ = conn.execute(stmt, []);
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_projects_client       ON projects(org_id, client_id);
+         CREATE INDEX IF NOT EXISTS idx_conventions_client    ON conventions(org_id, client_id);
+         CREATE INDEX IF NOT EXISTS idx_policies_client       ON policies(org_id, client_id, enabled);
+         CREATE INDEX IF NOT EXISTS idx_code_projects_project ON code_projects(project_id);",
+    )?;
+
+    // The one place the visibility rule lives.
+    //
+    // Before the client model, "who may see this project" was a hand-written
+    // `JOIN project_members` repeated in ~19 queries. Adding a second
+    // membership path to nineteen copies is how an isolation hole ships: one
+    // query gets updated, another does not, and nobody notices until a client
+    // reads another client's data. So the rule becomes a view and the queries
+    // consume it.
+    //
+    // UNION (not UNION ALL) is load-bearing: a user who is both a project
+    // member and a member of that project's client must appear once, or every
+    // JOIN against this view would silently duplicate their rows.
+    //
+    // A project with `client_id IS NULL` is internal work — the second branch
+    // yields nothing for it, so it is reachable only by direct project
+    // membership. That is deliberate, not an oversight.
+    conn.execute_batch(
+        "DROP VIEW IF EXISTS project_visibility;
+         CREATE VIEW project_visibility AS
+             SELECT p.id AS project_id, p.org_id AS org_id,
+                    p.name AS project_name, pm.user_id AS user_id
+               FROM projects p
+               JOIN project_members pm ON pm.project_id = p.id
+             UNION
+             SELECT p.id, p.org_id, p.name, cm.user_id
+               FROM projects p
+               JOIN client_members cm ON cm.client_id = p.client_id;",
+    )?;
+
+    rebuild_github_connections_v58(conn)?;
+
+    conn.execute_batch("PRAGMA user_version = 58;")?;
+    Ok(())
+}
+
+/// Stage 2 of v58 — rebuild `github_connections` with a per-client primary key
+/// and encrypt the tokens it already holds.
+///
+/// Two things force this to be its own step rather than an `ALTER TABLE`:
+/// SQLite cannot change a primary key in place, and each `access_token` has to
+/// pass through the cipher on the way across, which SQL alone cannot do.
+///
+/// The old key was `PRIMARY KEY (org_id)` — one GitHub account per
+/// organization. A consultancy needs one per client, because each client has
+/// its own GitHub organization.
+/// One stored connection as it exists before the rebuild:
+/// (org_id, access_token, token_type, scopes, github_login, github_user_id,
+///  created_at, updated_at).
+type LegacyGithubRow = (String, String, String, String, String, i64, String, String);
+
+fn rebuild_github_connections_v58(conn: &Connection) -> Result<()> {
+    let n_before: i64 =
+        conn.query_row("SELECT COUNT(*) FROM github_connections", [], |r| r.get(0))?;
+
+    // A fresh install has no stored credentials, so it has nothing to encrypt
+    // and must not be blocked on a key it does not need yet. An install that
+    // *does* hold tokens cannot proceed without one: copying them forward in
+    // plaintext is precisely what this migration exists to stop.
+    if n_before > 0 && !crate::crypto::is_configured() {
+        anyhow::bail!(
+            "migration v58 must encrypt {n_before} stored GitHub token(s), but \
+             NEXUSMIND_TOKEN_ENCRYPTION_KEY is unset or invalid. Set it (64 hex \
+             chars) and retry — refusing to copy credentials forward in plaintext."
+        );
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS github_connections_new (
+            org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            client_id      TEXT REFERENCES clients(id) ON DELETE CASCADE,
+            github_login   TEXT NOT NULL DEFAULT '',
+            access_token   TEXT NOT NULL,
+            token_type     TEXT NOT NULL DEFAULT 'bearer',
+            scopes         TEXT NOT NULL DEFAULT '',
+            github_user_id INTEGER NOT NULL DEFAULT 0,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (org_id, client_id, github_login)
+         );",
+    )?;
+
+    let rows: Vec<LegacyGithubRow> = {
+        let mut stmt = conn.prepare(
+            "SELECT org_id, access_token, token_type, scopes, github_login,
+                    github_user_id, created_at, updated_at
+             FROM github_connections",
+        )?;
+        let mapped = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })?;
+        mapped.collect::<std::result::Result<_, _>>()?
+    };
+
+    for (org_id, token, token_type, scopes, login, user_id, created, updated) in rows {
+        let encrypted = crate::crypto::encrypt(&token).ok_or_else(|| {
+            anyhow::anyhow!(
+                "migration v58 failed to encrypt the GitHub token for org {org_id}; \
+                 aborting rather than storing it in plaintext"
+            )
+        })?;
+        conn.execute(
+            "INSERT INTO github_connections_new
+               (org_id, client_id, github_login, access_token, token_type, scopes,
+                github_user_id, created_at, updated_at)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                org_id, login, encrypted, token_type, scopes, user_id, created, updated
+            ],
+        )?;
+    }
+
+    let n_after: i64 = conn.query_row("SELECT COUNT(*) FROM github_connections_new", [], |r| {
+        r.get(0)
+    })?;
+    if n_before != n_after {
+        anyhow::bail!(
+            "migration v58 would lose GitHub connections: {n_before} before, {n_after} after"
+        );
+    }
+
+    conn.execute_batch(
+        "DROP TABLE github_connections;
+         ALTER TABLE github_connections_new RENAME TO github_connections;",
+    )?;
     Ok(())
 }
 
@@ -2486,7 +2741,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
@@ -2883,7 +3138,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
@@ -2892,7 +3147,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must remain 57 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -3024,7 +3279,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -3051,14 +3306,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
@@ -3176,7 +3431,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -3195,14 +3450,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -3279,14 +3534,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -3369,7 +3624,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -3563,14 +3818,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
@@ -3607,14 +3862,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3653,14 +3908,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 57, "user_version must be 57 after run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -3785,7 +4040,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must remain 57 (run_all already applied v41-v57)");
+        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 (run_all already applied v41-v59)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -3796,8 +4051,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            57,
-            "user_version must be 57 after v41-v57 are included in run_all"
+            59,
+            "user_version must be 59 after v41-v59 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -3889,7 +4144,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "version must remain 57 on second run_all");
+        assert_eq!(get_user_version(&conn), 59, "version must remain 59 on second run_all");
     }
 
     #[test]
@@ -4015,7 +4270,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 57, "user_version must reach 57 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 59, "user_version must reach 59 after the backfill migration");
     }
 
     #[test]
@@ -4024,7 +4279,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 57, "user_version must remain 57 on second run_all");
+        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 on second run_all");
     }
 
     // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
@@ -4044,7 +4299,7 @@ mod tests {
         ] {
             assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
         }
-        assert_eq!(get_user_version(&conn), 57, "user_version must reach 57 on a fresh db");
+        assert_eq!(get_user_version(&conn), 59, "user_version must reach 59 on a fresh db");
     }
 
     #[test]
@@ -4884,13 +5139,13 @@ mod tests {
 
     /// 1.23 — run_all lands on the latest schema version.
     #[test]
-    fn run_all_sets_user_version_to_57() {
+    fn run_all_sets_user_version_to_59() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            57,
-            "run_all must leave user_version at 57"
+            59,
+            "run_all must leave user_version at 59"
         );
     }
 
@@ -5145,7 +5400,7 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 57, "user_version must remain 57");
+        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59");
     }
 
     // ── v56 migration tests (knowledge migration durable review foundation) ─────
@@ -5248,5 +5503,271 @@ mod tests {
             [],
         );
         assert!(rewrite.is_err(), "review history must be append-only");
+    }
+
+    // ── v58 migration tests — consultancy client model ────────────────────────
+
+    /// Seed one organization so client rows have a valid FK target.
+    fn seed_org(conn: &Connection, id: &str, slug: &str) {
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES (?1, ?1, ?2)",
+            rusqlite::params![id, slug],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_v58_creates_clients_and_members() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "clients"), "missing: clients");
+        assert!(
+            table_exists(&conn, "client_members"),
+            "missing: client_members"
+        );
+    }
+
+    #[test]
+    fn run_v58_adds_columns() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(column_exists(&conn, "projects", "client_id"));
+        assert!(column_exists(&conn, "code_projects", "project_id"));
+        assert!(column_exists(&conn, "conventions", "client_id"));
+        assert!(column_exists(&conn, "policies", "client_id"));
+        assert!(column_exists(&conn, "memories", "promoted_from"));
+    }
+
+    #[test]
+    fn run_v58_creates_indexes() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(index_exists(&conn, "clients", "idx_clients_org_status"));
+        assert!(index_exists(
+            &conn,
+            "client_members",
+            "idx_client_members_user"
+        ));
+        assert!(index_exists(&conn, "projects", "idx_projects_client"));
+        assert!(index_exists(
+            &conn,
+            "code_projects",
+            "idx_code_projects_project"
+        ));
+    }
+
+    /// Re-running v58 over an already-migrated database must succeed.
+    ///
+    /// The version guard alone would short-circuit and prove nothing, so the
+    /// guard is forced open first — that is the only way to exercise the
+    /// ALTER TABLE "duplicate column name" tolerance the migration relies on.
+    #[test]
+    fn run_v58_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+
+        conn.execute_batch("PRAGMA user_version = 57;").unwrap();
+        run_v58(&conn).expect("re-running v58 over a migrated db must not fail");
+
+        assert_eq!(get_user_version(&conn), 58);
+        assert!(table_exists(&conn, "clients"));
+        assert!(column_exists(&conn, "projects", "client_id"));
+    }
+
+    #[test]
+    fn run_v58_rejects_invalid_status() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "acme");
+
+        let bad = conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug, status)
+             VALUES ('c1', 'org1', 'Acme', 'acme', 'terminated')",
+            [],
+        );
+        assert!(
+            bad.is_err(),
+            "status must be constrained to the documented set"
+        );
+    }
+
+    #[test]
+    fn run_v58_enforces_unique_slug_per_org() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "u2s");
+
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('c1', 'org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+
+        let duplicate = conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('c2', 'org1', 'Acme Again', 'acme')",
+            [],
+        );
+        assert!(
+            duplicate.is_err(),
+            "slug must be unique within an organization"
+        );
+    }
+
+    /// Uniqueness is scoped to the organization, not global — two tenants may
+    /// each have a client called "acme".
+    #[test]
+    fn run_v58_allows_same_slug_across_orgs() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "u2s");
+        seed_org(&conn, "org2", "other");
+
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('c1', 'org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('c2', 'org2', 'Acme', 'acme')",
+            [],
+        )
+        .expect("the same slug must be allowed in a different organization");
+    }
+
+    /// A fresh install holds no tokens, so it has nothing to encrypt and must
+    /// not be blocked on a key it does not need yet.
+    #[test]
+    fn run_v58_succeeds_without_key_when_there_are_no_tokens() {
+        std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
+        let conn = in_memory_db();
+        run_all(&conn).expect("a fresh database has no credentials to protect");
+        assert_eq!(get_user_version(&conn), 59);
+    }
+
+    /// The new primary key is what lets a consultancy hold one GitHub account
+    /// per client instead of one per organization.
+    #[test]
+    fn run_v58_allows_one_github_connection_per_client() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "u2s");
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('c1', 'org1', 'A', 'a')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('c2', 'org1', 'B', 'b')", []).unwrap();
+
+        for (cid, login) in [("c1", "acme-org"), ("c2", "beta-org")] {
+            conn.execute(
+                "INSERT INTO github_connections (org_id, client_id, github_login, access_token)
+                 VALUES ('org1', ?1, ?2, 'ciphertext')",
+                rusqlite::params![cid, login],
+            )
+            .expect("each client must be able to hold its own GitHub connection");
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM github_connections", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "the old PRIMARY KEY (org_id) would have collapsed these into one");
+    }
+
+    /// The visibility view is the single expression of the rule; without it the
+    /// rewritten queries have nothing to read.
+    #[test]
+    fn run_v58_creates_project_visibility_view() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        let exists: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='project_visibility'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "missing view: project_visibility");
+    }
+
+    /// `client_id IS NULL` means "internal u2s project" and must be the default
+    /// for projects created without one — never a sentinel row.
+    #[test]
+    fn run_v58_project_client_id_defaults_to_null() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "u2s");
+
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p1', 'org1', 'internal-tooling')",
+            [],
+        )
+        .unwrap();
+
+        let client_id: Option<String> = conn
+            .query_row("SELECT client_id FROM projects WHERE id = 'p1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            client_id.is_none(),
+            "a project with no client is internal work"
+        );
+    }
+
+    // ── v59 migration tests — usage metrics ───────────────────────────────────
+
+    #[test]
+    fn run_v59_creates_usage_events() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "usage_events"), "missing: usage_events");
+        assert_eq!(get_user_version(&conn), 59);
+        assert!(index_exists(&conn, "usage_events", "idx_usage_events_org_ts"));
+        assert!(index_exists(&conn, "usage_events", "idx_usage_events_project"));
+        assert!(index_exists(&conn, "usage_events", "idx_usage_events_client"));
+        assert!(index_exists(&conn, "usage_events", "idx_usage_events_task"));
+        assert!(index_exists(&conn, "usage_events", "idx_usage_events_session"));
+    }
+
+    /// The backfill idempotency index must be UNIQUE and partial: at most one
+    /// `source='backfill'` row per session, while explicit ingest events may
+    /// share a session_id freely.
+    #[test]
+    fn run_v59_backfill_index_is_unique() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_org(&conn, "org1", "u2s");
+        conn.execute(
+            "INSERT INTO sessions (id, org_id, project) VALUES ('s1', 'org1', 'p')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO usage_events (id, org_id, session_id, source, event_ts)
+             VALUES ('u1', 'org1', 's1', 'backfill', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        // A second backfill row for the same session must be rejected.
+        let dup = conn.execute(
+            "INSERT INTO usage_events (id, org_id, session_id, source, event_ts)
+             VALUES ('u2', 'org1', 's1', 'backfill', datetime('now'))",
+            [],
+        );
+        assert!(dup.is_err(), "the partial-unique index must block duplicate backfill rows");
+        // But an ingest row for the same session is fine — the index is partial.
+        conn.execute(
+            "INSERT INTO usage_events (id, org_id, session_id, source, event_ts)
+             VALUES ('u3', 'org1', 's1', 'ingest', datetime('now'))",
+            [],
+        )
+        .expect("ingest events are not constrained by the backfill index");
+    }
+
+    /// Re-running v59 over an already-migrated database must succeed.
+    #[test]
+    fn run_v59_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch("PRAGMA user_version = 58;").unwrap();
+        run_v59(&conn).expect("re-running v59 over a migrated db must not fail");
+        assert_eq!(get_user_version(&conn), 59);
+        assert!(table_exists(&conn, "usage_events"));
     }
 }

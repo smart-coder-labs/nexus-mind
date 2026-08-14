@@ -3,6 +3,7 @@ pub mod api;
 pub mod automation;
 pub mod backup;
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod embed;
 pub mod email;

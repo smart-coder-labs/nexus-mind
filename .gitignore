@@ -28,3 +28,6 @@ tmp/
 
 # Local agent worktrees — generated locally, never tracked
 .claude/worktrees/
+
+# CodeGraph local index — generated per-checkout, never tracked
+.codegraph/
