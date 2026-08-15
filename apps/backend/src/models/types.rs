@@ -744,6 +744,30 @@ pub struct UsageSummaryResponse {
     pub totals: UsageSummaryRow,
 }
 
+/// One time bucket of `GET /v1/usage/timeseries`.
+///
+/// `bucket_ts` is the bucket's leading edge as a date-only (`YYYY-MM-DD`, for
+/// `day`/`week`) or hour-precision (`YYYY-MM-DD HH`, for `hour`) string — the
+/// same lexicographic shape `usage_events.event_ts` is stored in, so the client
+/// can sort and gap-fill without parsing a locale-dependent format.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageBucket {
+    pub bucket_ts: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub tokens_total: i64,
+    pub duration_ms: i64,
+    pub event_count: i64,
+}
+
+/// Response of `GET /v1/usage/timeseries`. Only non-empty buckets are returned
+/// — the client gap-fills against the requested range, which it already knows.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageTimeseriesResponse {
+    pub bucket: String,
+    pub buckets: Vec<UsageBucket>,
+}
+
 /// A client slug is lowercase alphanumeric with internal dashes, 1–64 chars.
 /// Used in URLs and as the stable identifier, so it is validated at the edge
 /// rather than trusted from the caller.
@@ -1034,6 +1058,34 @@ pub struct SearchCodeResult {
     pub end_line: i64,
     pub content: String,
     pub score: f32,
+}
+
+/// Request body for `POST /v1/code/locate`.
+///
+/// Same query embedding + cosine ranking as `/v1/code/search`, but the response is
+/// a lean, deduped-by-file list of ranked file paths — the token-saving output an
+/// agent uses to jump straight to the right file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeRequest {
+    pub project: String,
+    pub query: String,
+    /// Max distinct files to return. Defaults to 5, capped at [`MAX_TOP_K`].
+    pub limit: Option<i64>,
+}
+
+/// One ranked distinct file in a `POST /v1/code/locate` response. A file's score is
+/// its single best-scoring chunk; `top_symbol` is that chunk's symbol.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeHit {
+    pub file_path: String,
+    pub top_symbol: Option<String>,
+    pub score: f32,
+}
+
+/// Response body for `POST /v1/code/locate`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeResponse {
+    pub results: Vec<LocateCodeHit>,
 }
 
 /// Response body for `GET /v1/code/status/:project`.

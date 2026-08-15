@@ -20,6 +20,45 @@ use crate::{
     models::types::{CodeProject, IndexProjectResponse},
 };
 
+/// Target combined on-disk size (bytes) of one Pass-1 batch (~8 MB). Bounds the
+/// peak memory held while a batch's file contents + ASTs are live in parallel.
+const BATCH_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Hard cap on files per Pass-1 batch, so a run of tiny files still yields
+/// bounded-count batches (rayon parses the whole batch at once).
+const BATCH_MAX_FILES: usize = 64;
+
+/// Plan contiguous `[start, end)` batch ranges over `sizes`, cutting a batch as
+/// soon as adding the next file would push its combined size over `max_bytes` or
+/// its count to `max_files`. A single file whose size alone exceeds `max_bytes`
+/// forms its own batch (files are never split). Order is preserved and every
+/// index in `0..sizes.len()` is covered exactly once.
+fn plan_batches(sizes: &[u64], max_bytes: u64, max_files: usize) -> Vec<(usize, usize)> {
+    let max_files = max_files.max(1);
+    let mut batches = Vec::new();
+    let mut start = 0usize;
+    let mut acc: u64 = 0;
+    let mut i = 0usize;
+    while i < sizes.len() {
+        let batch_len = i - start;
+        // Cut the current (non-empty) batch before adding a file that would
+        // overflow the byte cap or reach the count cap.
+        if batch_len > 0
+            && (batch_len >= max_files || acc.saturating_add(sizes[i]) > max_bytes)
+        {
+            batches.push((start, i));
+            start = i;
+            acc = 0;
+            continue;
+        }
+        acc = acc.saturating_add(sizes[i]);
+        i += 1;
+    }
+    if start < sizes.len() {
+        batches.push((start, sizes.len()));
+    }
+    batches
+}
+
 /// Orchestrates walking, chunking, embedding, and persisting a code project.
 ///
 /// For each file:
@@ -88,7 +127,6 @@ pub fn index_project(
         db_queries::persist_structure(&conn, code_project_id, project_name, &all_rel_paths)?;
     }
 
-    let mut total_chunks = 0i64;
     let mut files_indexed = 0i64;
     // Changed files needing (re-)embedding in pass 2: (index into `files`, rel_path).
     let mut changed: Vec<(usize, String)> = Vec::new();
@@ -118,11 +156,13 @@ pub fn index_project(
         skip: bool,
     }
 
-    const BATCH: usize = 256;
-    let mut start = 0usize;
-    while start < files.len() {
-        let end = (start + BATCH).min(files.len());
-
+    // Batch by BYTES, not file count: a batch accumulates files until their combined
+    // on-disk size reaches BATCH_MAX_BYTES OR the file count reaches BATCH_MAX_FILES,
+    // whichever comes first. This bounds peak memory (full `content` Strings + ASTs of
+    // one batch, parsed across all cores) regardless of individual file sizes — a run
+    // of large files yields small batches, a run of tiny files yields count-capped ones.
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
+    for (start, end) in plan_batches(&sizes, BATCH_MAX_BYTES, BATCH_MAX_FILES) {
         // Parallel: read + parse each file in the batch (no DB access here).
         let parsed: Vec<Parsed> = (start..end)
             .into_par_iter()
@@ -162,8 +202,8 @@ pub fn index_project(
         // Serial: persist the batch (per-op lock keeps the health endpoint responsive).
         for p in parsed {
             if p.skip {
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                total_chunks += db_queries::count_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
+                // Unchanged + already complete: nothing to re-parse. Its chunks are
+                // still in the table and counted project-wide after Pass 2.
                 files_indexed += 1;
                 continue;
             }
@@ -183,10 +223,10 @@ pub fn index_project(
             if !p.has_chunks {
                 continue;
             }
-            if p.unchanged || graph_only {
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                total_chunks += db_queries::count_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
-            } else {
+            // Unchanged files keep their existing chunks; graph_only intentionally
+            // skips (re-)embedding. Both are counted project-wide after Pass 2. Only
+            // changed files in a full index are cleared and queued for re-embedding.
+            if !p.unchanged && !graph_only {
                 {
                     let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                     db_queries::delete_chunks_for_file(&conn, code_project_id, &p.rel_path)?;
@@ -194,8 +234,9 @@ pub fn index_project(
                 changed.push((p.idx, p.rel_path));
             }
         }
-
-        start = end;
+        // `parsed` (and every file `content` String it held) is dropped here at the end
+        // of each iteration, before the next batch is read — so peak memory is bounded
+        // to one batch's worth of source + ASTs at a time.
     }
 
     // ── PASS 2: embeddings for changed files (slow — powers semantic search) ──
@@ -217,7 +258,15 @@ pub fn index_project(
             }
 
             let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc {
-                let texts: Vec<&str> = raw_chunks.iter().map(|c| c.content.as_str()).collect();
+                // Embed a compact NL-friendly skeleton (symbol name + signature +
+                // leading doc comment), NOT the raw body — this is what cosine ranks
+                // against. `chunk.content` still stores the real body for get_context
+                // / snippet retrieval; only the embedded-against text changes.
+                let embed_texts: Vec<String> = raw_chunks
+                    .iter()
+                    .map(|c| chunker::build_embed_text(c.symbol.as_deref(), &c.content))
+                    .collect();
+                let texts: Vec<&str> = embed_texts.iter().map(|s| s.as_str()).collect();
                 match svc.embed_batch(&texts) {
                     Ok(vecs) => vecs.into_iter().map(|v| Some(embed::serialize(&v))).collect(),
                     Err(e) => {
@@ -246,6 +295,14 @@ pub fn index_project(
             }
         }
     }
+
+    // Authoritative chunk count: Pass 2 inserts freshly-embedded chunks without
+    // touching `total_chunks` (only Pass-1 unchanged/graph_only files increment it),
+    // so a fresh index would report 0. Read the real row count from the table.
+    let total_chunks = {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        db_queries::count_chunks_for_project(&conn, code_project_id)?
+    };
 
     // Update project stats and mark success
     let last_indexed = chrono::Utc::now()
@@ -287,20 +344,51 @@ mod tests {
     use super::*;
     use crate::db::{connection::connect, migrations};
 
-    /// End-to-end: a Markdown file in the project tree is indexed into the
-    /// searchable `code_chunks` content path, split by heading section with the
-    /// heading as its symbol. Runs without an embedding service — chunks are
-    /// still persisted (with NULL embeddings), which is what makes them findable.
+    /// The byte-bounded batcher must never emit a batch whose combined size
+    /// exceeds the cap (the sole exception being a single file larger than the
+    /// cap, which forms its own batch), must respect the count cap, and must
+    /// cover every file exactly once in order.
     #[test]
-    fn indexes_markdown_file_into_searchable_chunks() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
-        std::fs::write(
-            dir.path().join("docs").join("guide.md"),
-            "# Getting Started\n\nInstall the CLI.\n\n## Authentication\n\nUse an API key.\n",
-        )
-        .unwrap();
+    fn plan_batches_never_exceeds_byte_cap() {
+        let max_bytes = 8 * 1024 * 1024u64;
+        let max_files = 64usize;
+        // Mixed sizes: many small files, a few large ones near the 1 MB file cap.
+        let mut sizes = Vec::new();
+        for i in 0..500u64 {
+            sizes.push(if i % 37 == 0 { 900 * 1024 } else { 2 * 1024 });
+        }
 
+        let batches = plan_batches(&sizes, max_bytes, max_files);
+
+        // Full, ordered, non-overlapping coverage.
+        assert_eq!(batches.first().unwrap().0, 0);
+        assert_eq!(batches.last().unwrap().1, sizes.len());
+        for w in batches.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "batches must be contiguous");
+        }
+
+        for (start, end) in &batches {
+            let count = end - start;
+            assert!(count >= 1, "no empty batches");
+            assert!(count <= max_files, "count cap must hold: {count} > {max_files}");
+            let total: u64 = sizes[*start..*end].iter().sum();
+            // A batch may exceed the byte cap only if it is a single file.
+            assert!(
+                total <= max_bytes || count == 1,
+                "batch [{start},{end}) sums to {total} bytes, over cap {max_bytes}"
+            );
+        }
+    }
+
+    /// A file larger than the byte cap still forms its own batch (never split).
+    #[test]
+    fn plan_batches_isolates_oversized_file() {
+        let sizes = vec![1_000u64, 20 * 1024 * 1024, 1_000];
+        let batches = plan_batches(&sizes, 8 * 1024 * 1024, 64);
+        assert_eq!(batches, vec![(0, 1), (1, 2), (2, 3)]);
+    }
+
+    fn setup_indexer_db() -> Arc<Mutex<Connection>> {
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
         conn.execute(
@@ -308,47 +396,76 @@ mod tests {
             [],
         )
         .unwrap();
-        let db = Arc::new(Mutex::new(conn));
+        Arc::new(Mutex::new(conn))
+    }
 
-        let summary = index_project(
-            "org1",
-            "myproj",
-            dir.path().to_str().unwrap(),
-            &db,
-            None,
-            false,
+    /// End-to-end: docs (`.md`) are excluded from the CODE corpus while real
+    /// source files (`.ts`) are indexed. `README.md`/`AGENTS.md` previously ranked
+    /// at the top of code search; the walker's code-only allowlist now keeps them out.
+    #[test]
+    fn excludes_docs_from_code_corpus_indexes_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "# Getting Started\n\nInstall the CLI.\n",
         )
-        .expect("index must succeed");
-        assert!(summary.file_count >= 1, "markdown file must be counted as indexed");
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src").join("users.ts"),
+            "export function listUsers(): string[] {\n  return [];\n}\n",
+        )
+        .unwrap();
 
-        // The markdown content must land in code_chunks with heading symbols.
+        let db = setup_indexer_db();
+        let summary = index_project("org1", "myproj", dir.path().to_str().unwrap(), &db, None, false)
+            .expect("index must succeed");
+        assert_eq!(summary.file_count, 1, "only the .ts source file must be indexed");
+
         let conn = db.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT file_path, symbol, language FROM code_chunks")
+            .prepare("SELECT file_path FROM code_chunks")
             .unwrap();
-        let rows: Vec<(String, Option<String>, Option<String>)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let paths: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
+        assert!(
+            paths.iter().any(|p| p.ends_with("users.ts")),
+            "users.ts must be indexed into code_chunks, got: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("README.md")),
+            "README.md must NOT enter the code corpus, got: {paths:?}"
+        );
+    }
 
-        assert!(
-            rows.iter().any(|(path, _, _)| path.ends_with("guide.md")),
-            "guide.md must be indexed into code_chunks, got: {rows:?}"
-        );
-        assert!(
-            rows.iter().any(|(_, sym, _)| sym.as_deref() == Some("Getting Started")),
-            "an H1 heading must become a chunk symbol, got: {rows:?}"
-        );
-        assert!(
-            rows.iter().any(|(_, sym, _)| sym.as_deref() == Some("Authentication")),
-            "an H2 heading must become a chunk symbol, got: {rows:?}"
-        );
-        assert!(
-            rows.iter()
-                .filter(|(path, _, _)| path.ends_with("guide.md"))
-                .all(|(_, _, lang)| lang.as_deref() == Some("markdown")),
-            "markdown chunks must be tagged with the markdown language, got: {rows:?}"
+    /// A fresh index (all files new → embedded in Pass 2) must report
+    /// `chunk_count` equal to the actual number of rows in `code_chunks`, not 0.
+    /// Regression: Pass 2 inserts chunks without incrementing the in-loop counter.
+    #[test]
+    fn fresh_index_reports_actual_chunk_count() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src").join("lib.rs"),
+            "pub fn alpha() {}\n\npub fn beta() {}\n\npub fn gamma() {}\n",
+        )
+        .unwrap();
+
+        let db = setup_indexer_db();
+        let summary = index_project("org1", "myproj", dir.path().to_str().unwrap(), &db, None, false)
+            .expect("index must succeed");
+
+        let actual_rows: i64 = {
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0)).unwrap()
+        };
+        assert!(actual_rows > 0, "a fresh index must have inserted chunks");
+        assert_eq!(
+            summary.chunk_count, actual_rows,
+            "reported chunk_count must equal actual code_chunks rows"
         );
     }
 }

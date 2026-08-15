@@ -19,8 +19,9 @@ use crate::{
     indexer,
     models::types::{
         ApiError, AuthContext, CodeProject, CodeStatusResponse, GraphResponse, IndexProjectRequest,
-        IndexProjectResponse, ReindexProjectResponse, SearchCodeRequest, SearchCodeResult,
-        SnippetResponse, UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
+        IndexProjectResponse, LocateCodeHit, LocateCodeRequest, LocateCodeResponse,
+        ReindexProjectResponse, SearchCodeRequest, SearchCodeResult, SnippetResponse,
+        UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
     },
     store::sqlite::SqliteStore,
 };
@@ -321,6 +322,16 @@ pub async fn post_index(
         let conn = db.lock().map_err(|_| lock_err())?;
         let pid = db_queries::upsert_code_project(&conn, &auth.org_id, &project_name, &effective_root_path)
             .map_err(db_err)?;
+        // Ensure the creator can actually see/search the project they just indexed.
+        // upsert_code_project only writes the code_projects row; the visible-project
+        // queries additionally require a canonical projects row + a project_visibility
+        // membership. Enroll the creator so a non-super_user isn't locked out of their
+        // own index. Idempotent on re-index.
+        if let Err(e) = db_queries::ensure_code_project_visible_to_creator(
+            &conn, &auth.org_id, &project_name, &auth.user_id,
+        ) {
+            tracing::warn!("Failed to enroll creator for code project {project_name}: {e}");
+        }
         if let Some(url) = &input.repo_url {
             let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &project_name, url);
         }
@@ -492,6 +503,102 @@ pub async fn post_search(
     }
 
     Ok(Json(results))
+}
+
+/// `POST /v1/code/locate`
+///
+/// Same query embedding + cosine ranking as `post_search`, but returns RANKED
+/// DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its best chunk's
+/// score) instead of chunk bodies. This is the lean, token-cheap output an agent
+/// uses to jump straight to the right file. Default limit 5.
+/// Returns HTTP 404 if the project has not been indexed.
+pub async fn post_locate(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<LocateCodeRequest>,
+) -> Result<Json<LocateCodeResponse>, (StatusCode, Json<ApiError>)> {
+    // Permission check
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        require_permission(&conn, &auth, None, "memory:search")?;
+    }
+
+    let limit = input.limit.unwrap_or(DEFAULT_TOP_K).clamp(1, MAX_TOP_K);
+
+    // Check project exists and is indexed
+    let code_project = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &input.project)?;
+        db_queries::get_code_project(&auth.org_id, &input.project, &conn).map_err(db_err)?
+    };
+
+    let code_project = match code_project {
+        None => return Err(project_not_indexed(&input.project)),
+        Some(p) => p,
+    };
+
+    let code_project_id: i64 = code_project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
+
+    // Embed the query (reuse the same plumbing as search — no corpus re-embed).
+    let embed_svc = store.embed_service();
+    let q_vec = match embed_svc {
+        Some(ref svc) => svc.embed_one(&input.query).map_err(db_err)?,
+        None => return Ok(Json(LocateCodeResponse { results: vec![] })),
+    };
+
+    // Fetch embeddings + lightweight (id → file_path, symbol) locations (no content).
+    let (pairs, locations) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        let pairs = db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?;
+        let locations =
+            db_queries::get_code_chunk_locations(&conn, code_project_id).map_err(db_err)?;
+        (pairs, locations)
+    };
+
+    if pairs.is_empty() {
+        return Ok(Json(LocateCodeResponse { results: vec![] }));
+    }
+
+    let loc_map: std::collections::HashMap<i64, (String, Option<String>)> = locations
+        .into_iter()
+        .map(|(id, fp, sym)| (id, (fp, sym)))
+        .collect();
+
+    // Cosine-rank every chunk, then collapse to the best chunk per file.
+    let mut best: std::collections::HashMap<String, (f32, Option<String>)> =
+        std::collections::HashMap::new();
+    for (id, blob) in pairs {
+        let v = embed::deserialize(&blob);
+        let score = embed::cosine(&q_vec, &v);
+        if let Some((file_path, symbol)) = loc_map.get(&id) {
+            let entry = best
+                .entry(file_path.clone())
+                .or_insert((f32::MIN, None));
+            if score > entry.0 {
+                *entry = (score, symbol.clone());
+            }
+        }
+    }
+
+    let mut results: Vec<LocateCodeHit> = best
+        .into_iter()
+        .map(|(file_path, (score, top_symbol))| LocateCodeHit {
+            file_path,
+            top_symbol,
+            score,
+        })
+        .collect();
+
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit as usize);
+
+    Ok(Json(LocateCodeResponse { results }))
 }
 
 /// `GET /v1/code/status/:project`
@@ -1313,6 +1420,7 @@ mod tests {
         Router::new()
             .route("/v1/code/index", post(post_index))
             .route("/v1/code/search", post(post_search))
+            .route("/v1/code/locate", post(post_locate))
             .route("/v1/code/status/:project", get(get_status))
             .route("/v1/code/context", get(get_context))
             .route("/v1/code/projects", get(list_projects))
@@ -1652,6 +1760,66 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let results: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(results.is_empty(), "no embed service must return empty array, not error");
+    }
+
+    // ── POST /v1/code/locate ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn locate_unindexed_project_returns_404() {
+        let (store, key) = setup_with_key();
+        let body = serde_json::json!({ "project": "ghost", "query": "list users" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/code/locate")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp_body["code"], "project_not_indexed");
+    }
+
+    #[tokio::test]
+    async fn locate_no_embed_service_returns_empty_results() {
+        // With the embed service disabled, locate returns a shaped empty response,
+        // not an error: { "results": [] }.
+        let (store, key) = setup_with_key();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let project_id = q::upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+            q::update_code_project_stats(&conn, project_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
+        }
+
+        let body = serde_json::json!({ "project": "myapp", "query": "list users", "limit": 5 });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/code/locate")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(resp_body["results"].is_array(), "response must carry a results array");
+        assert!(resp_body["results"].as_array().unwrap().is_empty());
     }
 
     // ── POST /v1/code/index ───────────────────────────────────────────────────

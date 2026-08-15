@@ -37,8 +37,10 @@ import type {
   OnboardingStatus,
   WebhookTestResult,
   UsageStats,
+  UsageBucketSize,
   UsageLevel,
   UsageSummaryResponse,
+  UsageTimeseriesResponse,
   InviteLinkResponse,
   ImportMemory,
   ImportMemoriesResponse,
@@ -674,6 +676,21 @@ export class NexusMindClient {
     if (params.client_id) qs.set('client_id', params.client_id)
     if (params.project_id) qs.set('project_id', params.project_id)
     return this.request<UsageSummaryResponse>(`/v1/usage/summary?${qs}`)
+  }
+
+  getUsageTimeseries(params: {
+    bucket: UsageBucketSize
+    from?: string
+    to?: string
+    client_id?: string
+    project_id?: string
+  }): Promise<UsageTimeseriesResponse> {
+    const qs = new URLSearchParams({ bucket: params.bucket })
+    if (params.from) qs.set('from', params.from)
+    if (params.to) qs.set('to', params.to)
+    if (params.client_id) qs.set('client_id', params.client_id)
+    if (params.project_id) qs.set('project_id', params.project_id)
+    return this.request<UsageTimeseriesResponse>(`/v1/usage/timeseries?${qs}`)
   }
 
   runUsageBackfill(): Promise<{ inserted: number }> {

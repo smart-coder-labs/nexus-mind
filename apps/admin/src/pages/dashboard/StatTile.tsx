@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -9,7 +10,8 @@ const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[1
 export interface StatTileProps {
   label: string
   value: string
-  sub?: string
+  /** Caption under the value. A node, so callers can inline a delta chip. */
+  sub?: ReactNode
   icon: LucideIcon
   accent: string
   /** Recent daily counts, most recent last. Omitted entirely when the
@@ -56,7 +58,7 @@ export function StatTile({ label, value, sub, icon: Icon, accent, sparkline }: S
       </span>
 
       <div className="flex items-end justify-between gap-2 relative">
-        {sub && <span className="text-[12px] text-text-tertiary truncate">{sub}</span>}
+        {sub && <span className="text-[12px] text-text-tertiary truncate min-w-0">{sub}</span>}
         {bars && (
           <div className="flex items-end gap-[2px] h-[18px] shrink-0" aria-hidden="true">
             {bars.map((v, i) => (

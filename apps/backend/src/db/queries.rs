@@ -5228,6 +5228,28 @@ pub fn upsert_code_project(
     Ok(id)
 }
 
+/// Ensure the creator of a freshly-indexed code project can see and search it.
+///
+/// The visible-project queries (`list_code_projects_visible`,
+/// `user_can_access_canonical_project_by_name`) join `code_projects` → `projects`
+/// → the `project_visibility` view (backed by `project_members`). `upsert_code_project`
+/// only writes the `code_projects` row, so a non-super_user creator would otherwise be
+/// locked out of their own index (`/v1/code/projects` → [], `/v1/code/search` → 404).
+///
+/// This creates the matching canonical `projects` row (same org + name) if missing
+/// and enrolls `creator_id` as an `admin` member so the visibility view includes them.
+/// Idempotent — re-indexing reuses the existing project row and membership.
+pub fn ensure_code_project_visible_to_creator(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+    creator_id: &str,
+) -> Result<()> {
+    let project_id = get_or_create_project(conn, org_id, project_name)?;
+    upsert_project_member(conn, &project_id, creator_id, "admin")?;
+    Ok(())
+}
+
 /// Update file_count, chunk_count, and last_indexed for a code project.
 pub fn update_code_project_stats(
     conn: &Connection,
@@ -5295,6 +5317,23 @@ pub fn set_code_project_error(
     Ok(())
 }
 
+/// Fail any code projects left stuck in `index_status = 'indexing'` by an
+/// interrupted run (OOM kill, crash, or restart). An indexing run marks the row
+/// `'indexing'` up front and only flips it to `'success'`/`'error'` at the end, so
+/// a process that dies mid-index leaves a zombie row that would otherwise report
+/// "indexing" forever and block re-indexing. Call once on startup after migrations.
+/// Returns the number of rows reset.
+pub fn fail_stale_indexing_projects(conn: &Connection) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE code_projects
+         SET index_status = 'error',
+             last_index_error = 'Indexing interrupted (server restart)'
+         WHERE index_status = 'indexing'",
+        [],
+    )?;
+    Ok(n)
+}
+
 /// Delete all code_chunks for a specific file within a project.
 /// Called before re-indexing a changed file.
 pub fn delete_chunks_for_file(
@@ -5318,6 +5357,19 @@ pub fn count_chunks_for_file(
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
         rusqlite::params![code_project_id, file_path],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count all chunks currently stored for a project. Used as the authoritative
+/// chunk total after an index run: freshly-embedded files (Pass 2) insert chunks
+/// without incrementing the in-loop counter, so a fresh index would otherwise
+/// report 0 chunks despite real rows existing.
+pub fn count_chunks_for_project(conn: &Connection, code_project_id: i64) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_chunks WHERE code_project_id = ?1",
+        rusqlite::params![code_project_id],
         |r| r.get(0),
     )?;
     Ok(count)
@@ -5496,6 +5548,33 @@ pub fn get_code_embeddings(conn: &Connection, code_project_id: i64) -> Result<Ve
         pairs.push(r?);
     }
     Ok(pairs)
+}
+
+/// Return `(chunk_id, file_path, symbol)` for every embedded chunk in a project.
+/// Lightweight companion to [`get_code_embeddings`] for `POST /v1/code/locate`: it
+/// lets the handler dedupe ranked chunks down to distinct files without loading any
+/// chunk `content` (the heavy column). Only chunks that have an embedding are
+/// returned, so ids line up 1:1 with the cosine-scored set.
+pub fn get_code_chunk_locations(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<Vec<(i64, String, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_path, symbol FROM code_chunks
+         WHERE code_project_id = ?1 AND embedding IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// Fetch multiple code chunks by their row IDs (ORDER preserved).
@@ -12054,6 +12133,75 @@ mod tests {
     }
 
     #[test]
+    fn ensure_code_project_visible_to_creator_enrolls_member() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        // A non-super_user creator.
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES ('u-creator', ?1, 'dev@acme.com', 'Dev', 'member', 'active', datetime('now'))",
+            rusqlite::params![org_id],
+        )
+        .unwrap();
+
+        // Simulate what post_index does: create the code_projects row, then enroll.
+        upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
+
+        // Before enrollment, the creator can neither see nor access the project.
+        let before = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert!(before.is_empty(), "creator must not see the project before enrollment");
+        assert!(
+            !user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            "creator must not have access before enrollment"
+        );
+
+        ensure_code_project_visible_to_creator(&conn, &org_id, "myapp", "u-creator").unwrap();
+
+        // After enrollment, the project is visible and accessible.
+        let after = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert_eq!(after.len(), 1, "creator must see exactly their project");
+        assert_eq!(after[0].name, "myapp");
+        assert!(
+            user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            "creator must pass the name-access check (ensure_code_project_name_access)"
+        );
+
+        // Idempotent — a second enrollment (re-index) must not error or duplicate.
+        ensure_code_project_visible_to_creator(&conn, &org_id, "myapp", "u-creator").unwrap();
+        let again = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert_eq!(again.len(), 1, "re-index must not duplicate the visible project");
+    }
+
+    #[test]
+    fn fail_stale_indexing_projects_resets_zombies() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        // Two projects mid-index (zombies) and one already successful.
+        let z1 = upsert_code_project(&conn, &org_id, "zombie1", "/ws/z1").unwrap();
+        let z2 = upsert_code_project(&conn, &org_id, "zombie2", "/ws/z2").unwrap();
+        let ok = upsert_code_project(&conn, &org_id, "healthy", "/ws/ok").unwrap();
+        set_code_project_indexing(&conn, z1).unwrap();
+        set_code_project_indexing(&conn, z2).unwrap();
+        set_code_project_success(&conn, ok, 5, "2026-01-01T00:00:00Z").unwrap();
+
+        let reset = fail_stale_indexing_projects(&conn).unwrap();
+        assert_eq!(reset, 2, "only the two 'indexing' rows must be reset");
+
+        let p1 = get_code_project(&org_id, "zombie1", &conn).unwrap().unwrap();
+        assert_eq!(p1.index_status.as_deref(), Some("error"));
+        assert_eq!(
+            p1.last_index_error.as_deref(),
+            Some("Indexing interrupted (server restart)")
+        );
+        // The successful project is untouched.
+        let ph = get_code_project(&org_id, "healthy", &conn).unwrap().unwrap();
+        assert_eq!(ph.index_status.as_deref(), Some("success"));
+
+        // Idempotent: a second call resets nothing.
+        assert_eq!(fail_stale_indexing_projects(&conn).unwrap(), 0);
+    }
+
+    #[test]
     fn insert_and_get_code_chunks() {
         let conn = setup();
         let org_id = setup_org_for_code(&conn);
@@ -12262,6 +12410,31 @@ mod tests {
 
         let pairs = get_code_embeddings(&conn, project_id).unwrap();
         assert_eq!(pairs.len(), 1, "only chunk with embedding must be returned");
+    }
+
+    #[test]
+    fn get_code_chunk_locations_returns_only_embedded_with_symbol() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        let embedding: Vec<u8> = vec![0u8; 32];
+        // Embedded chunk with a symbol → included, content NOT loaded by this query.
+        insert_code_chunk(
+            &conn, project_id, "src/users.rs", "h1", Some("rust"), Some("list_users"),
+            1, 10, "fn list_users() { /* body */ }", Some(&embedding),
+        )
+        .unwrap();
+        // No embedding → excluded (must line up 1:1 with cosine-scored set).
+        insert_code_chunk(
+            &conn, project_id, "src/misc.rs", "h2", None, Some("misc"), 1, 5, "code", None,
+        )
+        .unwrap();
+
+        let locs = get_code_chunk_locations(&conn, project_id).unwrap();
+        assert_eq!(locs.len(), 1, "only embedded chunks are returned");
+        assert_eq!(locs[0].1, "src/users.rs");
+        assert_eq!(locs[0].2.as_deref(), Some("list_users"));
     }
 
     #[test]

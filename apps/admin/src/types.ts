@@ -198,8 +198,11 @@ export interface UsageStats {
 // at one of four levels (task → project → client → org), each row keyed by the
 // grouped entity plus additive token/time/count aggregates, and org-wide totals.
 
-/** The four additive rollup granularities the summary can be grouped by. */
-export type UsageLevel = 'task' | 'project' | 'client' | 'org'
+/** The additive rollup granularities the summary can be grouped by. */
+export type UsageLevel = 'task' | 'project' | 'client' | 'org' | 'model' | 'user'
+
+/** Time-bucket granularities of `GET /v1/usage/timeseries`. */
+export type UsageBucketSize = 'hour' | 'day' | 'week'
 
 /** One rollup row. `key_id`/`key_name` identify the grouped entity at `level`. */
 export interface UsageSummaryRow {
@@ -210,6 +213,29 @@ export interface UsageSummaryRow {
   tokens_total: number
   duration_ms: number
   event_count: number
+}
+
+/**
+ * One time bucket. `bucket_ts` is the bucket's leading edge in the same
+ * lexicographically-sortable shape the backend stores: `YYYY-MM-DD` for
+ * day/week, `YYYY-MM-DD HH` for hour.
+ */
+export interface UsageBucket {
+  bucket_ts: string
+  tokens_in: number
+  tokens_out: number
+  tokens_total: number
+  duration_ms: number
+  event_count: number
+}
+
+/**
+ * Response of `GET /v1/usage/timeseries`. Only non-empty buckets are returned —
+ * the caller gap-fills against the range it requested.
+ */
+export interface UsageTimeseriesResponse {
+  bucket: UsageBucketSize
+  buckets: UsageBucket[]
 }
 
 /** Response of `GET /v1/usage/summary` — rows plus org-wide totals. */

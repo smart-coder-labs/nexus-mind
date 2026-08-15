@@ -6,9 +6,94 @@
 //! read-only against the existing `tasks`/`projects`/`sessions` tables.
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use rusqlite::{types::Value, Connection, OptionalExtension};
 
-use crate::models::types::{UsageIngestRequest, UsageSummaryResponse, UsageSummaryRow};
+use crate::models::types::{
+    UsageBucket, UsageIngestRequest, UsageSummaryResponse, UsageSummaryRow,
+    UsageTimeseriesResponse,
+};
+
+/// The `WHERE`-clause inputs shared by every read in this module.
+struct UsageFilters<'a> {
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    client: Option<&'a str>,
+    project: Option<&'a str>,
+    /// `None` = org-wide (super_user); `Some(uid)` = restrict to that user's
+    /// visible projects via the `project_visibility` view.
+    viewer: Option<&'a str>,
+}
+
+/// Turns an inclusive `to` filter into the comparison SQLite must actually run.
+///
+/// `event_ts` is lexicographically sortable but NOT written in a single shape:
+/// `datetime('now')` produces `'YYYY-MM-DD HH:MM:SS'` while an agent may ingest
+/// ISO-8601 `'YYYY-MM-DDTHH:MM:SS'`. So a date-only bound needs care:
+///
+/// - `event_ts <= '2026-08-14'` drops the entire final day (any time-of-day
+///   suffix sorts after the bare date).
+/// - `event_ts <= '2026-08-14 23:59:59'` still drops the ISO rows, because
+///   `'T'` (0x54) sorts after `' '` (0x20).
+///
+/// The next day's midnight as an **exclusive** bound is correct for both shapes.
+/// A `to` that already carries a time component is passed through inclusive.
+fn upper_bound(to: &str) -> (&'static str, String) {
+    match NaiveDate::parse_from_str(to.trim(), "%Y-%m-%d") {
+        Ok(day) => match day.succ_opt() {
+            Some(next) => ("<", next.to_string()),
+            // Only reachable at chrono's max date; degrade to inclusive.
+            None => ("<=", to.to_string()),
+        },
+        Err(_) => ("<=", to.to_string()),
+    }
+}
+
+/// Appends the shared `AND …` predicates to `sql`, binding into `params`.
+///
+/// `next` is the highest placeholder index used so far and is advanced in place,
+/// so callers can keep binding after this returns.
+fn push_filters(
+    sql: &mut String,
+    params: &mut Vec<Value>,
+    next: &mut usize,
+    org_id: &str,
+    f: &UsageFilters<'_>,
+) {
+    if let Some(from) = f.from {
+        *next += 1;
+        sql.push_str(&format!(" AND e.event_ts >= ?{next}"));
+        params.push(Value::Text(from.to_string()));
+    }
+    if let Some(to) = f.to {
+        let (op, bound) = upper_bound(to);
+        *next += 1;
+        sql.push_str(&format!(" AND e.event_ts {op} ?{next}"));
+        params.push(Value::Text(bound));
+    }
+    if let Some(cid) = f.client {
+        *next += 1;
+        sql.push_str(&format!(" AND e.client_id = ?{next}"));
+        params.push(Value::Text(cid.to_string()));
+    }
+    if let Some(pid) = f.project {
+        *next += 1;
+        sql.push_str(&format!(" AND e.project_id = ?{next}"));
+        params.push(Value::Text(pid.to_string()));
+    }
+    if let Some(uid) = f.viewer {
+        *next += 1;
+        let uparam = *next;
+        *next += 1;
+        let oparam = *next;
+        sql.push_str(&format!(
+            " AND e.project_id IN (SELECT pv.project_id FROM project_visibility pv \
+              WHERE pv.user_id = ?{uparam} AND pv.org_id = ?{oparam})"
+        ));
+        params.push(Value::Text(uid.to_string()));
+        params.push(Value::Text(org_id.to_string()));
+    }
+}
 
 /// Inserts one `source='ingest'` usage event, resolving the hierarchy server-side.
 ///
@@ -124,7 +209,8 @@ pub fn insert_usage_event(
 /// - `Some(uid)` — restrict to events whose `project_id` is visible to `uid`
 ///   through the `project_visibility` view (project or client membership).
 ///
-/// `level` must be one of `task | project | client | org` (validated by the caller).
+/// `level` must be one of `task | project | client | org | model | user`
+/// (validated by the caller).
 pub fn usage_summary(
     conn: &Connection,
     org_id: &str,
@@ -156,6 +242,21 @@ pub fn usage_summary(
             "COALESCE(o.name, e.org_id)",
             "LEFT JOIN organizations o ON o.id = e.org_id",
         ),
+        // `model` groups on the free-text column itself, so key_id IS the model
+        // name. No join exists to resolve it — the value is whatever the agent
+        // reported, and NULL means the agent did not report one.
+        "model" => (
+            "e.model",
+            "COALESCE(NULLIF(TRIM(e.model), ''), '(unreported)')",
+            "",
+        ),
+        // `user` attributes usage to the operator. Backfilled rows carry no
+        // user_id (sessions have no author), hence the '(system)' bucket.
+        "user" => (
+            "e.user_id",
+            "COALESCE(NULLIF(TRIM(u.name), ''), u.email, '(system)')",
+            "LEFT JOIN users u ON u.id = e.user_id",
+        ),
         other => anyhow::bail!("invalid usage summary level: {other}"),
     };
 
@@ -174,38 +275,19 @@ pub fn usage_summary(
     let mut params: Vec<Value> = vec![Value::Text(org_id.to_string())];
     let mut next = 1;
 
-    if let Some(f) = from {
-        next += 1;
-        sql.push_str(&format!(" AND e.event_ts >= ?{next}"));
-        params.push(Value::Text(f.to_string()));
-    }
-    if let Some(t) = to {
-        next += 1;
-        sql.push_str(&format!(" AND e.event_ts <= ?{next}"));
-        params.push(Value::Text(t.to_string()));
-    }
-    if let Some(cid) = filter_client {
-        next += 1;
-        sql.push_str(&format!(" AND e.client_id = ?{next}"));
-        params.push(Value::Text(cid.to_string()));
-    }
-    if let Some(pid) = filter_project {
-        next += 1;
-        sql.push_str(&format!(" AND e.project_id = ?{next}"));
-        params.push(Value::Text(pid.to_string()));
-    }
-    if let Some(uid) = viewer_user_id {
-        next += 1;
-        let uparam = next;
-        next += 1;
-        let oparam = next;
-        sql.push_str(&format!(
-            " AND e.project_id IN (SELECT pv.project_id FROM project_visibility pv \
-              WHERE pv.user_id = ?{uparam} AND pv.org_id = ?{oparam})"
-        ));
-        params.push(Value::Text(uid.to_string()));
-        params.push(Value::Text(org_id.to_string()));
-    }
+    push_filters(
+        &mut sql,
+        &mut params,
+        &mut next,
+        org_id,
+        &UsageFilters {
+            from,
+            to,
+            client: filter_client,
+            project: filter_project,
+            viewer: viewer_user_id,
+        },
+    );
 
     sql.push_str(&format!(
         " GROUP BY {group_col} ORDER BY (COALESCE(SUM(e.tokens_in),0) + COALESCE(SUM(e.tokens_out),0)) DESC"
@@ -249,6 +331,87 @@ pub fn usage_summary(
     );
 
     Ok(UsageSummaryResponse { rows, totals })
+}
+
+/// Aggregates usage into time buckets for the trend chart.
+///
+/// `bucket` is one of `hour | day | week` (validated by the caller). The bucket
+/// key is derived with string/date functions rather than `strftime` on a parsed
+/// timestamp so that both stored shapes of `event_ts` (`'… HH:MM:SS'` from
+/// `datetime('now')` and ISO `'…THH:MM:SS'` from an agent) collapse into the
+/// same bucket — `replace(…, 'T', ' ')` is what makes the hour case agree.
+///
+/// Only non-empty buckets are returned; the caller gap-fills, since it is the
+/// side that knows the requested range. `viewer_user_id` scopes exactly as in
+/// [`usage_summary`].
+pub fn usage_timeseries(
+    conn: &Connection,
+    org_id: &str,
+    bucket: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    filter_client: Option<&str>,
+    filter_project: Option<&str>,
+    viewer_user_id: Option<&str>,
+) -> Result<UsageTimeseriesResponse> {
+    let bucket_expr = match bucket {
+        "hour" => "replace(substr(e.event_ts, 1, 13), 'T', ' ')",
+        "day" => "substr(e.event_ts, 1, 10)",
+        // Monday-anchored week. `-6 days` then `weekday 1` lands on the Monday
+        // of the event's own week (a Monday stays put, a Sunday walks back).
+        "week" => "date(substr(e.event_ts, 1, 10), '-6 days', 'weekday 1')",
+        other => anyhow::bail!("invalid usage timeseries bucket: {other}"),
+    };
+
+    let mut sql = format!(
+        "SELECT {bucket_expr} AS bucket_ts,
+                COALESCE(SUM(e.tokens_in), 0),
+                COALESCE(SUM(e.tokens_out), 0),
+                COALESCE(SUM(e.duration_ms), 0),
+                COUNT(*)
+           FROM usage_events e
+          WHERE e.org_id = ?1"
+    );
+
+    let mut params: Vec<Value> = vec![Value::Text(org_id.to_string())];
+    let mut next = 1;
+
+    push_filters(
+        &mut sql,
+        &mut params,
+        &mut next,
+        org_id,
+        &UsageFilters {
+            from,
+            to,
+            client: filter_client,
+            project: filter_project,
+            viewer: viewer_user_id,
+        },
+    );
+
+    sql.push_str(" GROUP BY bucket_ts ORDER BY bucket_ts ASC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let buckets = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            let tokens_in: i64 = r.get(1)?;
+            let tokens_out: i64 = r.get(2)?;
+            Ok(UsageBucket {
+                bucket_ts: r.get::<_, String>(0)?,
+                tokens_in,
+                tokens_out,
+                tokens_total: tokens_in + tokens_out,
+                duration_ms: r.get(3)?,
+                event_count: r.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(UsageTimeseriesResponse {
+        bucket: bucket.to_string(),
+        buckets,
+    })
 }
 
 /// Best-effort backfill: one `source='backfill'` usage row per org session that
@@ -503,6 +666,160 @@ mod tests {
             usage_summary(&conn, "org1", "project", None, None, None, None, Some("viewer")).unwrap();
         assert_eq!(scoped.rows.len(), 1, "client membership grants visibility");
         assert_eq!(scoped.rows[0].tokens_in, 42);
+    }
+
+    /// Inserts a raw event at an explicit timestamp, bypassing `insert_usage_event`
+    /// so the test can choose the exact stored `event_ts` shape.
+    fn seed_event_at(conn: &Connection, id: &str, org: &str, ts: &str, tokens_in: i64) {
+        conn.execute(
+            "INSERT INTO usage_events
+                (id, org_id, tokens_in, tokens_out, duration_ms, source, event_ts)
+             VALUES (?1, ?2, ?3, 0, 0, 'ingest', ?4)",
+            rusqlite::params![id, org, tokens_in, ts],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn to_filter_includes_the_whole_final_day_in_both_ts_shapes() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        // `datetime('now')` shape and the ISO-8601 shape an agent may ingest.
+        seed_event_at(&conn, "e1", "org1", "2026-08-14 10:00:00", 10);
+        seed_event_at(&conn, "e2", "org1", "2026-08-14T23:59:00", 20);
+        // Day after the bound — must stay excluded.
+        seed_event_at(&conn, "e3", "org1", "2026-08-15 00:00:01", 40);
+
+        let resp = usage_summary(
+            &conn,
+            "org1",
+            "org",
+            Some("2026-08-14"),
+            Some("2026-08-14"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            resp.totals.tokens_in, 30,
+            "both shapes of the final day are included, the next day is not"
+        );
+    }
+
+    #[test]
+    fn summary_rolls_up_by_model_and_user() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        seed_user(&conn, "u1", "org1");
+
+        for (model, tin) in [(Some("opus"), 100), (Some("opus"), 50), (None, 7)] {
+            let req = UsageIngestRequest {
+                model: model.map(str::to_string),
+                tokens_in: tin,
+                ..Default::default()
+            };
+            insert_usage_event(&conn, "org1", "u1", &req).unwrap();
+        }
+
+        let by_model = usage_summary(&conn, "org1", "model", None, None, None, None, None).unwrap();
+        assert_eq!(by_model.rows.len(), 2, "one row per model plus the NULL bucket");
+        let opus = by_model.rows.iter().find(|r| r.key_name == "opus").unwrap();
+        assert_eq!(opus.tokens_in, 150);
+        assert!(
+            by_model.rows.iter().any(|r| r.key_name == "(unreported)"),
+            "events with no model land in a labelled bucket, not a blank one"
+        );
+
+        let by_user = usage_summary(&conn, "org1", "user", None, None, None, None, None).unwrap();
+        assert_eq!(by_user.rows.len(), 1);
+        assert_eq!(by_user.rows[0].key_id.as_deref(), Some("u1"));
+        assert_eq!(by_user.rows[0].tokens_in, 157);
+    }
+
+    #[test]
+    fn timeseries_buckets_by_day_across_ts_shapes() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        seed_event_at(&conn, "e1", "org1", "2026-08-12 09:00:00", 10);
+        seed_event_at(&conn, "e2", "org1", "2026-08-12T15:00:00", 5);
+        seed_event_at(&conn, "e3", "org1", "2026-08-14 09:00:00", 100);
+
+        let ts =
+            usage_timeseries(&conn, "org1", "day", None, None, None, None, None).unwrap();
+        assert_eq!(ts.bucket, "day");
+        // 08-13 has no events and is NOT emitted — the client gap-fills.
+        assert_eq!(ts.buckets.len(), 2, "only non-empty buckets are returned");
+        assert_eq!(ts.buckets[0].bucket_ts, "2026-08-12");
+        assert_eq!(
+            ts.buckets[0].tokens_total, 15,
+            "both ts shapes collapse into the same day bucket"
+        );
+        assert_eq!(ts.buckets[0].event_count, 2);
+        assert_eq!(ts.buckets[1].bucket_ts, "2026-08-14");
+    }
+
+    #[test]
+    fn timeseries_hour_bucket_normalizes_the_iso_separator() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        seed_event_at(&conn, "e1", "org1", "2026-08-12 09:15:00", 10);
+        seed_event_at(&conn, "e2", "org1", "2026-08-12T09:45:00", 5);
+
+        let ts = usage_timeseries(&conn, "org1", "hour", None, None, None, None, None).unwrap();
+        assert_eq!(ts.buckets.len(), 1, "same hour, different ts shape → one bucket");
+        assert_eq!(ts.buckets[0].bucket_ts, "2026-08-12 09");
+        assert_eq!(ts.buckets[0].tokens_total, 15);
+    }
+
+    #[test]
+    fn timeseries_week_bucket_anchors_on_monday() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        // 2026-08-10 is a Monday; 2026-08-16 is the Sunday of that same week.
+        seed_event_at(&conn, "e1", "org1", "2026-08-10 09:00:00", 10);
+        seed_event_at(&conn, "e2", "org1", "2026-08-16 22:00:00", 5);
+        // Next Monday starts a new bucket.
+        seed_event_at(&conn, "e3", "org1", "2026-08-17 01:00:00", 1);
+
+        let ts = usage_timeseries(&conn, "org1", "week", None, None, None, None, None).unwrap();
+        assert_eq!(ts.buckets.len(), 2);
+        assert_eq!(ts.buckets[0].bucket_ts, "2026-08-10");
+        assert_eq!(ts.buckets[0].tokens_total, 15, "Mon..Sun collapse into one week");
+        assert_eq!(ts.buckets[1].bucket_ts, "2026-08-17");
+    }
+
+    #[test]
+    fn timeseries_respects_viewer_scoping() {
+        let conn = setup();
+        seed_org(&conn, "org1");
+        seed_user(&conn, "viewer", "org1");
+        seed_project(&conn, "p1", "org1", "visible", None);
+        seed_project(&conn, "p2", "org1", "hidden", None);
+        conn.execute(
+            "INSERT INTO project_members (id, project_id, user_id, role)
+             VALUES ('pm1', 'p1', 'viewer', 'member')",
+            [],
+        )
+        .unwrap();
+
+        for proj in ["visible", "hidden"] {
+            let req = UsageIngestRequest {
+                project: Some(proj.to_string()),
+                tokens_in: 100,
+                event_ts: Some("2026-08-14 10:00:00".to_string()),
+                ..Default::default()
+            };
+            insert_usage_event(&conn, "org1", "viewer", &req).unwrap();
+        }
+
+        let scoped =
+            usage_timeseries(&conn, "org1", "day", None, None, None, None, Some("viewer")).unwrap();
+        assert_eq!(scoped.buckets.len(), 1);
+        assert_eq!(
+            scoped.buckets[0].tokens_total, 100,
+            "the hidden project's tokens must not leak into the trend"
+        );
     }
 
     #[test]
