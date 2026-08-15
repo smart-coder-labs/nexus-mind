@@ -29,6 +29,26 @@ use crate::{
 const DEFAULT_TOP_K: i64 = 5;
 const MAX_TOP_K: i64 = 20;
 
+/// A `/v1/code/search` hit: a [`SearchCodeResult`] plus the embedding
+/// **skeleton** — the exact text (symbol name + signature + doc-comment) that
+/// was embedded at index time by [`indexer::chunker::build_embed_text`]. The
+/// UI shows both the real `content` body and this `skeleton` so a user can see
+/// "what was actually indexed/embedded" for each hit.
+///
+/// Defined here (not in `models::types`) so the search response can carry the
+/// skeleton without changing the shared `SearchCodeResult` struct. `#[serde(flatten)]`
+/// keeps the JSON identical to the old result shape, with `skeleton` added as a
+/// top-level field — backward compatible for any existing consumer.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SearchCodeHit {
+    #[serde(flatten)]
+    pub result: SearchCodeResult,
+    /// The signature/doc "skeleton" that was embedded for this chunk. Built with
+    /// the SAME function used at index time, so the UI sees exactly what was embedded.
+    #[serde(default)]
+    pub skeleton: String,
+}
+
 /// Build a Command for `git` with an augmented PATH that covers common install locations.
 /// Servers started by process managers (systemd, Docker, etc.) often have a stripped PATH
 /// that excludes /usr/local/bin and /opt/homebrew/bin where git lives.
@@ -539,7 +559,7 @@ pub async fn post_search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<SearchCodeRequest>,
-) -> Result<Json<Vec<SearchCodeResult>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<SearchCodeHit>>, (StatusCode, Json<ApiError>)> {
     // Permission check
     {
         let db = store.conn();
@@ -630,15 +650,24 @@ pub async fn post_search(
         db_queries::get_chunks_by_ids(&conn, &ids).map_err(db_err)?
     };
 
-    let mut results: Vec<SearchCodeResult> = chunks
+    let mut results: Vec<SearchCodeHit> = chunks
         .into_iter()
-        .map(|c| SearchCodeResult {
-            file_path: c.file_path.clone(),
-            symbol: c.symbol.clone(),
-            start_line: c.start_line,
-            end_line: c.end_line,
-            content: c.content.clone(),
-            score: score_map.get(&c.id).copied().unwrap_or(0.0),
+        .map(|c| {
+            // Rebuild the exact text that was embedded for this chunk at index
+            // time, so the UI can show "what was actually indexed/embedded".
+            let skeleton =
+                crate::indexer::chunker::build_embed_text(c.symbol.as_deref(), &c.content);
+            SearchCodeHit {
+                result: SearchCodeResult {
+                    file_path: c.file_path.clone(),
+                    symbol: c.symbol.clone(),
+                    start_line: c.start_line,
+                    end_line: c.end_line,
+                    content: c.content.clone(),
+                    score: score_map.get(&c.id).copied().unwrap_or(0.0),
+                },
+                skeleton,
+            }
         })
         .collect();
 
@@ -646,7 +675,7 @@ pub async fn post_search(
     if let Some(ext) = &input.extension {
         if !ext.is_empty() {
             let suffix = format!(".{}", ext);
-            results.retain(|r| r.file_path.ends_with(&suffix));
+            results.retain(|r| r.result.file_path.ends_with(&suffix));
         }
     }
 
@@ -2477,5 +2506,36 @@ mod tests {
 
         // We only verify it does NOT 400/500; the cap is invisible in an empty project
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Search hit skeleton exposure ──────────────────────────────────────────
+
+    #[test]
+    fn search_hit_serializes_flattened_result_plus_skeleton() {
+        // The skeleton is built with the SAME function used at index time, so the
+        // API returns exactly what was embedded for the chunk.
+        let content = "/// Lists users\npub fn list_users(db: &Db) -> Vec<User> {\n    db.all()\n}";
+        let skeleton = crate::indexer::chunker::build_embed_text(Some("list_users"), content);
+        assert!(!skeleton.is_empty(), "skeleton must not be empty");
+
+        let hit = SearchCodeHit {
+            result: SearchCodeResult {
+                file_path: "src/users.rs".to_string(),
+                symbol: Some("list_users".to_string()),
+                start_line: 1,
+                end_line: 4,
+                content: content.to_string(),
+                score: 0.9,
+            },
+            skeleton: skeleton.clone(),
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&hit).unwrap();
+        // Flattened SearchCodeResult fields sit at the top level …
+        assert_eq!(json["file_path"], "src/users.rs");
+        assert_eq!(json["symbol"], "list_users");
+        assert_eq!(json["content"], content);
+        // … alongside the added skeleton field, which mirrors the indexed text.
+        assert_eq!(json["skeleton"], serde_json::Value::String(skeleton));
     }
 }
