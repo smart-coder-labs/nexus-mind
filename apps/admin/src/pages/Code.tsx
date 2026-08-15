@@ -1,9 +1,9 @@
 import { useMemo, useState, useCallback, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff, Code2, GitBranch } from 'lucide-react'
+import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff, Code2, GitBranch, MapPin } from 'lucide-react'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient } from '../api/client'
-import type { CodeProject, CodeSearchResult } from '../types'
+import type { CodeProject, CodeSearchResult, LocateResult } from '../types'
 import { StatTile } from './dashboard/StatTile'
 import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
@@ -246,9 +246,57 @@ function SearchResultRow({ result, searchQuery }: { result: CodeSearchResult; se
           <pre className="px-4 py-3 text-[10px] font-mono text-text-secondary leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">
             {highlightCode(result.content, searchQuery)}
           </pre>
+          {/* Indexed skeleton — the compact text (symbol + signature + doc) that
+              was actually embedded. Hidden when the backend omits it. */}
+          {result.skeleton && result.skeleton.trim() && (
+            <div className="border-t border-white/[0.07] px-4 py-3">
+              <p className="text-[9px] font-semibold tracking-[0.08em] uppercase text-text-quaternary mb-1.5 flex items-center gap-1">
+                <Code2 className="w-3 h-3" aria-hidden="true" />
+                indexed skeleton
+              </p>
+              <pre className="text-[10px] font-mono text-accent-blue/80 leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">
+                {result.skeleton}
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </div>
+  )
+}
+
+// ── Locate result row (paths-only) ────────────────────────────────────────────
+
+function LocateResultRow({ result }: { result: LocateResult }) {
+  const [copied, setCopied] = useState(false)
+
+  const copyPath = useCallback(() => {
+    navigator.clipboard.writeText(result.file_path).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }, [result.file_path])
+
+  return (
+    <button
+      type="button"
+      onClick={copyPath}
+      title="Copy file path"
+      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] text-left hover:bg-accent-blue/[0.04] transition-colors ${GLASS_PANEL}`}
+    >
+      <span className="shrink-0 text-text-quaternary">
+        {copied ? <Check className="w-3.5 h-3.5 text-status-success" /> : <Copy className="w-3.5 h-3.5" />}
+      </span>
+      <span className="flex-1 min-w-0 text-xs font-mono text-text-primary truncate">
+        {result.file_path}
+      </span>
+      {result.top_symbol && (
+        <span className="text-[10px] font-mono text-accent-blue bg-accent-blue/8 rounded-[5px] px-1.5 py-0.5 shrink-0 truncate max-w-[38%]">
+          {result.top_symbol}
+        </span>
+      )}
+      <ScoreBadge score={result.score} />
+    </button>
   )
 }
 
@@ -266,6 +314,12 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
   const [submittedExtension, setSubmittedExtension] = useState('')
   const [copied, setCopied] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Search (full results) vs Locate (paths-only). `submittedMode` freezes the
+  // mode the visible results belong to, so the header/branching never disagrees
+  // with what was actually fetched.
+  const [mode, setMode] = useState<'search' | 'locate'>('search')
+  const [submittedMode, setSubmittedMode] = useState<'search' | 'locate'>('search')
 
   // Saved searches state
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(loadSaved)
@@ -294,10 +348,24 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
     [projects],
   )
 
+  const hasQuery = submittedQuery.trim().length > 0 && submittedProject.trim().length > 0
+
   const { data: results, isLoading, isError, error } = useQuery({
     queryKey: ['code-search', submittedProject, submittedQuery, submittedExtension],
     queryFn: () => client.searchCode(submittedProject, submittedQuery, 10, submittedExtension || undefined),
-    enabled: submittedQuery.trim().length > 0 && submittedProject.trim().length > 0,
+    enabled: submittedMode === 'search' && hasQuery,
+    retry: false,
+  })
+
+  const {
+    data: locateResults,
+    isLoading: locateLoading,
+    isError: locateIsError,
+    error: locateError,
+  } = useQuery({
+    queryKey: ['code-locate', submittedProject, submittedQuery],
+    queryFn: () => client.locateCode(submittedProject, submittedQuery, 10),
+    enabled: submittedMode === 'locate' && hasQuery,
     retry: false,
   })
 
@@ -310,8 +378,20 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
       setSubmittedQuery(q)
       setSubmittedProject(p)
       setSubmittedExtension(extensionFilter)
+      setSubmittedMode(mode)
     },
-    [query, selectedProject, extensionFilter],
+    [query, selectedProject, extensionFilter, mode],
+  )
+
+  // Toggling the mode re-runs the already-submitted query in the new mode, so
+  // the switch feels instant once a search exists; before any search it just
+  // arms the button.
+  const handleModeChange = useCallback(
+    (m: 'search' | 'locate') => {
+      setMode(m)
+      if (submittedQuery.trim() && submittedProject.trim()) setSubmittedMode(m)
+    },
+    [submittedQuery, submittedProject],
   )
 
   const handleSaveSearch = useCallback(() => {
@@ -346,6 +426,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
 
   const hasSearched = submittedQuery.length > 0 && submittedProject.length > 0
   const canSave = query.trim().length > 0 && selectedProject.length > 0
+  const busy = isLoading || locateLoading
 
   if (indexedProjects.length === 0) {
     return (
@@ -362,7 +443,40 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
     <div className="space-y-5">
       {/* Search form */}
       <form onSubmit={handleSubmit} className="border border-border-primary rounded-[18px] p-5 space-y-4">
-        <p className="text-[12px] tracking-[-0.12px] text-text-tertiary">Semantic Code Search</p>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-[12px] tracking-[-0.12px] text-text-tertiary">
+            {mode === 'locate' ? 'Locate Files' : 'Semantic Code Search'}
+          </p>
+          {/* Search vs Locate segmented toggle */}
+          <div className="bg-white/[0.04] border border-white/[0.09] rounded-[11px] p-0.5 flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => handleModeChange('search')}
+              aria-pressed={mode === 'search'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] rounded-[8px] transition-colors ${
+                mode === 'search'
+                  ? 'bg-accent-blue/15 text-accent-blue font-semibold'
+                  : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              <Search className="w-3 h-3" />
+              Search
+            </button>
+            <button
+              type="button"
+              onClick={() => handleModeChange('locate')}
+              aria-pressed={mode === 'locate'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] rounded-[8px] transition-colors ${
+                mode === 'locate'
+                  ? 'bg-accent-blue/15 text-accent-blue font-semibold'
+                  : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              <MapPin className="w-3 h-3" />
+              Locate
+            </button>
+          </div>
+        </div>
 
         <div className="flex gap-3 flex-col sm:flex-row">
           {/* Project selector */}
@@ -383,7 +497,8 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
             </select>
           </div>
 
-          {/* Extension filter */}
+          {/* Extension filter — only applies to full Search (Locate returns paths) */}
+          {mode === 'search' && (
           <div className="sm:w-40 shrink-0">
             <label className="block text-[12px] tracking-[-0.12px] text-text-tertiary mb-1.5">
               Extension
@@ -404,6 +519,7 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
               <option value="md">Markdown (.md)</option>
             </select>
           </div>
+          )}
 
           {/* Query input */}
           <div className="flex-1">
@@ -514,18 +630,20 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
 
             <button
               type="submit"
-              disabled={isLoading || !query.trim() || !selectedProject}
+              disabled={busy || !query.trim() || !selectedProject}
               className="flex items-center gap-1.5 bg-accent-blue text-white rounded-full px-4 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
             >
-              {isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {isLoading ? 'Searching…' : 'Search'}
+              {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {busy
+                ? (mode === 'locate' ? 'Locating…' : 'Searching…')
+                : (mode === 'locate' ? 'Locate' : 'Search')}
             </button>
           </div>
         </div>
       </form>
 
       {/* Results */}
-      {hasSearched && (
+      {hasSearched && submittedMode === 'search' && (
         <div className="space-y-3">
           {isError && (
             <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
@@ -600,6 +718,60 @@ function CodeSearchTab({ projects }: { projects: CodeProject[] | undefined }) {
                   <div className="space-y-2">
                     {results.map((r, i) => (
                       <SearchResultRow key={`${r.file_path}-${r.start_line}-${i}`} result={r} searchQuery={submittedQuery} />
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Locate results — paths-only ranked list */}
+      {hasSearched && submittedMode === 'locate' && (
+        <div className="space-y-3">
+          {locateIsError && (
+            <div className="border border-status-error/20 rounded-[11px] px-4 py-3 text-xs text-status-error/80">
+              {(locateError as Error)?.message ?? 'Locate failed.'}
+            </div>
+          )}
+
+          {!locateLoading && !locateIsError && locateResults !== undefined && (
+            <>
+              {locateResults.length === 0 ? (
+                <div className="border border-border-primary rounded-[18px] p-10 flex flex-col items-center gap-2 text-center">
+                  <MapPin className="w-6 h-6 text-text-quaternary/50" />
+                  <p className="text-xs font-semibold text-text-secondary">No files found</p>
+                  <p className="text-xs text-text-quaternary max-w-xs">
+                    Try a different query or check that the project is indexed.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-[12px] text-text-quaternary tracking-[-0.12px]">
+                      {locateResults.length} file{locateResults.length === 1 ? '' : 's'} for &ldquo;{submittedQuery}&rdquo; in {submittedProject}
+                    </p>
+                    <div className="ml-auto flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const text = locateResults.map(r => r.file_path).join('\n')
+                          navigator.clipboard.writeText(text).then(() => {
+                            setCopied(true)
+                            setTimeout(() => setCopied(false), 2000)
+                          })
+                        }}
+                        className={`border border-border-primary rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5 transition-colors ${copied ? 'text-status-success' : 'text-text-secondary hover:text-text-primary'}`}
+                      >
+                        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        {copied ? 'Copied!' : 'Copy paths'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {locateResults.map((r, i) => (
+                      <LocateResultRow key={`${r.file_path}-${i}`} result={r} />
                     ))}
                   </div>
                 </>

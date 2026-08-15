@@ -347,6 +347,23 @@ export interface CodeSearchResult {
   end_line: number
   content: string
   score: number
+  /**
+   * The compact text that was embedded for this chunk — symbol name + signature
+   * + doc-comment. Optional/backward-compatible: an older backend omits it, so
+   * every read site must tolerate it being absent.
+   */
+  skeleton?: string
+}
+
+/**
+ * One ranked distinct file path from `POST /v1/code/locate` — the lean,
+ * token-cheap "jump to the right file" view. A file's `score` is its single
+ * best-scoring chunk; `top_symbol` is that chunk's symbol (null if none).
+ */
+export interface LocateResult {
+  file_path: string
+  top_symbol: string | null
+  score: number
 }
 
 export interface SessionSummary {

@@ -25,6 +25,7 @@ import type {
   BulkDeleteResponse,
   BulkTagResponse,
   CodeSearchResult,
+  LocateResult,
   CodeGraph,
   CodeSnippet,
   SessionSummary,
@@ -562,6 +563,19 @@ export class NexusMindClient {
       method: 'POST',
       body: JSON.stringify({ project, query, top_k: topK, extension }),
     })
+  }
+
+  /**
+   * Paths-only "Locate" — ranked DISTINCT file paths, deduped by file. The
+   * token-cheap counterpart to `searchCode`: same auth, same body shape, but the
+   * response is `{ results: [...] }` (unwrapped here to the bare array).
+   */
+  async locateCode(project: string, query: string, limit?: number): Promise<LocateResult[]> {
+    const res = await this.request<{ results?: LocateResult[] } | LocateResult[]>('/v1/code/locate', {
+      method: 'POST',
+      body: JSON.stringify({ project, query, limit }),
+    })
+    return Array.isArray(res) ? res : (res?.results ?? [])
   }
 
   getCodeGraph(
