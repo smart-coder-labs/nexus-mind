@@ -88,5 +88,29 @@ Use it as the MCP `NEXUSMIND_API_KEY` and point clients at `http://<box-ip>:8080
   (`docker compose logs backend`). The MCP `api_key` above works regardless.
 - **No TLS** — internal IP:port only, as chosen. Put it behind a reverse proxy
   with certs before exposing to the public internet.
+- **`COOKIE_SECURE=false` — SECURITY DEBT, remove once TLS is in place.**
+  Because the box is served over plain HTTP, the session cookie cannot carry the
+  `Secure` attribute: browsers silently drop such a cookie on an insecure origin,
+  which makes login return `200` and then bounce the user straight back to
+  `/login`. The override in `docker-compose.yml` is what makes login work at all
+  here. The price is that **the session token travels in cleartext** — anyone on
+  the network path can capture it and impersonate the user, so keep the AWS
+  Security Group restricted to known source IPs. See "Getting to TLS" below.
+
+## Getting to TLS (removes the `COOKIE_SECURE` debt)
+
+`COOKIE_SECURE=false` exists only because there is no certificate. To retire it:
+
+1. Point a **domain** at the box (e.g. `nexus.u2s.dev` → the elastic IP).
+   Let's Encrypt will not issue a certificate for a bare IP, so a DNS name is a
+   hard prerequisite.
+2. Put a reverse proxy with automatic certs in front (Caddy is the least work —
+   it handles ACME issuance and renewal itself) terminating `:443` and proxying
+   to the `admin` and `backend` containers.
+3. Delete the `COOKIE_SECURE` line from `docker-compose.yml`. The backend
+   defaults to `true`, so removing the override is the whole change.
+4. Close `3000`/`8080` in the Security Group and expose only `443`.
+
+Until step 3 lands, treat any session on this box as interceptable.
 - **`main` scope** — Clients admin and usage metrics live on
   `customization/u2s-company-brain`, not `main`, so they are absent here by design.

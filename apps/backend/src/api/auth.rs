@@ -6,6 +6,7 @@ use tower_cookies::{Cookie, Cookies};
 
 use crate::{
     auth::{api_keys, password::verify_password},
+    config::Config,
     db::queries,
     email::{send_password_reset, EmailConfig},
     models::types::{ApiError, AuthContext},
@@ -42,11 +43,16 @@ fn bad_request(msg: &str, code: &str) -> (StatusCode, Json<ApiError>) {
     )
 }
 
-fn set_session_cookie(cookies: &Cookies, raw_key: String) {
+/// Builds the session cookie. `secure` comes from [`Config::cookie_secure`]
+/// rather than being hardcoded: a `Secure` cookie is silently dropped by the
+/// browser on an insecure origin, which turns a successful login into an
+/// immediate bounce back to /login. See the field docs for the security
+/// trade-off — it must be true wherever TLS is available.
+fn set_session_cookie(cookies: &Cookies, raw_key: String, secure: bool) {
     let mut cookie = Cookie::new("nexusmind_session", raw_key);
     cookie.set_http_only(true);
     cookie.set_path("/");
-    cookie.set_secure(true);
+    cookie.set_secure(secure);
     cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
     cookies.add(cookie);
 }
@@ -63,6 +69,7 @@ pub struct LoginInput {
 pub async fn login(
     cookies: Cookies,
     State(store): State<SqliteStore>,
+    Extension(config): Extension<Arc<Config>>,
     AppJson(input): AppJson<LoginInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
@@ -86,7 +93,7 @@ pub async fn login(
         let raw_key = queries::create_web_session_key(&conn, &auth_ctx.user_id, &auth_ctx.org_id)
             .map_err(|_| internal_err("failed to create session"))?;
 
-        set_session_cookie(&cookies, raw_key);
+        set_session_cookie(&cookies, raw_key, config.cookie_secure);
 
         return Ok(Json(serde_json::json!({
             "org": org,
@@ -119,7 +126,7 @@ pub async fn login(
     let raw_key = queries::create_web_session_key(&conn, &user.id, &user.org_id)
         .map_err(|_| internal_err("failed to create session"))?;
 
-    set_session_cookie(&cookies, raw_key);
+    set_session_cookie(&cookies, raw_key, config.cookie_secure);
 
     Ok(Json(serde_json::json!({
         "org": org,
@@ -163,6 +170,7 @@ pub async fn me(
 pub async fn logout(
     cookies: Cookies,
     State(store): State<SqliteStore>,
+    Extension(config): Extension<Arc<Config>>,
 ) -> StatusCode {
     if let Some(cookie) = cookies.get("nexusmind_session") {
         let token = cookie.value().to_string();
@@ -173,10 +181,14 @@ pub async fn logout(
     }
 
     // Clear the cookie by setting Max-Age=0
+    // Mirror the attributes used when the cookie was set. A removal cookie
+    // carrying `Secure` is itself dropped on an insecure origin, which would
+    // leave the session cookie in place and make logout a no-op.
     let mut removal = Cookie::new("nexusmind_session", "");
     removal.set_path("/");
     removal.set_max_age(tower_cookies::cookie::time::Duration::ZERO);
     removal.set_http_only(true);
+    removal.set_secure(config.cookie_secure);
     removal.set_same_site(tower_cookies::cookie::SameSite::Lax);
     cookies.add(removal);
 

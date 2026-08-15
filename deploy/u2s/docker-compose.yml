@@ -24,6 +24,21 @@ services:
       # Auth for the superuser-only endpoints (POST/GET /v1/orgs). Also gates the
       # one-time single-org bootstrap. Never baked into the image — env only.
       SUPERUSER_KEY: ${SUPERUSER_KEY}
+      # ⚠️  SECURITY DEBT — REMOVE THIS ONCE THE BOX IS BEHIND TLS. ⚠️
+      # This box is served over PLAIN HTTP on a bare IP (http://<ip>:3000).
+      # Browsers silently DROP a `Secure` cookie on an insecure origin, so with
+      # the default (true) login returns 200 and the user is bounced straight
+      # back to /login — the session cookie is never stored.
+      #
+      # The cost of this override: the session token travels in CLEARTEXT over
+      # the public internet. Anyone on the network path can capture it and
+      # impersonate the user. It is acceptable ONLY while access is restricted
+      # to known source IPs in the AWS Security Group.
+      #
+      # Fix: put a reverse proxy with a real certificate in front (needs a
+      # DOMAIN — Let's Encrypt will not issue for a bare IP), then delete this
+      # line so the secure-by-default applies. Tracked in the repo issues.
+      COOKIE_SECURE: "false"
     # Explicit memory ceiling: code indexing (tree-sitter ASTs + ONNX embeddings,
     # nomic-embed-text-v1.5) can spike. Batching bounds it; this fails the
     # container loudly instead of taking the 4 GiB host down on a runaway repo.
