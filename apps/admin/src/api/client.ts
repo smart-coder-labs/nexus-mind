@@ -105,6 +105,7 @@ import type {
   PatchSddChangeRequest,
   LinkSddChangeMemoryRequest,
 } from '../types'
+import { isPublicRoute } from '../auth/public-routes'
 
 export class NexusMindClient {
   constructor(private readonly baseUrl: string) {}
@@ -119,7 +120,12 @@ export class NexusMindClient {
       },
     })
     if (!res.ok) {
-      if (res.status === 401) {
+      // A 401 means the session cookie is gone or expired, so eject to /login.
+      // Except on the public routes: there an unauthenticated 401 is the normal
+      // state (the login page boots with GET /auth/me to detect an existing
+      // session), and redirecting would reload the document into the same 401 —
+      // an infinite reload loop.
+      if (res.status === 401 && !isPublicRoute(window.location?.pathname)) {
         window.location.replace('/login')
       }
       const body = await res.json().catch(() => ({ error: res.statusText, code: 'unknown' }))
