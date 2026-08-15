@@ -12,10 +12,12 @@
 //! The binary re-exports everything here, so it reads exactly as before.
 
 pub mod claude_memories;
+pub mod git_history;
 pub mod redact;
 pub mod repo_docs;
 
 pub use claude_memories::ClaudeMemoriesConnector;
+pub use git_history::GitHistoryConnector;
 pub use repo_docs::RepoDocsConnector;
 
 use anyhow::Result;

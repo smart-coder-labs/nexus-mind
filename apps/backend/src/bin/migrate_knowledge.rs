@@ -34,8 +34,8 @@ use std::process::Command;
 // the library suite. Re-exported here so this binary reads as it did before.
 
 pub use nexusmind::migration::{
-    CandidatePayload, ClaudeMemoriesConnector, Connector, RepoDocsConnector, ScanOptions,
-    SourceItem,
+    CandidatePayload, ClaudeMemoriesConnector, Connector, GitHistoryConnector, RepoDocsConnector,
+    ScanOptions, SourceItem,
 };
 
 // ── The noop connector ───────────────────────────────────────────────────────
@@ -321,6 +321,11 @@ struct Args {
     #[arg(long, default_value = "claude")]
     claude_bin: String,
 
+    /// Scan only the history after this commit — the incremental second pass
+    /// over a long-lived repository.
+    #[arg(long)]
+    since_commit: Option<String>,
+
     /// Which slice of the machine this material belongs to: `global`, or a
     /// project slug. Never the machine or user name — that would be PII inside a
     /// source identity.
@@ -346,9 +351,13 @@ fn connector_for(source: &str, args: &Args) -> Result<Box<dyn Connector>> {
         "claude-memories" => Ok(Box::new(ClaudeMemoriesConnector::new(
             args.host_scope.clone().unwrap_or_else(|| "global".to_string()),
         ))),
-        "git-history" | "db-schema" => anyhow::bail!(
+        "git-history" => Ok(Box::new(
+            GitHistoryConnector::new(GitHistoryConnector::repo_name_for(&args.path))
+                .since(args.since_commit.clone()),
+        )),
+        "db-schema" => anyhow::bail!(
             "connector `{source}` ships with its own change and is not available yet. \
-             Available: noop, repo-docs, claude-memories."
+             Available: noop, repo-docs, claude-memories, git-history."
         ),
         other => anyhow::bail!("unknown source `{other}`"),
     }
@@ -658,6 +667,7 @@ mod tests {
             claude_bin: "claude".to_string(),
             include_sdd: false,
             host_scope: None,
+            since_commit: None,
         }
     }
 
@@ -665,13 +675,13 @@ mod tests {
     /// still has to say where they live rather than just failing.
     #[test]
     fn repo_docs_is_available_and_the_other_three_are_not() {
-        for available in ["noop", "repo-docs", "claude-memories"] {
+        for available in ["noop", "repo-docs", "claude-memories", "git-history"] {
             assert!(
                 connector_for(available, &args_for(available)).is_ok(),
                 "`{available}` must be available"
             );
         }
-        for pending in ["git-history", "db-schema"] {
+        for pending in ["db-schema"] {
             match connector_for(pending, &args_for(pending)) {
                 Ok(_) => panic!("`{pending}` has not shipped yet"),
                 Err(e) => assert!(
