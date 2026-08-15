@@ -12,7 +12,9 @@
 //! The binary re-exports everything here, so it reads exactly as before.
 
 pub mod claude_memories;
+pub mod db_schema;
 pub mod git_history;
+pub mod pg_reader;
 pub mod redact;
 pub mod repo_docs;
 

@@ -34,6 +34,8 @@ use std::process::Command;
 // the library suite. Re-exported here so this binary reads as it did before.
 
 pub use nexusmind::migration::{
+    db_schema::{DbSchemaConnector, SamplingPolicy},
+    pg_reader::PgSchemaReader,
     CandidatePayload, ClaudeMemoriesConnector, Connector, GitHistoryConnector, RepoDocsConnector,
     ScanOptions, SourceItem,
 };
@@ -321,6 +323,37 @@ struct Args {
     #[arg(long, default_value = "claude")]
     claude_bin: String,
 
+    /// Declared only so passing it can be REFUSED with an explanation. The DSN
+    /// belongs in NEXUSMIND_SOURCE_DSN; on a command line it survives in shell
+    /// history, in `ps`, and in anything that logs commands.
+    #[arg(long)]
+    dsn: Option<String>,
+
+    /// Describe row-level security policies as the access rules they are.
+    #[arg(long)]
+    supabase: bool,
+
+    /// Read business rows. OFF by default and gated by four cumulative
+    /// conditions — see ADR db359a75. A flag you forget to set is a mistake;
+    /// a flag you must set on purpose is a decision.
+    #[arg(long)]
+    include_data: bool,
+
+    /// The explicit table allowlist for sampling. There is deliberately no --all.
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    #[arg(long)]
+    sample_limit: Option<usize>,
+
+    /// Redact PII locally before any sample leaves this process.
+    #[arg(long)]
+    redact_pii: bool,
+
+    /// Who authorised reading this client's data, and when. Recorded on the run.
+    #[arg(long)]
+    attest: Option<String>,
+
     /// Scan only the history after this commit — the incremental second pass
     /// over a long-lived repository.
     #[arg(long)]
@@ -355,10 +388,35 @@ fn connector_for(source: &str, args: &Args) -> Result<Box<dyn Connector>> {
             GitHistoryConnector::new(GitHistoryConnector::repo_name_for(&args.path))
                 .since(args.since_commit.clone()),
         )),
-        "db-schema" => anyhow::bail!(
-            "connector `{source}` ships with its own change and is not available yet. \
-             Available: noop, repo-docs, claude-memories, git-history."
-        ),
+        "db-schema" => {
+            // The DSN never comes from argv: it would survive in shell history,
+            // in `ps`, and in anything that logs commands.
+            if args.dsn.is_some() {
+                anyhow::bail!(
+                    "dsn_in_argv: pass the connection string in NEXUSMIND_SOURCE_DSN instead. \
+                     A DSN on the command line survives in your shell history, in `ps` output \
+                     and in any command logging."
+                );
+            }
+            let dsn = std::env::var("NEXUSMIND_SOURCE_DSN").map_err(|_| {
+                anyhow::anyhow!(
+                    "missing_dsn: set NEXUSMIND_SOURCE_DSN to the source database connection \
+                     string. Use a READ-ONLY role — the connector refuses one that can write."
+                )
+            })?;
+            let reader = PgSchemaReader::connect(&dsn)?;
+            Ok(Box::new(
+                DbSchemaConnector::new(reader)
+                    .with_supabase(args.supabase)
+                    .with_sampling(SamplingPolicy {
+                        enabled: args.include_data,
+                        allowlist: args.tables.clone(),
+                        limit: args.sample_limit,
+                        redact_pii: args.redact_pii,
+                        attestation: args.attest.clone(),
+                    }),
+            ))
+        }
         other => anyhow::bail!("unknown source `{other}`"),
     }
 }
@@ -668,6 +726,13 @@ mod tests {
             include_sdd: false,
             host_scope: None,
             since_commit: None,
+            dsn: None,
+            supabase: false,
+            include_data: false,
+            tables: vec![],
+            sample_limit: None,
+            redact_pii: false,
+            attest: None,
         }
     }
 
@@ -681,16 +746,34 @@ mod tests {
                 "`{available}` must be available"
             );
         }
-        for pending in ["db-schema"] {
-            match connector_for(pending, &args_for(pending)) {
-                Ok(_) => panic!("`{pending}` has not shipped yet"),
-                Err(e) => assert!(
-                    e.to_string().contains("its own change"),
-                    "the refusal must explain where the connector lives; got: {e}"
-                ),
-            }
-        }
         assert!(connector_for("notion", &args_for("notion")).is_err());
+    }
+
+    /// A DSN on the command line survives in shell history, in `ps`, and in
+    /// anything that logs commands. The flag exists only so passing it can be
+    /// refused with that explanation rather than silently accepted.
+    #[test]
+    fn a_dsn_passed_as_an_argument_is_refused() {
+        let mut args = args_for("db-schema");
+        args.dsn = Some("postgres://admin:hunter2@db.internal/prod".to_string());
+        let msg = match connector_for("db-schema", &args) {
+            Ok(_) => panic!("a DSN in argv must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("dsn_in_argv"), "{msg}");
+        assert!(msg.contains("NEXUSMIND_SOURCE_DSN"));
+        assert!(msg.contains("shell history"));
+    }
+
+    #[test]
+    fn db_schema_without_a_dsn_says_where_to_put_it() {
+        std::env::remove_var("NEXUSMIND_SOURCE_DSN");
+        let msg = match connector_for("db-schema", &args_for("db-schema")) {
+            Ok(_) => panic!("no DSN means no scan"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("missing_dsn"), "{msg}");
+        assert!(msg.contains("READ-ONLY"), "the refusal must say which role to use: {msg}");
     }
 
     #[test]
