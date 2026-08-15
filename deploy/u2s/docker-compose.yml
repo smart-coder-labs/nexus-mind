@@ -1,0 +1,52 @@
+# Self-host stack for the u2s box (AWS t3.medium).
+# Pulls PRE-BUILT images from GHCR — it does NOT build on the box (a 4 GiB
+# t3.medium OOMs / crawls compiling the Rust backend). Images are produced and
+# pushed by .github/workflows/deploy-u2s.yml.
+#
+# Requires a .env file next to this compose (written by the deploy workflow):
+#   GHCR_OWNER=<lowercase github owner>
+#   SUPERUSER_KEY=<secret>
+#   U2S_ADMIN_EMAIL=<admin email>     # consumed by bootstrap-u2s.sh only
+#   U2S_ADMIN_NAME=<admin name>       # consumed by bootstrap-u2s.sh only
+#
+# Ports (open these inbound in the AWS Security Group to your audience):
+#   8080 -> backend API / MCP base URL
+#   3000 -> admin panel (proxies /v1 to backend on the internal compose network)
+services:
+  backend:
+    image: ghcr.io/${GHCR_OWNER}/nexusmind-backend:main
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DB_PATH: /data/nexusmind.db
+      LOG_LEVEL: info
+      # Auth for the superuser-only endpoints (POST/GET /v1/orgs). Also gates the
+      # one-time single-org bootstrap. Never baked into the image — env only.
+      SUPERUSER_KEY: ${SUPERUSER_KEY}
+    # Explicit memory ceiling: code indexing (tree-sitter ASTs + ONNX embeddings,
+    # nomic-embed-text-v1.5) can spike. Batching bounds it; this fails the
+    # container loudly instead of taking the 4 GiB host down on a runaway repo.
+    mem_limit: 2g
+    mem_reservation: 512m
+    volumes:
+      - nexusmind_data:/data
+    healthcheck:
+      # start_period covers the ~35s embedding-model init before the port listens.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /v1/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  admin:
+    image: ghcr.io/${GHCR_OWNER}/nexusmind-admin:main
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  nexusmind_data:
