@@ -83,7 +83,7 @@ fn require_visible_project(
     project: &str,
     method: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if project_is_visible_to_actor(conn, auth, project).map_err(|e| db_err(e.into()))? {
+    if project_is_visible_to_actor(conn, auth, project).map_err(db_err)? {
         Ok(())
     } else {
         Err(hidden_resource_not_found(conn, auth, "sdd_project", project, method, "sdd"))

@@ -211,6 +211,7 @@ pub fn insert_usage_event(
 ///
 /// `level` must be one of `task | project | client | org | model | user`
 /// (validated by the caller).
+#[allow(clippy::too_many_arguments)]
 pub fn usage_summary(
     conn: &Connection,
     org_id: &str,
@@ -344,6 +345,7 @@ pub fn usage_summary(
 /// Only non-empty buckets are returned; the caller gap-fills, since it is the
 /// side that knows the requested range. `viewer_user_id` scopes exactly as in
 /// [`usage_summary`].
+#[allow(clippy::too_many_arguments)]
 pub fn usage_timeseries(
     conn: &Connection,
     org_id: &str,

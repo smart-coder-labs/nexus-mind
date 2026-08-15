@@ -3387,7 +3387,6 @@ mod tests {
         assert!(back.resource_id.is_none());
     }
 
-    #[test]
     /// The scanner refused to publish real harnesses because their prose contained the
     /// words `task-specific` and `ask-on-risk`. Both hold the substring `sk-`, which the
     /// check looked for unanchored, aiming at OpenAI keys.
@@ -3430,6 +3429,7 @@ mod tests {
         assert_eq!(validate_safe_manifest_content("/Users/cesar/.ssh/id_rsa"), Err("secret_scan_failed"));
     }
 
+    #[test]
     fn typed_harness_manifest_accepts_all_supported_formats() {
         for manifest in [
             json!({ "schema_version": "1.1", "format": "agent", "targets": ["claude"], "components": [manifest_file_component("file", "agents/reviewer.md", "text/markdown", "# Agent")], "provenance": { "source": "admin-ui" }, "security": { "requires_approval": true, "secret_scan_status": "passed" } }),
