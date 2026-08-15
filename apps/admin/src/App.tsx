@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import SetPassword from './pages/SetPassword'
 import { Layout } from './components/Layout'
 import { DISABLED_NAV_HREFS } from './config/disabled-sections'
+import Migrations from './pages/Migrations'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Users     = lazy(() => import('./pages/Users'))
@@ -105,6 +106,7 @@ function AppRoutes() {
                 <Route path="/harnesses" element={<AdminRoute><Harnesses /></AdminRoute>} />
                 <Route path="/tasks"    element={<AdminRoute><Tasks /></AdminRoute>} />
                 <Route path="/sdd"      element={<AdminRoute><Sdd /></AdminRoute>} />
+                <Route path="/migrations" element={<AdminRoute><Migrations /></AdminRoute>} />
                 <Route path="/graph"   element={<Graph />} />
                 <Route path="/401"    element={<Unauthorized />} />
               </Routes>

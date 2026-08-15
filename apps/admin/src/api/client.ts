@@ -45,6 +45,12 @@ import type {
   InviteLinkResponse,
   ImportMemory,
   ImportMemoriesResponse,
+  MigrationRun,
+  MigrationCandidate,
+  MigrationReviewAction,
+  MigrationReviewResponse,
+  MigrationCommitResponse,
+  MigrationRunReport,
   AgentActivity,
   HeatmapDay,
   ContributorStat,
@@ -676,6 +682,54 @@ export class NexusMindClient {
   //
   // Privileged read (admin/super_user); the backend scopes rows to the caller's
   // visible projects. `runUsageBackfill` is super_user-only server-side.
+
+  // ── Knowledge migration ────────────────────────────────────────────────────
+
+  listMigrationRuns(params?: { client_id?: string; limit?: number }): Promise<MigrationRun[]> {
+    const qs = new URLSearchParams()
+    if (params?.client_id) qs.set('client_id', params.client_id)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return this.request<MigrationRun[]>(`/v1/migrations${suffix}`)
+  }
+
+  getMigrationRun(id: string): Promise<MigrationRun> {
+    return this.request<MigrationRun>(`/v1/migrations/${id}`)
+  }
+
+  listMigrationCandidates(
+    id: string,
+    params?: { status?: string; destination_kind?: string; limit?: number },
+  ): Promise<MigrationCandidate[]> {
+    const qs = new URLSearchParams()
+    if (params?.status) qs.set('status', params.status)
+    if (params?.destination_kind) qs.set('destination_kind', params.destination_kind)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return this.request<MigrationCandidate[]>(`/v1/migrations/${id}/candidates${suffix}`)
+  }
+
+  reviewMigrationCandidates(
+    id: string,
+    actions: MigrationReviewAction[],
+  ): Promise<MigrationReviewResponse> {
+    return this.request<MigrationReviewResponse>(`/v1/migrations/${id}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ actions }),
+    })
+  }
+
+  commitMigrationRun(id: string): Promise<MigrationCommitResponse> {
+    return this.request<MigrationCommitResponse>(`/v1/migrations/${id}/commit`, { method: 'POST' })
+  }
+
+  cancelMigrationRun(id: string): Promise<{ cancelled: number }> {
+    return this.request<{ cancelled: number }>(`/v1/migrations/${id}/cancel`, { method: 'POST' })
+  }
+
+  getMigrationReport(id: string): Promise<MigrationRunReport> {
+    return this.request<MigrationRunReport>(`/v1/migrations/${id}/report`)
+  }
 
   getUsageSummary(params: {
     level: UsageLevel

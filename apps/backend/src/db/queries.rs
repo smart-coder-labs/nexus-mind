@@ -2827,6 +2827,55 @@ pub fn compute_normalized_hash(content: &str) -> String {
     hex::encode(hash)
 }
 
+/// The transactional core of storing a memory: session validation, the upsert,
+/// and the audit row — everything except taking a lock and computing an
+/// embedding.
+///
+/// It exists so the migration commit path and `MemoryStore::store` share **one**
+/// body. The alternative was for the commit path to call `upsert_memory` plus
+/// `log_audit` itself, which is the same code in two places until the day
+/// somebody changes one of them; a migrated memory would then quietly stop being
+/// audited, and nobody would notice until an auditor asked.
+///
+/// Takes `&Connection`, so a caller may pass a `&Transaction` and get the
+/// memory, its audit row and its own bookkeeping committed atomically.
+/// Embedding is deliberately NOT here: it is CPU-bound and must not run with a
+/// write transaction open.
+pub fn store_memory_with_audit(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    req: &StoreMemoryRequest,
+) -> Result<Memory> {
+    if let Some(ref sid) = req.session_id {
+        let valid = validate_session_ownership(conn, org_id, sid)?;
+        if !valid {
+            anyhow::bail!("invalid_session_id:{sid}");
+        }
+    }
+
+    let memory = upsert_memory(conn, org_id, user_id, req)?;
+
+    let _ = log_audit(
+        conn,
+        org_id,
+        user_id,
+        "store",
+        "memory",
+        Some(&memory.id),
+        serde_json::json!({
+            "tool": memory.tool,
+            "project": memory.project,
+            "title": memory.title,
+            "type": memory.memory_type,
+            "tags": memory.tags,
+            "preview": memory.content.chars().take(160).collect::<String>(),
+        }),
+    );
+
+    Ok(memory)
+}
+
 /// Stores a memory with upsert semantics when `topic_key` is provided.
 /// - With `topic_key`: SELECT existing row for `(org_id, topic_key)`.
 ///   If found, UPDATE content/title/type/scope/hash and increment `revision_count`.
@@ -3791,6 +3840,13 @@ pub fn get_role_permissions(
             "sdd:read".to_string(),
             "sdd:write".to_string(),
             "sdd:delete".to_string(),
+            // Knowledge migration (v60). `migration:review` is intentionally a
+            // separate grant from `migration:write`: running a scan and deciding
+            // what enters the company brain are different jobs, and in a
+            // consultancy they are usually different people.
+            "migration:read".to_string(),
+            "migration:write".to_string(),
+            "migration:review".to_string(),
         ]);
     } else if role_name == "super_user" {
         return Ok(vec![
@@ -3845,6 +3901,13 @@ pub fn get_role_permissions(
             "sdd:read".to_string(),
             "sdd:write".to_string(),
             "sdd:delete".to_string(),
+            // Knowledge migration (v60). `migration:review` is intentionally a
+            // separate grant from `migration:write`: running a scan and deciding
+            // what enters the company brain are different jobs, and in a
+            // consultancy they are usually different people.
+            "migration:read".to_string(),
+            "migration:write".to_string(),
+            "migration:review".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![

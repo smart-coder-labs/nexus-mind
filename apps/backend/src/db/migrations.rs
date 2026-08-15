@@ -62,6 +62,248 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v57(conn)?;
     run_v58(conn)?;
     run_v59(conn)?;
+    run_v60(conn)?;
+    Ok(())
+}
+
+/// Migration v60: knowledge migration — staging, review and the documentation corpus.
+///
+/// # Why this one recreates instead of altering
+///
+/// v56 created a complete staging schema for knowledge migration and then
+/// nothing was ever built on top of it: no queries, no routes, no UI. The
+/// tables are empty in every installation that exists.
+///
+/// The shape it needs is not reachable by `ALTER TABLE`:
+///
+///   * `destination_kind` has to move OFF `migration_runs` and ONTO
+///     `migration_candidates`. v56 assumed one destination kind per run, which
+///     dies on the first real scan — walking `docs/` yields memories,
+///     conventions, tasks and SDD artifacts in a single pass, and keeping the
+///     assumption would mean walking the same tree four times.
+///   * Dropping it also drops v56's cross-column
+///     `CHECK(destination_kind = 'convention' AND project_id IS NULL)`, which
+///     contradicted the destination anyway: `conventions.project_id` exists and
+///     is nullable, so v56 forbade project-scoped conventions that the
+///     conventions table happily supports.
+///   * `migration_provenance.destination_kind` widens from two accepted values
+///     to six. SQLite cannot alter a CHECK constraint.
+///
+/// Three interlocking partial rebuilds are harder to read and easier to get
+/// wrong than one clean recreation — but a recreation is only defensible while
+/// the tables are empty, so this migration VERIFIES that rather than assuming
+/// it. If any of the five holds a row, the premise is false and we abort with
+/// the table and the count instead of dropping data someone cared about.
+///
+/// Everything v56 got right is preserved verbatim: the org/project scope
+/// triggers, `UNIQUE(run_id, source_identity)` for per-run idempotency, the
+/// `UNIQUE(org_id, destination_kind, source_identity)` provenance key that makes
+/// re-committing a source a database error rather than an application check,
+/// optimistic `version`, and the append-only triggers on review actions.
+pub fn run_v60(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= 60 {
+        return Ok(());
+    }
+
+    // ── Guard: v56 must be unused ────────────────────────────────────────────
+    for table in [
+        "migration_runs",
+        "migration_candidates",
+        "migration_review_actions",
+        "migration_provenance",
+        "migration_outcomes",
+    ] {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            continue;
+        }
+        let rows: i64 =
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+        if rows != 0 {
+            anyhow::bail!(
+                "run_v60 aborted: {table} holds {rows} row(s). v60 recreates the v56 staging \
+                 tables, which is only safe because that schema was never wired to anything. \
+                 Migrate or export these rows by hand, then re-run."
+            );
+        }
+    }
+
+    // ── Recreate ─────────────────────────────────────────────────────────────
+    // Dropped in reverse dependency order. `DROP TABLE` also drops the table's
+    // indexes and triggers, so there is nothing to clean up separately.
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS migration_outcomes;
+         DROP TABLE IF EXISTS migration_provenance;
+         DROP TABLE IF EXISTS migration_review_actions;
+         DROP TABLE IF EXISTS migration_candidates;
+         DROP TABLE IF EXISTS migration_runs;
+
+         CREATE TABLE migration_runs (
+            id             TEXT PRIMARY KEY,
+            org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            client_id      TEXT REFERENCES clients(id)  ON DELETE RESTRICT,
+            project_id     TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+            source_kind    TEXT NOT NULL CHECK(source_kind IN
+                             ('repo-docs','git-history','claude-memories','db-schema','noop')),
+            status         TEXT NOT NULL DEFAULT 'staging' CHECK(status IN
+                             ('staging','in_review','committing','completed','cancelled')),
+            source_ref     TEXT,
+            runner_version TEXT,
+            attestation    TEXT NOT NULL DEFAULT '{}',
+            created_by     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX idx_migration_runs_org_status ON migration_runs(org_id, status);
+         CREATE INDEX idx_migration_runs_client     ON migration_runs(client_id);
+
+         CREATE TRIGGER migration_runs_project_scope_insert
+         BEFORE INSERT ON migration_runs
+         WHEN NEW.project_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM projects WHERE id = NEW.project_id AND org_id = NEW.org_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'migration project must belong to run organization');
+         END;
+         CREATE TRIGGER migration_runs_client_scope_insert
+         BEFORE INSERT ON migration_runs
+         WHEN NEW.client_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM clients WHERE id = NEW.client_id AND org_id = NEW.org_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'migration client must belong to run organization');
+         END;
+         CREATE TRIGGER migration_runs_scope_immutable
+         BEFORE UPDATE OF org_id, client_id, project_id, source_kind ON migration_runs
+         WHEN OLD.org_id <> NEW.org_id
+           OR OLD.source_kind <> NEW.source_kind
+           OR OLD.client_id IS NOT NEW.client_id
+           OR OLD.project_id IS NOT NEW.project_id
+         BEGIN
+             SELECT RAISE(ABORT, 'migration run scope is immutable');
+         END;
+
+         CREATE TABLE migration_candidates (
+            id                  TEXT PRIMARY KEY,
+            run_id              TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            source_identity     TEXT NOT NULL,
+            destination_kind    TEXT NOT NULL CHECK(destination_kind IN
+                                  ('memory','convention','task','sdd_artifact',
+                                   'harness','harness_config_review')),
+            destination_hint    TEXT NOT NULL DEFAULT '{}',
+            content             TEXT NOT NULL,
+            source_excerpt      TEXT,
+            confidence          REAL,
+            normalized_metadata TEXT NOT NULL DEFAULT '{}',
+            attestation         TEXT NOT NULL DEFAULT '{}',
+            provenance_kind     TEXT NOT NULL DEFAULT 'client_attested'
+                                  CHECK(provenance_kind IN ('client_attested','verified_manifest')),
+            status              TEXT NOT NULL DEFAULT 'staged' CHECK(status IN
+                                  ('staged','approved','rejected','committing','committed',
+                                   'skipped','failed','cancelled')),
+            version             INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            indexed_at          TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(run_id, source_identity)
+         );
+         CREATE INDEX idx_migration_candidates_run_status
+             ON migration_candidates(run_id, status, id);
+         CREATE INDEX idx_migration_candidates_pending_index
+             ON migration_candidates(indexed_at)
+             WHERE indexed_at IS NULL AND status = 'committed';
+
+         CREATE TABLE migration_review_actions (
+            id                     TEXT PRIMARY KEY,
+            run_id                 TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            candidate_id           TEXT REFERENCES migration_candidates(id) ON DELETE CASCADE,
+            actor_id               TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            actor_authorization    TEXT NOT NULL DEFAULT '{}',
+            action                 TEXT NOT NULL CHECK(action IN
+                                     ('approved','rejected','cancelled','restaged','stale_version',
+                                      'permission_denied','not_approved','stale_approval')),
+            expected_version       INTEGER,
+            resulting_version      INTEGER,
+            reason                 TEXT,
+            request_correlation_id TEXT,
+            created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX idx_migration_review_actions_candidate
+             ON migration_review_actions(candidate_id, created_at);
+         CREATE TRIGGER migration_review_actions_no_update
+         BEFORE UPDATE ON migration_review_actions
+         BEGIN
+             SELECT RAISE(ABORT, 'migration review actions are append-only');
+         END;
+         CREATE TRIGGER migration_review_actions_no_delete
+         BEFORE DELETE ON migration_review_actions
+         BEGIN
+             SELECT RAISE(ABORT, 'migration review actions are append-only');
+         END;
+
+         CREATE TABLE migration_provenance (
+            id               TEXT PRIMARY KEY,
+            org_id           TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            destination_kind TEXT NOT NULL CHECK(destination_kind IN
+                               ('memory','convention','task','sdd_artifact',
+                                'harness','harness_config_review')),
+            source_identity  TEXT NOT NULL,
+            candidate_id     TEXT NOT NULL REFERENCES migration_candidates(id) ON DELETE RESTRICT,
+            destination_id   TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, destination_kind, source_identity)
+         );
+
+         CREATE TABLE migration_outcomes (
+            id               TEXT PRIMARY KEY,
+            run_id           TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            candidate_id     TEXT NOT NULL REFERENCES migration_candidates(id) ON DELETE CASCADE,
+            expected_version INTEGER NOT NULL,
+            candidate_status TEXT NOT NULL,
+            outcome_status   TEXT NOT NULL CHECK(outcome_status IN
+                               ('staged','blocked','approved','committed','skipped',
+                                'failed','cancelled')),
+            error_code       TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX idx_migration_outcomes_candidate
+             ON migration_outcomes(candidate_id, created_at);
+
+         CREATE TABLE IF NOT EXISTS doc_documents (
+            id          TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            client_id   TEXT REFERENCES clients(id)  ON DELETE RESTRICT,
+            project_id  TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            path        TEXT NOT NULL,
+            content_sha TEXT NOT NULL,
+            scanned_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, project_id, path)
+         );
+         CREATE INDEX IF NOT EXISTS idx_doc_documents_project ON doc_documents(project_id);
+
+         CREATE TABLE IF NOT EXISTS doc_chunks (
+            id           TEXT PRIMARY KEY,
+            document_id  TEXT NOT NULL REFERENCES doc_documents(id) ON DELETE CASCADE,
+            heading_path TEXT NOT NULL DEFAULT '',
+            anchor       TEXT NOT NULL,
+            ordinal      INTEGER NOT NULL,
+            content      TEXT NOT NULL,
+            UNIQUE(document_id, anchor, ordinal)
+         );
+         CREATE INDEX IF NOT EXISTS idx_doc_chunks_document ON doc_chunks(document_id);
+
+         CREATE TABLE IF NOT EXISTS doc_chunk_embeddings (
+            chunk_id  TEXT PRIMARY KEY REFERENCES doc_chunks(id) ON DELETE CASCADE,
+            embedding BLOB NOT NULL
+         );
+
+         PRAGMA user_version = 60;",
+    )?;
     Ok(())
 }
 
@@ -2741,7 +2983,7 @@ mod tests {
     fn run_all_sets_user_version_to_11() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
@@ -3138,7 +3380,7 @@ mod tests {
     fn run_v20_sets_user_version_to_20() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
@@ -3147,7 +3389,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v20(&conn);
         assert!(result.is_ok(), "run_v20 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 after re-running v20 on already-migrated db");
+        assert_eq!(get_user_version(&conn), 60, "user_version must remain 60 after re-running v20 on already-migrated db");
     }
 
     // ── v22 migration tests ───────────────────────────────────────────────────
@@ -3279,7 +3521,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v23(&conn);
         assert!(result.is_ok(), "run_v23 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v24 migration tests ───────────────────────────────────────────────────
@@ -3306,14 +3548,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v24(&conn);
         assert!(result.is_ok(), "run_v24 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_v24_sets_user_version_to_24() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
@@ -3431,7 +3673,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v26(&conn);
         assert!(result.is_ok(), "run_v26 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v27 migration tests ───────────────────────────────────────────────────
@@ -3450,14 +3692,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v27(&conn);
         assert!(result.is_ok(), "run_v27 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_v27_sets_user_version_to_27() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v28 migration tests ───────────────────────────────────────────────────
@@ -3534,14 +3776,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v28(&conn);
         assert!(result.is_ok(), "run_v28 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_all_sets_user_version_to_29() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v29 migration tests ───────────────────────────────────────────────────
@@ -3624,7 +3866,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v29(&conn);
         assert!(result.is_ok(), "run_v29 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── admin_note integration test (via queries) ─────────────────────────────
@@ -3818,14 +4060,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v30(&conn);
         assert!(result.is_ok(), "run_v30 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_v30_sets_user_version_to_30() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
@@ -3862,14 +4104,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v31(&conn);
         assert!(result.is_ok(), "run_v31 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_v31_sets_user_version_to_31() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v32 migration tests ───────────────────────────────────────────────────
@@ -3908,14 +4150,14 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v32(&conn);
         assert!(result.is_ok(), "run_v32 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     #[test]
     fn run_v32_sets_user_version_to_32() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 59, "user_version must be 59 after run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must be 60 after run_all");
     }
 
     // ── v35 migration tests ───────────────────────────────────────────────────
@@ -4040,7 +4282,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_v37(&conn);
         assert!(result.is_ok(), "run_v37 must be idempotent: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 (run_all already applied v41-v59)");
+        assert_eq!(get_user_version(&conn), 60, "user_version must remain 60 (run_all already applied v41-v60)");
     }
 
     // ── v41 + v42 migration tests (code knowledge graph) ────────────────────────
@@ -4051,8 +4293,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            59,
-            "user_version must be 59 after v41-v59 are included in run_all"
+            60,
+            "user_version must be 60 after v41-v60 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -4144,7 +4386,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v41+v42: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "version must remain 59 on second run_all");
+        assert_eq!(get_user_version(&conn), 60, "version must remain 60 on second run_all");
     }
 
     #[test]
@@ -4270,7 +4512,7 @@ mod tests {
             table_exists(&conn, "agent_assignments"),
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
-        assert_eq!(get_user_version(&conn), 59, "user_version must reach 59 after the backfill migration");
+        assert_eq!(get_user_version(&conn), 60, "user_version must reach 60 after the backfill migration");
     }
 
     #[test]
@@ -4279,7 +4521,7 @@ mod tests {
         run_all(&conn).unwrap();
         let result = run_all(&conn);
         assert!(result.is_ok(), "run_all must be idempotent after v45: {:?}", result.err());
-        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59 on second run_all");
+        assert_eq!(get_user_version(&conn), 60, "user_version must remain 60 on second run_all");
     }
 
     // ── v51 / v52 migration tests (team-tasks) ──────────────────────────────────
@@ -4299,7 +4541,7 @@ mod tests {
         ] {
             assert!(table_exists(&conn, table), "{table} table must exist after run_all on a fresh db");
         }
-        assert_eq!(get_user_version(&conn), 59, "user_version must reach 59 on a fresh db");
+        assert_eq!(get_user_version(&conn), 60, "user_version must reach 60 on a fresh db");
     }
 
     #[test]
@@ -5139,13 +5381,13 @@ mod tests {
 
     /// 1.23 — run_all lands on the latest schema version.
     #[test]
-    fn run_all_sets_user_version_to_59() {
+    fn run_all_sets_user_version_to_60() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            59,
-            "run_all must leave user_version at 59"
+            60,
+            "run_all must leave user_version at 60"
         );
     }
 
@@ -5400,7 +5642,7 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 59, "user_version must remain 59");
+        assert_eq!(get_user_version(&conn), 60, "user_version must remain 60");
     }
 
     // ── v56 migration tests (knowledge migration durable review foundation) ─────
@@ -5421,8 +5663,20 @@ mod tests {
         }
     }
 
+    /// Supersedes v56's `migration_run_scope_allows_only_v1_destination_matrix`,
+    /// which asserted two things v60 deliberately reverses:
+    ///
+    ///   * the destination kind lived on the RUN, so a run could only ever
+    ///     produce one kind of artifact — and one scan of `docs/` legitimately
+    ///     produces four;
+    ///   * a project-scoped convention run was forbidden, even though
+    ///     `conventions.project_id` exists and is nullable. v56 outlawed a row
+    ///     the destination table has always accepted.
+    ///
+    /// The replacement pins the new contract: the run carries scope, the
+    /// candidate carries destination, and a project-scoped convention is legal.
     #[test]
-    fn migration_run_scope_allows_only_v1_destination_matrix() {
+    fn migration_candidates_mix_destinations_within_one_project_scoped_run() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         seed_sdd_fixtures(&conn);
@@ -5432,30 +5686,40 @@ mod tests {
         )
         .unwrap();
 
-        for (id, destination_kind, project_id) in [
-            ("org-memory", "memory", None),
-            ("project-memory", "memory", Some("project1")),
-            ("org-convention", "convention", None),
+        // A project-scoped run — the case v56 rejected for conventions.
+        conn.execute(
+            "INSERT INTO migration_runs (id, org_id, project_id, source_kind, created_by)
+             VALUES ('run1', 'org1', 'project1', 'repo-docs', 'u1')",
+            [],
+        )
+        .unwrap();
+
+        // One scan, four destinations, including the convention v56 forbade.
+        for (id, destination_kind) in [
+            ("cand-memory", "memory"),
+            ("cand-convention", "convention"),
+            ("cand-task", "task"),
+            ("cand-sdd", "sdd_artifact"),
         ] {
             conn.execute(
-                "INSERT INTO migration_runs (id, org_id, project_id, destination_kind, created_by)
-                 VALUES (?1, 'org1', ?2, ?3, 'u1')",
-                rusqlite::params![id, project_id, destination_kind],
+                "INSERT INTO migration_candidates
+                    (id, run_id, source_identity, destination_kind, content)
+                 VALUES (?1, 'run1', ?1, ?2, 'body')",
+                rusqlite::params![id, destination_kind],
             )
-            .unwrap();
+            .unwrap_or_else(|e| panic!("{id} must be accepted under the v60 contract: {e}"));
         }
 
-        for (id, project_id, destination_kind) in [
-            ("project-convention", Some("project1"), "convention"),
-            ("unknown-destination", None, "unknown"),
-        ] {
-            let invalid = conn.execute(
-                "INSERT INTO migration_runs (id, org_id, project_id, destination_kind, created_by)
-                 VALUES (?1, 'org1', ?2, ?3, 'u1')",
-                rusqlite::params![id, project_id, destination_kind],
-            );
-            assert!(invalid.is_err(), "{id} must be rejected by the scope matrix");
-        }
+        let invalid = conn.execute(
+            "INSERT INTO migration_candidates
+                (id, run_id, source_identity, destination_kind, content)
+             VALUES ('cand-unknown', 'run1', 'unknown', 'unknown', 'body')",
+            [],
+        );
+        assert!(
+            invalid.is_err(),
+            "an unlisted destination kind must still be rejected"
+        );
     }
 
     #[test]
@@ -5464,14 +5728,15 @@ mod tests {
         run_all(&conn).unwrap();
         seed_sdd_fixtures(&conn);
         conn.execute(
-            "INSERT INTO migration_runs (id, org_id, destination_kind, created_by)
-             VALUES ('run1', 'org1', 'memory', 'u1')",
+            "INSERT INTO migration_runs (id, org_id, source_kind, created_by)
+             VALUES ('run1', 'org1', 'repo-docs', 'u1')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO migration_candidates (id, run_id, source_identity, content, attestation)
-             VALUES ('candidate1', 'run1', 'source://one', 'content', '{}')",
+            "INSERT INTO migration_candidates
+                (id, run_id, source_identity, destination_kind, content, attestation)
+             VALUES ('candidate1', 'run1', 'source://one', 'memory', 'content', '{}')",
             [],
         )
         .unwrap();
@@ -5641,7 +5906,7 @@ mod tests {
         std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
         let conn = in_memory_db();
         run_all(&conn).expect("a fresh database has no credentials to protect");
-        assert_eq!(get_user_version(&conn), 59);
+        assert_eq!(get_user_version(&conn), 60);
     }
 
     /// The new primary key is what lets a consultancy hold one GitHub account
@@ -5716,7 +5981,7 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert!(table_exists(&conn, "usage_events"), "missing: usage_events");
-        assert_eq!(get_user_version(&conn), 59);
+        assert_eq!(get_user_version(&conn), 60);
         assert!(index_exists(&conn, "usage_events", "idx_usage_events_org_ts"));
         assert!(index_exists(&conn, "usage_events", "idx_usage_events_project"));
         assert!(index_exists(&conn, "usage_events", "idx_usage_events_client"));
@@ -5769,5 +6034,372 @@ mod tests {
         run_v59(&conn).expect("re-running v59 over a migrated db must not fail");
         assert_eq!(get_user_version(&conn), 59);
         assert!(table_exists(&conn, "usage_events"));
+    }
+
+    // ── v60: knowledge migration ─────────────────────────────────────────────
+    //
+    // v60 RECREATES the five v56 staging tables rather than altering them: the
+    // shape changes are not additive (`destination_kind` moves off the run and
+    // onto the candidate, and SQLite cannot alter a CHECK or drop a column that
+    // a cross-column CHECK references). That is only safe because v56 was never
+    // wired to anything and its tables are empty in every install.
+    //
+    // The guard below is what makes that assumption falsifiable instead of
+    // merely believed. It is written first, on purpose: it is the single test
+    // standing between a `DROP TABLE` and somebody's data.
+
+    /// Insert one row into `table` and nothing else. Foreign keys are switched
+    /// off around the insert so each table can be exercised in isolation — the
+    /// guard must fire on a lone orphan row, not only on a well-formed graph.
+    fn insert_lone_migration_row(conn: &Connection, table: &str) {
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let sql = match table {
+            "migration_runs" => {
+                "INSERT INTO migration_runs (id, org_id, source_kind, created_by)
+                 VALUES ('r1', 'org1', 'repo-docs', 'u1')"
+            }
+            "migration_candidates" => {
+                "INSERT INTO migration_candidates
+                     (id, run_id, source_identity, destination_kind, content)
+                 VALUES ('c1', 'r1', 'repo-docs:x', 'memory', 'body')"
+            }
+            "migration_review_actions" => {
+                "INSERT INTO migration_review_actions (id, run_id, actor_id, action)
+                 VALUES ('a1', 'r1', 'u1', 'approved')"
+            }
+            "migration_provenance" => {
+                "INSERT INTO migration_provenance
+                     (id, org_id, destination_kind, source_identity, candidate_id)
+                 VALUES ('p1', 'org1', 'memory', 'repo-docs:x', 'c1')"
+            }
+            "migration_outcomes" => {
+                "INSERT INTO migration_outcomes
+                     (id, run_id, candidate_id, expected_version, candidate_status, outcome_status)
+                 VALUES ('o1', 'r1', 'c1', 1, 'approved', 'committed')"
+            }
+            other => panic!("unknown migration table: {other}"),
+        };
+        conn.execute(sql, [])
+            .unwrap_or_else(|e| panic!("seeding {table} failed: {e}"));
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    }
+
+    /// T-01 — the guard. A non-empty v56 staging table means the premise that
+    /// justifies recreating them ("nobody ever used this") is false, so v60 MUST
+    /// refuse to run rather than drop the data. The error has to name the table
+    /// and the row count, because whoever hits this needs to know what they are
+    /// about to lose before they decide what to do about it.
+    #[test]
+    fn run_v60_aborts_when_v56_tables_have_rows() {
+        for table in [
+            "migration_runs",
+            "migration_candidates",
+            "migration_review_actions",
+            "migration_provenance",
+            "migration_outcomes",
+        ] {
+            let conn = in_memory_db();
+            run_all(&conn).unwrap();
+            seed_org(&conn, "org1", "acme");
+
+            insert_lone_migration_row(&conn, table);
+
+            // Force the version guard open so v60 actually evaluates.
+            conn.execute_batch("PRAGMA user_version = 59;").unwrap();
+
+            let err = run_v60(&conn)
+                .expect_err(&format!("v60 must refuse to run while {table} holds rows"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(table),
+                "the abort message must name the offending table; got: {msg}"
+            );
+            assert!(
+                msg.contains('1'),
+                "the abort message must report the row count; got: {msg}"
+            );
+
+            // And it must not have destroyed anything on the way out.
+            let still_there: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(still_there, 1, "{table} must be untouched after the abort");
+            assert_eq!(
+                get_user_version(&conn),
+                59,
+                "an aborted v60 must not advance user_version"
+            );
+        }
+    }
+
+    /// The other half of the guard: with the tables empty — which is every real
+    /// install — v60 runs normally.
+    #[test]
+    fn run_v60_runs_when_v56_tables_are_empty() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch("PRAGMA user_version = 59;").unwrap();
+        run_v60(&conn).expect("v60 must run when the v56 staging tables are empty");
+        assert_eq!(get_user_version(&conn), 60);
+    }
+
+    /// Minimal fixture: an org, a user, a client and a project of that client,
+    /// so a run can be created with every scope column populated.
+    fn seed_v60_fixture(conn: &Connection) {
+        seed_org(conn, "org1", "u2s");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1', 'org1', 'dev@u2s.com', 'Dev')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cl1', 'org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name, client_id) VALUES ('p1', 'org1', 'acme-billing', 'cl1')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn insert_run(
+        conn: &Connection,
+        id: &str,
+        client: Option<&str>,
+        project: Option<&str>,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO migration_runs (id, org_id, client_id, project_id, source_kind, created_by)
+             VALUES (?1, 'org1', ?2, ?3, 'repo-docs', 'u1')",
+            rusqlite::params![id, client, project],
+        )
+    }
+
+    fn insert_candidate(
+        conn: &Connection,
+        id: &str,
+        run: &str,
+        identity: &str,
+        dest: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO migration_candidates (id, run_id, source_identity, destination_kind, content)
+             VALUES (?1, ?2, ?3, ?4, 'body')",
+            rusqlite::params![id, run, identity, dest],
+        )
+    }
+
+    /// Re-running v60 over an already-migrated database must succeed. The
+    /// version guard has to be forced open first — without that the function
+    /// returns early and the test proves nothing.
+    #[test]
+    fn run_v60_is_idempotent() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch("PRAGMA user_version = 59;").unwrap();
+        run_v60(&conn).expect("re-running v60 over a migrated db must not fail");
+        assert_eq!(get_user_version(&conn), 60);
+        assert!(table_exists(&conn, "migration_runs"));
+        assert!(table_exists(&conn, "migration_candidates"));
+    }
+
+    /// The whole point of the recreation: one run may now carry candidates of
+    /// several destination kinds, so `destination_kind` no longer lives on the
+    /// run. A scan of `docs/` produces memories, conventions, tasks and SDD
+    /// artifacts in one pass.
+    #[test]
+    fn run_v60_run_has_no_destination_kind_column() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(
+            !column_exists(&conn, "migration_runs", "destination_kind"),
+            "destination_kind must have moved off the run and onto the candidate"
+        );
+        assert!(column_exists(
+            &conn,
+            "migration_candidates",
+            "destination_kind"
+        ));
+        assert!(column_exists(&conn, "migration_runs", "client_id"));
+        assert!(column_exists(&conn, "migration_runs", "source_kind"));
+        assert!(column_exists(
+            &conn,
+            "migration_candidates",
+            "destination_hint"
+        ));
+        assert!(column_exists(&conn, "migration_candidates", "indexed_at"));
+    }
+
+    #[test]
+    fn run_v60_candidate_accepts_six_destination_kinds() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        insert_run(&conn, "r1", Some("cl1"), Some("p1")).unwrap();
+
+        for (i, kind) in [
+            "memory",
+            "convention",
+            "task",
+            "sdd_artifact",
+            "harness",
+            "harness_config_review",
+        ]
+        .iter()
+        .enumerate()
+        {
+            insert_candidate(&conn, &format!("c{i}"), "r1", &format!("src:{i}"), kind)
+                .unwrap_or_else(|e| panic!("destination kind {kind} must be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn run_v60_candidate_rejects_unknown_destination_kind() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        insert_run(&conn, "r1", None, None).unwrap();
+
+        let bad = insert_candidate(&conn, "c1", "r1", "src:x", "notion_page");
+        assert!(
+            bad.is_err(),
+            "an unlisted destination kind must be rejected"
+        );
+    }
+
+    /// A run may only name a client of its own organization. Without this the
+    /// isolation v58 built is one typo away from being undone.
+    #[test]
+    fn run_v60_client_scope_trigger_aborts_cross_org() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        seed_org(&conn, "org2", "other");
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cl2', 'org2', 'Other', 'other')",
+            [],
+        )
+        .unwrap();
+
+        let cross = insert_run(&conn, "r1", Some("cl2"), None);
+        assert!(
+            cross.is_err(),
+            "a run must not reference a client of another organization"
+        );
+    }
+
+    /// `client_id` is the attribution that decides who may read the migrated
+    /// knowledge. Letting it be reassigned after the fact would move a whole
+    /// run's worth of material between clients in one UPDATE.
+    #[test]
+    fn run_v60_scope_is_immutable_after_insert() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cl9', 'org1', 'Nine', 'nine')",
+            [],
+        )
+        .unwrap();
+        insert_run(&conn, "r1", Some("cl1"), None).unwrap();
+
+        let reassign = conn.execute(
+            "UPDATE migration_runs SET client_id = 'cl9' WHERE id = 'r1'",
+            [],
+        );
+        assert!(
+            reassign.is_err(),
+            "client_id must be immutable after creation"
+        );
+
+        let retarget = conn.execute(
+            "UPDATE migration_runs SET source_kind = 'db-schema' WHERE id = 'r1'",
+            [],
+        );
+        assert!(
+            retarget.is_err(),
+            "source_kind must be immutable after creation"
+        );
+
+        // Status is NOT part of the scope and must stay updatable.
+        conn.execute(
+            "UPDATE migration_runs SET status = 'in_review' WHERE id = 'r1'",
+            [],
+        )
+        .expect("status must remain updatable");
+    }
+
+    /// Idempotency is enforced by the database, not by an application check
+    /// somebody can forget on a branch.
+    #[test]
+    fn run_v60_provenance_unique_blocks_second_commit() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        insert_run(&conn, "r1", None, None).unwrap();
+        insert_candidate(&conn, "c1", "r1", "repo-docs:a", "memory").unwrap();
+        insert_candidate(&conn, "c2", "r1", "repo-docs:b", "memory").unwrap();
+
+        conn.execute(
+            "INSERT INTO migration_provenance (id, org_id, destination_kind, source_identity, candidate_id)
+             VALUES ('pr1', 'org1', 'memory', 'repo-docs:a', 'c1')",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO migration_provenance (id, org_id, destination_kind, source_identity, candidate_id)
+             VALUES ('pr2', 'org1', 'memory', 'repo-docs:a', 'c2')",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "the same source may not commit twice to the same destination kind"
+        );
+
+        // The same source to a DIFFERENT destination kind is legitimate: a
+        // document can be both a memory and a convention.
+        conn.execute(
+            "INSERT INTO migration_provenance (id, org_id, destination_kind, source_identity, candidate_id)
+             VALUES ('pr3', 'org1', 'convention', 'repo-docs:a', 'c1')",
+            [],
+        )
+        .expect("same identity, different destination kind must be allowed");
+    }
+
+    /// The review trail is evidence. A reversal is a new row, never an edit.
+    #[test]
+    fn run_v60_review_actions_reject_update_and_delete() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        seed_v60_fixture(&conn);
+        insert_run(&conn, "r1", None, None).unwrap();
+        insert_candidate(&conn, "c1", "r1", "repo-docs:a", "memory").unwrap();
+        conn.execute(
+            "INSERT INTO migration_review_actions (id, run_id, candidate_id, actor_id, action, expected_version)
+             VALUES ('a1', 'r1', 'c1', 'u1', 'approved', 1)",
+            [],
+        )
+        .unwrap();
+
+        let updated = conn.execute(
+            "UPDATE migration_review_actions SET action = 'rejected' WHERE id = 'a1'",
+            [],
+        );
+        assert!(updated.is_err(), "review actions must be append-only");
+
+        let deleted = conn.execute("DELETE FROM migration_review_actions WHERE id = 'a1'", []);
+        assert!(deleted.is_err(), "review actions must not be deletable");
+    }
+
+    #[test]
+    fn run_v60_creates_doc_tables() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert!(table_exists(&conn, "doc_documents"));
+        assert!(table_exists(&conn, "doc_chunks"));
+        assert!(table_exists(&conn, "doc_chunk_embeddings"));
     }
 }

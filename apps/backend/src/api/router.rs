@@ -9,9 +9,11 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, automation, backup, clients, code, context, conventions, github_auth,
+    admin, agents, audit, auth, automation, backup, clients, code, context, conventions, docs,
+    github_auth,
     harnesses, health,
-    internal, memory, middleware as api_mw, policy, rate_limit, search, sdd, sessions, tasks,
+    internal, memory, middleware as api_mw, migrations as migrations_api, policy, rate_limit,
+    search, sdd, sessions, tasks,
     usage, users, webhooks,
 };
 use crate::config::Config;
@@ -129,6 +131,21 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             patch(clients::update_client).delete(clients::delete_client),
         )
         .route("/v1/clients/:id/archive", post(clients::archive_client))
+        .route(
+            "/v1/migrations",
+            get(migrations_api::list_runs).post(migrations_api::create_run),
+        )
+        .route("/v1/migrations/:id", get(migrations_api::get_run))
+        .route(
+            "/v1/migrations/:id/candidates",
+            get(migrations_api::list_candidates).post(migrations_api::stage_candidates),
+        )
+        .route("/v1/migrations/:id/review", post(migrations_api::review))
+        .route("/v1/migrations/:id/commit", post(migrations_api::commit))
+        .route("/v1/migrations/:id/cancel", post(migrations_api::cancel_run))
+        .route("/v1/migrations/:id/report", get(migrations_api::get_report))
+        .route("/v1/docs/search", get(docs::search))
+        .route("/v1/docs/index-status", get(docs::index_status))
         .route("/v1/usage", post(usage::ingest))
         .route("/v1/usage/summary", get(usage::summary))
         .route("/v1/usage/timeseries", get(usage::timeseries))

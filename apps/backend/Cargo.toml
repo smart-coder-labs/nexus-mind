@@ -20,6 +20,10 @@ path = "src/bin/backfill_embeddings.rs"
 name = "import-sdd"
 path = "src/bin/import_sdd.rs"
 
+[[bin]]
+name = "migrate-knowledge"
+path = "src/bin/migrate_knowledge.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["json"] }

@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod doc_walker;
 pub mod tree_sitter_chunker;
 pub mod walker;
 
@@ -339,6 +340,102 @@ pub fn get_project_status(
     db_queries::get_code_project(org_id, project_name, &conn)
 }
 
+/// Result of one documentation indexing pass.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct IndexDocsResponse {
+    pub documents_scanned: usize,
+    pub documents_changed: usize,
+    pub chunks_written: usize,
+    pub chunks_embedded: usize,
+    pub chunks_pending_embedding: usize,
+}
+
+/// Indexes the documentation under `root_path` into the DOC corpus.
+///
+/// Runs beside [`index_project`] and shares nothing with it but the ignore
+/// configuration. It writes only `doc_documents` / `doc_chunks` /
+/// `doc_chunk_embeddings`, and never touches `code_chunks` — that separation is
+/// the whole reason the corpus exists (see `indexer::doc_walker`).
+///
+/// Embedding is best-effort: a chunk with no vector is still searchable by
+/// keyword, and `chunks_pending_embedding` reports how many are waiting.
+pub fn index_documents(
+    org_id: &str,
+    client_id: Option<&str>,
+    project_id: Option<&str>,
+    root_path: &str,
+    opts: &doc_walker::DocWalkOptions,
+    db: &Arc<Mutex<Connection>>,
+    embed_svc: Option<&Arc<EmbedService>>,
+) -> Result<IndexDocsResponse> {
+    let files = doc_walker::walk_docs(root_path, opts)?;
+    let mut out = IndexDocsResponse {
+        documents_scanned: files.len(),
+        ..Default::default()
+    };
+
+    for file in &files {
+        let Some((content, content_sha)) = walker::read_file(&file.path) else {
+            continue;
+        };
+        // Store the path relative to the scan root: an absolute path would carry
+        // the operator's home directory into a shared corpus.
+        let rel = file
+            .path
+            .strip_prefix(root_path)
+            .unwrap_or(&file.path)
+            .trim_start_matches('/')
+            .to_string();
+
+        let chunk_ids = {
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+            let (doc_id, changed) = crate::db::doc_queries::upsert_document(
+                &conn,
+                org_id,
+                client_id,
+                project_id,
+                &rel,
+                &content_sha,
+            )?;
+            if !changed {
+                continue;
+            }
+            out.documents_changed += 1;
+            crate::db::doc_queries::replace_chunks(&conn, &doc_id, &rel, &content_sha, &content)?
+        };
+        out.chunks_written += chunk_ids.len();
+
+        // Embedding happens outside the lock above, one chunk at a time, for the
+        // same reason the migration commit vectorizes after committing: it is
+        // CPU-bound and must not hold a write lock across a batch.
+        if let Some(svc) = embed_svc {
+            for chunk_id in &chunk_ids {
+                let text = {
+                    let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                    crate::db::doc_queries::get_chunk_content(&conn, chunk_id)?
+                };
+                let Some(text) = text else { continue };
+                match svc.embed_one(&text) {
+                    Ok(vector) => {
+                        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+                        if crate::db::doc_queries::store_chunk_embedding(&conn, chunk_id, &vector)
+                            .is_ok()
+                        {
+                            out.chunks_embedded += 1;
+                        }
+                    }
+                    Err(e) => tracing::warn!("doc index: failed to embed chunk {chunk_id}: {e}"),
+                }
+            }
+        }
+    }
+
+    let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+    let (_total, pending) = crate::db::doc_queries::index_status(&conn, org_id)?;
+    out.chunks_pending_embedding = pending as usize;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,5 +564,170 @@ mod tests {
             summary.chunk_count, actual_rows,
             "reported chunk_count must equal actual code_chunks rows"
         );
+    }
+
+    // ── T-17: the two corpora must not merge ─────────────────────────────────
+
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn repo_with_code_and_docs() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(
+            dir.path().join("src/handler.rs"),
+            "pub fn handle_payment(amount: i64) -> i64 {\n    amount * 2\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/util.rs"),
+            "pub fn normalize(s: &str) -> String {\n    s.trim().to_string()\n}\n",
+        )
+        .unwrap();
+        // Prose that mentions the same words as the code — the exact material
+        // that used to out-rank real handlers in code search.
+        fs::write(
+            dir.path().join("README.md"),
+            "# Payments\n\nThis service handles payment normalization and handler routing.\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("docs/ARCHITECTURE.md"),
+            "# Architecture\n\n## Handlers\n\nEvery handler normalizes its payment input.\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn seeded_db() -> Arc<Mutex<Connection>> {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'U2S', 'u2s')",
+            [],
+        )
+        .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn code_chunk_fingerprint(db: &Arc<Mutex<Connection>>) -> Vec<(String, String)> {
+        let conn = db.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT file_path, content FROM code_chunks ORDER BY file_path, start_line")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    /// The regression this whole design exists to avoid: documentation entering
+    /// the code corpus and out-ranking real handlers. Indexing docs must leave
+    /// the code corpus byte-identical.
+    #[test]
+    fn code_search_results_unchanged_after_doc_indexing() {
+        let dir = repo_with_code_and_docs();
+        let root = dir.path().to_str().unwrap();
+        let db = seeded_db();
+
+        index_project("org1", "proj", root, &db, None, false).unwrap();
+        let before = code_chunk_fingerprint(&db);
+        assert!(!before.is_empty(), "the code corpus must have been populated");
+        assert!(
+            before.iter().all(|(p, _)| p.ends_with(".rs")),
+            "only code files belong in the code corpus; got {:?}",
+            before.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+
+        index_documents(
+            "org1",
+            None,
+            None,
+            root,
+            &doc_walker::DocWalkOptions::default(),
+            &db,
+            None,
+        )
+        .unwrap();
+
+        let after = code_chunk_fingerprint(&db);
+        assert_eq!(
+            before, after,
+            "indexing documentation must not change the code corpus by a single byte"
+        );
+    }
+
+    #[test]
+    fn doc_indexing_populates_only_the_doc_corpus() {
+        let dir = repo_with_code_and_docs();
+        let root = dir.path().to_str().unwrap();
+        let db = seeded_db();
+
+        let resp = index_documents(
+            "org1",
+            None,
+            None,
+            root,
+            &doc_walker::DocWalkOptions::default(),
+            &db,
+            None,
+        )
+        .unwrap();
+        assert_eq!(resp.documents_scanned, 2, "README.md and docs/ARCHITECTURE.md");
+        assert_eq!(resp.documents_changed, 2);
+        assert!(resp.chunks_written >= 2);
+
+        let conn = db.lock().unwrap();
+        let code_chunks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(code_chunks, 0, "the doc pass must not write to code_chunks");
+
+        // And the doc corpus answers for prose the code corpus never held.
+        let hits = crate::db::doc_queries::search_docs_keyword(&conn, "org1", "normaliz", 10).unwrap();
+        assert!(!hits.is_empty(), "documentation search must find the prose");
+        assert!(hits.iter().all(|h| h.path.ends_with(".md")));
+    }
+
+    /// Paths are stored relative to the scan root. An absolute path would carry
+    /// the operator's home directory into a corpus the whole org can read.
+    #[test]
+    fn doc_paths_are_stored_relative_to_the_scan_root() {
+        let dir = repo_with_code_and_docs();
+        let root = dir.path().to_str().unwrap();
+        let db = seeded_db();
+        index_documents("org1", None, None, root, &doc_walker::DocWalkOptions::default(), &db, None)
+            .unwrap();
+
+        let conn = db.lock().unwrap();
+        let paths: Vec<String> = conn
+            .prepare("SELECT path FROM doc_documents ORDER BY path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(paths, vec!["README.md", "docs/ARCHITECTURE.md"]);
+        assert!(
+            paths.iter().all(|p| !p.starts_with('/')),
+            "no absolute paths may reach the shared corpus"
+        );
+    }
+
+    #[test]
+    fn rescanning_unchanged_documentation_is_a_no_op() {
+        let dir = repo_with_code_and_docs();
+        let root = dir.path().to_str().unwrap();
+        let db = seeded_db();
+        let opts = doc_walker::DocWalkOptions::default();
+
+        let first = index_documents("org1", None, None, root, &opts, &db, None).unwrap();
+        assert_eq!(first.documents_changed, 2);
+
+        let second = index_documents("org1", None, None, root, &opts, &db, None).unwrap();
+        assert_eq!(second.documents_scanned, 2);
+        assert_eq!(second.documents_changed, 0, "unchanged files are not re-chunked");
+        assert_eq!(second.chunks_written, 0);
     }
 }
