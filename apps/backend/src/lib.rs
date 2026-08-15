@@ -8,6 +8,7 @@ pub mod db;
 pub mod embed;
 pub mod email;
 pub mod indexer;
+pub mod migration;
 pub mod models;
 pub mod policy;
 pub mod store;

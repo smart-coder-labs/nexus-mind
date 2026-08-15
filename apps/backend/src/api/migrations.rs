@@ -1606,10 +1606,13 @@ mod tests {
     /// anything to a model provider would actually deploy.
     #[tokio::test]
     async fn backend_pipeline_succeeds_with_no_model_credentials() {
-        for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NEXUSMIND_EMBED_ENABLED"] {
-            std::env::remove_var(key);
-        }
-
+        // Deliberately NOT mutating the process environment here. `std::env` is
+        // process-global and this suite runs in parallel, so a test that removes
+        // a variable can break an unrelated test mid-flight — which is exactly
+        // the flake `crypto::tests::with_key` already causes. The fixture is
+        // built without an embedding service and the crate has no LLM client at
+        // all, so the BYOM claim is established by construction rather than by
+        // poking at the environment.
         let store = store();
         assert!(
             store.embed_service().is_none(),

@@ -26,70 +26,16 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 // ── The connector contract ───────────────────────────────────────────────────
+//
+// Moved to `nexusmind::migration` so connectors can be tested with the rest of
+// the library suite. Re-exported here so this binary reads as it did before.
 
-/// One unit of source material, addressed by an identity its connector computes.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SourceItem {
-    /// Deterministic and provenance-derived, including a hash of the content.
-    /// Editing the source changes the identity, which is what makes an edited
-    /// document a *new* candidate rather than a silent overwrite.
-    pub source_identity: String,
-    /// Human-readable origin, shown to the reviewer. Never an absolute path.
-    pub display_origin: String,
-    pub raw: String,
-    pub meta: serde_json::Value,
-}
-
-/// A candidate as posted to the backend. Mirrors `models::types::CandidateInput`
-/// on the wire; kept as its own type so the runner does not depend on the
-/// backend's internal shapes beyond the JSON contract.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CandidatePayload {
-    pub source_identity: String,
-    pub destination_kind: String,
-    pub content: String,
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub destination_hint: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_excerpt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance_kind: Option<String>,
-}
-
-/// A source of pre-NexusMind knowledge.
-pub trait Connector {
-    fn source_kind(&self) -> &'static str;
-
-    /// Enumerate source units. Must not call a language model: scanning has to
-    /// work under `--dry-run` and under `--no-llm`.
-    fn scan(&self, opts: &ScanOptions) -> Result<Vec<SourceItem>>;
-
-    /// The classification prompt for one unit. The connector knows its own
-    /// domain; the pipeline only knows how to run a prompt.
-    fn classify_prompt(&self, item: &SourceItem) -> String;
-
-    /// A deterministic candidate derived without any model, or `None` when the
-    /// unit genuinely needs judgement.
-    ///
-    /// This is not a nicety. A connector that only works with an LLM stops
-    /// working when the CLI changes its output format, when there is no network,
-    /// and — the case that actually matters — when a client's NDA forbids
-    /// sending their material to a third party for processing.
-    fn fallback(&self, item: &SourceItem) -> Option<CandidatePayload>;
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ScanOptions {
-    pub root: String,
-    pub includes: Vec<String>,
-    pub excludes: Vec<String>,
-}
+pub use nexusmind::migration::{
+    CandidatePayload, Connector, RepoDocsConnector, ScanOptions, SourceItem,
+};
 
 // ── The noop connector ───────────────────────────────────────────────────────
 
@@ -373,39 +319,58 @@ struct Args {
 
     #[arg(long, default_value = "claude")]
     claude_bin: String,
+
+    /// Let `openspec/changes/**` produce `sdd_artifact` candidates.
+    ///
+    /// Off by default: in this repository `import-sdd` already backfilled them,
+    /// and two paths to one destination is how duplicates happen. Turn it on
+    /// when migrating a repo where that importer never ran.
+    #[arg(long)]
+    include_sdd: bool,
 }
 
-fn connector_for(source: &str) -> Result<Box<dyn Connector>> {
+fn connector_for(source: &str, args: &Args) -> Result<Box<dyn Connector>> {
     match source {
         "noop" => Ok(Box::new(NoopConnector::with_sample())),
-        "repo-docs" | "git-history" | "claude-memories" | "db-schema" => anyhow::bail!(
-            "connector `{source}` is not part of knowledge-migration-core; it ships with its own \
-             change. Only `noop` is available here."
+        "repo-docs" => Ok(Box::new(
+            RepoDocsConnector::new(RepoDocsConnector::repo_name_for(&args.path))
+                .with_sdd(args.include_sdd),
+        )),
+        "git-history" | "claude-memories" | "db-schema" => anyhow::bail!(
+            "connector `{source}` ships with its own change and is not available yet. \
+             Available: noop, repo-docs."
         ),
         other => anyhow::bail!("unknown source `{other}`"),
     }
 }
 
 fn run(args: &Args) -> Result<()> {
-    let connector = connector_for(&args.source)?;
+    let connector = connector_for(&args.source, args)?;
     let opts = ScanOptions {
         root: args.path.clone(),
         ..Default::default()
     };
-    let items = connector.scan(&opts)?;
+    let report = connector.scan_report(&opts)?;
 
     if args.dry_run {
-        let bytes: usize = items.iter().map(|i| i.raw.len()).sum();
         println!(
-            "dry run — source={} items={} bytes={} estimated_tokens≈{}",
+            "dry run — source={} documents={} units={} bytes={} estimated_tokens≈{}",
             connector.source_kind(),
-            items.len(),
-            bytes,
-            bytes / 4
+            report.documents,
+            report.units,
+            report.bytes,
+            report.estimated_tokens(),
         );
+        if !report.excluded.is_empty() {
+            println!("excluded {} document(s):", report.excluded.len());
+            for (path, reason) in &report.excluded {
+                println!("  - {path} — {reason}");
+            }
+        }
         println!("no classification was run and nothing was posted.");
         return Ok(());
     }
+    let items = report.items;
 
     let cli = (!args.no_llm).then(|| ClaudeCli {
         bin: args.claude_bin.clone(),
@@ -669,18 +634,47 @@ mod tests {
 
     // ── The core change ships no real connector ──────────────────────────────
 
+    fn args_for(source: &str) -> Args {
+        Args {
+            source: source.to_string(),
+            path: ".".to_string(),
+            api_url: None,
+            api_key: None,
+            client: None,
+            project: None,
+            dry_run: false,
+            no_llm: false,
+            max_tokens: None,
+            claude_bin: "claude".to_string(),
+            include_sdd: false,
+        }
+    }
+
+    /// `repo-docs` now exists. The other three still do not, and the refusal
+    /// still has to say where they live rather than just failing.
     #[test]
-    fn only_the_noop_connector_is_available_in_the_core_change() {
-        assert!(connector_for("noop").is_ok());
-        for real in ["repo-docs", "git-history", "claude-memories", "db-schema"] {
-            match connector_for(real) {
-                Ok(_) => panic!("`{real}` must not ship in the core change"),
+    fn repo_docs_is_available_and_the_other_three_are_not() {
+        for available in ["noop", "repo-docs"] {
+            assert!(
+                connector_for(available, &args_for(available)).is_ok(),
+                "`{available}` must be available"
+            );
+        }
+        for pending in ["git-history", "claude-memories", "db-schema"] {
+            match connector_for(pending, &args_for(pending)) {
+                Ok(_) => panic!("`{pending}` has not shipped yet"),
                 Err(e) => assert!(
                     e.to_string().contains("its own change"),
                     "the refusal must explain where the connector lives; got: {e}"
                 ),
             }
         }
-        assert!(connector_for("notion").is_err());
+        assert!(connector_for("notion", &args_for("notion")).is_err());
+    }
+
+    #[test]
+    fn repo_docs_connector_reports_its_source_kind() {
+        let c = connector_for("repo-docs", &args_for("repo-docs")).unwrap();
+        assert_eq!(c.source_kind(), "repo-docs");
     }
 }
