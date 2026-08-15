@@ -39,7 +39,19 @@ pub struct Config {
     #[arg(long, env = "ADMIN_ORIGIN", default_value = "http://localhost:3000")]
     pub admin_origin: String,
 
-    #[arg(long, env = "COOKIE_SECURE", default_value_t = false)]
+    /// Sets the `Secure` attribute on the session cookie. Defaults to true and
+    /// should STAY true in any real deployment: with it off the session token
+    /// travels in cleartext and anyone on the network path can steal the session.
+    ///
+    /// It exists as an escape hatch for deployments that are not yet behind TLS,
+    /// because browsers silently DROP a `Secure` cookie on an insecure origin —
+    /// login returns 200 and the user is bounced straight back to the login page.
+    /// Note that `http://localhost` counts as a secure context, so this is only
+    /// ever needed when serving over plain HTTP on a real host or IP.
+    ///
+    /// SECURITY DEBT: the u2s self-host box sets this to false (see
+    /// deploy/u2s/docker-compose.yml). Put it behind TLS and drop the override.
+    #[arg(long, env = "COOKIE_SECURE", default_value_t = true)]
     pub cookie_secure: bool,
 
     #[arg(long, env = "GITHUB_CLIENT_ID")]

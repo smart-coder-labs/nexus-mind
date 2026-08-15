@@ -63,6 +63,38 @@ fn app() -> axum::Router {
     router::build(conn, test_config())
 }
 
+/// Same as [`app`] but with an explicit `cookie_secure` setting, so the tests
+/// can assert both sides of the flag.
+fn app_with_cookie_secure(cookie_secure: bool) -> axum::Router {
+    let conn = connection::connect(":memory:").expect("in-memory db");
+    migrations::run(&conn).expect("migrations");
+
+    let (_, admin, _) = queries::bootstrap(
+        &conn,
+        "Test Org",
+        "test-org",
+        ADMIN_EMAIL,
+        "Test Admin",
+    )
+    .expect("bootstrap");
+
+    let hashed = hash_password(ADMIN_PASSWORD).expect("hash");
+    queries::set_user_password(&conn, &admin.id, &hashed).expect("set password");
+
+    router::build(conn, Config { cookie_secure, ..test_config() })
+}
+
+/// Read the raw `Set-Cookie` header off a response.
+fn set_cookie_header(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get("set-cookie")
+        .expect("Set-Cookie header must be present")
+        .to_str()
+        .expect("Set-Cookie must be ASCII")
+        .to_string()
+}
+
 /// POST /v1/admin/auth/login with valid credentials and return the full response.
 async fn do_login(router: axum::Router) -> axum::response::Response {
     let body = serde_json::json!({
@@ -593,4 +625,75 @@ async fn delete_code_project_by_id_removes_only_target() {
         remaining.iter().any(|p| p["id"].as_str() == Some(id_beta_str.as_str())),
         "beta (untouched id) must still be present: {remaining:?}"
     );
+}
+
+// ── COOKIE_SECURE ─────────────────────────────────────────────────────────────
+//
+// A `Secure` cookie is silently DROPPED by the browser on an insecure origin,
+// so a deployment served over plain HTTP would return 200 from login and then
+// bounce the user straight back to /login. `cookie_secure` is the escape hatch;
+// these tests pin both sides of it so the flag cannot quietly stop working.
+
+#[tokio::test]
+async fn login_cookie_sets_secure_when_cookie_secure_is_true() {
+    let response = do_login(app_with_cookie_secure(true)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let set_cookie = set_cookie_header(&response);
+    assert!(
+        set_cookie.to_lowercase().contains("secure"),
+        "cookie must carry Secure when cookie_secure=true, got: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn login_cookie_omits_secure_when_cookie_secure_is_false() {
+    let response = do_login(app_with_cookie_secure(false)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let set_cookie = set_cookie_header(&response);
+    assert!(
+        !set_cookie.to_lowercase().contains("secure"),
+        "cookie must NOT carry Secure when cookie_secure=false (it would be \
+         dropped over plain HTTP), got: {set_cookie}"
+    );
+    // The other hardening attributes must survive the escape hatch.
+    assert!(
+        set_cookie.to_lowercase().contains("httponly"),
+        "HttpOnly must still be set, got: {set_cookie}"
+    );
+    assert!(
+        set_cookie.contains("SameSite=Lax"),
+        "SameSite=Lax must still be set, got: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn logout_removal_cookie_mirrors_cookie_secure() {
+    // A removal cookie carrying `Secure` is itself dropped on an insecure
+    // origin, which would leave the session cookie in place and make logout a
+    // silent no-op. The removal must mirror however the cookie was set.
+    for secure in [true, false] {
+        let router = app_with_cookie_secure(secure);
+        let session = extract_session_cookie(&do_login(router.clone()).await);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/auth/logout")
+                    .header("Cookie", format!("nexusmind_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let set_cookie = set_cookie_header(&response);
+        assert_eq!(
+            set_cookie.to_lowercase().contains("secure"),
+            secure,
+            "logout removal cookie must mirror cookie_secure={secure}, got: {set_cookie}"
+        );
+    }
 }
