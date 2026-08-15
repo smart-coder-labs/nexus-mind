@@ -123,16 +123,21 @@ fn seed_org(
     }
 
     // Implicit project creation is disabled at the store layer, so pre-create every
-    // project referenced by demo memories. Done AFTER users are invited so
-    // get_or_create_project enrols them as members and the demo data stays visible.
-    let mut seen_projects = std::collections::HashSet::new();
+    // project referenced by demo memories and keep its id for membership enrolment.
+    // Storing a memory no longer auto-enrols its author (that write-time behaviour was
+    // removed in favour of explicit membership — see queries::create_org), so without
+    // the enrolment below the demo data is invisible under the project-scoped
+    // visibility model: every list/search returns "Access denied" or 0 results.
+    let mut project_ids = std::collections::HashMap::new();
     for &(_, project, _, _) in MEMORIES.iter() {
-        if seen_projects.insert(project) {
-            queries::get_or_create_project(conn, &org.id, project)?;
+        if !project_ids.contains_key(project) {
+            let id = queries::get_or_create_project(conn, &org.id, project)?;
+            project_ids.insert(project, id);
         }
     }
 
-    // Store memories round-robin across non-viewer users.
+    // Store memories round-robin across non-viewer users, enrolling each author as a
+    // member of the project they write to so they can see their own demo memories.
     for (i, &(tool, project, content, tags)) in MEMORIES.iter().enumerate() {
         let user_id = &non_viewer_user_ids[i % non_viewer_user_ids.len()];
         let tag_strings: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
@@ -147,6 +152,7 @@ fn seed_org(
             topic_key: None,
             session_id: None,
         })?;
+        queries::upsert_project_member(conn, &project_ids[project], user_id, "member")?;
     }
 
     // Log audit events across users.
@@ -170,14 +176,47 @@ fn print_summary(slug: &str, org_name: &str, memory_count: usize) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+/// Bail out if another connection holds the database, so we never delete a file
+/// a live backend is using. Opens the existing DB and tries to take the write
+/// lock via `BEGIN EXCLUSIVE`; if it cannot be acquired within a short timeout,
+/// someone is writing it and we refuse to proceed with a clear message.
+fn ensure_not_in_use(db_path: &str) -> anyhow::Result<()> {
+    let conn = Connection::open(db_path)?;
+    conn.busy_timeout(std::time::Duration::from_millis(500))?;
+    conn.execute_batch("BEGIN EXCLUSIVE; COMMIT;").map_err(|e| {
+        anyhow::anyhow!(
+            "Database at {db_path} is in use by another process (could not acquire \
+             an exclusive lock: {e}).\nStop the backend before seeding, e.g.:\n  \
+             docker compose stop backend"
+        )
+    })?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let db_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "./data/nexusmind.db".to_string());
 
-    // Always start fresh.
+    // Refuse to seed a database another process holds open. Seeding deletes and
+    // recreates the file; doing that under a live backend leaves it writing to a
+    // now-unlinked inode (silent data loss) and produces SQLITE_IOERR_SHORT_READ
+    // (522) from the stale -wal/-shm sidecars. An exclusive lock is our portable
+    // "is anyone writing this?" probe — it catches a backend that is up and
+    // serving, which is the case that actually bites. A fully idle open handle
+    // can still slip past it, so we also drop the WAL sidecars below.
     if Path::new(&db_path).exists() {
-        fs::remove_file(&db_path)?;
+        ensure_not_in_use(&db_path)?;
+    }
+
+    // Always start fresh — remove the main file AND its WAL sidecars. Removing
+    // only the .db (the old behaviour) left -wal/-shm orphaned, so the next open
+    // recovered a WAL against an empty file and failed with error 522.
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let path = format!("{db_path}{suffix}");
+        if Path::new(&path).exists() {
+            fs::remove_file(&path)?;
+        }
     }
     if let Some(parent) = Path::new(&db_path).parent() {
         fs::create_dir_all(parent)?;

@@ -70,9 +70,29 @@ pub async fn get_project_context(
     let ctx = db_queries::get_project_context(&conn, &auth.org_id, &project)
         .map_err(db_err)?;
 
-    // Scope to org-wide + this project's conventions (project scoping ADDS to org-wide).
-    let conventions = db_queries::list_conventions_visible(&conn, &auth.org_id, None, Some(false), Some(&project), MAX_CONTEXT_CONVENTIONS, 0, viewer_scope(&auth))
-        .map_err(db_err)?;
+    // Resolve the owning client so the chain is org → client → project. `None`
+    // means an internal u2s project, where the chain is simply org → project.
+    let client_id = db_queries::get_project_client_id(&conn, &auth.org_id, &project).map_err(db_err)?;
+
+    // `project` arrives as a NAME, but conventions.project_id is a foreign key
+    // to projects(id). Comparing the two matched nothing, so project-scoped
+    // conventions never reached this response. Resolve before filtering.
+    let project_id = db_queries::get_project_id_by_name(&conn, &auth.org_id, &project).map_err(db_err)?;
+
+    // Each level ADDS to the broader ones — a client convention never replaces
+    // an org-wide one.
+    let conventions = db_queries::list_conventions_visible(
+        &conn,
+        &auth.org_id,
+        None,
+        Some(false),
+        project_id.as_deref(),
+        client_id.as_deref(),
+        MAX_CONTEXT_CONVENTIONS,
+        0,
+        viewer_scope(&auth),
+    )
+    .map_err(db_err)?;
 
     let mut ctx_json = if params.compact.unwrap_or(false) {
         let previews: Vec<MemoryPreview> = ctx.recent_memories.iter().map(MemoryPreview::from).collect();
@@ -163,7 +183,7 @@ pub async fn get_global_context(
     };
 
     // Global context has no project in scope — admin listing (everything for the org).
-    let conventions = db_queries::list_conventions_visible(&conn, &auth.org_id, None, Some(false), None, MAX_CONTEXT_CONVENTIONS, 0, viewer)
+    let conventions = db_queries::list_conventions_visible(&conn, &auth.org_id, None, Some(false), None, None, MAX_CONTEXT_CONVENTIONS, 0, viewer)
         .map_err(db_err)?;
 
     let mut resp = build_context_response(full_values, "scope", serde_json::json!("global"));

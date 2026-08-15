@@ -16,6 +16,14 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::connection::connect(&config.db_path)?;
     db::migrations::run_all(&conn)?;
 
+    // Reset zombie index runs: a code project left in 'indexing' by a crash/OOM/restart
+    // would report "indexing" forever and block re-indexing. Flip them to 'error'.
+    match db::queries::fail_stale_indexing_projects(&conn) {
+        Ok(n) if n > 0 => tracing::warn!("Reset {n} interrupted code index run(s) to 'error'"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Failed to reset stale indexing projects: {e}"),
+    }
+
     // Backfill the default project for orgs created before default-project onboarding
     // existed, so agents using the standard "nexus-mind" project don't get 404s.
     match db::queries::ensure_default_projects(&conn) {

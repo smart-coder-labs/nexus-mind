@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::indexer::chunker::{Chunker, LineWindowChunker, MarkdownChunker, RawChunk};
+use crate::indexer::chunker::{is_comment_line, Chunker, LineWindowChunker, MarkdownChunker, RawChunk};
 
 // ── Code graph types ──────────────────────────────────────────────────────────
 
@@ -187,19 +187,31 @@ impl TreeSitterChunker {
         content: &str,
         out: &mut Vec<RawChunk>,
     ) {
-        let start_row = node.start_position().row; // 0-indexed
+        let node_start_row = node.start_position().row; // 0-indexed
         let end_row = node.end_position().row; // 0-indexed
-        let span_lines = end_row.saturating_sub(start_row) + 1;
         let symbol = node_symbol(node, content);
-        let text = &content[node.byte_range()];
+
+        // Extend the chunk's start upward over the contiguous doc-comment block
+        // immediately preceding the symbol (`///`, `//`, `/** */`, `#`, `"""`, …),
+        // tolerating blank lines between the comment and the symbol. Tree-sitter
+        // definition nodes start AT the symbol, so without this the doc-comment —
+        // the one part `build_embed_text` uses for NL ranking — would be dropped.
+        let lines: Vec<&str> = content.lines().collect();
+        let start_row = extend_start_over_doc_comment(&lines, node_start_row);
+        let span_lines = end_row.saturating_sub(start_row) + 1;
+
+        // Rebuild the chunk text from whole lines [start_row, end_row] so the
+        // preceding doc-comment (and any blank line before the symbol) is included.
+        let last = end_row.min(lines.len().saturating_sub(1));
+        let text: String = lines[start_row..=last].join("\n");
 
         if span_lines > self.max_chunk_lines {
             // Oversized symbol — sub-split with the line-window fallback and
-            // re-base its (1-indexed, node-relative) line numbers onto the file,
+            // re-base its (1-indexed, chunk-relative) line numbers onto the file,
             // forcing the parent symbol onto every sub-chunk.
             for mut sub in self
                 .fallback
-                .chunk(file_path, file_hash, language, text)
+                .chunk(file_path, file_hash, language, &text)
                 .into_iter()
             {
                 sub.start_line += start_row as i64;
@@ -217,7 +229,7 @@ impl TreeSitterChunker {
             symbol,
             start_line: (start_row as i64) + 1,
             end_line: (end_row as i64) + 1,
-            content: text.to_string(),
+            content: text,
         });
     }
 
@@ -308,7 +320,7 @@ impl TreeSitterChunker {
 
         // Chunk extraction — same logic as Chunker::chunk.
         let defs = self.collect_definitions(root);
-        let chunks = if defs.is_empty() {
+        let mut chunks = if defs.is_empty() {
             self.fallback.chunk(file_path, file_hash, language, content)
         } else {
             let mut out = Vec::with_capacity(defs.len());
@@ -317,6 +329,12 @@ impl TreeSitterChunker {
             }
             out
         };
+        // Safety net: a non-empty file must always yield ≥1 searchable chunk. If the
+        // AST path produced nothing (grammar edge cases, all-error trees), fall back
+        // to line windows rather than dropping the file from the index.
+        if chunks.is_empty() {
+            chunks = self.fallback.chunk(file_path, file_hash, language, content);
+        }
 
         // Graph extraction — reuses the same already-parsed tree.
         let file_graph =
@@ -369,6 +387,10 @@ impl Chunker for TreeSitterChunker {
         let mut out = Vec::with_capacity(defs.len());
         for node in defs {
             self.emit_node(node, file_path, file_hash, language, content, &mut out);
+        }
+        // Safety net: a non-empty file must always yield ≥1 searchable chunk.
+        if out.is_empty() {
+            return self.fallback.chunk(file_path, file_hash, language, content);
         }
         out
     }
@@ -1037,6 +1059,35 @@ fn normalize_path(path: &str) -> String {
     parts.join("/")
 }
 
+/// Given the file's lines and a symbol's 0-indexed start row, return the row the
+/// chunk should start at so it includes the symbol's leading doc-comment block.
+///
+/// Walks upward from the symbol, first tolerating blank lines directly above it
+/// (a doc-comment separated from its symbol by a blank line still belongs to it),
+/// then swallowing the contiguous run of comment lines above. If no comment line
+/// is found, the original symbol row is returned unchanged (blank lines alone are
+/// never pulled in). Blank-line-tolerant, language-agnostic — `is_comment_line`
+/// recognizes `///`, `//`, `/*`/`*`, `#`, `"""`/`'''`, `<!--`, `--`.
+fn extend_start_over_doc_comment(lines: &[&str], symbol_start_row: usize) -> usize {
+    // Skip blank lines directly above the symbol.
+    let mut j = symbol_start_row;
+    while j > 0 && lines[j - 1].trim().is_empty() {
+        j -= 1;
+    }
+    // Swallow the contiguous comment block above.
+    let mut start = j;
+    while start > 0 && is_comment_line(lines[start - 1].trim()) {
+        start -= 1;
+    }
+    // Only extend when a comment was actually found; otherwise keep the symbol row
+    // so we never absorb bare blank lines that carry no doc.
+    if start < j {
+        start
+    } else {
+        symbol_start_row
+    }
+}
+
 /// Extract the declared name of a definition node (best-effort).
 fn node_symbol(node: Node, src: &str) -> Option<String> {
     // For decorated defs (Python), the name lives on the inner definition.
@@ -1165,6 +1216,21 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_language_java_and_shell_yield_chunks() {
+        let chunker = TreeSitterChunker::default();
+        // Java has no tree-sitter grammar wired in here → must fall back to line
+        // windows and still produce searchable chunks (not an empty vec).
+        let java = "public class OrderService {\n  public Order create(Cart c) { return new Order(c); }\n}\n";
+        let jc = chunker.chunk("OrderService.java", "h", Some("java"), java);
+        assert!(!jc.is_empty(), "a .java file must yield ≥1 chunk via fallback");
+
+        // Same guarantee for a shell script.
+        let sh = "#!/usr/bin/env bash\nset -euo pipefail\ndeploy() {\n  kubectl apply -f k8s/\n}\n";
+        let sc = chunker.chunk("deploy.sh", "h", Some("shell"), sh);
+        assert!(!sc.is_empty(), "a .sh file must yield ≥1 chunk via fallback");
+    }
+
+    #[test]
     fn typescript_extracts_code_symbols_and_edges() {
         let chunker = TreeSitterChunker::default();
         let src = "import { Order } from './order';\nimport express from 'express';\n\nexport interface Product {\n  id: string;\n  price: number;\n}\n\nexport class OrderService {\n  private orders: Order[] = [];\n  createOrder(p: Product): Order { return {} as Order; }\n  async cancelOrder(id: string): Promise<void> {}\n}\n\nexport function calculateTotal(products: Product[]): number {\n  return products.reduce((s, p) => s + p.price, 0);\n}\n\nexport type OrderId = string;\nexport enum Status { Pending, Shipped }\n";
@@ -1232,6 +1298,50 @@ mod tests {
     fn empty_file_produces_no_chunks() {
         let chunker = TreeSitterChunker::default();
         assert!(chunker.chunk("src/empty.rs", "h", Some("rust"), "").is_empty());
+    }
+
+    #[test]
+    fn ts_symbol_chunk_includes_preceding_doc_comment() {
+        use crate::indexer::chunker::build_embed_text;
+        let chunker = TreeSitterChunker::default();
+        // A JSDoc block sits directly above the function. The tree-sitter node starts
+        // at `export function`, so the chunk must be extended upward to capture it.
+        let src = "import { db } from './db';\n\n/** Lists all users */\nexport function listUsers(): User[] {\n  return db.query('SELECT * FROM users');\n}\n";
+        let chunks = chunker.chunk("api/users.ts", "h", Some("typescript"), src);
+        let chunk = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("listUsers"))
+            .expect("listUsers chunk must exist");
+        assert!(
+            chunk.content.contains("Lists all users"),
+            "chunk content must include the doc-comment: {:?}",
+            chunk.content
+        );
+        // The whole point: build_embed_text must now surface the doc text.
+        let embed = build_embed_text(chunk.symbol.as_deref(), &chunk.content);
+        assert!(
+            embed.contains("Lists all users"),
+            "build_embed_text must capture the doc-comment: {embed}"
+        );
+    }
+
+    #[test]
+    fn rust_symbol_chunk_includes_doc_comment_with_blank_line() {
+        use crate::indexer::chunker::build_embed_text;
+        let chunker = TreeSitterChunker::default();
+        // A `///` doc block separated from the fn by a blank line still belongs to it.
+        let src = "/// Authenticates the caller.\n\npub fn authenticate(token: &str) -> bool {\n    !token.is_empty()\n}\n";
+        let chunks = chunker.chunk("src/auth.rs", "h", Some("rust"), src);
+        let chunk = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("authenticate"))
+            .expect("authenticate chunk must exist");
+        assert_eq!(chunk.start_line, 1, "chunk must start at the doc-comment line");
+        let embed = build_embed_text(chunk.symbol.as_deref(), &chunk.content);
+        assert!(
+            embed.contains("Authenticates the caller"),
+            "doc-comment above a blank line must be captured: {embed}"
+        );
     }
 
     // ── chunk_with_graph tests ────────────────────────────────────────────────

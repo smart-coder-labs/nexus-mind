@@ -101,11 +101,41 @@ export interface Project {
   parent_id: string | null
   created_at: string
   archived_at?: string | null
+  /** Owning client. null/absent = an internal u2s project (not unassigned). */
+  client_id?: string | null
 }
 
 export interface ProjectMember {
   id: string
   project_id: string
+  user_id: string
+  email: string
+  name: string
+  role: string
+  created_at: string
+}
+
+// ── Clients (consultancy grouping) ────────────────────────────────────────────
+
+export type ClientStatus = 'active' | 'paused' | 'offboarded'
+
+/** The statuses a client may hold — mirrors backend `CLIENT_STATUSES`. */
+export const CLIENT_STATUSES: ClientStatus[] = ['active', 'paused', 'offboarded']
+
+/** A client of the consultancy. Sits between the org and its projects. */
+export interface Client {
+  id: string
+  org_id: string
+  name: string
+  slug: string
+  status: ClientStatus
+  archived_at?: string | null
+  created_at: string
+}
+
+export interface ClientMember {
+  id: string
+  client_id: string
   user_id: string
   email: string
   name: string
@@ -160,6 +190,64 @@ export interface UsageStats {
   users: number
   projects: number
   code_repos: number
+}
+
+// ── Usage Metrics (tokens + execution time) ───────────────────────────────────
+//
+// Backs the Usage page. Mirrors the backend `usage-metrics` contract: a rollup
+// at one of four levels (task → project → client → org), each row keyed by the
+// grouped entity plus additive token/time/count aggregates, and org-wide totals.
+
+/** The additive rollup granularities the summary can be grouped by. */
+export type UsageLevel = 'task' | 'project' | 'client' | 'org' | 'model' | 'user'
+
+/** Time-bucket granularities of `GET /v1/usage/timeseries`. */
+export type UsageBucketSize = 'hour' | 'day' | 'week'
+
+/** One rollup row. `key_id`/`key_name` identify the grouped entity at `level`. */
+export interface UsageSummaryRow {
+  key_id: string | null
+  key_name: string
+  tokens_in: number
+  tokens_out: number
+  tokens_total: number
+  duration_ms: number
+  event_count: number
+}
+
+/**
+ * One time bucket. `bucket_ts` is the bucket's leading edge in the same
+ * lexicographically-sortable shape the backend stores: `YYYY-MM-DD` for
+ * day/week, `YYYY-MM-DD HH` for hour.
+ */
+export interface UsageBucket {
+  bucket_ts: string
+  tokens_in: number
+  tokens_out: number
+  tokens_total: number
+  duration_ms: number
+  event_count: number
+}
+
+/**
+ * Response of `GET /v1/usage/timeseries`. Only non-empty buckets are returned —
+ * the caller gap-fills against the range it requested.
+ */
+export interface UsageTimeseriesResponse {
+  bucket: UsageBucketSize
+  buckets: UsageBucket[]
+}
+
+/** Response of `GET /v1/usage/summary` — rows plus org-wide totals. */
+export interface UsageSummaryResponse {
+  rows: UsageSummaryRow[]
+  totals: {
+    tokens_in: number
+    tokens_out: number
+    tokens_total: number
+    duration_ms: number
+    event_count: number
+  }
 }
 
 export interface DashboardData {
@@ -258,6 +346,23 @@ export interface CodeSearchResult {
   start_line: number
   end_line: number
   content: string
+  score: number
+  /**
+   * The compact text that was embedded for this chunk — symbol name + signature
+   * + doc-comment. Optional/backward-compatible: an older backend omits it, so
+   * every read site must tolerate it being absent.
+   */
+  skeleton?: string
+}
+
+/**
+ * One ranked distinct file path from `POST /v1/code/locate` — the lean,
+ * token-cheap "jump to the right file" view. A file's `score` is its single
+ * best-scoring chunk; `top_symbol` is that chunk's symbol (null if none).
+ */
+export interface LocateResult {
+  file_path: string
+  top_symbol: string | null
   score: number
 }
 

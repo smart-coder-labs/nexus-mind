@@ -8,7 +8,8 @@ use crate::auth::api_keys;
 use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
 use crate::models::types::{
     validate_typed_harness_manifest, Agent, AgentAssignment, ApiKeyWithUser, AuditEntry,
-    AuthContext, CodeChunk, CodeProject, Convention, CreateAgentRequest, CreateConventionRequest,
+    AuthContext, Client, ClientMember, CodeChunk, CodeProject, Convention, CreateAgentRequest,
+    CreateConventionRequest,
     CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
     CreateWebhookRequest, CustomRole, GitHubConnection, GlobalMetrics, GraphEdgeDto, GraphNodeDto,
     Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewAuthor,
@@ -16,9 +17,10 @@ use crate::models::types::{
     HarnessInstallResultRequest, HarnessOwner, HarnessRecommendation, HarnessVersion,
     HarnessVersionSummary, InviteLink, MemGraphEdge, MemGraphNode, Memory, OnboardingItem,
     OnboardingStatus, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
-    Project, ProjectEventOverrides, ProjectMember, PublishHarnessVersionRequest, Session,
+    Project, ProjectEventOverrides, ProjectMember, ProjectResolutionReport,
+    PublishHarnessVersionRequest, Session,
     SessionWithCount, StoreMemoryRequest, ToolUsage, UpdateAgentRequest, UpdateConventionRequest,
-    UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
+    UnresolvedProject, UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
 };
 use crate::models::types::{
     can_transition, CreateRetrospectiveRequest, CreateSprintRequest, CreateTaskRequest,
@@ -293,7 +295,7 @@ pub fn sanitize_fts_query(query: &str) -> Option<String> {
 /// parameter token holding the viewer's user id (e.g. `"?5"`).
 fn visibility_predicate(col: &str, placeholder: &str) -> String {
     format!(
-        " AND ({col} IS NULL OR {col} IN (SELECT project_id FROM project_members WHERE user_id = {placeholder}))"
+        " AND ({col} IS NULL OR {col} IN (SELECT project_id FROM project_visibility WHERE user_id = {placeholder}))"
     )
 }
 
@@ -1703,7 +1705,7 @@ pub fn list_visible_harnesses(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
     let mut idx = 2usize;
     if let Some(user_id) = viewer_user_id {
-        sql.push_str(&format!(" AND ((h.project_id IS NULL AND h.owner_user_id = ?{idx}) OR h.project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{idx}))"));
+        sql.push_str(&format!(" AND ((h.project_id IS NULL AND h.owner_user_id = ?{idx}) OR h.project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?{idx}))"));
         params.push(Box::new(user_id.to_string()));
         idx += 1;
     }
@@ -2537,7 +2539,7 @@ pub fn get_memory_facets(
             "SELECT COALESCE(m.type, ''), COUNT(*) as cnt
              FROM memories m
              JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
-             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             JOIN project_visibility pv ON pv.project_id = p.id AND pv.user_id = ?2
              WHERE m.org_id = ?1 AND m.type IS NOT NULL AND m.type != ''
              GROUP BY m.type
              ORDER BY cnt DESC
@@ -2577,7 +2579,7 @@ pub fn get_memory_facets(
             "SELECT COALESCE(m.scope, 'project'), COUNT(*) as cnt
              FROM memories m
              JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
-             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             JOIN project_visibility pv ON pv.project_id = p.id AND pv.user_id = ?2
              WHERE m.org_id = ?1
              GROUP BY COALESCE(m.scope, 'project')
              ORDER BY cnt DESC
@@ -2617,7 +2619,7 @@ pub fn get_memory_facets(
             "SELECT m.project, COUNT(*) as cnt
              FROM memories m
              JOIN projects p ON p.org_id = m.org_id AND p.name = m.project
-             JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+             JOIN project_visibility pv ON pv.project_id = p.id AND pv.user_id = ?2
              WHERE m.org_id = ?1
              GROUP BY m.project
              ORDER BY cnt DESC
@@ -3099,8 +3101,8 @@ pub fn user_can_view_project_name(
                   WHEN NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = ?1 AND p.name = ?2) THEN 1
                   WHEN EXISTS (
                       SELECT 1 FROM projects p
-                      JOIN project_members pm ON pm.project_id = p.id
-                      WHERE p.org_id = ?1 AND p.name = ?2 AND pm.user_id = ?3
+                      JOIN project_visibility pv ON pv.project_id = p.id
+                      WHERE p.org_id = ?1 AND p.name = ?2 AND pv.user_id = ?3
                   ) THEN 1
                   ELSE 0
                 END",
@@ -3132,8 +3134,8 @@ pub fn list_sessions_visible(
                 NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = ?1 AND p.name = s.project)
                 OR EXISTS (
                     SELECT 1 FROM projects p
-                    JOIN project_members pm ON pm.project_id = p.id
-                    WHERE p.org_id = ?1 AND p.name = s.project AND pm.user_id = ?2
+                    JOIN project_visibility pv ON pv.project_id = p.id
+                    WHERE p.org_id = ?1 AND p.name = s.project AND pv.user_id = ?2
                 )
             )",
         );
@@ -3766,6 +3768,8 @@ pub fn get_role_permissions(
             "settings:write".to_string(),
             "policy:read".to_string(),
             "policy:write".to_string(),
+            "client:read".to_string(),
+            "client:write".to_string(),
             "harness:read".to_string(),
             "harness:write".to_string(),
             "harness:download".to_string(),
@@ -3803,6 +3807,8 @@ pub fn get_role_permissions(
             "policy:write".to_string(),
             "project:read".to_string(),
             "project:write".to_string(),
+            "client:read".to_string(),
+            "client:write".to_string(),
             "session:read".to_string(),
             "api_key:read".to_string(),
             "convention:read".to_string(),
@@ -3918,21 +3924,32 @@ pub fn project_name_exists(conn: &Connection, org_id: &str, name: &str) -> Resul
 }
 
 pub fn list_projects(conn: &Connection, org_id: &str) -> Result<Vec<Project>> {
-    list_projects_filtered(conn, org_id, false)
+    list_projects_filtered(conn, org_id, false, None)
 }
 
+/// Lists an org's projects, privileged view.
+///
+/// `client_id` filters the result set: `None` returns every project;
+/// `Some(id)` returns only projects owned by that client. The filter is
+/// backward-compatible — callers that don't pass it get the prior behaviour.
 pub fn list_projects_filtered(
     conn: &Connection,
     org_id: &str,
     include_archived: bool,
+    client_id: Option<&str>,
 ) -> Result<Vec<Project>> {
-    let sql = if include_archived {
-        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE org_id = ?1 ORDER BY name ASC"
+    let archived_clause = if include_archived {
+        ""
     } else {
-        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE org_id = ?1 AND archived_at IS NULL ORDER BY name ASC"
+        " AND archived_at IS NULL"
     };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([org_id], |row| {
+    let sql = format!(
+        "SELECT id, org_id, name, description, created_at, parent_id, archived_at, client_id \
+         FROM projects WHERE org_id = ?1{archived_clause} \
+         AND (?2 IS NULL OR client_id = ?2) ORDER BY name ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![org_id, client_id], |row| {
         Ok(Project {
             id: row.get(0)?,
             org_id: row.get(1)?,
@@ -3941,6 +3958,7 @@ pub fn list_projects_filtered(
             created_at: row.get(4)?,
             parent_id: row.get(5)?,
             archived_at: row.get(6)?,
+            client_id: row.get(7)?,
         })
     })?;
     let mut projects = Vec::new();
@@ -3956,10 +3974,10 @@ pub fn list_projects_visible(
     user_id: &str,
 ) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT p.id, p.org_id, p.name, p.description, p.created_at, p.parent_id, p.archived_at
+        "SELECT p.id, p.org_id, p.name, p.description, p.created_at, p.parent_id, p.archived_at, p.client_id
          FROM projects p
-         JOIN project_members pm ON pm.project_id = p.id
-         WHERE p.org_id = ?1 AND pm.user_id = ?2 AND p.archived_at IS NULL
+         JOIN project_visibility pv ON pv.project_id = p.id
+         WHERE p.org_id = ?1 AND pv.user_id = ?2 AND p.archived_at IS NULL
          ORDER BY p.name ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![org_id, user_id], |row| {
@@ -3971,6 +3989,7 @@ pub fn list_projects_visible(
             created_at: row.get(4)?,
             parent_id: row.get(5)?,
             archived_at: row.get(6)?,
+            client_id: row.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -3978,7 +3997,7 @@ pub fn list_projects_visible(
 
 pub fn get_project_by_id(conn: &Connection, org_id: &str, id: &str) -> Result<Option<Project>> {
     let mut stmt = conn.prepare(
-        "SELECT id, org_id, name, description, created_at, parent_id, archived_at FROM projects WHERE id = ?1 AND org_id = ?2",
+        "SELECT id, org_id, name, description, created_at, parent_id, archived_at, client_id FROM projects WHERE id = ?1 AND org_id = ?2",
     )?;
     let mut rows = stmt.query_map([id, org_id], |row| {
         Ok(Project {
@@ -3989,6 +4008,7 @@ pub fn get_project_by_id(conn: &Connection, org_id: &str, id: &str) -> Result<Op
             created_at: row.get(4)?,
             parent_id: row.get(5)?,
             archived_at: row.get(6)?,
+            client_id: row.get(7)?,
         })
     })?;
     rows.next().transpose().map_err(Into::into)
@@ -4026,10 +4046,10 @@ pub fn list_project_ids_for_user(
     user_id: &str,
 ) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT pm.project_id
-         FROM project_members pm
-         JOIN projects p ON p.id = pm.project_id
-         WHERE p.org_id = ?1 AND pm.user_id = ?2",
+        "SELECT pv.project_id
+         FROM project_visibility pv
+         JOIN projects p ON p.id = pv.project_id
+         WHERE p.org_id = ?1 AND pv.user_id = ?2",
     )?;
     let project_ids = stmt
         .query_map(rusqlite::params![org_id, user_id], |row| row.get(0))?
@@ -4045,9 +4065,9 @@ pub fn user_is_project_member(
 ) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*)
-         FROM project_members pm
-         JOIN projects p ON p.id = pm.project_id
-         WHERE p.org_id = ?1 AND pm.project_id = ?2 AND pm.user_id = ?3",
+         FROM project_visibility pv
+         JOIN projects p ON p.id = pv.project_id
+         WHERE p.org_id = ?1 AND pv.project_id = ?2 AND pv.user_id = ?3",
         rusqlite::params![org_id, project_id, user_id],
         |row| row.get(0),
     )?;
@@ -4114,7 +4134,7 @@ pub fn resolve_project_family(conn: &Connection, org_id: &str, root: &str) -> Re
         match get_project_by_id(conn, org_id, root)? {
             Some(p) => p,
             None => match conn.query_row(
-                "SELECT id, org_id, name, description, created_at, parent_id, archived_at \
+                "SELECT id, org_id, name, description, created_at, parent_id, archived_at, client_id \
                  FROM projects WHERE org_id = ?1 AND name = ?2",
                 rusqlite::params![org_id, root],
                 |row| {
@@ -4126,6 +4146,7 @@ pub fn resolve_project_family(conn: &Connection, org_id: &str, root: &str) -> Re
                         created_at: row.get(4)?,
                         parent_id: row.get(5)?,
                         archived_at: row.get(6)?,
+                        client_id: row.get(7)?,
                     })
                 },
             ) {
@@ -4136,7 +4157,7 @@ pub fn resolve_project_family(conn: &Connection, org_id: &str, root: &str) -> Re
         }
     } else {
         match conn.query_row(
-            "SELECT id, org_id, name, description, created_at, parent_id, archived_at \
+            "SELECT id, org_id, name, description, created_at, parent_id, archived_at, client_id \
              FROM projects WHERE org_id = ?1 AND name = ?2",
             rusqlite::params![org_id, root],
             |row| {
@@ -4148,6 +4169,7 @@ pub fn resolve_project_family(conn: &Connection, org_id: &str, root: &str) -> Re
                     created_at: row.get(4)?,
                     parent_id: row.get(5)?,
                     archived_at: row.get(6)?,
+                    client_id: row.get(7)?,
                 })
             },
         ) {
@@ -4220,9 +4242,15 @@ pub fn create_project(
         created_at: now,
         parent_id: parent_id.map(String::from),
         archived_at: None,
+        client_id: None,
     })
 }
 
+/// Creates a project and makes its creator an admin member.
+///
+/// `client_id` of `None` creates an **internal u2s project** — that is a
+/// meaning, not a missing value, so nothing backfills it later.
+#[allow(clippy::too_many_arguments)]
 pub fn create_project_with_creator_membership(
     conn: &Connection,
     org_id: &str,
@@ -4230,13 +4258,26 @@ pub fn create_project_with_creator_membership(
     name: &str,
     description: Option<&str>,
     parent_id: Option<&str>,
+    client_id: Option<&str>,
 ) -> Result<Project> {
+    // A project may only be attached to a client of its own organization;
+    // otherwise a caller could graft a project onto another tenant's client.
+    if let Some(cid) = client_id {
+        let belongs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clients WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![cid, org_id],
+            |r| r.get(0),
+        )?;
+        if belongs == 0 {
+            anyhow::bail!("client {cid} does not belong to this organization");
+        }
+    }
     let tx = conn.unchecked_transaction()?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     tx.execute(
-        "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, org_id, name, description, now, parent_id],
+        "INSERT INTO projects (id, org_id, name, description, created_at, parent_id, client_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, org_id, name, description, now, parent_id, client_id],
     )?;
     tx.execute(
         "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES (?1, ?2, ?3, 'admin', ?4)",
@@ -4251,6 +4292,7 @@ pub fn create_project_with_creator_membership(
         created_at: now,
         parent_id: parent_id.map(String::from),
         archived_at: None,
+        client_id: client_id.map(String::from),
     })
 }
 
@@ -4974,7 +5016,7 @@ pub fn list_policies_visible(
              FROM policies
              WHERE org_id = ?1
                AND (project_id IS NULL OR project_id IN (
-                   SELECT project_id FROM project_members WHERE user_id = ?2
+                   SELECT project_id FROM project_visibility WHERE user_id = ?2
                ))
              ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
         )?;
@@ -5011,6 +5053,9 @@ pub fn list_enabled_policies(
     list_enabled_policies_visible(conn, org_id, project, None)
 }
 
+/// Enabled policies in force for a project, resolved **org → client → project**
+/// additively — same chain as conventions. A client-level policy tightens an
+/// org-level one; it never loosens or replaces it.
 pub fn list_enabled_policies_visible(
     conn: &Connection,
     org_id: &str,
@@ -5018,14 +5063,24 @@ pub fn list_enabled_policies_visible(
     viewer_user_id: Option<&str>,
 ) -> Result<Vec<Policy>> {
     if let Some(p) = project {
+        // Resolve the owning client here rather than making every caller do it:
+        // a caller that forgot would silently drop the client's policies, which
+        // is a governance hole that no test would obviously catch.
+        let client_id = get_project_client_id(conn, org_id, p)?;
         let mut sql = String::from(
             "SELECT id, org_id, name, rule_type, config, enabled, created_at, updated_at, project_id
-             FROM policies WHERE org_id = ?1 AND enabled = 1 AND (project_id IS NULL OR project_id = ?2)",
+             FROM policies WHERE org_id = ?1 AND enabled = 1
+               AND ((client_id IS NULL AND project_id IS NULL)
+                 OR (client_id IS NOT NULL AND client_id = ?3 AND project_id IS NULL)
+                 OR project_id = ?2)",
         );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(org_id.to_string()), Box::new(p.to_string())];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(org_id.to_string()),
+            Box::new(p.to_string()),
+            Box::new(client_id.clone()),
+        ];
         if let Some(viewer) = viewer_user_id {
-            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?4))");
             params.push(Box::new(viewer.to_string()));
         }
         sql.push_str(" ORDER BY created_at ASC");
@@ -5041,7 +5096,7 @@ pub fn list_enabled_policies_visible(
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
         if let Some(viewer) = viewer_user_id {
-            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?2))");
+            sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?2))");
             params.push(Box::new(viewer.to_string()));
         }
         sql.push_str(" ORDER BY created_at ASC");
@@ -5173,6 +5228,28 @@ pub fn upsert_code_project(
     Ok(id)
 }
 
+/// Ensure the creator of a freshly-indexed code project can see and search it.
+///
+/// The visible-project queries (`list_code_projects_visible`,
+/// `user_can_access_canonical_project_by_name`) join `code_projects` → `projects`
+/// → the `project_visibility` view (backed by `project_members`). `upsert_code_project`
+/// only writes the `code_projects` row, so a non-super_user creator would otherwise be
+/// locked out of their own index (`/v1/code/projects` → [], `/v1/code/search` → 404).
+///
+/// This creates the matching canonical `projects` row (same org + name) if missing
+/// and enrolls `creator_id` as an `admin` member so the visibility view includes them.
+/// Idempotent — re-indexing reuses the existing project row and membership.
+pub fn ensure_code_project_visible_to_creator(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+    creator_id: &str,
+) -> Result<()> {
+    let project_id = get_or_create_project(conn, org_id, project_name)?;
+    upsert_project_member(conn, &project_id, creator_id, "admin")?;
+    Ok(())
+}
+
 /// Update file_count, chunk_count, and last_indexed for a code project.
 pub fn update_code_project_stats(
     conn: &Connection,
@@ -5240,6 +5317,23 @@ pub fn set_code_project_error(
     Ok(())
 }
 
+/// Fail any code projects left stuck in `index_status = 'indexing'` by an
+/// interrupted run (OOM kill, crash, or restart). An indexing run marks the row
+/// `'indexing'` up front and only flips it to `'success'`/`'error'` at the end, so
+/// a process that dies mid-index leaves a zombie row that would otherwise report
+/// "indexing" forever and block re-indexing. Call once on startup after migrations.
+/// Returns the number of rows reset.
+pub fn fail_stale_indexing_projects(conn: &Connection) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE code_projects
+         SET index_status = 'error',
+             last_index_error = 'Indexing interrupted (server restart)'
+         WHERE index_status = 'indexing'",
+        [],
+    )?;
+    Ok(n)
+}
+
 /// Delete all code_chunks for a specific file within a project.
 /// Called before re-indexing a changed file.
 pub fn delete_chunks_for_file(
@@ -5263,6 +5357,19 @@ pub fn count_chunks_for_file(
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
         rusqlite::params![code_project_id, file_path],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count all chunks currently stored for a project. Used as the authoritative
+/// chunk total after an index run: freshly-embedded files (Pass 2) insert chunks
+/// without incrementing the in-loop counter, so a fresh index would otherwise
+/// report 0 chunks despite real rows existing.
+pub fn count_chunks_for_project(conn: &Connection, code_project_id: i64) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_chunks WHERE code_project_id = ?1",
+        rusqlite::params![code_project_id],
         |r| r.get(0),
     )?;
     Ok(count)
@@ -5443,6 +5550,33 @@ pub fn get_code_embeddings(conn: &Connection, code_project_id: i64) -> Result<Ve
     Ok(pairs)
 }
 
+/// Return `(chunk_id, file_path, symbol)` for every embedded chunk in a project.
+/// Lightweight companion to [`get_code_embeddings`] for `POST /v1/code/locate`: it
+/// lets the handler dedupe ranked chunks down to distinct files without loading any
+/// chunk `content` (the heavy column). Only chunks that have an embedding are
+/// returned, so ids line up 1:1 with the cosine-scored set.
+pub fn get_code_chunk_locations(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<Vec<(i64, String, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_path, symbol FROM code_chunks
+         WHERE code_project_id = ?1 AND embedding IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Fetch multiple code chunks by their row IDs (ORDER preserved).
 pub fn get_chunks_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<CodeChunk>> {
     if ids.is_empty() {
@@ -5550,8 +5684,8 @@ pub fn user_can_access_canonical_project_by_name(
     let count: i64 = conn.query_row(
         "SELECT COUNT(*)
          FROM projects p
-         JOIN project_members pm ON pm.project_id = p.id
-         WHERE p.org_id = ?1 AND p.name = ?2 AND pm.user_id = ?3",
+         JOIN project_visibility pv ON pv.project_id = p.id
+         WHERE p.org_id = ?1 AND p.name = ?2 AND pv.user_id = ?3",
         rusqlite::params![org_id, project_name, user_id],
         |row| row.get(0),
     )?;
@@ -5698,7 +5832,7 @@ pub fn list_code_projects_visible(
                 cp.exclude_patterns
          FROM code_projects cp
          JOIN projects p ON p.org_id = cp.org_id AND p.name = cp.name
-         JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?2
+         JOIN project_visibility pv ON pv.project_id = p.id AND pv.user_id = ?2
          WHERE cp.org_id = ?1";
     let sql = if include_archived {
         format!("{base} ORDER BY cp.created_at DESC")
@@ -6167,7 +6301,7 @@ pub fn search_projects_by_query_visible(
         vec![Box::new(org_id.to_string()), Box::new(pattern)];
     let mut limit_idx = 3usize;
     if let Some(viewer) = viewer_user_id {
-        sql.push_str(" AND id IN (SELECT project_id FROM project_members WHERE user_id = ?3)");
+        sql.push_str(" AND id IN (SELECT project_id FROM project_visibility WHERE user_id = ?3)");
         params.push(Box::new(viewer.to_string()));
         limit_idx = 4;
     }
@@ -6184,6 +6318,7 @@ pub fn search_projects_by_query_visible(
             created_at: row.get(4)?,
             parent_id: row.get(5)?,
             archived_at: None,
+            client_id: None,
         })
     })?;
     let mut projects = Vec::new();
@@ -6221,7 +6356,7 @@ pub fn search_policies_by_query_visible(
         vec![Box::new(org_id.to_string()), Box::new(pattern)];
     let mut limit_idx = 3usize;
     if let Some(viewer) = viewer_user_id {
-        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?3))");
         params.push(Box::new(viewer.to_string()));
         limit_idx = 4;
     }
@@ -6263,7 +6398,7 @@ pub fn search_conventions_by_query_visible(
         vec![Box::new(org_id.to_string()), Box::new(pattern)];
     let mut limit_idx = 3usize;
     if let Some(viewer) = viewer_user_id {
-        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))");
+        sql.push_str(" AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?3))");
         params.push(Box::new(viewer.to_string()));
         limit_idx = 4;
     }
@@ -6937,8 +7072,8 @@ fn build_task_filter_sql(
     if let Some(vid) = viewer {
         sql.push_str(&format!(
             " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = t.org_id AND p.name = t.project)
-                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
-                              WHERE p.org_id = t.org_id AND p.name = t.project AND pm.user_id = ?{idx}))"
+                   OR EXISTS (SELECT 1 FROM project_visibility pv
+                              WHERE pv.org_id = t.org_id AND pv.project_name = t.project AND pv.user_id = ?{idx}))"
         ));
         params.push(Box::new(vid.to_string()));
         idx += 1;
@@ -7323,9 +7458,8 @@ pub fn resolve_tasks_by_spec(
          WHERE t.org_id = ?1 AND l.spec_change_name = ?2
             AND t.status NOT IN ('done', 'cancelled')
             AND (?3 IS NULL OR EXISTS (
-                SELECT 1 FROM project_members pm
-                JOIN projects p ON p.id = pm.project_id
-                WHERE pm.user_id = ?3 AND p.org_id = t.org_id AND p.name = t.project
+                SELECT 1 FROM project_visibility pv
+                WHERE pv.user_id = ?3 AND pv.org_id = t.org_id AND pv.project_name = t.project
             ))",
     )?;
     let ids: Vec<String> = stmt
@@ -7529,8 +7663,8 @@ pub fn list_sprints(
     if let Some(vid) = viewer {
         sql.push_str(&format!(
             " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = s.org_id AND p.name = s.project)
-                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
-                              WHERE p.org_id = s.org_id AND p.name = s.project AND pm.user_id = ?{idx}))"
+                   OR EXISTS (SELECT 1 FROM project_visibility pv
+                              WHERE pv.org_id = s.org_id AND pv.project_name = s.project AND pv.user_id = ?{idx}))"
         ));
         params.push(Box::new(vid.to_string()));
         idx += 1;
@@ -8326,8 +8460,8 @@ pub fn list_tasks_for_sdd_change(
     if let Some(vid) = viewer {
         sql.push_str(
             " AND (NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = t.org_id AND p.name = t.project)
-                   OR EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id
-                              WHERE p.org_id = t.org_id AND p.name = t.project AND pm.user_id = ?3))",
+                   OR EXISTS (SELECT 1 FROM project_visibility pv
+                              WHERE pv.org_id = t.org_id AND pv.project_name = t.project AND pv.user_id = ?3))",
         );
         params.push(Box::new(vid.to_string()));
     }
@@ -11999,6 +12133,75 @@ mod tests {
     }
 
     #[test]
+    fn ensure_code_project_visible_to_creator_enrolls_member() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        // A non-super_user creator.
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+             VALUES ('u-creator', ?1, 'dev@acme.com', 'Dev', 'member', 'active', datetime('now'))",
+            rusqlite::params![org_id],
+        )
+        .unwrap();
+
+        // Simulate what post_index does: create the code_projects row, then enroll.
+        upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
+
+        // Before enrollment, the creator can neither see nor access the project.
+        let before = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert!(before.is_empty(), "creator must not see the project before enrollment");
+        assert!(
+            !user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            "creator must not have access before enrollment"
+        );
+
+        ensure_code_project_visible_to_creator(&conn, &org_id, "myapp", "u-creator").unwrap();
+
+        // After enrollment, the project is visible and accessible.
+        let after = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert_eq!(after.len(), 1, "creator must see exactly their project");
+        assert_eq!(after[0].name, "myapp");
+        assert!(
+            user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            "creator must pass the name-access check (ensure_code_project_name_access)"
+        );
+
+        // Idempotent — a second enrollment (re-index) must not error or duplicate.
+        ensure_code_project_visible_to_creator(&conn, &org_id, "myapp", "u-creator").unwrap();
+        let again = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
+        assert_eq!(again.len(), 1, "re-index must not duplicate the visible project");
+    }
+
+    #[test]
+    fn fail_stale_indexing_projects_resets_zombies() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        // Two projects mid-index (zombies) and one already successful.
+        let z1 = upsert_code_project(&conn, &org_id, "zombie1", "/ws/z1").unwrap();
+        let z2 = upsert_code_project(&conn, &org_id, "zombie2", "/ws/z2").unwrap();
+        let ok = upsert_code_project(&conn, &org_id, "healthy", "/ws/ok").unwrap();
+        set_code_project_indexing(&conn, z1).unwrap();
+        set_code_project_indexing(&conn, z2).unwrap();
+        set_code_project_success(&conn, ok, 5, "2026-01-01T00:00:00Z").unwrap();
+
+        let reset = fail_stale_indexing_projects(&conn).unwrap();
+        assert_eq!(reset, 2, "only the two 'indexing' rows must be reset");
+
+        let p1 = get_code_project(&org_id, "zombie1", &conn).unwrap().unwrap();
+        assert_eq!(p1.index_status.as_deref(), Some("error"));
+        assert_eq!(
+            p1.last_index_error.as_deref(),
+            Some("Indexing interrupted (server restart)")
+        );
+        // The successful project is untouched.
+        let ph = get_code_project(&org_id, "healthy", &conn).unwrap().unwrap();
+        assert_eq!(ph.index_status.as_deref(), Some("success"));
+
+        // Idempotent: a second call resets nothing.
+        assert_eq!(fail_stale_indexing_projects(&conn).unwrap(), 0);
+    }
+
+    #[test]
     fn insert_and_get_code_chunks() {
         let conn = setup();
         let org_id = setup_org_for_code(&conn);
@@ -12207,6 +12410,31 @@ mod tests {
 
         let pairs = get_code_embeddings(&conn, project_id).unwrap();
         assert_eq!(pairs.len(), 1, "only chunk with embedding must be returned");
+    }
+
+    #[test]
+    fn get_code_chunk_locations_returns_only_embedded_with_symbol() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        let embedding: Vec<u8> = vec![0u8; 32];
+        // Embedded chunk with a symbol → included, content NOT loaded by this query.
+        insert_code_chunk(
+            &conn, project_id, "src/users.rs", "h1", Some("rust"), Some("list_users"),
+            1, 10, "fn list_users() { /* body */ }", Some(&embedding),
+        )
+        .unwrap();
+        // No embedding → excluded (must line up 1:1 with cosine-scored set).
+        insert_code_chunk(
+            &conn, project_id, "src/misc.rs", "h2", None, Some("misc"), 1, 5, "code", None,
+        )
+        .unwrap();
+
+        let locs = get_code_chunk_locations(&conn, project_id).unwrap();
+        assert_eq!(locs.len(), 1, "only embedded chunks are returned");
+        assert_eq!(locs[0].1, "src/users.rs");
+        assert_eq!(locs[0].2.as_deref(), Some("list_users"));
     }
 
     #[test]
@@ -13615,7 +13843,8 @@ pub fn get_dashboard_data(conn: &Connection, org_id: &str, user_id: &str, is_sup
             availability: DashboardAvailability { usage: true, users: true, onboarding: true, agent_activity: true, health: true, contributors: true, heatmap: true, conventions: true },
         });
     }
-    let visible = "m.org_id = ?1 AND EXISTS (SELECT 1 FROM projects p JOIN project_members pm ON pm.project_id = p.id WHERE p.org_id = m.org_id AND p.name = m.project AND pm.user_id = ?2)";
+    let visible = "m.org_id = ?1 AND EXISTS (SELECT 1 FROM project_visibility pv
+                              WHERE pv.org_id = m.org_id AND pv.project_name = m.project AND pv.user_id = ?2)";
     let total_memories = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
     let active_users_24h = conn.query_row(&format!("SELECT COUNT(DISTINCT a.user_id) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.timestamp > datetime('now', '-24 hours') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
     let searches_today = conn.query_row(&format!("SELECT COUNT(*) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.action = 'search' AND a.timestamp > datetime('now', 'start of day') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
@@ -14487,12 +14716,30 @@ pub fn list_conventions(
         category,
         include_archived,
         project,
+        None,
         limit,
         offset,
         None,
     )
 }
 
+/// Lists conventions visible to `viewer_user_id`, resolving the inheritance
+/// chain **org → client → project** additively.
+///
+/// Each level *adds* to the broader ones and never replaces them: a
+/// client-level convention sits alongside the organization's, so u2s's own
+/// standards stay enforceable no matter what a client engagement adds. That is
+/// the whole point of a company brain, and it is why there is no override.
+///
+/// `client` is the owning client's id, or `None` for an internal project — in
+/// which case the chain simply collapses to org → project, which is correct
+/// rather than an error.
+///
+/// `project` is the project **id**, matching `conventions.project_id`, which is
+/// a real foreign key to `projects(id)`. Callers holding a project *name* must
+/// resolve it first — see [`get_project_id_by_name`]. Passing a name here
+/// silently matches nothing, which is exactly the bug this parameter had
+/// before the client model went in.
 #[allow(clippy::too_many_arguments)]
 pub fn list_conventions_visible(
     conn: &Connection,
@@ -14500,6 +14747,7 @@ pub fn list_conventions_visible(
     category: Option<&str>,
     include_archived: Option<bool>,
     project: Option<&str>,
+    client: Option<&str>,
     limit: i64,
     offset: i64,
     viewer_user_id: Option<&str>,
@@ -14522,15 +14770,33 @@ pub fn list_conventions_visible(
         param_idx += 1;
     }
     if let Some(p) = project {
-        sql.push_str(&format!(
-            " AND (project_id IS NULL OR project_id = ?{param_idx})"
-        ));
-        extra_params.push(p.to_string());
-        param_idx += 1;
+        match client {
+            Some(c) => {
+                let ci = param_idx;
+                let pi = param_idx + 1;
+                sql.push_str(&format!(
+                    " AND ((client_id IS NULL AND project_id IS NULL)\
+                       OR (client_id = ?{ci} AND project_id IS NULL)\
+                       OR project_id = ?{pi})"
+                ));
+                extra_params.push(c.to_string());
+                extra_params.push(p.to_string());
+                param_idx += 2;
+            }
+            None => {
+                // Internal u2s project: no client level exists, so the chain is
+                // org → project. Client-scoped conventions must NOT leak here.
+                sql.push_str(&format!(
+                    " AND (((client_id IS NULL AND project_id IS NULL) OR project_id = ?{param_idx}))"
+                ));
+                extra_params.push(p.to_string());
+                param_idx += 1;
+            }
+        }
     }
     if let Some(viewer) = viewer_user_id {
         sql.push_str(&format!(
-            " AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?{param_idx}))"
+            " AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?{param_idx}))"
         ));
         extra_params.push(viewer.to_string());
         param_idx += 1;
@@ -14570,7 +14836,7 @@ pub fn get_convention_visible(
             "SELECT id, org_id, project_id, title, content, category, weight, tags, created_at, updated_at, archived_at
              FROM conventions
              WHERE org_id = ?1 AND id = ?2
-               AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_members WHERE user_id = ?3))",
+               AND (project_id IS NULL OR project_id IN (SELECT project_id FROM project_visibility WHERE user_id = ?3))",
             rusqlite::params![org_id, id, viewer],
             convention_from_row,
         ).optional()?;
@@ -14844,39 +15110,435 @@ mod convention_scope_tests {
     }
 }
 
+// ── Client queries (consultancy grouping) ─────────────────────────────────────
+
+/// May this viewer see this client?
+///
+/// Mirrors [`user_can_view_project_name`], including its existence-hiding
+/// branch: a client that does not exist reports as *visible*, so a caller
+/// cannot tell "absent" from "forbidden" by the response code. Removing that
+/// branch would turn every 404 into an existence oracle.
+///
+/// `viewer_user_id` is `None` only for super_user — see `api::context::viewer_scope`.
+/// It must NOT be derived from `is_privileged()`: admin is privileged for
+/// permission checks but stays membership-scoped for reads.
+pub fn user_can_view_client(
+    conn: &Connection,
+    org_id: &str,
+    client_id: &str,
+    viewer_user_id: Option<&str>,
+) -> Result<bool> {
+    let Some(vid) = viewer_user_id else {
+        return Ok(true);
+    };
+    let visible: i64 = conn.query_row(
+        "SELECT CASE
+                  WHEN NOT EXISTS (SELECT 1 FROM clients c WHERE c.org_id = ?1 AND c.id = ?2) THEN 1
+                  WHEN EXISTS (SELECT 1 FROM client_members cm
+                                WHERE cm.client_id = ?2 AND cm.user_id = ?3) THEN 1
+                  WHEN EXISTS (SELECT 1 FROM projects p
+                                JOIN project_members pm ON pm.project_id = p.id
+                                WHERE p.org_id = ?1 AND p.client_id = ?2 AND pm.user_id = ?3) THEN 1
+                  ELSE 0
+                END",
+        rusqlite::params![org_id, client_id, vid],
+        |row| row.get(0),
+    )?;
+    Ok(visible != 0)
+}
+
+/// Lists clients the viewer may see. `viewer_user_id = None` = no restriction.
+pub fn list_clients_visible(
+    conn: &Connection,
+    org_id: &str,
+    include_archived: bool,
+    viewer_user_id: Option<&str>,
+) -> Result<Vec<Client>> {
+    let mut sql = String::from(
+        "SELECT id, org_id, name, slug, status, archived_at, created_at
+         FROM clients WHERE org_id = ?1",
+    );
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(vid) = viewer_user_id {
+        sql.push_str(
+            " AND (EXISTS (SELECT 1 FROM client_members cm
+                            WHERE cm.client_id = clients.id AND cm.user_id = ?2)
+               OR EXISTS (SELECT 1 FROM projects p
+                            JOIN project_members pm ON pm.project_id = p.id
+                            WHERE p.client_id = clients.id AND pm.user_id = ?2))",
+        );
+        params.push(Box::new(vid.to_string()));
+    }
+    sql.push_str(" ORDER BY name ASC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
+        Ok(Client {
+            id: row.get(0)?,
+            org_id: row.get(1)?,
+            name: row.get(2)?,
+            slug: row.get(3)?,
+            status: row.get(4)?,
+            archived_at: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn get_client(conn: &Connection, org_id: &str, client_id: &str) -> Result<Option<Client>> {
+    conn.query_row(
+        "SELECT id, org_id, name, slug, status, archived_at, created_at
+         FROM clients WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, client_id],
+        |row| {
+            Ok(Client {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                name: row.get(2)?,
+                slug: row.get(3)?,
+                status: row.get(4)?,
+                archived_at: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn insert_client(
+    conn: &Connection,
+    org_id: &str,
+    name: &str,
+    slug: &str,
+    status: &str,
+) -> Result<Client> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO clients (id, org_id, name, slug, status) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, org_id, name, slug, status],
+    )?;
+    get_client(conn, org_id, &id)?
+        .ok_or_else(|| anyhow::anyhow!("client vanished immediately after insert"))
+}
+
+/// Updates name and/or status. `slug` is immutable and deliberately absent.
+pub fn update_client(
+    conn: &Connection,
+    org_id: &str,
+    client_id: &str,
+    name: Option<&str>,
+    status: Option<&str>,
+) -> Result<Option<Client>> {
+    if name.is_none() && status.is_none() {
+        return get_client(conn, org_id, client_id);
+    }
+    conn.execute(
+        "UPDATE clients
+            SET name   = COALESCE(?3, name),
+                status = COALESCE(?4, status)
+          WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, client_id, name, status],
+    )?;
+    get_client(conn, org_id, client_id)
+}
+
+/// Soft-archives a client. Idempotent: archiving an archived client is a no-op.
+pub fn archive_client(conn: &Connection, org_id: &str, client_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE clients SET archived_at = datetime('now')
+          WHERE org_id = ?1 AND id = ?2 AND archived_at IS NULL",
+        rusqlite::params![org_id, client_id],
+    )?;
+    Ok(n > 0 || get_client(conn, org_id, client_id)?.is_some())
+}
+
+/// Number of projects still owned by a client. A client with projects cannot be
+/// deleted — offboarding is a status change, not a cascade.
+pub fn count_client_projects(conn: &Connection, org_id: &str, client_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM projects WHERE org_id = ?1 AND client_id = ?2",
+        rusqlite::params![org_id, client_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn list_client_members(conn: &Connection, client_id: &str) -> Result<Vec<ClientMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT cm.id, cm.client_id, cm.user_id, u.email, u.name, cm.role, cm.created_at
+         FROM client_members cm
+         JOIN users u ON u.id = cm.user_id
+         WHERE cm.client_id = ?1
+         ORDER BY u.name ASC",
+    )?;
+    let rows = stmt.query_map([client_id], |row| {
+        Ok(ClientMember {
+            id: row.get(0)?,
+            client_id: row.get(1)?,
+            user_id: row.get(2)?,
+            email: row.get(3)?,
+            name: row.get(4)?,
+            role: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn add_client_member(
+    conn: &Connection,
+    client_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO client_members (id, client_id, user_id, role)
+         VALUES (COALESCE((SELECT id FROM client_members WHERE client_id = ?1 AND user_id = ?2), ?4),
+                 ?1, ?2, ?3)",
+        rusqlite::params![client_id, user_id, role, uuid::Uuid::new_v4().to_string()],
+    )?;
+    Ok(())
+}
+
+pub fn remove_client_member(conn: &Connection, client_id: &str, user_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM client_members WHERE client_id = ?1 AND user_id = ?2",
+        rusqlite::params![client_id, user_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// The role a user holds on a client, if any. Mirrors `get_project_member_role`
+/// in shape and return type so permission resolution reads the same either way.
+pub fn get_client_member_role(
+    conn: &Connection,
+    org_id: &str,
+    client_id: &str,
+    user_id: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT cm.role FROM client_members cm
+         JOIN clients c ON c.id = cm.client_id
+         WHERE c.org_id = ?1 AND cm.client_id = ?2 AND cm.user_id = ?3",
+        rusqlite::params![org_id, client_id, user_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The client that owns a project, by project **name**. `None` means the
+/// project is internal u2s work — not that the lookup failed.
+pub fn get_project_client_id(
+    conn: &Connection,
+    org_id: &str,
+    project_name: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT client_id FROM projects WHERE org_id = ?1 AND name = ?2",
+        rusqlite::params![org_id, project_name],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|outer| outer.flatten())
+    .map_err(Into::into)
+}
+
+/// Links a code project (repo) to a project. One repo per project — a second
+/// link to the same project is refused rather than silently repointing the
+/// first, because "which repo is this project's repo" must have one answer.
+pub fn link_code_project_to_project(
+    conn: &Connection,
+    org_id: &str,
+    code_project_id: i64,
+    project_id: &str,
+) -> Result<()> {
+    let taken: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM code_projects
+          WHERE org_id = ?1 AND project_id = ?2 AND id != ?3",
+        rusqlite::params![org_id, project_id, code_project_id],
+        |r| r.get(0),
+    )?;
+    if taken > 0 {
+        anyhow::bail!("project {project_id} is already linked to a repository");
+    }
+    let n = conn.execute(
+        "UPDATE code_projects SET project_id = ?3 WHERE org_id = ?1 AND id = ?2",
+        rusqlite::params![org_id, code_project_id, project_id],
+    )?;
+    if n == 0 {
+        anyhow::bail!("code project {code_project_id} not found in this organization");
+    }
+    Ok(())
+}
+
+// ── Promotion (client knowledge → organization asset) ─────────────────────────
+
+/// Promotes a client- or project-scoped memory into an org-scoped one.
+///
+/// Creates a NEW memory and leaves the source untouched, recording lineage in
+/// `promoted_from` so it stays auditable which client asset a shared playbook
+/// came from. Never invoked implicitly — a leak here is a contractual breach,
+/// not a bug, so the action is always an explicit human decision.
+pub fn promote_memory(
+    conn: &Connection,
+    org_id: &str,
+    source_id: &str,
+    actor_user_id: &str,
+) -> Result<Option<Memory>> {
+    let source = match get_memory_by_id_for_org(conn, org_id, source_id)? {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    if source.scope != "client" && source.scope != "project" {
+        anyhow::bail!(
+            "only client- or project-scoped memories can be promoted (this one is '{}')",
+            source.scope
+        );
+    }
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO memories
+           (id, org_id, user_id, project, tool, content, tags, title, type, scope,
+            promoted_from)
+         VALUES (?1, ?2, ?3, 'default', ?4, ?5, ?6, ?7, ?8, 'org', ?9)",
+        rusqlite::params![
+            new_id,
+            org_id,
+            actor_user_id,
+            source.tool,
+            source.content,
+            serde_json::to_string(&source.tags).unwrap_or_else(|_| "[]".to_string()),
+            source.title,
+            source.memory_type,
+            source_id,
+        ],
+    )?;
+    get_memory_by_id_for_org(conn, org_id, &new_id)
+}
+
+// ── Project resolution (report only — never mutates) ──────────────────────────
+
+/// Reports how legacy free-form `memories.project` values map onto real
+/// projects. Exact match only: no case folding, no fuzzy matching, no prefix
+/// heuristics. Assigning `project_id` to legacy rows is a separate operator
+/// action, so this deliberately writes nothing.
+pub fn report_project_resolution(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<ProjectResolutionReport> {
+    let resolved: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories m
+          WHERE m.org_id = ?1
+            AND EXISTS (SELECT 1 FROM projects p WHERE p.org_id = m.org_id AND p.name = m.project)",
+        [org_id],
+        |r| r.get(0),
+    )?;
+    let unresolved: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories m
+          WHERE m.org_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = m.org_id AND p.name = m.project)",
+        [org_id],
+        |r| r.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT m.project, COUNT(*) AS n FROM memories m
+          WHERE m.org_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.org_id = m.org_id AND p.name = m.project)
+          GROUP BY m.project
+          ORDER BY n DESC",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        Ok(UnresolvedProject {
+            project: row.get(0)?,
+            memory_count: row.get(1)?,
+        })
+    })?;
+    Ok(ProjectResolutionReport {
+        resolved,
+        unresolved,
+        unresolved_values: rows.collect::<rusqlite::Result<Vec<_>>>()?,
+    })
+}
+
 // ── GitHub OAuth connection queries ───────────────────────────────────────────
 
-/// Upserts a GitHub OAuth connection for the given org.
+/// Upserts a GitHub OAuth connection for the given org and client.
+///
+/// `client_id` is `None` for the organization's own connection; a consultancy
+/// stores one row per client, because each client has its own GitHub org.
+///
+/// The token is encrypted before it touches the database. Callers pass
+/// plaintext; nothing plaintext is persisted. If no encryption key is
+/// configured this returns an error rather than silently storing the token in
+/// the clear — migration v58 encrypted the existing rows, and a write path that
+/// re-introduced plaintext would undo it.
+// Eight parameters, one over the lint's threshold. They are the columns of a
+// single row and grouping them into a struct would only move the argument list
+// to the call site, so the shape stays as it is.
+#[allow(clippy::too_many_arguments)]
 pub fn save_github_connection(
     conn: &Connection,
     org_id: &str,
+    client_id: Option<&str>,
     access_token: &str,
     token_type: &str,
     scopes: &str,
     github_login: &str,
     github_user_id: i64,
 ) -> Result<()> {
+    let encrypted = crate::crypto::encrypt(access_token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot store a GitHub token: NEXUSMIND_TOKEN_ENCRYPTION_KEY is unset or invalid"
+        )
+    })?;
     conn.execute(
         "INSERT OR REPLACE INTO github_connections
-         (org_id, access_token, token_type, scopes, github_login, github_user_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6,
-           COALESCE((SELECT created_at FROM github_connections WHERE org_id = ?1), datetime('now')),
+         (org_id, client_id, github_login, access_token, token_type, scopes, github_user_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+           COALESCE((SELECT created_at FROM github_connections
+                      WHERE org_id = ?1 AND client_id IS ?2 AND github_login = ?3), datetime('now')),
            datetime('now'))",
-        rusqlite::params![org_id, access_token, token_type, scopes, github_login, github_user_id],
+        rusqlite::params![org_id, client_id, github_login, encrypted, token_type, scopes, github_user_id],
     )?;
     Ok(())
 }
 
-/// Returns the GitHub OAuth connection for the given org, or None if not connected.
+/// Returns the org-level GitHub OAuth connection, or None if not connected.
+///
+/// The stored token is ciphertext; it is decrypted on the way out so callers
+/// keep seeing plaintext. A row whose token cannot be decrypted (key rotated or
+/// missing) is returned with an empty token rather than failing the whole
+/// request — the caller will get a clean auth error from GitHub instead of a
+/// 500 from us.
 pub fn get_github_connection(conn: &Connection, org_id: &str) -> Result<Option<GitHubConnection>> {
+    get_github_connection_for_client(conn, org_id, None)
+}
+
+/// Returns the GitHub OAuth connection for one client of an org. `client_id` of
+/// `None` selects the organization's own connection.
+pub fn get_github_connection_for_client(
+    conn: &Connection,
+    org_id: &str,
+    client_id: Option<&str>,
+) -> Result<Option<GitHubConnection>> {
     conn.query_row(
         "SELECT org_id, access_token, token_type, scopes, github_login, github_user_id, created_at, updated_at
-         FROM github_connections WHERE org_id = ?1",
-        [org_id],
+         FROM github_connections WHERE org_id = ?1 AND client_id IS ?2",
+        rusqlite::params![org_id, client_id],
         |row| {
+            let stored: String = row.get(1)?;
             Ok(GitHubConnection {
                 org_id: row.get(0)?,
-                access_token: row.get(1)?,
+                access_token: crate::crypto::decrypt(&stored).unwrap_or_default(),
                 token_type: row.get(2)?,
                 scopes: row.get(3)?,
                 github_login: row.get(4)?,
@@ -14891,7 +15553,10 @@ pub fn get_github_connection(conn: &Connection, org_id: &str) -> Result<Option<G
 /// Deletes the GitHub OAuth connection for the given org.
 /// Returns true if a row was deleted, false if no connection existed.
 pub fn delete_github_connection(conn: &Connection, org_id: &str) -> Result<bool> {
-    let n = conn.execute("DELETE FROM github_connections WHERE org_id = ?1", [org_id])?;
+    let n = conn.execute(
+        "DELETE FROM github_connections WHERE org_id = ?1 AND client_id IS NULL",
+        [org_id],
+    )?;
     Ok(n > 0)
 }
 
@@ -19119,5 +19784,404 @@ mod privileged_permission_tests {
                 );
             }
         }
+    }
+}
+
+
+// ── Client isolation tests (the acceptance gates of the client model) ─────────
+#[cfg(test)]
+mod client_isolation_tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+
+    struct Fixture {
+        conn: Connection,
+    }
+
+    fn setup() -> Fixture {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')",
+            [],
+        )
+        .unwrap();
+        for (uid, email) in [
+            ("u_a", "a@u2s.io"),
+            ("u_b", "b@u2s.io"),
+            ("u_admin", "admin@u2s.io"),
+        ] {
+            conn.execute(
+                "INSERT INTO users (id, org_id, email, name, role) VALUES (?1, 'org1', ?2, ?1, 'member')",
+                rusqlite::params![uid, email],
+            )
+            .unwrap();
+        }
+        // Two clients, one project each, plus an internal u2s project.
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_a', 'org1', 'Client A', 'client-a')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_b', 'org1', 'Client B', 'client-b')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a1', 'org1', 'a-billing', 'cli_a')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a2', 'org1', 'a-web', 'cli_a')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_b1', 'org1', 'b-api', 'cli_b')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal-tooling')", []).unwrap();
+        // u_a is a member of client A; u_b of client B.
+        add_client_member(&conn, "cli_a", "u_a", "member").unwrap();
+        add_client_member(&conn, "cli_b", "u_b", "member").unwrap();
+        Fixture { conn }
+    }
+
+    fn visible_projects(conn: &Connection, uid: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT project_name FROM project_visibility WHERE org_id = 'org1' AND user_id = ?1 ORDER BY project_name")
+            .unwrap();
+        stmt.query_map([uid], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    /// One membership on the client reaches every project that client owns —
+    /// that is the whole point of grouping by client.
+    #[test]
+    fn client_member_sees_all_projects_of_that_client() {
+        let f = setup();
+        assert_eq!(visible_projects(&f.conn, "u_a"), vec!["a-billing", "a-web"]);
+    }
+
+    #[test]
+    fn non_member_cannot_see_other_client_projects() {
+        let f = setup();
+        let seen = visible_projects(&f.conn, "u_a");
+        assert!(!seen.contains(&"b-api".to_string()), "client A must not see client B's project");
+        assert!(!user_can_view_client(&f.conn, "org1", "cli_b", Some("u_a")).unwrap());
+    }
+
+    /// Project membership alone must NOT widen to the client's other projects.
+    #[test]
+    fn project_member_sees_only_that_project() {
+        let f = setup();
+        f.conn
+            .execute("INSERT INTO project_members (id, project_id, user_id, role) VALUES ('pm1', 'p_a1', 'u_b', 'member')", [])
+            .unwrap();
+        let seen = visible_projects(&f.conn, "u_b");
+        assert!(seen.contains(&"a-billing".to_string()));
+        assert!(!seen.contains(&"a-web".to_string()), "project membership must not leak the client's other projects");
+    }
+
+    /// super_user (viewer_user_id = None) is the only org-wide reader.
+    #[test]
+    fn super_user_sees_every_client() {
+        let f = setup();
+        assert!(user_can_view_client(&f.conn, "org1", "cli_a", None).unwrap());
+        assert!(user_can_view_client(&f.conn, "org1", "cli_b", None).unwrap());
+    }
+
+    /// Guards the `is_privileged()` trap: admin is privileged for permission
+    /// checks but must stay membership-scoped for reads. If a future refactor
+    /// swaps `is_super_user()` for `is_privileged()` in the visibility path,
+    /// this test is what catches it.
+    #[test]
+    fn admin_without_membership_does_not_see_client() {
+        let f = setup();
+        assert!(
+            !user_can_view_client(&f.conn, "org1", "cli_a", Some("u_admin")).unwrap(),
+            "an admin with no membership must not see a client's data"
+        );
+    }
+
+    /// Guards the existence oracle: a client that does not exist reports as
+    /// visible, so "absent" and "forbidden" are indistinguishable to a caller.
+    #[test]
+    fn user_can_view_client_returns_true_for_nonexistent_client() {
+        let f = setup();
+        assert!(user_can_view_client(&f.conn, "org1", "cli_nope", Some("u_a")).unwrap());
+    }
+
+    /// An internal project has no client, so client membership cannot reach it.
+    #[test]
+    fn internal_project_visible_only_via_project_membership() {
+        let f = setup();
+        assert!(!visible_projects(&f.conn, "u_a").contains(&"internal-tooling".to_string()));
+        f.conn
+            .execute("INSERT INTO project_members (id, project_id, user_id, role) VALUES ('pm2', 'p_int', 'u_a', 'member')", [])
+            .unwrap();
+        assert!(visible_projects(&f.conn, "u_a").contains(&"internal-tooling".to_string()));
+    }
+
+    /// A user who is both a project member and a member of that project's
+    /// client must appear once — UNION, not UNION ALL. Duplicates here would
+    /// silently multiply rows in every JOIN against the view.
+    #[test]
+    fn dual_membership_does_not_duplicate_rows() {
+        let f = setup();
+        f.conn
+            .execute("INSERT INTO project_members (id, project_id, user_id, role) VALUES ('pm3', 'p_a1', 'u_a', 'member')", [])
+            .unwrap();
+        let seen = visible_projects(&f.conn, "u_a");
+        assert_eq!(seen.iter().filter(|p| *p == "a-billing").count(), 1);
+    }
+
+    #[test]
+    fn client_with_projects_reports_its_project_count() {
+        let f = setup();
+        assert_eq!(count_client_projects(&f.conn, "org1", "cli_a").unwrap(), 2);
+        assert_eq!(count_client_projects(&f.conn, "org1", "cli_b").unwrap(), 1);
+    }
+
+    #[test]
+    fn archive_client_is_idempotent() {
+        let f = setup();
+        assert!(archive_client(&f.conn, "org1", "cli_a").unwrap());
+        assert!(archive_client(&f.conn, "org1", "cli_a").unwrap());
+        let c = get_client(&f.conn, "org1", "cli_a").unwrap().unwrap();
+        assert!(c.archived_at.is_some());
+    }
+
+    #[test]
+    fn list_clients_visible_scopes_to_membership() {
+        let f = setup();
+        let for_a = list_clients_visible(&f.conn, "org1", false, Some("u_a")).unwrap();
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].slug, "client-a");
+
+        let for_super = list_clients_visible(&f.conn, "org1", false, None).unwrap();
+        assert_eq!(for_super.len(), 2);
+    }
+
+    #[test]
+    fn report_project_resolution_counts_without_mutating() {
+        let f = setup();
+        f.conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content)
+             VALUES ('m1', 'org1', 'u_a', 'a-billing', 'claude-code', 'resolved one')",
+            [],
+        ).unwrap();
+        f.conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content)
+             VALUES ('m2', 'org1', 'u_a', 'ghost-project', 'claude-code', 'unresolved one')",
+            [],
+        ).unwrap();
+
+        let before: i64 = f.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
+        let report = report_project_resolution(&f.conn, "org1").unwrap();
+        let after: i64 = f.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
+
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.unresolved, 1);
+        assert_eq!(report.unresolved_values[0].project, "ghost-project");
+        assert_eq!(before, after, "the report must never mutate");
+    }
+}
+
+// ── Promotion tests ───────────────────────────────────────────────────────────
+#[cfg(test)]
+mod promotion_tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+
+    fn setup() -> Connection {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')", []).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'a@u2s.io', 'A', 'member')", []).unwrap();
+        conn
+    }
+
+    fn insert_memory(conn: &Connection, id: &str, scope: &str) {
+        conn.execute(
+            "INSERT INTO memories (id, org_id, user_id, project, tool, content, title, type, scope)
+             VALUES (?1, 'org1', 'u1', 'a-billing', 'claude-code', 'the content', 'A title', 'decision', ?2)",
+            rusqlite::params![id, scope],
+        ).unwrap();
+    }
+
+    #[test]
+    fn promote_creates_org_scoped_copy_with_lineage() {
+        let conn = setup();
+        insert_memory(&conn, "src1", "client");
+        let promoted = promote_memory(&conn, "org1", "src1", "u1").unwrap().unwrap();
+        assert_eq!(promoted.scope, "org");
+        assert_ne!(promoted.id, "src1");
+        let lineage: Option<String> = conn
+            .query_row("SELECT promoted_from FROM memories WHERE id = ?1", [&promoted.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(lineage.as_deref(), Some("src1"));
+    }
+
+    /// Promotion copies; it never moves. The client keeps its own record.
+    #[test]
+    fn promote_leaves_source_unchanged() {
+        let conn = setup();
+        insert_memory(&conn, "src2", "project");
+        promote_memory(&conn, "org1", "src2", "u1").unwrap().unwrap();
+        let scope: String = conn
+            .query_row("SELECT scope FROM memories WHERE id = 'src2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(scope, "project", "the source memory must not be modified");
+    }
+
+    #[test]
+    fn promote_rejects_org_scoped_source() {
+        let conn = setup();
+        insert_memory(&conn, "src3", "org");
+        assert!(promote_memory(&conn, "org1", "src3", "u1").is_err());
+    }
+
+    #[test]
+    fn promote_rejects_personal_source() {
+        let conn = setup();
+        insert_memory(&conn, "src4", "personal");
+        assert!(promote_memory(&conn, "org1", "src4", "u1").is_err());
+    }
+}
+
+// ── Inheritance and project/client wiring tests ──────────────────────────────
+#[cfg(test)]
+mod inheritance_tests {
+    use super::*;
+    use crate::db::{connection::connect, migrations};
+
+    fn setup() -> Connection {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')", []).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'a@u2s.io', 'A', 'member')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_a', 'org1', 'A', 'a')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_b', 'org1', 'B', 'b')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a', 'org1', 'a-billing', 'cli_a')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_b', 'org1', 'b-api', 'cli_b')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal')", []).unwrap();
+        conn
+    }
+
+    fn add_convention(conn: &Connection, title: &str, client: Option<&str>, project: Option<&str>) {
+        conn.execute(
+            "INSERT INTO conventions (org_id, project_id, client_id, title, content, category, weight, tags)
+             VALUES ('org1', ?2, ?3, ?1, 'content', 'general', 100, '[]')",
+            rusqlite::params![title, project, client],
+        ).unwrap();
+    }
+
+    fn titles(conn: &Connection, project: &str) -> Vec<String> {
+        let client = get_project_client_id(conn, "org1", project).unwrap();
+        let pid = get_project_id_by_name(conn, "org1", project).unwrap();
+        list_conventions_visible(conn, "org1", None, Some(false), pid.as_deref(), client.as_deref(), 50, 0, None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.title)
+            .collect()
+    }
+
+    #[test]
+    fn org_convention_applies_to_every_client_project() {
+        let conn = setup();
+        add_convention(&conn, "org-wide", None, None);
+        assert!(titles(&conn, "a-billing").contains(&"org-wide".to_string()));
+        assert!(titles(&conn, "b-api").contains(&"org-wide".to_string()));
+        assert!(titles(&conn, "internal").contains(&"org-wide".to_string()));
+    }
+
+    /// The anti-override test: a client convention must sit ALONGSIDE the
+    /// org-wide one, never in place of it. If this ever asserts one title
+    /// instead of two, u2s's own standards have become overridable.
+    #[test]
+    fn client_convention_adds_to_org_convention() {
+        let conn = setup();
+        add_convention(&conn, "org-wide", None, None);
+        add_convention(&conn, "client-a-rule", Some("cli_a"), None);
+        let seen = titles(&conn, "a-billing");
+        assert!(seen.contains(&"org-wide".to_string()), "org level must survive");
+        assert!(seen.contains(&"client-a-rule".to_string()), "client level must apply");
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn client_convention_does_not_leak_to_another_client() {
+        let conn = setup();
+        add_convention(&conn, "client-a-rule", Some("cli_a"), None);
+        assert!(!titles(&conn, "b-api").contains(&"client-a-rule".to_string()));
+    }
+
+    /// An internal project has no client level, so the chain is org → project.
+    /// Crucially, no client's conventions may reach it.
+    #[test]
+    fn internal_project_resolves_org_then_project() {
+        let conn = setup();
+        add_convention(&conn, "org-wide", None, None);
+        add_convention(&conn, "client-a-rule", Some("cli_a"), None);
+        add_convention(&conn, "internal-rule", None, Some("p_int"));
+        let seen = titles(&conn, "internal");
+        assert!(seen.contains(&"org-wide".to_string()));
+        assert!(seen.contains(&"internal-rule".to_string()));
+        assert!(!seen.contains(&"client-a-rule".to_string()), "a client's rules must not reach internal work");
+    }
+
+    #[test]
+    fn all_three_levels_stack() {
+        let conn = setup();
+        add_convention(&conn, "org-wide", None, None);
+        add_convention(&conn, "client-a-rule", Some("cli_a"), None);
+        add_convention(&conn, "project-rule", None, Some("p_a"));
+        assert_eq!(titles(&conn, "a-billing").len(), 3);
+    }
+
+    #[test]
+    fn get_project_client_id_distinguishes_internal_from_missing() {
+        let conn = setup();
+        assert_eq!(get_project_client_id(&conn, "org1", "a-billing").unwrap().as_deref(), Some("cli_a"));
+        assert_eq!(get_project_client_id(&conn, "org1", "internal").unwrap(), None);
+        assert_eq!(get_project_client_id(&conn, "org1", "no-such-project").unwrap(), None);
+    }
+
+    // ── T-12: project creation and repo linking ──────────────────────────────
+
+    #[test]
+    fn create_project_without_client_is_internal() {
+        let conn = setup();
+        let p = create_project_with_creator_membership(&conn, "org1", "u1", "new-internal", None, None, None).unwrap();
+        let cid: Option<String> = conn
+            .query_row("SELECT client_id FROM projects WHERE id = ?1", [&p.id], |r| r.get(0))
+            .unwrap();
+        assert!(cid.is_none());
+    }
+
+    #[test]
+    fn create_project_attaches_to_client() {
+        let conn = setup();
+        let p = create_project_with_creator_membership(&conn, "org1", "u1", "a-new", None, None, Some("cli_a")).unwrap();
+        let cid: Option<String> = conn
+            .query_row("SELECT client_id FROM projects WHERE id = ?1", [&p.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cid.as_deref(), Some("cli_a"));
+    }
+
+    /// Grafting a project onto another tenant's client must be refused.
+    #[test]
+    fn create_project_rejects_client_from_another_org() {
+        let conn = setup();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')", []).unwrap();
+        assert!(create_project_with_creator_membership(&conn, "org1", "u1", "bad", None, None, Some("cli_x")).is_err());
+    }
+
+    #[test]
+    fn second_repo_link_to_same_project_is_refused() {
+        let conn = setup();
+        conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'repo-one', '/a')", []).unwrap();
+        conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (2, 'org1', 'repo-two', '/b')", []).unwrap();
+
+        link_code_project_to_project(&conn, "org1", 1, "p_a").unwrap();
+        assert!(
+            link_code_project_to_project(&conn, "org1", 2, "p_a").is_err(),
+            "one repo per project — the second link must be refused, not silently repoint the first"
+        );
+    }
+
+    #[test]
+    fn relinking_the_same_repo_is_idempotent() {
+        let conn = setup();
+        conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'repo-one', '/a')", []).unwrap();
+        link_code_project_to_project(&conn, "org1", 1, "p_a").unwrap();
+        link_code_project_to_project(&conn, "org1", 1, "p_a").expect("re-linking the same repo must be a no-op");
     }
 }

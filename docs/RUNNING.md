@@ -8,6 +8,28 @@
 
 ---
 
+## Required environment
+
+| Variable | When it is required | Notes |
+|---|---|---|
+| `NEXUSMIND_TOKEN_ENCRYPTION_KEY` | Before first boot on any install that stores GitHub credentials | 64 hex characters (32 bytes). Generate with `openssl rand -hex 32`. |
+| `NEXUSMIND_EMBED_ENABLED` | To enable semantic search | Set to `true`. When unset the backend logs `Embedding service disabled` and search silently degrades to full-text — it does **not** fail loudly, so check the startup log. |
+
+### `NEXUSMIND_TOKEN_ENCRYPTION_KEY` is a startup dependency
+
+Migration **v58** encrypts every stored GitHub token. If the database already
+holds connections and this key is unset or malformed, the migration **aborts**
+rather than copying credentials forward in plaintext, and the backend will not
+start. A fresh database has nothing to encrypt and starts without it.
+
+Once tokens exist, the key must be stable: rotating it makes existing tokens
+undecryptable, and affected connections must be re-authorized. Store it in a
+secrets manager — Parameter Store on AWS — never in the image or the repo.
+
+```bash
+export NEXUSMIND_TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
+```
+
 ## Option A — Local dev (recommended for development)
 
 ### 1. Seed demo data + start backend

@@ -203,6 +203,9 @@ pub async fn post_callback(
         db_queries::save_github_connection(
             &conn,
             &auth.org_id,
+            // Org-level connection. Per-client connections are stored by the
+            // client-scoped path, which carries the client id.
+            None,
             &token_res.access_token,
             &token_res.token_type,
             &token_res.scope,

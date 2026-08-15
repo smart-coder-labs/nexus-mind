@@ -15,6 +15,66 @@ const SKIP_DIRS: &[&str] = &[
     ".idea", ".vscode", "Pods", "DerivedData", ".terraform",
 ];
 
+/// Well-known lock / dependency-manifest files that pollute code search: they are
+/// huge, machine-generated, and carry no semantic code signal, yet several of them
+/// (`pnpm-lock.yaml`, `package-lock.json`) have extensions on the allowlist and so
+/// would otherwise be chunked and rank at the top for real code queries. Matched by
+/// exact file name.
+const NOISE_FILES: &[&str] = &[
+    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock",
+    "poetry.lock", "composer.lock", "Gemfile.lock", "go.sum", "bun.lockb",
+];
+
+/// True when `file_name` is a machine-generated noise file that must never be
+/// indexed: a well-known lockfile, or a minified bundle (`*.min.js` / `*.min.css`).
+fn is_noise_file(file_name: &str) -> bool {
+    NOISE_FILES.contains(&file_name)
+        || file_name.ends_with(".min.js")
+        || file_name.ends_with(".min.css")
+}
+
+/// Real source-code file extensions admitted into the CODE corpus.
+///
+/// Documentation (`.md`), data, and config (`.json`, `.yaml`, `.toml`, …) files
+/// are deliberately EXCLUDED: they dominate code-search results with non-code
+/// prose (`README.md`, `AGENTS.md`) or machine-generated noise while carrying no
+/// code signal. `language_for_ext` still recognizes several of those extensions
+/// for other callers (e.g. `MarkdownChunker`), so this code-only gate lives in the
+/// walker rather than in language detection — the walker simply won't feed a `.md`
+/// or config file to the code index.
+const CODE_EXTENSIONS: &[&str] = &[
+    // Rust
+    "rs",
+    // TypeScript / JavaScript
+    "ts", "tsx", "js", "jsx", "mjs", "cjs",
+    // Python
+    "py",
+    // Go
+    "go",
+    // JVM
+    "java", "kt", "kts",
+    // C / C++
+    "c", "h", "cc", "cpp", "cxx", "hpp",
+    // C#
+    "cs",
+    // Ruby / PHP
+    "rb", "php",
+    // Swift
+    "swift",
+    // Shell
+    "sh", "bash", "zsh",
+    // Web source (markup/styles/components — real source, not config)
+    "html", "htm", "css", "scss", "sass", "vue", "svelte",
+    // SQL
+    "sql",
+];
+
+/// True when `ext` is a real source-code extension admitted into the code corpus.
+/// Excludes docs (`md`), data, and config (`json`, `yaml`, `toml`, `txt`, …).
+fn is_code_extension(ext: &str) -> bool {
+    CODE_EXTENSIONS.contains(&ext)
+}
+
 /// Lightweight metadata for an eligible source file. Deliberately holds NO file
 /// content: large repos must not be loaded into memory all at once — content is
 /// read on demand (see [`read_file`]) one file at a time during indexing.
@@ -26,6 +86,10 @@ pub struct FileMeta {
     pub ext: Option<String>,
     /// Detected language, if recognized.
     pub language: Option<String>,
+    /// On-disk size in bytes (captured during the walk's cheap `metadata` stat).
+    /// Used by the indexer to bound Pass-1 batches by bytes so peak memory stays
+    /// bounded regardless of individual file sizes.
+    pub size: u64,
 }
 
 /// Reads a file's UTF-8 content and its SHA-256 hex hash on demand.
@@ -83,24 +147,40 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
 
         let path = entry.path();
 
-        // Size cap (cheap stat — no read)
-        match std::fs::metadata(path) {
-            Ok(m) if m.len() > MAX_FILE_SIZE => {
-                tracing::debug!("Skipping oversized file {:?}", path);
-                continue;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::debug!("Could not stat {:?}: {e}", path);
+        // Noise exclusion: skip machine-generated lockfiles and minified bundles
+        // by exact file name before any other check — they pollute search results.
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if is_noise_file(name) {
+                tracing::debug!("Skipping noise file {:?}", path);
                 continue;
             }
         }
 
-        // Extension allowlist
+        // Size cap (cheap stat — no read). Capture the size so the indexer can
+        // bound Pass-1 batches by bytes without re-stat'ing.
+        let size = match std::fs::metadata(path) {
+            Ok(m) if m.len() > MAX_FILE_SIZE => {
+                tracing::debug!("Skipping oversized file {:?}", path);
+                continue;
+            }
+            Ok(m) => m.len(),
+            Err(e) => {
+                tracing::debug!("Could not stat {:?}: {e}", path);
+                continue;
+            }
+        };
+
+        // Extension allowlist — CODE files only. Docs (`.md`) and config/data
+        // (`.json`, `.yaml`, `.toml`, …) are excluded from the code corpus even
+        // when `language_for_ext` recognizes them, so they never pollute code
+        // search (READMEs/AGENTS.md/lockfiles ranking above real handlers).
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|s| s.to_string());
+        if !ext.as_deref().map(is_code_extension).unwrap_or(false) {
+            continue;
+        }
         let language = ext
             .as_deref()
             .and_then(language_for_ext)
@@ -113,6 +193,7 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
             path: path.to_string_lossy().into_owned(),
             ext,
             language,
+            size,
         });
     }
 
@@ -175,6 +256,42 @@ mod tests {
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(files.len(), 1, "node_modules and target must be pruned");
         assert!(files[0].path.ends_with("app.js"));
+    }
+
+    #[test]
+    fn walk_excludes_noise_lockfiles_and_minified() {
+        let dir = make_temp_project();
+        // Lockfiles whose extensions are on the allowlist (would otherwise index).
+        fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
+        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        // Minified bundles.
+        fs::write(dir.path().join("app.min.js"), "var a=1;").unwrap();
+        fs::write(dir.path().join("styles.min.css"), "a{color:red}").unwrap();
+        // A real source file that must survive.
+        fs::write(dir.path().join("app.js"), "function app() {}").unwrap();
+
+        let files = walk_files(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(files.len(), 1, "only the real source file must remain: {files:?}");
+        assert!(files[0].path.ends_with("app.js"));
+    }
+
+    #[test]
+    fn walk_excludes_docs_and_config_from_code_corpus() {
+        let dir = make_temp_project();
+        // Docs + config that `language_for_ext` still recognizes, but which must
+        // NOT enter the code corpus.
+        fs::write(dir.path().join("README.md"), "# Title\n\nProse.\n").unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# Agents\n").unwrap();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        fs::write(dir.path().join("config.yaml"), "a: 1\n").unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        // A real source file that must survive.
+        fs::write(dir.path().join("foo.ts"), "export function foo() {}").unwrap();
+
+        let files = walk_files(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(files.len(), 1, "only the .ts source file must remain: {files:?}");
+        assert!(files[0].path.ends_with("foo.ts"));
+        assert_eq!(files[0].language.as_deref(), Some("typescript"));
     }
 
     #[test]

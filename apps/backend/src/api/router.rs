@@ -9,9 +9,10 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, automation, backup, code, context, conventions, github_auth, harnesses, health,
+    admin, agents, audit, auth, automation, backup, clients, code, context, conventions, github_auth,
+    harnesses, health,
     internal, memory, middleware as api_mw, policy, rate_limit, search, sdd, sessions, tasks,
-    users, webhooks,
+    usage, users, webhooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -92,6 +93,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             post(memory::pin).delete(memory::unpin),
         )
         .route("/v1/memory/:id/unpin", post(memory::unpin))
+        .route("/v1/memory/:id/promote", post(memory::promote))
         .route("/v1/memory", get(memory::list))
         .route(
             "/v1/sessions",
@@ -117,6 +119,27 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/roles/:id",
             delete(admin::delete_role_api).patch(admin::update_role_api),
+        )
+        .route(
+            "/v1/clients",
+            get(clients::list_clients).post(clients::create_client),
+        )
+        .route(
+            "/v1/clients/:id",
+            patch(clients::update_client).delete(clients::delete_client),
+        )
+        .route("/v1/clients/:id/archive", post(clients::archive_client))
+        .route("/v1/usage", post(usage::ingest))
+        .route("/v1/usage/summary", get(usage::summary))
+        .route("/v1/usage/timeseries", get(usage::timeseries))
+        .route("/v1/usage/backfill", post(usage::backfill))
+        .route(
+            "/v1/clients/:id/members",
+            get(clients::list_members).post(clients::add_member),
+        )
+        .route(
+            "/v1/clients/:id/members/:user_id",
+            delete(clients::remove_member),
         )
         .route(
             "/v1/projects",
@@ -322,6 +345,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route("/v1/code/index", post(code::post_index))
         .route("/v1/code/search", post(code::post_search))
+        .route("/v1/code/locate", post(code::post_locate))
         .route("/v1/code/status/:project", get(code::get_status))
         .route("/v1/code/context", get(code::get_context))
         .route("/v1/code/graph", get(code::get_graph))

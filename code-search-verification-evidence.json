@@ -1,0 +1,161 @@
+{
+  "title": "Code-search subsystem — verification evidence (for review before commit)",
+  "branch": "customization/u2s-company-brain",
+  "date": "2026-08-14",
+  "status": "ALL work uncommitted, awaiting user visto bueno",
+  "environment": {
+    "docker_vm_total_ram": "4.1 GB",
+    "docker_vm_cpus": 8,
+    "backend_idle_baseline_ram": "~897 MB (embedding model nomic-embed-text-v1.5 loaded)",
+    "docker_build_status": "docker compose build backend FAILS with BuildKit 'DeadlineExceeded' (broad Phase-2/3 release recompile too heavy for 4.1GB VM)",
+    "verification_method": "native `cargo run` on the host (more RAM, faster) — the same code, bypassing the failing Docker build",
+    "test_repo": "https://github.com/cr8297408/ecommerce-event-driven-microservices (TS DDD/CQRS/Kafka microservices)"
+  },
+  "automated_tests": {
+    "cargo_test_after_phase_1_2_3": "1028 lib + 46 integration + all suites, 0 failed",
+    "cargo_test_after_phase_4": "1033 lib + 46 integration + all suites, 0 failed",
+    "new_unit_tests_added": [
+      "indexer::plan_batches_never_exceeds_byte_cap",
+      "indexer::plan_batches_isolates_oversized_file",
+      "embed::embed_sub_batches_preserve_order_and_count",
+      "db::queries::fail_stale_indexing_projects_resets_zombies",
+      "walk_excludes_noise_lockfiles_and_minified",
+      "unsupported_language_java_and_shell_yield_chunks",
+      "embed_text_keeps_name_signature_doc_excludes_body",
+      "get_code_chunk_locations_returns_only_embedded_with_symbol",
+      "locate_unindexed_project_returns_404",
+      "walk_excludes_docs_and_config_from_code_corpus",
+      "ts_symbol_chunk_includes_preceding_doc_comment",
+      "rust_symbol_chunk_includes_doc_comment_with_blank_line",
+      "fresh_index_reports_actual_chunk_count",
+      "ensure_code_project_visible_to_creator_enrolls_member"
+    ]
+  },
+  "phase_1_oom_fix": {
+    "problem": "Indexing a real repo OOM-killed the whole backend.",
+    "evidence_of_crash": {
+      "docker_inspect": "OOMKilled=true, ExitCode=137 (SIGKILL)",
+      "logs": "cut off cleanly after 'NexusMind listening' with no panic (classic OOM)"
+    },
+    "bisection": {
+      "graph_only_true_no_embeddings": "SUCCESS — 202 files, memory stable ~1.03 GB, no OOM",
+      "full_index_embeddings_on_before_fix": "memory climbed past 2 GB -> OOMKilled",
+      "conclusion": "OOM is 100% in the embedding pass (Pass 2), not parsing"
+    },
+    "root_cause": "Embedding sequence length was uncapped (nomic accepts up to 8192 tokens). Transformer activation memory scales with batch x seq_len x hidden x layers. The batch-count cap alone did NOT bound it.",
+    "fix": [
+      "embed/mod.rs: InitOptions::new(NomicEmbedTextV15).with_max_length(256)",
+      "embed/mod.rs: EMBED_BATCH = 16 (sub-batched inference)",
+      "indexer/mod.rs: byte-bounded Pass-1 batching (8 MiB / 64 files)",
+      "docker-compose.yml: backend mem_limit 2g + mem_reservation 512m",
+      "main.rs + queries.rs: fail_stale_indexing_projects() marks interrupted 'indexing' projects as 'error' on startup"
+    ],
+    "validation_after_fix": {
+      "memory_during_embedding": "PLATEAU at ~1.28 GB for 12+ minutes, never OOM, CPU pegged ~1152% (working)",
+      "docker_index_completed": "status=success, files=202, chunks=122 (no crash)",
+      "zombie_cleanup_confirmed": "restart flipped a stuck project to index_status='error' with 'Indexing interrupted (server restart)'"
+    },
+    "verdict": "FIXED — validated empirically (Docker + native)"
+  },
+  "phase_2_coverage_and_noise": {
+    "changes": [
+      "walker.rs: exclude lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock, Cargo.lock, poetry.lock, composer.lock, Gemfile.lock, go.sum, bun.lockb) and *.min.js/*.min.css",
+      "tree_sitter_chunker.rs: unsupported-language / empty-AST files fall back to line-window chunks so real code files always produce chunks"
+    ],
+    "evidence_native_before_phase_4_allowlist_tightening": {
+      "files_indexed": 194,
+      "note_vs_raw": "202 raw -> 194 after lockfile exclusion",
+      "code_chunks_in_db": 612,
+      "chunks_with_embedding": "612 of 612 (all embedded)",
+      "vs_old_docker_baseline_chunks": 122,
+      "coverage_multiplier": "~5x"
+    },
+    "verdict": "WORKS — 5x more embedded chunks; lockfiles excluded"
+  },
+  "phase_3_skeleton_and_locate": {
+    "changes": [
+      "chunker.rs build_embed_text(): embed a skeleton (symbol name + signature + leading doc-comment) instead of the raw body; body still stored for get_context",
+      "POST /v1/code/locate: returns ranked DISTINCT file paths only { file_path, top_symbol, score } (token-cheap for agents)"
+    ],
+    "verdict": "WORKS — /locate returns paths-only; skeleton embedding active"
+  },
+  "phase_4_precision_iteration": {
+    "changes": [
+      "walker.rs: CODE-ONLY allowlist — dropped md/mdx/markdown/json/yaml/yml/toml (kept rs,ts,tsx,js,jsx,mjs,cjs,py,go,java,kt,kts,c,h,cc,cpp,cxx,hpp,cs,rb,php,swift,sh,bash,zsh,html,htm,css,scss,sass,vue,svelte,sql)",
+      "tree_sitter_chunker.rs: fold the preceding doc-comment into each symbol chunk so build_embed_text captures it (TS/Rust/etc.)",
+      "indexer/mod.rs + queries.count_chunks_for_project(): fresh index reports the ACTUAL chunk_count (was 0)",
+      "api/code.rs + queries.ensure_code_project_visible_to_creator(): on index, create the matching projects row + enroll the creator as member so a non-super_user creator can see/search their project"
+    ],
+    "validation_native_as_PLAIN_admin_not_superuser": {
+      "admin_role_in_db": "admin (NOT super_user)",
+      "creator_visibility": "project 'ecom' NOW appears in GET /v1/code/projects and is searchable (BEFORE this fix it returned [] and /search gave 404)",
+      "index_result": "status=success, files=145 (docs/config now excluded from 194), chunk_count=159 (was 0 — counter bug fixed)"
+    },
+    "verdict": "WORKS — both read bugs fixed; docs/config removed from corpus"
+  },
+  "bugs_found_during_verification": [
+    {
+      "id": "chunk_count_zero",
+      "severity": "cosmetic-but-risky",
+      "desc": "code_projects.chunk_count stayed 0 after a fresh index (Pass 2 inserts never incremented the counter). Real chunks existed.",
+      "status": "FIXED in Phase 4 (count_chunks_for_project)"
+    },
+    {
+      "id": "creator_invisible",
+      "severity": "usability-blocking",
+      "desc": "An indexed code project was invisible to its non-super_user creator: /v1/code/projects returned [] and /v1/code/search returned 404, because list_code_projects_visible requires a projects row + project_visibility membership that post_index never created.",
+      "status": "FIXED in Phase 4 (ensure_code_project_visible_to_creator)"
+    }
+  ],
+  "search_precision_before_after": {
+    "note": "BEFORE = Docker baseline (raw bodies embedded, docs+lockfiles indexed). AFTER = native, Phase-4 code (skeleton embeddings, code-only corpus). Scores are cosine similarity.",
+    "queries": [
+      {
+        "query": "where users are listed",
+        "before_top3": ["packages/domain/interfaces/user-profile.interface.ts (UserProfile)", "packages/domain/events/get-user-profile.ts", "servers/users/src/enums/user-status.enum.ts"],
+        "after_top3": ["servers/users/src/app.service.ts (0.560)", "packages/domain/interfaces/user.interface.ts (0.542)", "packages/domain/interfaces/user-profile.interface.ts (0.525)"],
+        "assessment": "IMPROVED — a real service file is now #1 (was an interface)"
+      },
+      {
+        "query": "create order endpoint",
+        "before_top3": ["clients/.../pnpm-lock.yaml (!!)", "packages/domain/topics/index.ts", "packages/domain/events/create-product.ts"],
+        "after_top3": ["packages/domain/events/create-product.ts (0.499)", "packages/domain/events/resend-verification-token.ts (0.484)", "packages/domain/events/create-user.ts (0.477)"],
+        "assessment": "PARTIAL — lockfile noise gone, but still returns event classes not an order controller (repo has thin controllers; event-driven)"
+      },
+      {
+        "query": "payment processing",
+        "before_top3": ["AGENTS.md (docs)", "AGENTS.md", "AGENTS.md"],
+        "after_top3": ["packages/domain/services/index.ts (0.502)", "clients/.../login-promo-banner.tsx (0.482)", "servers/api-gateway/src/auth/auth.service.ts (0.479)"],
+        "assessment": "IMPROVED — docs gone; a service file surfaces (some UI noise remains)"
+      },
+      {
+        "query": "product inventory update",
+        "before_top3": ["packages/domain/topics/index.ts", "servers/inventory/package.json", "pnpm-lock.yaml"],
+        "after_top3": ["packages/domain/events/create-product.ts (0.515)", "servers/users/src/steps/update-user-status.step.ts (0.502)", "packages/domain/events/get-user-profile.ts (0.487)"],
+        "assessment": "PARTIAL — config/lockfile gone; a step file surfaces, but events still rank"
+      },
+      {
+        "query": "kafka event consumer",
+        "before_top3": ["README.md (docs)", "AGENTS.md", "packages/domain/kafka/index.ts"],
+        "after_top3": ["packages/domain/kafka/index.ts (0.601)", "servers/users/src/kafka/index.ts (0.570)", "servers/api-gateway/src/auth/auth.service.ts (0.560)"],
+        "assessment": "IMPROVED — real kafka code now #1 and #2 (was docs)"
+      }
+    ],
+    "overall": "Materially better: docs/lockfiles/config eliminated from every result; real service/handler files now surface at top-1/top-2 for most queries. NOT yet 'super exact' for a couple of queries (event-driven repo surfaces event classes over thin controllers). Further gains require heavier technique: symbol-kind weighting (deprioritize interfaces/events) + keyword+semantic hybrid + a re-ranking pass."
+  },
+  "files_changed_summary": [
+    "apps/backend/src/embed/mod.rs",
+    "apps/backend/src/indexer/mod.rs",
+    "apps/backend/src/indexer/walker.rs",
+    "apps/backend/src/indexer/chunker.rs",
+    "apps/backend/src/indexer/tree_sitter_chunker.rs",
+    "apps/backend/src/api/code.rs",
+    "apps/backend/src/db/queries.rs",
+    "apps/backend/src/db/migrations.rs (Phase-1 zombie cleanup path)",
+    "apps/backend/src/main.rs",
+    "apps/backend/tests/integration_test.rs",
+    "docker-compose.yml"
+  ],
+  "next_step_requested_by_user": "commit Phases 1-4 as a checkpoint, then a heavier precision pass (symbol-kind weighting + keyword hybrid) to get handlers/controllers to top-1",
+  "awaiting": "user visto bueno on this evidence before committing"
+}

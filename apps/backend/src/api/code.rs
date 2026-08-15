@@ -6,56 +6,10 @@ use axum::{
 use serde::Deserialize;
 use chrono::Utc;
 
-// ── Token cipher (AES-256-GCM) ────────────────────────────────────────────────
-//
-// Env var NEXUSMIND_TOKEN_ENCRYPTION_KEY must be a 64-char hex string (32 bytes).
-// If not set, `encrypt_pat` returns None and the token is NOT persisted for reindex;
-// it is still used for the current index operation.
-
-mod token_cipher {
-    use aes_gcm::{
-        aead::{Aead, AeadCore, KeyInit, OsRng},
-        Aes256Gcm,
-    };
-
-    const KEY_ENV: &str = "NEXUSMIND_TOKEN_ENCRYPTION_KEY";
-
-    fn cipher() -> Option<Aes256Gcm> {
-        let key_hex = std::env::var(KEY_ENV).ok()?;
-        let key_bytes = hex::decode(key_hex.trim()).ok()?;
-        if key_bytes.len() != 32 {
-            tracing::warn!(
-                "{KEY_ENV} must be 64 hex chars (32 bytes); token will not be persisted"
-            );
-            return None;
-        }
-        Aes256Gcm::new_from_slice(&key_bytes).ok()
-    }
-
-    /// Encrypt `plaintext` with AES-256-GCM. Returns hex(nonce || ciphertext).
-    /// Returns None if NEXUSMIND_TOKEN_ENCRYPTION_KEY is not configured or invalid.
-    pub fn encrypt(plaintext: &str) -> Option<String> {
-        let c = cipher()?;
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ct = c.encrypt(&nonce, plaintext.as_bytes()).ok()?;
-        let mut blob = nonce.to_vec();
-        blob.extend_from_slice(&ct);
-        Some(hex::encode(blob))
-    }
-
-    /// Decrypt a blob produced by `encrypt`. Returns None on any failure.
-    pub fn decrypt(blob: &str) -> Option<String> {
-        let c = cipher()?;
-        let bytes = hex::decode(blob).ok()?;
-        if bytes.len() < 12 {
-            return None;
-        }
-        let (nonce_bytes, ct) = bytes.split_at(12);
-        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
-        let plain = c.decrypt(nonce, ct).ok()?;
-        String::from_utf8(plain).ok()
-    }
-}
+// Token cipher lives in `crate::crypto` — it is used by the code index, the
+// GitHub connection queries and migration v58, so it is not an HTTP concern.
+// Aliased here so the existing call sites read unchanged.
+use crate::crypto as token_cipher;
 
 use crate::{
     api::helpers::hidden_resource_not_found,
@@ -65,14 +19,35 @@ use crate::{
     indexer,
     models::types::{
         ApiError, AuthContext, CodeProject, CodeStatusResponse, GraphResponse, IndexProjectRequest,
-        IndexProjectResponse, ReindexProjectResponse, SearchCodeRequest, SearchCodeResult,
-        SnippetResponse, UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
+        IndexProjectResponse, LocateCodeHit, LocateCodeRequest, LocateCodeResponse,
+        ReindexProjectResponse, SearchCodeRequest, SearchCodeResult, SnippetResponse,
+        UpdateCodeProjectRequest, UpdateReindexScheduleRequest,
     },
     store::sqlite::SqliteStore,
 };
 
 const DEFAULT_TOP_K: i64 = 5;
 const MAX_TOP_K: i64 = 20;
+
+/// A `/v1/code/search` hit: a [`SearchCodeResult`] plus the embedding
+/// **skeleton** — the exact text (symbol name + signature + doc-comment) that
+/// was embedded at index time by [`indexer::chunker::build_embed_text`]. The
+/// UI shows both the real `content` body and this `skeleton` so a user can see
+/// "what was actually indexed/embedded" for each hit.
+///
+/// Defined here (not in `models::types`) so the search response can carry the
+/// skeleton without changing the shared `SearchCodeResult` struct. `#[serde(flatten)]`
+/// keeps the JSON identical to the old result shape, with `skeleton` added as a
+/// top-level field — backward compatible for any existing consumer.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SearchCodeHit {
+    #[serde(flatten)]
+    pub result: SearchCodeResult,
+    /// The signature/doc "skeleton" that was embedded for this chunk. Built with
+    /// the SAME function used at index time, so the UI sees exactly what was embedded.
+    #[serde(default)]
+    pub skeleton: String,
+}
 
 /// Build a Command for `git` with an augmented PATH that covers common install locations.
 /// Servers started by process managers (systemd, Docker, etc.) often have a stripped PATH
@@ -243,6 +218,135 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
     )
 }
 
+// ── Semantic re-ranking ────────────────────────────────────────────────────
+//
+// Cosine similarity alone tends to float declaration-only files (interfaces,
+// enums, DTOs, event/command type definitions under `packages/domain`) above
+// the imperative code that actually DOES the thing (services, controllers,
+// handlers, use-cases, saga steps). These heuristics nudge the ranking toward
+// code that performs work, while keeping the weights modest so a strong cosine
+// match is never buried by a path guess.
+
+/// Multiplicative penalty applied to declaration-only files/symbols.
+const DECL_DOWN_WEIGHT: f32 = 0.75;
+/// Multiplicative bonus applied to imperative (handler/service/…) files.
+const IMPERATIVE_UP_WEIGHT: f32 = 1.25;
+/// Additive boost per distinct query token found in the path/symbol.
+const KEYWORD_BOOST_PER_TOKEN: f32 = 0.05;
+/// Cap on the total additive keyword boost (≈ 4 distinct matches).
+const KEYWORD_BOOST_CAP: f32 = 0.20;
+
+/// English stopwords dropped from the query before keyword matching, so a
+/// phrase like "list the ORDER endpoint" only boosts on `order`/`endpoint`.
+const QUERY_STOPWORDS: &[&str] = &[
+    "where", "is", "the", "a", "an", "of", "to", "in", "for", "list", "and",
+    "on", "at", "by", "with", "how", "does", "do",
+];
+
+/// Path fragments that mark a file/dir as declaration-only (types, interfaces,
+/// enums, DTOs, event/command definitions). Matched case-insensitively.
+const DECL_PATH_PATTERNS: &[&str] = &[
+    ".interface.", ".enum.", ".type.", ".dto.", ".d.ts",
+    "/types/", "/interfaces/", "/events/", "/dto/", "/enums/",
+];
+
+/// Path fragments that mark a file/dir as imperative "does the thing" code.
+/// Matched case-insensitively.
+const IMPERATIVE_PATH_PATTERNS: &[&str] = &[
+    ".service.", ".controller.", ".handler.", ".resolver.",
+    ".usecase.", ".use-case.", ".repository.", ".step.",
+    "/handlers/", "/controllers/", "/services/", "/steps/",
+    "/usecases/", "/use-cases/", "/repositories/", "/resolvers/",
+];
+
+/// Symbol-name suffixes that identify a declaration (type/enum/interface/DTO).
+const DECL_SYMBOL_SUFFIXES: &[&str] =
+    &["interface", "enum", "dto", "event", "command", "props"];
+
+fn matches_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(n))
+}
+
+/// True when the symbol name looks like a type/enum/interface declaration.
+fn is_declaration_symbol(symbol_lower: &str) -> bool {
+    DECL_SYMBOL_SUFFIXES.iter().any(|s| symbol_lower.ends_with(s))
+}
+
+/// Kind/path multiplicative weight. Imperative code wins ties over
+/// declarations so a real handler outranks the interface it implements at
+/// equal cosine.
+fn kind_weight(file_path_lower: &str, symbol_lower: Option<&str>) -> f32 {
+    let imperative = matches_any(file_path_lower, IMPERATIVE_PATH_PATTERNS);
+    if imperative {
+        return IMPERATIVE_UP_WEIGHT;
+    }
+    let declaration = matches_any(file_path_lower, DECL_PATH_PATTERNS)
+        // `packages/domain` in a DDD/CQRS layout is declaration-heavy.
+        || file_path_lower.contains("packages/domain/")
+        || symbol_lower.map(is_declaration_symbol).unwrap_or(false);
+    if declaration {
+        DECL_DOWN_WEIGHT
+    } else {
+        1.0
+    }
+}
+
+/// Additive keyword boost: +`KEYWORD_BOOST_PER_TOKEN` per distinct query token
+/// that appears in the file path or symbol, capped at `KEYWORD_BOOST_CAP`.
+fn keyword_boost(
+    file_path_lower: &str,
+    symbol_lower: Option<&str>,
+    query_tokens: &[String],
+) -> f32 {
+    let mut matched = 0u32;
+    for tok in query_tokens {
+        let hit = file_path_lower.contains(tok.as_str())
+            || symbol_lower.map(|s| s.contains(tok.as_str())).unwrap_or(false);
+        if hit {
+            matched += 1;
+        }
+    }
+    (matched as f32 * KEYWORD_BOOST_PER_TOKEN).min(KEYWORD_BOOST_CAP)
+}
+
+/// Deterministic re-rank score: `cosine × kind_weight + keyword_boost`,
+/// clamped to a sane range. Pure and DB/model-free so it is unit-testable.
+///
+/// `query_tokens` must already be lowercased and stopword-filtered (see
+/// [`tokenize_query`]).
+fn rerank_score(
+    cosine: f32,
+    file_path: &str,
+    symbol: Option<&str>,
+    query_tokens: &[String],
+) -> f32 {
+    let path_lower = file_path.to_ascii_lowercase();
+    let symbol_lower = symbol.map(|s| s.to_ascii_lowercase());
+    let weight = kind_weight(&path_lower, symbol_lower.as_deref());
+    let boost = keyword_boost(&path_lower, symbol_lower.as_deref(), query_tokens);
+    (cosine * weight + boost).clamp(0.0, 2.0)
+}
+
+/// Split a natural-language query into distinct lowercase tokens, dropping
+/// stopwords and very short fragments. Deterministic order is irrelevant —
+/// callers only test membership.
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for raw in query.split(|c: char| !c.is_alphanumeric()) {
+        if raw.len() < 2 {
+            continue;
+        }
+        let tok = raw.to_ascii_lowercase();
+        if QUERY_STOPWORDS.contains(&tok.as_str()) {
+            continue;
+        }
+        if !seen.contains(&tok) {
+            seen.push(tok);
+        }
+    }
+    seen
+}
+
 /// `POST /v1/code/index`
 ///
 /// Accepts either a `repo_url` (GitHub URL to clone/pull) or a `root_path` (local path).
@@ -367,6 +471,16 @@ pub async fn post_index(
         let conn = db.lock().map_err(|_| lock_err())?;
         let pid = db_queries::upsert_code_project(&conn, &auth.org_id, &project_name, &effective_root_path)
             .map_err(db_err)?;
+        // Ensure the creator can actually see/search the project they just indexed.
+        // upsert_code_project only writes the code_projects row; the visible-project
+        // queries additionally require a canonical projects row + a project_visibility
+        // membership. Enroll the creator so a non-super_user isn't locked out of their
+        // own index. Idempotent on re-index.
+        if let Err(e) = db_queries::ensure_code_project_visible_to_creator(
+            &conn, &auth.org_id, &project_name, &auth.user_id,
+        ) {
+            tracing::warn!("Failed to enroll creator for code project {project_name}: {e}");
+        }
         if let Some(url) = &input.repo_url {
             let _ = db_queries::set_code_project_repo_url(&conn, &auth.org_id, &project_name, url);
         }
@@ -445,7 +559,7 @@ pub async fn post_search(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     AppJson(input): AppJson<SearchCodeRequest>,
-) -> Result<Json<Vec<SearchCodeResult>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<SearchCodeHit>>, (StatusCode, Json<ApiError>)> {
     // Permission check
     {
         let db = store.conn();
@@ -484,23 +598,42 @@ pub async fn post_search(
         }
     };
 
-    // Fetch all chunk embeddings for this project
-    let pairs = {
+    // Fetch all chunk embeddings + lightweight (id → file_path, symbol)
+    // locations for this project. The locations feed the re-rank heuristics
+    // (path/symbol kind weighting + keyword boost) without loading chunk bodies.
+    let (pairs, locations) = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
-        db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?
+        let pairs = db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?;
+        let locations =
+            db_queries::get_code_chunk_locations(&conn, code_project_id).map_err(db_err)?;
+        (pairs, locations)
     };
 
     if pairs.is_empty() {
         return Ok(Json(vec![]));
     }
 
-    // Cosine rank
+    let loc_map: std::collections::HashMap<i64, (String, Option<String>)> = locations
+        .into_iter()
+        .map(|(id, fp, sym)| (id, (fp, sym)))
+        .collect();
+
+    // Tokenize the query once for the keyword-hybrid boost.
+    let query_tokens = tokenize_query(&input.query);
+
+    // Cosine rank, then apply the deterministic re-rank (kind weighting +
+    // keyword boost) BEFORE truncating so a declaration-heavy file cannot
+    // occupy a top-K slot ahead of the imperative code that does the work.
     let mut scored: Vec<(i64, f32)> = pairs
         .into_iter()
         .map(|(id, blob)| {
             let v = embed::deserialize(&blob);
-            let score = embed::cosine(&q_vec, &v);
+            let cosine = embed::cosine(&q_vec, &v);
+            let score = match loc_map.get(&id) {
+                Some((fp, sym)) => rerank_score(cosine, fp, sym.as_deref(), &query_tokens),
+                None => cosine,
+            };
             (id, score)
         })
         .collect();
@@ -517,15 +650,24 @@ pub async fn post_search(
         db_queries::get_chunks_by_ids(&conn, &ids).map_err(db_err)?
     };
 
-    let mut results: Vec<SearchCodeResult> = chunks
+    let mut results: Vec<SearchCodeHit> = chunks
         .into_iter()
-        .map(|c| SearchCodeResult {
-            file_path: c.file_path.clone(),
-            symbol: c.symbol.clone(),
-            start_line: c.start_line,
-            end_line: c.end_line,
-            content: c.content.clone(),
-            score: score_map.get(&c.id).copied().unwrap_or(0.0),
+        .map(|c| {
+            // Rebuild the exact text that was embedded for this chunk at index
+            // time, so the UI can show "what was actually indexed/embedded".
+            let skeleton =
+                crate::indexer::chunker::build_embed_text(c.symbol.as_deref(), &c.content);
+            SearchCodeHit {
+                result: SearchCodeResult {
+                    file_path: c.file_path.clone(),
+                    symbol: c.symbol.clone(),
+                    start_line: c.start_line,
+                    end_line: c.end_line,
+                    content: c.content.clone(),
+                    score: score_map.get(&c.id).copied().unwrap_or(0.0),
+                },
+                skeleton,
+            }
         })
         .collect();
 
@@ -533,11 +675,112 @@ pub async fn post_search(
     if let Some(ext) = &input.extension {
         if !ext.is_empty() {
             let suffix = format!(".{}", ext);
-            results.retain(|r| r.file_path.ends_with(&suffix));
+            results.retain(|r| r.result.file_path.ends_with(&suffix));
         }
     }
 
     Ok(Json(results))
+}
+
+/// `POST /v1/code/locate`
+///
+/// Same query embedding + cosine ranking as `post_search`, but returns RANKED
+/// DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its best chunk's
+/// score) instead of chunk bodies. This is the lean, token-cheap output an agent
+/// uses to jump straight to the right file. Default limit 5.
+/// Returns HTTP 404 if the project has not been indexed.
+pub async fn post_locate(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<LocateCodeRequest>,
+) -> Result<Json<LocateCodeResponse>, (StatusCode, Json<ApiError>)> {
+    // Permission check
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        require_permission(&conn, &auth, None, "memory:search")?;
+    }
+
+    let limit = input.limit.unwrap_or(DEFAULT_TOP_K).clamp(1, MAX_TOP_K);
+
+    // Check project exists and is indexed
+    let code_project = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        ensure_code_project_name_access(&conn, &auth, &input.project)?;
+        db_queries::get_code_project(&auth.org_id, &input.project, &conn).map_err(db_err)?
+    };
+
+    let code_project = match code_project {
+        None => return Err(project_not_indexed(&input.project)),
+        Some(p) => p,
+    };
+
+    let code_project_id: i64 = code_project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
+
+    // Embed the query (reuse the same plumbing as search — no corpus re-embed).
+    let embed_svc = store.embed_service();
+    let q_vec = match embed_svc {
+        Some(ref svc) => svc.embed_one(&input.query).map_err(db_err)?,
+        None => return Ok(Json(LocateCodeResponse { results: vec![] })),
+    };
+
+    // Fetch embeddings + lightweight (id → file_path, symbol) locations (no content).
+    let (pairs, locations) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        let pairs = db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?;
+        let locations =
+            db_queries::get_code_chunk_locations(&conn, code_project_id).map_err(db_err)?;
+        (pairs, locations)
+    };
+
+    if pairs.is_empty() {
+        return Ok(Json(LocateCodeResponse { results: vec![] }));
+    }
+
+    let loc_map: std::collections::HashMap<i64, (String, Option<String>)> = locations
+        .into_iter()
+        .map(|(id, fp, sym)| (id, (fp, sym)))
+        .collect();
+
+    // Tokenize the query once for the keyword-hybrid boost.
+    let query_tokens = tokenize_query(&input.query);
+
+    // Cosine-rank every chunk, apply the deterministic re-rank (kind weighting
+    // + keyword boost), then collapse to the best-scoring chunk per file.
+    let mut best: std::collections::HashMap<String, (f32, Option<String>)> =
+        std::collections::HashMap::new();
+    for (id, blob) in pairs {
+        let v = embed::deserialize(&blob);
+        let cosine = embed::cosine(&q_vec, &v);
+        if let Some((file_path, symbol)) = loc_map.get(&id) {
+            let score = rerank_score(cosine, file_path, symbol.as_deref(), &query_tokens);
+            let entry = best
+                .entry(file_path.clone())
+                .or_insert((f32::MIN, None));
+            if score > entry.0 {
+                *entry = (score, symbol.clone());
+            }
+        }
+    }
+
+    let mut results: Vec<LocateCodeHit> = best
+        .into_iter()
+        .map(|(file_path, (score, top_symbol))| LocateCodeHit {
+            file_path,
+            top_symbol,
+            score,
+        })
+        .collect();
+
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit as usize);
+
+    Ok(Json(LocateCodeResponse { results }))
 }
 
 /// `GET /v1/code/status/:project`
@@ -1302,6 +1545,81 @@ mod tests {
         SqliteStore::new(conn)
     }
 
+    // ── Re-ranking heuristics (pure, DB/model-free) ───────────────────────────
+
+    #[test]
+    fn rerank_downweights_interface_vs_service_at_equal_cosine() {
+        let cos = 0.60_f32;
+        let iface = rerank_score(cos, "packages/domain/interfaces/order.interface.ts", Some("OrderInterface"), &[]);
+        let svc = rerank_score(cos, "apps/api/src/order/order.service.ts", Some("OrderService"), &[]);
+        assert!(
+            svc > iface,
+            "service must outrank interface at equal cosine (svc={svc}, iface={iface})"
+        );
+    }
+
+    #[test]
+    fn rerank_downweights_domain_events_and_dtos() {
+        let cos = 0.55_f32;
+        let base = rerank_score(cos, "apps/api/src/order/order.usecase.ts", Some("createOrder"), &[]);
+        let event = rerank_score(cos, "packages/domain/events/create-order.event.ts", Some("CreateOrderEvent"), &[]);
+        let dto = rerank_score(cos, "packages/domain/dto/create-order.dto.ts", Some("CreateOrderDto"), &[]);
+        assert!(base > event, "usecase must beat event decl (base={base}, event={event})");
+        assert!(base > dto, "usecase must beat dto decl (base={base}, dto={dto})");
+    }
+
+    #[test]
+    fn rerank_keyword_match_in_path_boosts() {
+        let cos = 0.50_f32;
+        let tokens = tokenize_query("create ORDER endpoint");
+        let with_kw = rerank_score(cos, "apps/api/src/order/order.controller.ts", Some("createOrder"), &tokens);
+        let without_kw = rerank_score(cos, "apps/api/src/billing/billing.controller.ts", Some("charge"), &tokens);
+        assert!(
+            with_kw > without_kw,
+            "path/symbol keyword match must boost (with={with_kw}, without={without_kw})"
+        );
+    }
+
+    #[test]
+    fn rerank_semantics_dominate_strong_cosine_beats_weak_service() {
+        // A very strong cosine on a declaration must still beat a weak cosine on
+        // an imperative file — the heuristic nudges, it does not override.
+        let strong_decl = rerank_score(0.95, "packages/domain/interfaces/order.interface.ts", Some("OrderInterface"), &[]);
+        let weak_service = rerank_score(0.30, "apps/api/src/order/order.service.ts", Some("OrderService"), &[]);
+        assert!(
+            strong_decl > weak_service,
+            "strong cosine on decl must beat weak cosine on service (decl={strong_decl}, svc={weak_service})"
+        );
+    }
+
+    #[test]
+    fn tokenize_query_drops_stopwords_and_short_tokens() {
+        let toks = tokenize_query("Where is the ORDER endpoint for a user");
+        assert!(toks.contains(&"order".to_string()));
+        assert!(toks.contains(&"endpoint".to_string()));
+        assert!(toks.contains(&"user".to_string()));
+        assert!(!toks.contains(&"where".to_string()), "stopword must be dropped");
+        assert!(!toks.contains(&"the".to_string()), "stopword must be dropped");
+        assert!(!toks.contains(&"for".to_string()), "stopword must be dropped");
+        assert!(!toks.iter().any(|t| t == "a"), "short/stopword token must be dropped");
+    }
+
+    #[test]
+    fn keyword_boost_is_capped() {
+        let tokens: Vec<String> = vec![
+            "order".into(), "create".into(), "user".into(), "item".into(),
+            "line".into(), "price".into(),
+        ];
+        // A path containing every token would boost 6×0.05=0.30 uncapped;
+        // the cap holds it at 0.20.
+        let boost = keyword_boost(
+            "src/order/create/user/item/line/price.service.ts",
+            None,
+            &tokens,
+        );
+        assert!((boost - KEYWORD_BOOST_CAP).abs() < 1e-6, "boost must be capped at {KEYWORD_BOOST_CAP}, got {boost}");
+    }
+
     // ── Private-repo clone-failure handling ───────────────────────────────────
 
     #[test]
@@ -1359,6 +1677,7 @@ mod tests {
         Router::new()
             .route("/v1/code/index", post(post_index))
             .route("/v1/code/search", post(post_search))
+            .route("/v1/code/locate", post(post_locate))
             .route("/v1/code/status/:project", get(get_status))
             .route("/v1/code/context", get(get_context))
             .route("/v1/code/projects", get(list_projects))
@@ -1698,6 +2017,66 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let results: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(results.is_empty(), "no embed service must return empty array, not error");
+    }
+
+    // ── POST /v1/code/locate ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn locate_unindexed_project_returns_404() {
+        let (store, key) = setup_with_key();
+        let body = serde_json::json!({ "project": "ghost", "query": "list users" });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/code/locate")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp_body["code"], "project_not_indexed");
+    }
+
+    #[tokio::test]
+    async fn locate_no_embed_service_returns_empty_results() {
+        // With the embed service disabled, locate returns a shaped empty response,
+        // not an error: { "results": [] }.
+        let (store, key) = setup_with_key();
+        {
+            let db = store.conn();
+            let conn = db.lock().unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let project_id = q::upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+            q::update_code_project_stats(&conn, project_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
+        }
+
+        let body = serde_json::json!({ "project": "myapp", "query": "list users", "limit": 5 });
+        let resp = app(store)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/code/locate")
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(resp_body["results"].is_array(), "response must carry a results array");
+        assert!(resp_body["results"].as_array().unwrap().is_empty());
     }
 
     // ── POST /v1/code/index ───────────────────────────────────────────────────
@@ -2127,5 +2506,36 @@ mod tests {
 
         // We only verify it does NOT 400/500; the cap is invisible in an empty project
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Search hit skeleton exposure ──────────────────────────────────────────
+
+    #[test]
+    fn search_hit_serializes_flattened_result_plus_skeleton() {
+        // The skeleton is built with the SAME function used at index time, so the
+        // API returns exactly what was embedded for the chunk.
+        let content = "/// Lists users\npub fn list_users(db: &Db) -> Vec<User> {\n    db.all()\n}";
+        let skeleton = crate::indexer::chunker::build_embed_text(Some("list_users"), content);
+        assert!(!skeleton.is_empty(), "skeleton must not be empty");
+
+        let hit = SearchCodeHit {
+            result: SearchCodeResult {
+                file_path: "src/users.rs".to_string(),
+                symbol: Some("list_users".to_string()),
+                start_line: 1,
+                end_line: 4,
+                content: content.to_string(),
+                score: 0.9,
+            },
+            skeleton: skeleton.clone(),
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&hit).unwrap();
+        // Flattened SearchCodeResult fields sit at the top level …
+        assert_eq!(json["file_path"], "src/users.rs");
+        assert_eq!(json["symbol"], "list_users");
+        assert_eq!(json["content"], content);
+        // … alongside the added skeleton field, which mirrors the indexed text.
+        assert_eq!(json["skeleton"], serde_json::Value::String(skeleton));
     }
 }

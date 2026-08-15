@@ -10,6 +10,11 @@ services:
       LOG_LEVEL: info
     env_file:
       - ./apps/backend/.env
+    # Explicit memory ceiling: code indexing (tree-sitter ASTs + ONNX embeddings)
+    # can spike. Batching bounds the spike; this makes the budget explicit and
+    # fails the container loudly instead of taking down the host on a runaway repo.
+    mem_limit: 2g
+    mem_reservation: 512m
     volumes:
       - nexusmind_data:/data
       # The SDD importer reads the openspec/ tree from disk, and the image has no

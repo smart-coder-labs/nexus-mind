@@ -595,6 +595,9 @@ pub struct Project {
     /// Non-null when the project has been soft-archived. NULL = active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Owning client. NULL = an internal u2s project (not unassigned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -606,6 +609,207 @@ pub struct ProjectMember {
     pub name: String,
     pub role: String,
     pub created_at: String,
+}
+
+// ── Client (consultancy grouping) ─────────────────────────────────────────────
+
+/// A client of the consultancy. Sits between `Organization` and `Project`.
+///
+/// A project whose `client_id` is NULL is *internal* work, not an unassigned
+/// project — see `Project::client_id`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Client {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub slug: String,
+    #[serde(default = "default_active_status")]
+    pub status: String,
+    /// Non-null when the client has been soft-archived. NULL = active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ClientMember {
+    pub id: String,
+    pub client_id: String,
+    pub user_id: String,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateClientRequest {
+    pub name: String,
+    pub slug: String,
+    #[serde(default = "default_active_status")]
+    pub status: String,
+}
+
+/// `slug` is deliberately absent: it is the stable external identifier and is
+/// immutable after create. Renaming a client changes `name` only.
+#[derive(Debug, Deserialize)]
+pub struct UpdateClientRequest {
+    pub name: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddClientMemberRequest {
+    pub user_id: String,
+    #[serde(default = "default_member_role")]
+    pub role: String,
+}
+
+fn default_member_role() -> String {
+    "member".to_string()
+}
+
+/// The statuses a client may hold. `offboarded` is terminal for new work but
+/// keeps history readable — it is not a delete.
+pub const CLIENT_STATUSES: [&str; 3] = ["active", "paused", "offboarded"];
+
+/// The scopes a memory may carry, widened from `project | personal` by the
+/// client model.
+pub const MEMORY_SCOPES: [&str; 4] = ["org", "client", "project", "personal"];
+
+// ── Usage metrics (tokens + execution time) ───────────────────────────────────
+
+/// One recorded unit of agent work: token counts and wall-clock time, resolved
+/// at ingest into the task → project → client → org hierarchy. Every id below
+/// `org_id` is nullable — an unresolvable reference is stored as NULL, never
+/// rejected, so telemetry never 500s the caller.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageEvent {
+    pub id: String,
+    pub org_id: String,
+    pub user_id: Option<String>,
+    pub client_id: Option<String>,
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub duration_ms: i64,
+    /// `ingest` (reported by an agent/harness) or `backfill` (derived from a session).
+    pub source: String,
+    pub event_ts: String,
+    pub created_at: String,
+}
+
+/// Body of `POST /v1/usage`. `project` is a project **name** (resolved
+/// server-side, never auto-created); if it is absent but `task_id` is present
+/// the project is derived from that task.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UsageIngestRequest {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tokens_in: i64,
+    #[serde(default)]
+    pub tokens_out: i64,
+    #[serde(default)]
+    pub duration_ms: i64,
+    #[serde(default)]
+    pub event_ts: Option<String>,
+}
+
+/// One aggregated bucket at the requested rollup level. `key_id` is NULL for
+/// events whose id at that level was unresolved (e.g. usage with no project).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageSummaryRow {
+    pub key_id: Option<String>,
+    pub key_name: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub tokens_total: i64,
+    pub duration_ms: i64,
+    pub event_count: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageSummaryResponse {
+    pub rows: Vec<UsageSummaryRow>,
+    pub totals: UsageSummaryRow,
+}
+
+/// One time bucket of `GET /v1/usage/timeseries`.
+///
+/// `bucket_ts` is the bucket's leading edge as a date-only (`YYYY-MM-DD`, for
+/// `day`/`week`) or hour-precision (`YYYY-MM-DD HH`, for `hour`) string — the
+/// same lexicographic shape `usage_events.event_ts` is stored in, so the client
+/// can sort and gap-fill without parsing a locale-dependent format.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageBucket {
+    pub bucket_ts: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub tokens_total: i64,
+    pub duration_ms: i64,
+    pub event_count: i64,
+}
+
+/// Response of `GET /v1/usage/timeseries`. Only non-empty buckets are returned
+/// — the client gap-fills against the requested range, which it already knows.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UsageTimeseriesResponse {
+    pub bucket: String,
+    pub buckets: Vec<UsageBucket>,
+}
+
+/// A client slug is lowercase alphanumeric with internal dashes, 1–64 chars.
+/// Used in URLs and as the stable identifier, so it is validated at the edge
+/// rather than trusted from the caller.
+pub fn validate_slug(slug: &str) -> Result<(), String> {
+    if slug.is_empty() || slug.len() > 64 {
+        return Err("slug must be 1–64 characters".to_string());
+    }
+    let mut chars = slug.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err("slug must start with a lowercase letter or digit".to_string());
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err("slug may contain only lowercase letters, digits and dashes".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromoteMemoryRequest {
+    /// Optional note recorded on the audit row explaining why this was promoted.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Read-only report of how legacy `memories.project` strings map onto real
+/// projects. Deliberately carries no mutation — assigning `project_id` to
+/// legacy rows is a separate operator action.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProjectResolutionReport {
+    pub resolved: i64,
+    pub unresolved: i64,
+    pub unresolved_values: Vec<UnresolvedProject>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UnresolvedProject {
+    pub project: String,
+    pub memory_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -854,6 +1058,34 @@ pub struct SearchCodeResult {
     pub end_line: i64,
     pub content: String,
     pub score: f32,
+}
+
+/// Request body for `POST /v1/code/locate`.
+///
+/// Same query embedding + cosine ranking as `/v1/code/search`, but the response is
+/// a lean, deduped-by-file list of ranked file paths — the token-saving output an
+/// agent uses to jump straight to the right file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeRequest {
+    pub project: String,
+    pub query: String,
+    /// Max distinct files to return. Defaults to 5, capped at [`MAX_TOP_K`].
+    pub limit: Option<i64>,
+}
+
+/// One ranked distinct file in a `POST /v1/code/locate` response. A file's score is
+/// its single best-scoring chunk; `top_symbol` is that chunk's symbol.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeHit {
+    pub file_path: String,
+    pub top_symbol: Option<String>,
+    pub score: f32,
+}
+
+/// Response body for `POST /v1/code/locate`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LocateCodeResponse {
+    pub results: Vec<LocateCodeHit>,
 }
 
 /// Response body for `GET /v1/code/status/:project`.

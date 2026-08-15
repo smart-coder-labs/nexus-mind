@@ -627,6 +627,9 @@ pub struct CreateProjectInput {
     pub name: String,
     pub description: Option<String>,
     pub parent_id: Option<String>,
+    /// Owning client. Omitted or null = an internal u2s project.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -644,6 +647,10 @@ pub struct UpsertProjectMemberInput {
 pub struct ListProjectsParams {
     #[serde(default)]
     pub include_archived: bool,
+    /// Optional client filter. When set, only projects owned by this client are
+    /// returned. Absent = every project (privileged view). Backward-compatible.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 pub async fn list_projects_api(
@@ -655,9 +662,20 @@ pub async fn list_projects_api(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let projects = if is_privileged {
-        queries::list_projects_filtered(&conn, &auth.org_id, params.include_archived).map_err(db_err)?
+        queries::list_projects_filtered(
+            &conn,
+            &auth.org_id,
+            params.include_archived,
+            params.client_id.as_deref(),
+        )
+        .map_err(db_err)?
     } else {
-        queries::list_projects_visible(&conn, &auth.org_id, &auth.user_id).map_err(db_err)?
+        let mut visible =
+            queries::list_projects_visible(&conn, &auth.org_id, &auth.user_id).map_err(db_err)?;
+        if let Some(cid) = params.client_id.as_deref() {
+            visible.retain(|p| p.client_id.as_deref() == Some(cid));
+        }
+        visible
     };
     Ok(Json(projects))
 }
@@ -693,7 +711,7 @@ pub async fn create_project_api(
     validate_project_name(&input.name)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let project = queries::create_project_with_creator_membership(&conn, &auth.org_id, &auth.user_id, &input.name, input.description.as_deref(), input.parent_id.as_deref())
+    let project = queries::create_project_with_creator_membership(&conn, &auth.org_id, &auth.user_id, &input.name, input.description.as_deref(), input.parent_id.as_deref(), input.client_id.as_deref())
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
                 (

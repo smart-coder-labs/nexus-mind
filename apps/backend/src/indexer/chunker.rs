@@ -247,6 +247,83 @@ impl Chunker for MarkdownChunker {
     }
 }
 
+// ── Skeleton builder: what actually gets embedded ────────────────────────────
+
+/// True for a source-comment line in any of the indexed languages (best-effort).
+/// Used to isolate a chunk's leading doc-comment block from its body, and (in the
+/// tree-sitter chunker) to extend a symbol chunk upward over its doc-comment lines.
+/// `line` is expected to be already trimmed of leading whitespace.
+pub(crate) fn is_comment_line(line: &str) -> bool {
+    line.starts_with("//")        // Rust / TS / JS / Go / C-family
+        || line.starts_with('#')  // Python / shell / Ruby (also Rust attributes)
+        || line.starts_with("/*") || line.starts_with('*') // block comments
+        || line.starts_with("\"\"\"") || line.starts_with("'''") // Python docstrings
+        || line.starts_with("<!--") // HTML / Markdown
+        || line.starts_with("--")   // SQL
+}
+
+/// Build the compact, NL-friendly text that is embedded and cosine-ranked for a
+/// code chunk — deliberately NOT the full body.
+///
+/// A raw symbol body is dominated by loop bodies, SQL, and nested statements that
+/// drown the semantic signal, so a natural-language query ("where are users
+/// listed") matches declaration-heavy files instead of the `listUsers` handler
+/// that does the work. The skeleton keeps only the parts that carry intent:
+///   * the symbol name (led, so its identifier tokens weigh heavily),
+///   * the immediately-preceding doc-comment block, when the chunk starts with one,
+///   * the declaration / signature line(s): the first up-to-3 non-blank, non-comment
+///     lines, stopping at the body opener (`{`).
+///
+/// Deterministic and language-agnostic — it reads only the chunk text, so it works
+/// for tree-sitter chunks and line-window fallbacks alike. Falls back to the head of
+/// the content when no signature can be isolated, so a chunk never embeds as empty.
+pub fn build_embed_text(symbol: Option<&str>, content: &str) -> String {
+    let mut doc: Vec<&str> = Vec::new();
+    let mut sig: Vec<&str> = Vec::new();
+    let mut past_doc = false;
+
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            // Blank lines before any signature line are skipped; a blank AFTER the
+            // signature has started marks the end of the declaration region.
+            if sig.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if !past_doc && is_comment_line(line) {
+            doc.push(line);
+            continue;
+        }
+        past_doc = true;
+        sig.push(line);
+        // Stop at the body opener or after 3 signature lines — the deep body is
+        // intentionally excluded.
+        if line.contains('{') || sig.len() >= 3 {
+            break;
+        }
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(name) = symbol {
+        if !name.is_empty() {
+            parts.push(name);
+        }
+    }
+    parts.extend(&doc);
+    parts.extend(&sig);
+
+    let text = parts.join("\n");
+    if text.trim().is_empty() {
+        // Nothing isolatable (no symbol, no comment, no code) → bounded head of the
+        // content so the chunk still embeds against a non-empty string.
+        content.lines().take(3).collect::<Vec<_>>().join("\n")
+    } else {
+        text
+    }
+}
+
 // ── Utility: detect language from file extension ──────────────────────────────
 
 pub fn language_for_ext(ext: &str) -> Option<&'static str> {
@@ -475,6 +552,46 @@ Body.
             !symbols.iter().any(|s| s.map(|t| t.contains("not a heading")).unwrap_or(false)),
             "a `#` line inside the fence must not become a heading: {symbols:?}"
         );
+    }
+
+    #[test]
+    fn embed_text_keeps_name_signature_doc_excludes_body() {
+        // A chunk with a doc comment + signature + a deep body.
+        let content = "\
+/// Lists all users for the current tenant.
+pub fn list_users(tenant: &str) -> Vec<User> {
+    let rows = db.query(\"SELECT id, email FROM users WHERE tenant = ?\");
+    let mut out = Vec::new();
+    for r in rows { out.push(User::from(r)); }
+    out
+}";
+        let text = build_embed_text(Some("list_users"), content);
+        // Name is present (led).
+        assert!(text.contains("list_users"), "must contain the symbol name: {text}");
+        // Doc comment is present.
+        assert!(text.contains("Lists all users"), "must contain the doc comment: {text}");
+        // Signature is present.
+        assert!(text.contains("pub fn list_users(tenant: &str)"), "must contain the signature: {text}");
+        // The deep body must be excluded.
+        assert!(!text.contains("SELECT id, email"), "must exclude the SQL body: {text}");
+        assert!(!text.contains("out.push"), "must exclude the loop body: {text}");
+    }
+
+    #[test]
+    fn embed_text_without_doc_still_has_name_and_signature() {
+        let content = "function createOrder(p) {\n  return db.insert(p);\n}\n";
+        let text = build_embed_text(Some("createOrder"), content);
+        assert!(text.contains("createOrder"));
+        assert!(text.contains("function createOrder(p)"));
+        assert!(!text.contains("db.insert"), "body excluded: {text}");
+    }
+
+    #[test]
+    fn embed_text_falls_back_to_head_when_nothing_isolatable() {
+        // No symbol, no comment — a data blob (e.g. a JSON fallback chunk).
+        let content = "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}\n";
+        let text = build_embed_text(None, content);
+        assert!(!text.trim().is_empty(), "must never embed an empty string");
     }
 
     #[test]

@@ -785,6 +785,75 @@ pub async fn update(
 
 // ── Archive / Restore ─────────────────────────────────────────────────────────
 
+/// Promotes a client- or project-scoped memory into an organization asset.
+///
+/// Always an explicit call: nothing else in the system invokes this. A memory
+/// promoted by mistake is client material inside a shared playbook, which is a
+/// contractual problem rather than a bug, so the decision stays with a human
+/// and the lineage stays in `promoted_from`.
+pub async fn promote(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Memory>), (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
+    let Some((_, ref project_name)) = details else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    };
+    require_permission(&conn, &auth, Some(project_name), "memory:write")?;
+
+    let promoted = db_queries::promote_memory(&conn, &auth.org_id, &id, &auth.user_id).map_err(
+        |e| {
+            // A wrong source scope is the caller's mistake, not a server fault.
+            if e.to_string().contains("can be promoted") {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: e.to_string(),
+                        code: "invalid_scope".to_string(),
+                    }),
+                )
+            } else {
+                store_err(e)
+            }
+        },
+    )?;
+
+    match promoted {
+        Some(memory) => {
+            let _ = db_queries::log_audit(
+                &conn,
+                &auth.org_id,
+                &auth.user_id,
+                "memory.promoted",
+                "memory",
+                Some(&memory.id),
+                serde_json::json!({ "promoted_from": id }),
+            );
+            Ok((StatusCode::CREATED, Json(memory)))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Memory not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+    }
+}
+
 pub async fn archive(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
