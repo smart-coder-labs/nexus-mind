@@ -1,0 +1,152 @@
+name: Deploy U2S (self-host)
+
+# Manual-only. Always deploys the `main` branch to the u2s AWS t3.medium box.
+# Flow: build backend+admin images -> push to (private) GHCR -> SSH to the box,
+# pull, `docker compose up`, then an idempotent single-org ("u2s") bootstrap.
+#
+# Required repository secrets (all prefixed U2S_):
+#   U2S_SSH_HOST        Public IP / Elastic IP / DNS of the t3.medium
+#   U2S_SSH_USER        SSH user (e.g. "ubuntu")
+#   U2S_SSH_KEY         Private SSH key contents (the nexusmind.pem body)
+#   U2S_GHCR_USERNAME   GitHub username that owns the read-only pull token
+#   U2S_GHCR_TOKEN      PAT with read:packages, for `docker login` on the box
+#   U2S_SUPERUSER_KEY   Backend SUPERUSER_KEY (auth for org creation + admin)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm deploying main to the u2s box'
+        required: true
+        default: ''
+      admin_email:
+        description: 'Admin email for the u2s org (first-time bootstrap only)'
+        required: false
+        default: 'admin@u2s.local'
+      admin_name:
+        description: 'Admin name for the u2s org (first-time bootstrap only)'
+        required: false
+        default: 'U2S Admin'
+
+concurrency:
+  group: deploy-u2s
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation text
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+            echo "::error::Confirmation mismatch — type 'deploy' to proceed." >&2
+            exit 1
+          fi
+
+  build-and-push:
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Compute lowercase owner (GHCR requires lowercase paths)
+        id: vars
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (push, via GITHUB_TOKEN)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          push: true
+          tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-backend:main
+
+      # Admin is built WITHOUT VITE_API_URL on purpose: the client falls back to
+      # relative URLs and the bundled nginx proxies /v1 to the backend, so the
+      # image is IP-agnostic and needs no rebuild per box.
+      - name: Build & push admin
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/admin
+          push: true
+          tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-admin:main
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # Secrets live in this Environment (Settings -> Environments -> u2s-production).
+    # Attach protection rules there: required reviewers (manual approval before the
+    # box is touched) and "Deployment branches -> main only".
+    environment: u2s-production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Deploy to u2s box over SSH
+        env:
+          SSH_HOST: ${{ secrets.U2S_SSH_HOST }}
+          SSH_USER: ${{ secrets.U2S_SSH_USER }}
+          SSH_KEY: ${{ secrets.U2S_SSH_KEY }}
+          GHCR_USERNAME: ${{ secrets.U2S_GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.U2S_GHCR_TOKEN }}
+          SUPERUSER_KEY: ${{ secrets.U2S_SUPERUSER_KEY }}
+          GHCR_OWNER: ${{ needs.build-and-push.outputs.owner_lc }}
+          ADMIN_EMAIL: ${{ github.event.inputs.admin_email }}
+          ADMIN_NAME: ${{ github.event.inputs.admin_name }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing U2S_SSH_HOST secret}"
+          : "${SSH_USER:?missing U2S_SSH_USER secret}"
+          : "${SSH_KEY:?missing U2S_SSH_KEY secret}"
+
+          install -m 600 /dev/null /tmp/u2s_key
+          printf '%s\n' "$SSH_KEY" > /tmp/u2s_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          SSHOPTS="-i /tmp/u2s_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+
+          # 1. Ship compose + bootstrap script.
+          ssh $SSHOPTS "$REMOTE" "mkdir -p ~/u2s-deploy"
+          scp $SSHOPTS deploy/u2s/docker-compose.yml deploy/u2s/bootstrap-u2s.sh "$REMOTE:~/u2s-deploy/"
+
+          # 2. Write .env on the box (secrets live only here, never in the image).
+          # Values are QUOTED: admin_name defaults to "U2S Admin" (has a space),
+          # and bootstrap-u2s.sh sources this file under `set -e` — unquoted a
+          # space would be parsed as a command and abort the deploy. docker
+          # compose v2 also strips the surrounding quotes on interpolation.
+          ssh $SSHOPTS "$REMOTE" "umask 077; cat > ~/u2s-deploy/.env" <<ENVEOF
+          GHCR_OWNER="${GHCR_OWNER}"
+          SUPERUSER_KEY="${SUPERUSER_KEY}"
+          U2S_ADMIN_EMAIL="${ADMIN_EMAIL}"
+          U2S_ADMIN_NAME="${ADMIN_NAME}"
+          ENVEOF
+
+          # 3. Private GHCR login. Token flows runner-stdin -> ssh -> docker
+          # --password-stdin, so it never appears in the box's process argv.
+          printf '%s' "$GHCR_TOKEN" | ssh $SSHOPTS "$REMOTE" "docker login ghcr.io -u '${GHCR_USERNAME}' --password-stdin"
+          ssh $SSHOPTS "$REMOTE" "cd ~/u2s-deploy && docker compose pull && docker compose up -d"
+
+          # 4. Idempotent single-org bootstrap (reads ./.env; no secrets on argv).
+          ssh $SSHOPTS "$REMOTE" "cd ~/u2s-deploy && bash bootstrap-u2s.sh"
+
+          rm -f /tmp/u2s_key
+          echo "Deploy complete."
+          echo "First deploy only — retrieve the u2s admin API key with:"
+          echo "  ssh ${REMOTE} 'cat ~/u2s-deploy/u2s-admin-key.txt'"
