@@ -6,7 +6,7 @@ const fetchMock = vi.fn()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  vi.stubGlobal('window', { location: { replace: vi.fn() } })
+  vi.stubGlobal('window', { location: { pathname: '/memories', replace: vi.fn() } })
 })
 
 describe('NexusMindClient request() empty-body handling', () => {
@@ -61,5 +61,27 @@ describe('NexusMindClient request() empty-body handling', () => {
 
     await expect(client.getStats()).rejects.toMatchObject({ status: 401 })
     expect(window.location.replace).toHaveBeenCalledWith('/login')
+  })
+
+  it('does not redirect on a 401 raised while already on /login', async () => {
+    vi.stubGlobal('window', { location: { pathname: '/login', replace: vi.fn() } })
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthenticated', code: 'unauthorized' }), { status: 401 }))
+
+    const client = new NexusMindClient('https://api.test')
+
+    // The login page boots with getMe() to detect an existing cookie session.
+    // Redirecting here reloads the document into the same 401 — an infinite loop.
+    await expect(client.getMe()).rejects.toMatchObject({ status: 401 })
+    expect(window.location.replace).not.toHaveBeenCalled()
+  })
+
+  it('does not redirect on a 401 raised while on /set-password', async () => {
+    vi.stubGlobal('window', { location: { pathname: '/set-password', replace: vi.fn() } })
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthenticated', code: 'unauthorized' }), { status: 401 }))
+
+    const client = new NexusMindClient('https://api.test')
+
+    await expect(client.getMe()).rejects.toMatchObject({ status: 401 })
+    expect(window.location.replace).not.toHaveBeenCalled()
   })
 })
