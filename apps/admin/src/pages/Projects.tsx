@@ -770,9 +770,12 @@ export default function Projects() {
   })
 
   const updateProjectMut = useMutation({
-    mutationFn: ({ id, parent_id }: { id: string; parent_id: string | null }) =>
-      client.updateProject(id, { parent_id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+    mutationFn: ({ id, ...patch }: { id: string; parent_id?: string | null; client_id?: string | null }) =>
+      client.updateProject(id, patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      qc.invalidateQueries({ queryKey: ['clients'] })
+    },
   })
 
   const updateProjectSettingsMut = useMutation({
@@ -1353,6 +1356,28 @@ export default function Projects() {
                     <SelectItem value="">— No parent (root) —</SelectItem>
                     {parentOptionsForEdit.map(p => (
                       <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Owning client */}
+              <div className="space-y-1">
+                <label className="text-[10px] text-text-quaternary">Client</label>
+                <Select
+                  key={editingProject.id + '-client'}
+                  value={editingProject.client_id ?? ''}
+                  onValueChange={v =>
+                    updateProjectMut.mutate({ id: editingProject.id, client_id: v || null })
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs" disabled={updateProjectMut.isPending}>
+                    <SelectValue placeholder="Internal (no client)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Internal (no client)</SelectItem>
+                    {(clients ?? []).map(c => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

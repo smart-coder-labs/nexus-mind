@@ -320,7 +320,7 @@ export class NexusMindClient {
     })
   }
 
-  updateProject(id: string, data: Partial<{ parent_id: string | null; description: string; custom_instructions: string; retention_days: number }>): Promise<void> {
+  updateProject(id: string, data: Partial<{ parent_id: string | null; client_id: string | null; description: string; custom_instructions: string; retention_days: number }>): Promise<void> {
     return this.request(`/v1/projects/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),

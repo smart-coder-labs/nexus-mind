@@ -632,9 +632,27 @@ pub struct CreateProjectInput {
     pub client_id: Option<String>,
 }
 
+/// `deserialize_with` helper that distinguishes an ABSENT JSON field from an
+/// explicit `null`, without pulling in `serde_with`. Combined with
+/// `#[serde(default)]`, an absent field deserializes to `None`, a JSON `null`
+/// to `Some(None)`, and a value to `Some(Some(value))`. This is what makes
+/// `PATCH /v1/projects/:id` a true partial update.
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
 #[derive(Deserialize)]
 pub struct UpdateProjectInput {
-    pub parent_id: Option<String>,
+    /// Absent = leave parent unchanged; null = detach to root; value = reparent.
+    #[serde(default, deserialize_with = "double_option")]
+    pub parent_id: Option<Option<String>>,
+    /// Absent = leave owner unchanged; null = clear to Internal; value = reassign.
+    #[serde(default, deserialize_with = "double_option")]
+    pub client_id: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -816,10 +834,22 @@ pub async fn update_project_api(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_visible_project(&conn, &auth, &project_id, "PATCH")?;
 
-    let found = queries::update_project(&conn, &auth.org_id, &project_id, input.parent_id.as_deref())
+    // Preserve absent-vs-null: Option<Option<String>> -> Option<Option<&str>>.
+    let parent_arg = input.parent_id.as_ref().map(|o| o.as_deref());
+    let client_arg = input.client_id.as_ref().map(|o| o.as_deref());
+
+    let found = queries::update_project(&conn, &auth.org_id, &project_id, parent_arg, client_arg)
         .map_err(|e| {
             let msg = e.to_string();
-            if msg.starts_with("cycle_detected:") {
+            if msg.starts_with("client_not_found:") {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ApiError {
+                        error: msg.strip_prefix("client_not_found: ").unwrap_or(&msg).to_string(),
+                        code: "client_not_found".to_string(),
+                    }),
+                )
+            } else if msg.starts_with("cycle_detected:") {
                 (
                     StatusCode::UNPROCESSABLE_ENTITY,
                     Json(ApiError {

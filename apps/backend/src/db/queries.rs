@@ -4296,13 +4296,25 @@ pub fn create_project_with_creator_membership(
     })
 }
 
+/// Partially update a project.
+///
+/// Both `parent_id` and `client_id` use `Option<Option<&str>>` to distinguish
+/// three intents, so a PATCH that omits a field never clobbers it:
+/// - `None`            → field absent, leave the column untouched
+/// - `Some(None)`      → set the column to NULL (parent → root / client → Internal)
+/// - `Some(Some(val))` → set the column to `val`
+///
+/// Returns whether the project row exists in the org.
 pub fn update_project(
     conn: &Connection,
     org_id: &str,
     project_id: &str,
-    parent_id: Option<&str>,
+    parent_id: Option<Option<&str>>,
+    client_id: Option<Option<&str>>,
 ) -> Result<bool> {
-    if let Some(new_parent) = parent_id {
+    // Parent cycle/cross-org checks only run when a concrete parent is provided;
+    // clearing the parent (Some(None)) or leaving it alone (None) needs no check.
+    if let Some(Some(new_parent)) = parent_id {
         // Self-parenting is a cycle
         if new_parent == project_id {
             anyhow::bail!("cycle_detected: a project cannot be its own parent");
@@ -4344,10 +4356,56 @@ pub fn update_project(
             }
         }
     }
-    let rows = conn.execute(
-        "UPDATE projects SET parent_id = ?1 WHERE id = ?2 AND org_id = ?3",
-        rusqlite::params![parent_id, project_id, org_id],
-    )?;
+
+    // A project may only be attached to a client of its own organization;
+    // otherwise a caller could graft a project onto another tenant's client.
+    // Mirror the check in create_project_with_creator_membership.
+    if let Some(Some(cid)) = client_id {
+        let belongs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clients WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![cid, org_id],
+            |r| r.get(0),
+        )?;
+        if belongs == 0 {
+            anyhow::bail!("client_not_found: client {cid} does not belong to this organization");
+        }
+    }
+
+    // Build a partial UPDATE that touches only the columns actually provided.
+    // Owned copies keep the bound values alive for the duration of execute().
+    let parent_val: Option<Option<String>> = parent_id.map(|p| p.map(|s| s.to_string()));
+    let client_val: Option<Option<String>> = client_id.map(|c| c.map(|s| s.to_string()));
+
+    let mut sets: Vec<String> = Vec::new();
+    let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    if let Some(ref p) = parent_val {
+        sets.push(format!("parent_id = ?{}", binds.len() + 1));
+        binds.push(p);
+    }
+    if let Some(ref c) = client_val {
+        sets.push(format!("client_id = ?{}", binds.len() + 1));
+        binds.push(c);
+    }
+
+    if sets.is_empty() {
+        // Nothing to change — just report whether the project exists.
+        let exists: bool = conn.query_row(
+            "SELECT count(*) > 0 FROM projects WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![project_id, org_id],
+            |row| row.get(0),
+        )?;
+        return Ok(exists);
+    }
+
+    let sql = format!(
+        "UPDATE projects SET {} WHERE id = ?{} AND org_id = ?{}",
+        sets.join(", "),
+        binds.len() + 1,
+        binds.len() + 2,
+    );
+    binds.push(&project_id);
+    binds.push(&org_id);
+    let rows = conn.execute(&sql, binds.as_slice())?;
     Ok(rows > 0)
 }
 
@@ -20162,6 +20220,78 @@ mod inheritance_tests {
         conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')", []).unwrap();
         conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')", []).unwrap();
         assert!(create_project_with_creator_membership(&conn, "org1", "u1", "bad", None, None, Some("cli_x")).is_err());
+    }
+
+    // ── update_project: client reassignment + partial-update semantics ────────
+
+    fn project_parent_and_client(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT parent_id, client_id FROM projects WHERE id = ?1",
+            [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn update_project_reassigns_client_to_another_client() {
+        let conn = setup();
+        // p_a starts owned by cli_a; move it to cli_b.
+        let found = update_project(&conn, "org1", "p_a", None, Some(Some("cli_b"))).unwrap();
+        assert!(found);
+        let (_, client) = project_parent_and_client(&conn, "p_a");
+        assert_eq!(client.as_deref(), Some("cli_b"));
+    }
+
+    #[test]
+    fn update_project_clears_client_to_internal() {
+        let conn = setup();
+        let found = update_project(&conn, "org1", "p_a", None, Some(None)).unwrap();
+        assert!(found);
+        let (_, client) = project_parent_and_client(&conn, "p_a");
+        assert!(client.is_none(), "null client_id must clear the project to Internal");
+    }
+
+    #[test]
+    fn update_project_rejects_client_from_another_org() {
+        let conn = setup();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')", []).unwrap();
+        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')", []).unwrap();
+        let err = update_project(&conn, "org1", "p_a", None, Some(Some("cli_x")));
+        assert!(err.is_err(), "a client from another org must be rejected");
+        assert!(err.unwrap_err().to_string().contains("client_not_found"));
+        // The offending update must not have partially applied.
+        let (_, client) = project_parent_and_client(&conn, "p_a");
+        assert_eq!(client.as_deref(), Some("cli_a"), "rejected update must leave client untouched");
+    }
+
+    #[test]
+    fn update_project_partial_update_does_not_clobber_the_other_field() {
+        let conn = setup();
+        // Give p_a a parent so both columns are populated (client=cli_a, parent=p_int).
+        update_project(&conn, "org1", "p_a", Some(Some("p_int")), None).unwrap();
+        let (parent, client) = project_parent_and_client(&conn, "p_a");
+        assert_eq!(parent.as_deref(), Some("p_int"));
+        assert_eq!(client.as_deref(), Some("cli_a"));
+
+        // Sending only client_id must NOT null out parent_id.
+        update_project(&conn, "org1", "p_a", None, Some(Some("cli_b"))).unwrap();
+        let (parent, client) = project_parent_and_client(&conn, "p_a");
+        assert_eq!(parent.as_deref(), Some("p_int"), "client-only update must not touch parent_id");
+        assert_eq!(client.as_deref(), Some("cli_b"));
+
+        // Sending only parent_id must NOT null out client_id.
+        update_project(&conn, "org1", "p_a", Some(None), None).unwrap();
+        let (parent, client) = project_parent_and_client(&conn, "p_a");
+        assert!(parent.is_none(), "parent-only update to null must detach to root");
+        assert_eq!(client.as_deref(), Some("cli_b"), "parent-only update must not touch client_id");
+    }
+
+    #[test]
+    fn update_project_no_fields_reports_existence() {
+        let conn = setup();
+        assert!(update_project(&conn, "org1", "p_a", None, None).unwrap(), "existing project returns true");
+        assert!(!update_project(&conn, "org1", "nope", None, None).unwrap(), "missing project returns false");
     }
 
     #[test]
