@@ -754,6 +754,19 @@ mod tests {
         if !c.is_repository(&root) {
             return; // packaged crate without a checkout
         }
+        // A shallow clone has no history to calibrate against. CI fetches the
+        // full history for this job precisely so this test can run; anywhere
+        // else, skipping is the honest outcome rather than asserting against
+        // one commit.
+        let shallow = std::process::Command::new("git")
+            .args(["-C", &root, "rev-parse", "--is-shallow-repository"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+            .unwrap_or(false);
+        if shallow {
+            eprintln!("skipping: shallow clone has no history to calibrate against");
+            return;
+        }
 
         let report = c
             .scan_report(&ScanOptions {
