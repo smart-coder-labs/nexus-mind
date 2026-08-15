@@ -697,27 +697,27 @@ fn update_project_parent_id_validation() {
     let c = queries::create_project(&conn, &org.id, "proj-c", None, None).unwrap();
 
     // Happy path: set B's parent to A
-    let updated = queries::update_project(&conn, &org.id, &b.id, Some(&a.id)).unwrap();
+    let updated = queries::update_project(&conn, &org.id, &b.id, Some(Some(a.id.as_str())), None).unwrap();
     assert!(updated, "setting parent should return true");
 
     // Happy path: set C's parent to B (creating chain A → B → C)
-    let updated2 = queries::update_project(&conn, &org.id, &c.id, Some(&b.id)).unwrap();
+    let updated2 = queries::update_project(&conn, &org.id, &c.id, Some(Some(b.id.as_str())), None).unwrap();
     assert!(updated2);
 
     // Happy path: clear parent (set to None)
-    let cleared = queries::update_project(&conn, &org.id, &c.id, None).unwrap();
+    let cleared = queries::update_project(&conn, &org.id, &c.id, None, None).unwrap();
     assert!(cleared);
 
     // Re-establish A → B → C chain for cycle tests
-    queries::update_project(&conn, &org.id, &c.id, Some(&b.id)).unwrap();
+    queries::update_project(&conn, &org.id, &c.id, Some(Some(b.id.as_str())), None).unwrap();
 
     // Cycle: try to set A's parent to C (would create C → A → B → C cycle)
-    let cycle_err = queries::update_project(&conn, &org.id, &a.id, Some(&c.id));
+    let cycle_err = queries::update_project(&conn, &org.id, &a.id, Some(Some(c.id.as_str())), None);
     assert!(cycle_err.is_err(), "cycle must be rejected");
     assert!(cycle_err.unwrap_err().to_string().contains("cycle_detected"));
 
     // Self-parenting: A cannot be its own parent
-    let self_err = queries::update_project(&conn, &org.id, &a.id, Some(&a.id));
+    let self_err = queries::update_project(&conn, &org.id, &a.id, Some(Some(a.id.as_str())), None);
     assert!(self_err.is_err(), "self-parenting must be rejected");
     assert!(self_err.unwrap_err().to_string().contains("cycle_detected"));
 
@@ -728,7 +728,7 @@ fn update_project_parent_id_validation() {
         |row| row.get::<_, String>(0),
     ).unwrap();
     let other_org_project = queries::create_project(&conn, &org2_id, "other-org-proj", None, None).unwrap();
-    let cross_org_err = queries::update_project(&conn, &org.id, &a.id, Some(&other_org_project.id));
+    let cross_org_err = queries::update_project(&conn, &org.id, &a.id, Some(Some(other_org_project.id.as_str())), None);
     assert!(cross_org_err.is_err(), "cross-org parent must be rejected");
     assert!(cross_org_err.unwrap_err().to_string().contains("not_found"));
 }
@@ -757,7 +757,7 @@ fn update_project_terminates_on_pre_existing_cycle() {
     .unwrap();
 
     // Pointing C at a member of the cyclic pair must terminate (Ok or Err — no hang).
-    let result = queries::update_project(&conn, &org.id, &c.id, Some(&a.id));
+    let result = queries::update_project(&conn, &org.id, &c.id, Some(Some(a.id.as_str())), None);
     // The important assertion is that we got here at all; either outcome is acceptable.
     let _ = result;
 }

@@ -15,7 +15,7 @@ import { StatTile } from './dashboard/StatTile'
 import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { CLIENT_STATUSES } from '../types'
-import type { Client, ClientMember, ClientStatus, User as UserType } from '../types'
+import type { Client, ClientMember, ClientStatus, Project, User as UserType } from '../types'
 
 // Same glass recipe used across the admin pages (see Projects.tsx / StatTile).
 const GLASS_PANEL = 'border border-white/[0.07] bg-[#0d0f14]/60 backdrop-blur-[12px]'
@@ -270,6 +270,7 @@ export default function Clients() {
   const [editingClientId, setEditingClientId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [editStatus, setEditStatus] = useState<ClientStatus>('active')
+  const [projectFilter, setProjectFilter] = useState('')
 
   // Queries
   const { data: clients, isLoading: clientsLoading, isError, error } = useQuery({
@@ -286,6 +287,13 @@ export default function Clients() {
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: () => client.listRoles(),
+    enabled: isAdmin,
+  })
+
+  // Projects power the client↔project assignment section in the Edit modal.
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => client.listProjects({ include_archived: false }),
     enabled: isAdmin,
   })
 
@@ -335,6 +343,17 @@ export default function Clients() {
     },
   })
 
+  // Assign / unassign a project to the client being edited. Sending client_id
+  // null clears the project back to Internal.
+  const setProjectClientMut = useMutation({
+    mutationFn: ({ projectId, clientId }: { projectId: string; clientId: string | null }) =>
+      client.updateProject(projectId, { client_id: clientId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      qc.invalidateQueries({ queryKey: ['clients'] })
+    },
+  })
+
   const archiveMut = useMutation({
     mutationFn: (id: string) => client.archiveClient(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['clients'] }),
@@ -366,6 +385,23 @@ export default function Clients() {
     setEditingClientId(c.id)
     setEditName(c.name)
     setEditStatus(c.status)
+    setProjectFilter('')
+  }
+
+  const filteredEditProjects = useMemo(() => {
+    const q = projectFilter.trim().toLowerCase()
+    const list = projects ?? []
+    if (!q) return list
+    return list.filter(p => p.name.toLowerCase().includes(q))
+  }, [projects, projectFilter])
+
+  const toggleProjectClient = (p: Project) => {
+    if (!editingClient) return
+    const isMine = p.client_id === editingClient.id
+    setProjectClientMut.mutate({
+      projectId: p.id,
+      clientId: isMine ? null : editingClient.id,
+    })
   }
 
   const handleUpdate = (e: React.FormEvent) => {
@@ -747,6 +783,66 @@ export default function Clients() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Projects — assign or clear which projects this client owns */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold text-text-tertiary tracking-[-0.08px] uppercase">
+                    Projects
+                  </label>
+                  {setProjectClientMut.isPending && (
+                    <Loader2 className="w-3 h-3 animate-spin text-text-quaternary" />
+                  )}
+                </div>
+
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-text-quaternary" />
+                  <input
+                    type="text"
+                    value={projectFilter}
+                    onChange={e => setProjectFilter(e.target.value)}
+                    placeholder="Filter projects…"
+                    className="w-full bg-white/[0.04] border border-border-primary rounded-[8px] pl-7 pr-3 py-2 text-text-primary focus:outline-none focus:border-accent-blue/60 placeholder:text-text-quaternary"
+                  />
+                </div>
+
+                {filteredEditProjects.length === 0 ? (
+                  <p className="text-xs text-text-quaternary py-1">No projects found.</p>
+                ) : (
+                  <div className="max-h-52 overflow-y-auto rounded-[8px] border border-border-primary divide-y divide-border-secondary/40">
+                    {filteredEditProjects.map(p => {
+                      const isMine = p.client_id === editingClient.id
+                      const ownedElsewhere = !isMine && !!p.client_id
+                      return (
+                        <label
+                          key={p.id}
+                          className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-white/[0.04]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isMine}
+                            disabled={setProjectClientMut.isPending}
+                            onChange={() => toggleProjectClient(p)}
+                            className="accent-accent-blue w-3.5 h-3.5 shrink-0 disabled:opacity-40"
+                          />
+                          <span className="text-xs text-text-secondary font-mono truncate">{p.name}</span>
+                          {ownedElsewhere && (
+                            <span className="ml-auto text-[10px] text-text-quaternary shrink-0">
+                              {clients?.find(c => c.id === p.client_id)?.name ?? 'other client'}
+                            </span>
+                          )}
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {setProjectClientMut.isError && (
+                  <p className="text-xs text-status-error/80">
+                    {(setProjectClientMut.error as Error)?.message ?? 'Failed to update project assignment'}
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
