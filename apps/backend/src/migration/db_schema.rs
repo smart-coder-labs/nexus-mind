@@ -411,7 +411,7 @@ impl<R: SchemaReader> Connector for DbSchemaConnector<R> {
         Ok(self.scan_report(opts)?.items)
     }
 
-    fn scan_report(&self, _opts: &ScanOptions) -> Result<super::ScanReport> {
+    fn scan_report(&self, opts: &ScanOptions) -> Result<super::ScanReport> {
         self.ensure_read_only()?;
 
         let tables = self.reader.tables()?;
@@ -424,7 +424,8 @@ impl<R: SchemaReader> Connector for DbSchemaConnector<R> {
         let mut report = super::ScanReport::default();
         let mut items = Vec::new();
 
-        for area in group_into_areas(&tables) {
+        for (seen, area) in group_into_areas(&tables).into_iter().enumerate() {
+            opts.note(seen + 1, area.label());
             let (samples, redaction) = self.samples_for(&area)?;
             let prose = render_area(&area, &policies, &samples);
             let identity = self.identity(&area, &prose);

@@ -48,6 +48,22 @@ const NEVER_SCANNED: &[&str] = &["/plugins/cache/", "/plugins/marketplaces/", "/
 /// the machine. Out of scope by decision, not by omission.
 const TRANSCRIPT_EXTENSIONS: &[&str] = &["jsonl"];
 
+/// Directory names never descended into.
+///
+/// This walk deliberately sets `git_ignore(false)`, because `.claude/` and
+/// `.cursor/` are frequently gitignored and are exactly what we came for. The
+/// cost of that decision is that build output and object stores are walked too:
+/// over this repository it meant examining 98,325 files to find 249, and taking
+/// 27 seconds to do it — long enough that the operator concludes it has hung.
+///
+/// Only directories that carry no *reported* meaning belong here. A plugin
+/// cache is skipped too — but by `is_never_scanned`, which puts it in the
+/// report with its reason, so the operator can see the third-party assets were
+/// deliberately left alone. Pruning those instead would make them vanish
+/// silently, which is a worse report for a scan that is barely faster: over
+/// this repository the walk is dominated by build output, not by caches.
+const NEVER_DESCENDED: &[&str] = &[".git", "target"];
+
 pub struct ClaudeMemoriesConnector {
     /// `global`, or the slug of the project the material belongs to. Never the
     /// machine or user name — that would be PII inside a primary key.
@@ -403,8 +419,19 @@ impl Connector for ClaudeMemoriesConnector {
             .hidden(false) // `.claude/` and `.cursor/` are hidden by design
             .git_ignore(false)
             .require_git(false)
+            .filter_entry(|entry| {
+                // Prune whole subtrees rather than filtering their files one by
+                // one: the cost of this walk is dominated by directories nobody
+                // wants to look inside.
+                if entry.file_type().map(|t| t.is_dir()) != Some(true) {
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                !NEVER_DESCENDED.contains(&name.as_str())
+            })
             .build();
 
+        let mut seen = 0usize;
         for entry in walker.flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
@@ -415,6 +442,8 @@ impl Connector for ClaudeMemoriesConnector {
                 .unwrap_or(&abs)
                 .trim_start_matches('/')
                 .to_string();
+            seen += 1;
+            opts.note(seen, &rel);
 
             // Not overridable, deliberately: `opts` is never consulted here.
             if is_never_scanned(&rel) {
@@ -426,6 +455,23 @@ impl Connector for ClaudeMemoriesConnector {
                         "third-party asset — republishing it is a licensing problem".to_string()
                     },
                 ));
+                continue;
+            }
+            // Narrowing, applied *after* the non-overridable filter above so
+            // an `--include` can never reach into a cache. Without this the
+            // flags were accepted, documented, and silently ignored: asking for
+            // one directory classified all 249 assets, at the operator's
+            // expense. Substring semantics, matching `repo-docs`.
+            if !opts.includes.is_empty() && !opts.includes.iter().any(|inc| rel.contains(inc)) {
+                report
+                    .excluded
+                    .push((rel, "outside the requested --include paths".to_string()));
+                continue;
+            }
+            if opts.excludes.iter().any(|exc| rel.contains(exc)) {
+                report
+                    .excluded
+                    .push((rel, "matched an --exclude path".to_string()));
                 continue;
             }
             if is_memory_index(&rel) {
@@ -615,6 +661,23 @@ fn first_lines(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Pruning must never be the *only* thing stopping a third-party asset:
+    /// every directory pruned for speed that carries a licensing meaning is
+    /// still refused by `is_never_scanned` on the full path.
+    #[test]
+    fn pruning_does_not_replace_the_never_scanned_filter() {
+        for path in [
+            "plugins/cache/nexusmind/skills/sdd/SKILL.md",
+            "plugins/marketplaces/acme/agents/x.md",
+            "web/node_modules/pkg/CLAUDE.md",
+        ] {
+            assert!(
+                super::is_never_scanned(path),
+                "{path} must be refused on its own merits, not merely unvisited"
+            );
+        }
+    }
+
     use super::*;
     use crate::models::types::validate_typed_harness_manifest;
     use std::fs;
@@ -629,7 +692,8 @@ mod tests {
             root: dir.path().to_string_lossy().to_string(),
             includes: vec![],
             excludes: vec![],
-        }
+            ..Default::default()
+}
     }
 
     // ── Frontmatter and typing ───────────────────────────────────────────────
@@ -793,17 +857,89 @@ mod tests {
             root: dir.path().to_string_lossy().to_string(),
             includes: vec!["plugins".to_string(), "cache".to_string()],
             excludes: vec![],
-        };
+            ..Default::default()
+};
         let items = connector().scan(&wide).unwrap();
         let paths: Vec<&str> = items
             .iter()
             .map(|i| i.meta["path"].as_str().unwrap_or(""))
             .collect();
 
-        assert!(paths.iter().any(|p| p.contains("agents/mine.md")));
+        // Aimed straight at the cache, and it yields nothing at all. `mine.md`
+        // is absent too, and correctly so: `--include` narrows. This assertion
+        // used to expect it, which only ever passed because the include list
+        // was ignored entirely.
         assert!(
             !paths.iter().any(|p| p.contains("cache")),
             "cached third-party assets must stay out regardless of options: {paths:?}"
+        );
+        assert!(
+            paths.is_empty(),
+            "an include pointing only at the cache can reach nothing: {paths:?}"
+        );
+
+        // And without the include, the operator's own agent is still found —
+        // so the exclusion is about the cache, not about the scan being inert.
+        let plain = ScanOptions {
+            root: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let paths: Vec<String> = connector()
+            .scan(&plain)
+            .unwrap()
+            .iter()
+            .map(|i| i.meta["path"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(paths.iter().any(|p| p.contains("agents/mine.md")), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.contains("cache")), "{paths:?}");
+    }
+
+    /// `--include` was accepted and ignored, so a request for one directory
+    /// classified everything — and was billed for it.
+    #[test]
+    fn include_narrows_the_scan() {
+        let dir = TempDir::new().unwrap();
+        for rel in [".claude/agents/mine.md", ".claude/skills/other/SKILL.md"] {
+            let path = dir.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "# something\n").unwrap();
+        }
+
+        let narrowed = ScanOptions {
+            root: dir.path().to_string_lossy().to_string(),
+            includes: vec![".claude/agents".to_string()],
+            ..Default::default()
+        };
+        let paths: Vec<String> = connector()
+            .scan(&narrowed)
+            .unwrap()
+            .iter()
+            .map(|i| i.meta["path"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(paths.len(), 1, "only the requested directory: {paths:?}");
+        assert!(paths[0].contains("agents/mine.md"));
+    }
+
+    #[test]
+    fn exclude_removes_a_path_and_says_so() {
+        let dir = TempDir::new().unwrap();
+        for rel in [".claude/agents/mine.md", ".claude/skills/other/SKILL.md"] {
+            let path = dir.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "# something\n").unwrap();
+        }
+        let opts = ScanOptions {
+            root: dir.path().to_string_lossy().to_string(),
+            excludes: vec!["skills".to_string()],
+            ..Default::default()
+        };
+        let report = connector().scan_report(&opts).unwrap();
+        assert_eq!(report.units, 1);
+        assert!(
+            report.excluded.iter().any(|(p, r)| p.contains("SKILL.md")
+                && r.contains("--exclude")),
+            "an excluded path must be reported, not vanish: {:?}",
+            report.excluded
         );
     }
 

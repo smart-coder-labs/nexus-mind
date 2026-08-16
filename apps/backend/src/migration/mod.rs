@@ -12,6 +12,7 @@
 //! The binary re-exports everything here, so it reads exactly as before.
 
 pub mod claude_memories;
+pub mod events;
 pub mod db_schema;
 pub mod git_history;
 pub mod pg_reader;
@@ -23,6 +24,9 @@ pub use git_history::GitHistoryConnector;
 pub use repo_docs::RepoDocsConnector;
 
 use anyhow::Result;
+use std::fmt;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 // ── The connector contract ───────────────────────────────────────────────────
@@ -118,10 +122,59 @@ impl ScanReport {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Where a scan currently is.
+///
+/// `seen` counts sources examined so far, not units produced — a scan does not
+/// know how many units it will yield until it is done.
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    pub seen: usize,
+    pub current: String,
+}
+
+#[derive(Clone, Default)]
 pub struct ScanOptions {
     pub root: String,
     pub includes: Vec<String>,
     pub excludes: Vec<String>,
+    /// Called as the walk advances, if anyone is listening.
+    ///
+    /// # Why this exists
+    ///
+    /// A scan is one blocking call that can take minutes over a large
+    /// repository, and between entering it and returning there was no way for a
+    /// caller to know anything at all. A supervising process could not tell a
+    /// slow scan from a hung one — and neither could the operator watching it,
+    /// which is the whole failure this hook removes.
+    ///
+    /// It is on `ScanOptions` rather than on the `Connector` trait so that a
+    /// connector which has nothing useful to report simply never calls it, and
+    /// no signature changes.
+    pub progress: Option<Arc<dyn Fn(ScanProgress) + Send + Sync>>,
+}
+
+impl fmt::Debug for ScanOptions {
+    /// Hand-written because a closure has no `Debug`. Reports whether anyone is
+    /// listening, which is the only thing about it worth printing.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScanOptions")
+            .field("root", &self.root)
+            .field("includes", &self.includes)
+            .field("excludes", &self.excludes)
+            .field("progress", &self.progress.is_some())
+            .finish()
+    }
+}
+
+impl ScanOptions {
+    /// Reports one examined source. Costs an `Option` check when unobserved.
+    pub fn note(&self, seen: usize, current: impl Into<String>) {
+        if let Some(sink) = self.progress.as_ref() {
+            sink(ScanProgress {
+                seen,
+                current: current.into(),
+            });
+        }
+    }
 }
 

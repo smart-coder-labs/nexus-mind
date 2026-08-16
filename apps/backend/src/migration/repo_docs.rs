@@ -144,8 +144,9 @@ impl RepoDocsConnector {
         let mut items = Vec::new();
         let mut summary = ScanSummary::default();
 
-        for file in &files {
+        for (seen, file) in files.iter().enumerate() {
             let rel = relative_path(&file.path, &opts.root);
+            opts.note(seen + 1, &rel);
 
             if let Some(reason) = Self::excluded_reason(&rel) {
                 summary.excluded.push(ExcludedDocument {
@@ -565,7 +566,8 @@ mod tests {
             root: dir.path().to_string_lossy().to_string(),
             includes: vec![],
             excludes: vec![],
-        }
+            ..Default::default()
+}
     }
 
     fn connector() -> RepoDocsConnector {
@@ -840,7 +842,8 @@ mod tests {
                 root: root.clone(),
                 includes: vec!["/docs/".to_string()],
                 excludes: vec![],
-            })
+                ..Default::default()
+})
             .unwrap();
 
         assert!(

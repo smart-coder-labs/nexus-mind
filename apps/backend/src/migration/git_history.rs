@@ -187,7 +187,42 @@ impl GitHistoryConnector {
 
     /// Read the history. Uses a record separator no commit message contains, so
     /// a body with blank lines cannot be mistaken for a record boundary.
-    pub fn read_commits(&self, root: &str) -> Result<Vec<Commit>> {
+    /// Turns `--include` / `--exclude` into a git pathspec.
+    ///
+    /// # Why git does the matching and not this connector
+    ///
+    /// For a commit, "include this path" can only sensibly mean "commits that
+    /// touched it" — and answering that in Rust would need the file list of
+    /// every commit, i.e. one `git show` per commit over the whole history.
+    /// `git log -- <pathspec>` already does it, prunes as it walks, and applies
+    /// `-n` to *matching* commits, so a capped scan returns 200 relevant
+    /// commits instead of 200 commits of which three are relevant.
+    ///
+    /// The cost is that matching follows git's pathspec rules rather than the
+    /// substring rules the file-based connectors use. That is the right trade:
+    /// re-implementing pathspec matching would be a worse version of something
+    /// git is authoritative about, and `docs/adr` means the same thing under
+    /// both readings.
+    ///
+    /// Unlike the file connectors, commits filtered out here are never read at
+    /// all, so they are absent rather than listed in the exclusion report. That
+    /// is the point — reading them to report them would undo the saving.
+    fn pathspec(opts: &ScanOptions) -> Vec<String> {
+        if opts.includes.is_empty() && opts.excludes.is_empty() {
+            return Vec::new();
+        }
+        let mut spec = vec!["--".to_string()];
+        if opts.includes.is_empty() {
+            // An exclude with no include means "everything except"; git needs
+            // something to subtract from.
+            spec.push(".".to_string());
+        }
+        spec.extend(opts.includes.iter().cloned());
+        spec.extend(opts.excludes.iter().map(|e| format!(":(exclude){e}")));
+        spec
+    }
+
+    pub fn read_commits(&self, root: &str, opts: &ScanOptions) -> Result<Vec<Commit>> {
         const REC: &str = "\u{1e}";
         const FLD: &str = "\u{1f}";
         let format = format!("--format={REC}%H{FLD}%P{FLD}%an{FLD}%aI{FLD}%s{FLD}%b");
@@ -198,13 +233,18 @@ impl GitHistoryConnector {
             .map(|c| format!("{c}..HEAD"))
             .unwrap_or_else(|| "HEAD".to_string());
         let max = self.max_commits.to_string();
-        let raw = self.git(root, &[
-            "log",
-            &format,
-            "-n",
-            &max,
-            &range,
-        ])?;
+        let mut args: Vec<String> = vec!["log".into(), format, "-n".into(), max, range];
+        let pathspec = Self::pathspec(opts);
+        if !pathspec.is_empty() {
+            // Without this, git simplifies merges away when a pathspec is given
+            // and the PR grouping below would silently stop working — every
+            // commit of a filtered PR would arrive on its own, which is the
+            // exact failure `absorbed_by` exists to prevent.
+            args.push("--full-history".into());
+            args.extend(pathspec);
+        }
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let raw = self.git(root, &borrowed)?;
 
         let mut commits = Vec::new();
         for record in raw.split(REC).skip(1) {
@@ -291,7 +331,7 @@ impl Connector for GitHistoryConnector {
             );
         }
 
-        let commits = self.read_commits(&opts.root)?;
+        let commits = self.read_commits(&opts.root, opts)?;
 
         // Anything a merge brought in is represented by that merge.
         let mut absorbed: HashSet<String> = HashSet::new();
@@ -302,7 +342,8 @@ impl Connector for GitHistoryConnector {
         }
 
         let mut items = Vec::new();
-        for commit in &commits {
+        for (seen, commit) in commits.iter().enumerate() {
+            opts.note(seen + 1, &commit.sha);
             if !commit.is_merge() && absorbed.contains(&commit.sha) {
                 report.excluded.push((
                     commit.sha.clone(),
@@ -464,6 +505,26 @@ mod tests {
         );
     }
 
+    /// Like `commit`, but for a path in a subdirectory.
+    fn commit_at(dir: &std::path::Path, rel: &str, subject: &str, body: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{subject}\n")).unwrap();
+        git(dir, &["add", "."]);
+        git(
+            dir,
+            &["commit", "-m", &format!("{subject}\n\n{body}")],
+        );
+    }
+
+    fn subjects_of(report: &super::super::ScanReport) -> Vec<String> {
+        report
+            .items
+            .iter()
+            .map(|i| i.meta["subject"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
     fn repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"]);
@@ -481,7 +542,8 @@ mod tests {
             root: dir.path().to_string_lossy().to_string(),
             includes: vec![],
             excludes: vec![],
-        }
+            ..Default::default()
+}
     }
 
     const REAL_BODY: &str = "The pod was never restarted because the workflow \
@@ -645,6 +707,147 @@ mod tests {
             .any(|(_, r)| r.contains("merged group")));
     }
 
+    // ── Narrowing by path ────────────────────────────────────────────────────
+
+    /// `--include` and `--exclude` were accepted and ignored here, exactly as
+    /// they were in `claude-memories`: a request for one area scanned — and
+    /// billed for — the whole history.
+    fn history_across_two_areas() -> TempDir {
+        let dir = repo();
+        commit_at(
+            dir.path(),
+            "docs/adr/ADR-001.md",
+            "docs: record the storage decision",
+            "We chose SQLite because the deployment target is a single node.",
+        );
+        commit_at(
+            dir.path(),
+            "src/api/handler.rs",
+            "fix(api): stop dropping the request id",
+            "The header was read before the middleware ran, so it was always empty.",
+        );
+        // Deliberately NOT a `chore:` subject. With one, the chore filter would
+        // drop it anyway and the exclusion tests below would pass without the
+        // pathspec doing anything at all.
+        commit_at(
+            dir.path(),
+            "vendor/lib/thing.rs",
+            "fix(vendor): patch the bundled parser",
+            "Upstream mis-handles CRLF, so the fork carries a patch until 2.1 ships.",
+        );
+        dir
+    }
+
+    #[test]
+    fn include_narrows_history_to_commits_touching_those_paths() {
+        let dir = history_across_two_areas();
+        let narrowed = ScanOptions {
+            includes: vec!["docs".to_string()],
+            ..opts(&dir)
+        };
+        let subjects = subjects_of(&connector().scan_report(&narrowed).unwrap());
+        assert_eq!(subjects.len(), 1, "{subjects:?}");
+        assert!(subjects[0].contains("storage decision"), "{subjects:?}");
+    }
+
+    #[test]
+    fn exclude_drops_commits_that_only_touch_excluded_paths() {
+        let dir = history_across_two_areas();
+        let filtered = ScanOptions {
+            excludes: vec!["vendor".to_string()],
+            ..opts(&dir)
+        };
+        let subjects = subjects_of(&connector().scan_report(&filtered).unwrap());
+        assert!(
+            !subjects.iter().any(|s| s.contains("vendor")),
+            "{subjects:?}"
+        );
+        assert_eq!(subjects.len(), 2, "the other two survive: {subjects:?}");
+    }
+
+    /// An exclude alone must subtract from everything, not from nothing.
+    #[test]
+    fn an_exclude_without_an_include_still_reads_the_rest() {
+        let dir = history_across_two_areas();
+        let filtered = ScanOptions {
+            excludes: vec!["docs".to_string(), "vendor".to_string()],
+            ..opts(&dir)
+        };
+        let subjects = subjects_of(&connector().scan_report(&filtered).unwrap());
+        assert_eq!(subjects.len(), 1, "{subjects:?}");
+        assert!(subjects[0].contains("request id"), "{subjects:?}");
+    }
+
+    /// A commit that touches both keeps its place: the include is what it
+    /// matched on, and one excluded file alongside does not disqualify it.
+    #[test]
+    fn a_commit_touching_both_included_and_excluded_paths_is_kept() {
+        let dir = repo();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("docs/note.md"), "a\n").unwrap();
+        std::fs::write(root.join("vendor/dep.rs"), "b\n").unwrap();
+        git(root, &["add", "."]);
+        git(
+            root,
+            &[
+                "commit",
+                "-m",
+                "feat: document the vendored dependency\n\nExplains why the fork exists and \
+                 when it can be dropped again.",
+            ],
+        );
+        let filtered = ScanOptions {
+            includes: vec!["docs".to_string()],
+            excludes: vec!["vendor".to_string()],
+            ..opts(&dir)
+        };
+        assert_eq!(subjects_of(&connector().scan_report(&filtered).unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn no_filters_still_reads_the_whole_history() {
+        let dir = history_across_two_areas();
+        let subjects = subjects_of(&connector().scan_report(&opts(&dir)).unwrap());
+        assert_eq!(subjects.len(), 3, "{subjects:?}");
+    }
+
+    /// A pathspec makes git simplify merges away by default, which would
+    /// silently undo the PR grouping. `--full-history` is what keeps one PR
+    /// worth one candidate even when the scan is narrowed.
+    #[test]
+    fn pr_grouping_survives_a_pathspec() {
+        let dir = repo();
+        commit_at(dir.path(), "docs/base.md", "docs: base", "Baseline for the work described here.");
+        git(dir.path(), &["checkout", "-q", "-b", "feature"]);
+        commit_at(dir.path(), "docs/one.md", "docs: part one", "First half, explained at length here.");
+        commit_at(dir.path(), "docs/two.md", "docs: part two", "Second half, explained at length here.");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        git(
+            dir.path(),
+            &[
+                "merge",
+                "--no-ff",
+                "feature",
+                "-m",
+                "Merge pull request #7 from feature\n\nWe chose the streaming approach over \
+                 batching because the batch window made latency unpredictable.",
+            ],
+        );
+
+        let narrowed = ScanOptions {
+            includes: vec!["docs".to_string()],
+            ..opts(&dir)
+        };
+        let subjects = subjects_of(&connector().scan_report(&narrowed).unwrap());
+        assert!(subjects.iter().any(|s| s.contains("#7")), "{subjects:?}");
+        assert!(
+            !subjects.iter().any(|s| s.contains("part one") || s.contains("part two")),
+            "the absorbed commits must not each produce a unit: {subjects:?}"
+        );
+    }
+
     // ── Mapping ──────────────────────────────────────────────────────────────
 
     #[test]
@@ -773,7 +976,8 @@ mod tests {
                 root: root.clone(),
                 includes: vec![],
                 excludes: vec![],
-            })
+                ..Default::default()
+})
             .unwrap();
 
         let examined = report.units + report.excluded.len();

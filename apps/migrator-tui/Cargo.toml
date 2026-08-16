@@ -1,0 +1,37 @@
+[package]
+name = "migrator-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive terminal front-end for the NexusMind knowledge migrations."
+
+[[bin]]
+name = "nexusmind-migrate"
+path = "src/main.rs"
+
+[features]
+default = ["mascot"]
+# Embeds the mascot frames (64 KB of raw RGBA) and its renderer.
+mascot = []
+
+[dependencies]
+# The TUI talks to `migrate-knowledge` over NDJSON and to the backend over HTTP.
+# It deliberately does NOT depend on the `nexusmind` crate: without a cargo
+# workspace that path dependency would rebuild fastembed, ONNX and every
+# tree-sitter grammar into a second target directory, and a workspace root is
+# not an option because the backend Dockerfile copies `apps/backend/` alone.
+ratatui = "0.29"
+crossterm = "0.28"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+shell-words = "1"
+# `chafa-dyn` is in this crate's defaults and pulls a C library through
+# pkg-config. Requiring `brew install chafa` to build a terminal app is a
+# deployment tax nobody asked for; the protocols we want (kitty, iTerm2,
+# sixel) are pure Rust in this crate.
+ratatui-image = { version = "8", default-features = false, features = ["crossterm"] }
+
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
