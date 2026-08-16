@@ -109,6 +109,7 @@ pub struct RunConfig {
     pub no_llm: bool,
     pub max_tokens: String,
     pub claude_bin: String,
+    pub verbose: bool,
 }
 
 impl Default for RunConfig {
@@ -142,6 +143,7 @@ impl Default for RunConfig {
             no_llm: false,
             max_tokens: String::new(),
             claude_bin: "claude".to_string(),
+            verbose: false,
         }
     }
 }
@@ -256,6 +258,9 @@ impl RunConfig {
 
         if self.no_llm {
             a.push("--no-llm".into());
+        }
+        if self.verbose {
+            a.push("--verbose".into());
         }
         if dry_run {
             a.push("--dry-run".into());
