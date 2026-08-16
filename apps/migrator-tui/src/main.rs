@@ -12,6 +12,7 @@
 mod api;
 mod app;
 mod config;
+mod format;
 mod mascot;
 mod protocol;
 mod runner;
