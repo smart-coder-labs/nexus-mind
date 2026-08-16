@@ -9,7 +9,12 @@ jobs:
     name: Backend (Rust)
     runs-on: ubuntu-latest
     steps:
+      # Full history: `migration::git_history` has a calibration test that runs
+      # the connector over this repository's real commits. A shallow clone gives
+      # it one commit and the test cannot do its job.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1

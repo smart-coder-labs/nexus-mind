@@ -62,31 +62,11 @@ impl MemoryStore for SqliteStore {
     fn store(&self, org_id: &str, user_id: &str, req: &StoreMemoryRequest) -> Result<Memory> {
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
 
-        if let Some(ref sid) = req.session_id {
-            let valid = queries::validate_session_ownership(&conn, org_id, sid)?;
-            if !valid {
-                anyhow::bail!("invalid_session_id:{sid}");
-            }
-        }
-
-        let memory = queries::upsert_memory(&conn, org_id, user_id, req)?;
-
-        let _ = queries::log_audit(
-            &conn,
-            org_id,
-            user_id,
-            "store",
-            "memory",
-            Some(&memory.id),
-            serde_json::json!({
-                "tool": memory.tool,
-                "project": memory.project,
-                "title": memory.title,
-                "type": memory.memory_type,
-                "tags": memory.tags,
-                "preview": memory.content.chars().take(160).collect::<String>(),
-            }),
-        );
+        // Session validation + upsert + audit live in `store_memory_with_audit`
+        // so the knowledge-migration commit path runs the exact same body inside
+        // its own transaction. One implementation, two callers — see the note on
+        // that function.
+        let memory = queries::store_memory_with_audit(&conn, org_id, user_id, req)?;
 
         // Embed the content and persist the vector (best-effort — never fail the store call).
         if let Some(ref svc) = self.embed {

@@ -1330,3 +1330,118 @@ export interface ListSddSpecsParams {
   project?: string
   include_archived?: boolean
 }
+
+// ── Knowledge migration ──────────────────────────────────────────────────────
+
+export type MigrationDestinationKind =
+  | 'memory'
+  | 'convention'
+  | 'task'
+  | 'sdd_artifact'
+  | 'harness'
+  | 'harness_config_review'
+
+export type MigrationSourceKind =
+  | 'repo-docs'
+  | 'git-history'
+  | 'claude-memories'
+  | 'db-schema'
+  | 'noop'
+
+export interface MigrationRun {
+  id: string
+  org_id: string
+  client_id?: string | null
+  project_id?: string | null
+  source_kind: MigrationSourceKind
+  status: string
+  source_ref?: string | null
+  runner_version?: string | null
+  attestation: unknown
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+/** `client_attested` candidates must be approved one at a time — their
+ *  truthfulness rests on somebody's word rather than a verified manifest. */
+export type MigrationProvenanceKind = 'client_attested' | 'verified_manifest'
+
+export interface MigrationCandidate {
+  id: string
+  run_id: string
+  source_identity: string
+  destination_kind: MigrationDestinationKind
+  destination_hint: Record<string, unknown>
+  content: string
+  source_excerpt?: string | null
+  confidence?: number | null
+  normalized_metadata: Record<string, unknown>
+  attestation: Record<string, unknown>
+  provenance_kind: MigrationProvenanceKind
+  status: string
+  version: number
+  indexed_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type MigrationVerdict = 'approved' | 'rejected' | 'restaged'
+
+export interface MigrationReviewAction {
+  candidate_id: string
+  action: MigrationVerdict
+  /** Mandatory: the optimistic-concurrency guard only works if the reviewer
+   *  declares the version they actually read. */
+  expected_version: number
+  reason?: string
+}
+
+export interface MigrationReviewResultEntry {
+  candidate_id: string
+  outcome: string
+  new_version?: number
+  actual_version?: number
+}
+
+export interface MigrationReviewResponse {
+  applied: number
+  conflicts: number
+  results: MigrationReviewResultEntry[]
+}
+
+export interface MigrationCommitResultEntry {
+  candidate_id: string
+  outcome: string
+  destination_id?: string
+  reason?: string
+}
+
+export interface MigrationCommitResponse {
+  committed: number
+  skipped: number
+  failed: number
+  indexed: number
+  pending_index: number
+  results: MigrationCommitResultEntry[]
+}
+
+export interface MigrationRunReportEntry {
+  candidate_id: string
+  source_identity: string
+  destination_kind: MigrationDestinationKind
+  status: string
+  reason?: string
+}
+
+export interface MigrationRunReport {
+  run_id: string
+  staged: number
+  approved: number
+  rejected: number
+  committed: number
+  skipped: number
+  failed: number
+  pending_index: number
+  outcomes: MigrationRunReportEntry[]
+}

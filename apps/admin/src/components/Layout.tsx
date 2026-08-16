@@ -157,6 +157,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Collections', href: '/collections', icon: FolderOpen,    adminOnly: true, requiredPermission: 'collection:read' },
       { label: 'Tags',        href: '/tags',        icon: Hash,          adminOnly: true, requiredPermission: 'tag:read' },
       { label: 'Conventions', href: '/conventions', icon: BookMarked,    adminOnly: true, requiredPermission: 'convention:read' },
+      { label: 'Migration',   href: '/migrations',  icon: BookMarked,    adminOnly: true, requiredPermission: 'migration:read' },
       { label: 'Sessions',    href: '/sessions',    icon: MessageSquare },
       { label: 'Tasks',       href: '/tasks',       icon: ListTodo,      adminOnly: true, requiredPermission: 'task:read' },
       { label: 'SDD',         href: '/sdd',         icon: FileStack,     adminOnly: true, requiredPermission: 'sdd:read' },

@@ -3257,6 +3257,238 @@ pub struct CreateRetrospectiveRequest {
     pub action_items: Option<String>,
 }
 
+// ── Knowledge migration (v60) ────────────────────────────────────────────────
+
+/// Where a staged candidate is headed once a human approves it.
+///
+/// The set is closed on purpose and mirrors the CHECK on
+/// `migration_candidates.destination_kind`. Adding a destination means a
+/// migration, not just a new enum arm — the database is the authority.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationKind {
+    Memory,
+    Convention,
+    Task,
+    SddArtifact,
+    Harness,
+    HarnessConfigReview,
+}
+
+impl DestinationKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DestinationKind::Memory => "memory",
+            DestinationKind::Convention => "convention",
+            DestinationKind::Task => "task",
+            DestinationKind::SddArtifact => "sdd_artifact",
+            DestinationKind::Harness => "harness",
+            DestinationKind::HarnessConfigReview => "harness_config_review",
+        }
+    }
+}
+
+impl FromStr for DestinationKind {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "memory" => Ok(DestinationKind::Memory),
+            "convention" => Ok(DestinationKind::Convention),
+            "task" => Ok(DestinationKind::Task),
+            "sdd_artifact" => Ok(DestinationKind::SddArtifact),
+            "harness" => Ok(DestinationKind::Harness),
+            "harness_config_review" => Ok(DestinationKind::HarnessConfigReview),
+            _ => Err("unsupported_destination_kind"),
+        }
+    }
+}
+
+/// Which connector produced a run. `Noop` exists so the pipeline is testable in
+/// CI without a filesystem, a database, or a model CLI on the runner.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    RepoDocs,
+    GitHistory,
+    ClaudeMemories,
+    DbSchema,
+    Noop,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::RepoDocs => "repo-docs",
+            SourceKind::GitHistory => "git-history",
+            SourceKind::ClaudeMemories => "claude-memories",
+            SourceKind::DbSchema => "db-schema",
+            SourceKind::Noop => "noop",
+        }
+    }
+}
+
+impl FromStr for SourceKind {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "repo-docs" => Ok(SourceKind::RepoDocs),
+            "git-history" => Ok(SourceKind::GitHistory),
+            "claude-memories" => Ok(SourceKind::ClaudeMemories),
+            "db-schema" => Ok(SourceKind::DbSchema),
+            "noop" => Ok(SourceKind::Noop),
+            _ => Err("unsupported_source_kind"),
+        }
+    }
+}
+
+/// One migration run. `client_id`, `project_id` and `source_kind` are immutable
+/// after creation — enforced by a trigger, not by convention.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MigrationRun {
+    pub id: String,
+    pub org_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub source_kind: SourceKind,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_version: Option<String>,
+    pub attestation: serde_json::Value,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// One staged candidate awaiting a human decision.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MigrationCandidate {
+    pub id: String,
+    pub run_id: String,
+    pub source_identity: String,
+    pub destination_kind: DestinationKind,
+    pub destination_hint: serde_json::Value,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    pub normalized_metadata: serde_json::Value,
+    pub attestation: serde_json::Value,
+    pub provenance_kind: String,
+    pub status: String,
+    pub version: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Request body for `POST /v1/migrations`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateMigrationRunRequest {
+    pub source_kind: SourceKind,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub runner_version: Option<String>,
+    #[serde(default)]
+    pub attestation: Option<serde_json::Value>,
+}
+
+/// One candidate as submitted by a connector.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CandidateInput {
+    pub source_identity: String,
+    pub destination_kind: DestinationKind,
+    pub content: String,
+    #[serde(default)]
+    pub destination_hint: serde_json::Value,
+    #[serde(default)]
+    pub source_excerpt: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub normalized_metadata: serde_json::Value,
+    #[serde(default)]
+    pub provenance_kind: Option<String>,
+}
+
+/// Request body for `POST /v1/migrations/:id/candidates`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StageCandidatesRequest {
+    pub candidates: Vec<CandidateInput>,
+}
+
+/// Per-candidate outcome of a staging call. A malformed candidate is reported,
+/// never fatal: one bad row must not discard the other four hundred.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "result")]
+pub enum StageResult {
+    Staged { id: String },
+    Skipped { reason: String },
+    Rejected { reason: String },
+}
+
+/// What a reviewer decided.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Approved,
+    Rejected,
+    Restaged,
+}
+
+/// Request body for `POST /v1/migrations/:id/review`.
+///
+/// `expected_version` is deliberately NOT optional. Making it optional would
+/// invite callers to omit it, and optimistic concurrency would silently stop
+/// working exactly when it matters: two reviewers on the same queue.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewActionRequest {
+    pub candidate_id: String,
+    pub action: ReviewVerdict,
+    pub expected_version: i64,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub request_correlation_id: Option<String>,
+}
+
+/// Counts plus a reason for every candidate that did not reach its destination.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RunReport {
+    pub run_id: String,
+    pub staged: usize,
+    pub approved: usize,
+    pub rejected: usize,
+    pub committed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub pending_index: usize,
+    pub outcomes: Vec<RunReportEntry>,
+}
+
+/// One non-committed candidate and why it is not committed.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunReportEntry {
+    pub candidate_id: String,
+    pub source_identity: String,
+    pub destination_kind: DestinationKind,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4283,5 +4515,131 @@ mod tests {
             json.get("content").is_none(),
             "SddRevisionMeta must never serialize a content field"
         );
+    }
+
+    // ── Knowledge migration types (v60) ──────────────────────────────────────
+
+    #[test]
+    fn destination_kind_roundtrips_through_serde_and_str() {
+        for (variant, wire) in [
+            (DestinationKind::Memory, "memory"),
+            (DestinationKind::Convention, "convention"),
+            (DestinationKind::Task, "task"),
+            (DestinationKind::SddArtifact, "sdd_artifact"),
+            (DestinationKind::Harness, "harness"),
+            (
+                DestinationKind::HarnessConfigReview,
+                "harness_config_review",
+            ),
+        ] {
+            assert_eq!(variant.as_str(), wire);
+            assert_eq!(serde_json::to_value(variant).unwrap(), json!(wire));
+            assert_eq!(DestinationKind::from_str(wire).unwrap(), variant);
+            assert_eq!(
+                serde_json::from_value::<DestinationKind>(json!(wire)).unwrap(),
+                variant
+            );
+        }
+    }
+
+    /// The accepted set is closed. A destination the database will not store
+    /// must not deserialize into something the code believes it can commit.
+    #[test]
+    fn destination_kind_rejects_unknown_string() {
+        assert!(DestinationKind::from_str("notion_page").is_err());
+        assert!(serde_json::from_value::<DestinationKind>(json!("notion_page")).is_err());
+        assert!(serde_json::from_value::<DestinationKind>(json!("Memory")).is_err());
+    }
+
+    /// Source kinds are kebab-case on the wire because that is what the CLI
+    /// flag and the database CHECK both use — `--source repo-docs`.
+    #[test]
+    fn source_kind_serializes_kebab_case() {
+        for (variant, wire) in [
+            (SourceKind::RepoDocs, "repo-docs"),
+            (SourceKind::GitHistory, "git-history"),
+            (SourceKind::ClaudeMemories, "claude-memories"),
+            (SourceKind::DbSchema, "db-schema"),
+            (SourceKind::Noop, "noop"),
+        ] {
+            assert_eq!(variant.as_str(), wire);
+            assert_eq!(serde_json::to_value(variant).unwrap(), json!(wire));
+            assert_eq!(SourceKind::from_str(wire).unwrap(), variant);
+        }
+        assert!(
+            SourceKind::from_str("repo_docs").is_err(),
+            "snake_case is not the wire format"
+        );
+    }
+
+    /// Optimistic concurrency only works if every caller declares the version
+    /// it acted on. An absent `expected_version` must be a deserialization
+    /// failure, not a default.
+    #[test]
+    fn review_request_without_expected_version_fails_to_deserialize() {
+        let missing = json!({ "candidate_id": "c1", "action": "approved" });
+        assert!(
+            serde_json::from_value::<ReviewActionRequest>(missing).is_err(),
+            "expected_version must be mandatory"
+        );
+
+        let present = json!({ "candidate_id": "c1", "action": "approved", "expected_version": 3 });
+        let parsed: ReviewActionRequest = serde_json::from_value(present).unwrap();
+        assert_eq!(parsed.expected_version, 3);
+        assert_eq!(parsed.action, ReviewVerdict::Approved);
+    }
+
+    #[test]
+    fn candidate_input_defaults_optional_fields() {
+        let minimal = json!({
+            "source_identity": "repo-docs:docs/a.md:abc",
+            "destination_kind": "convention",
+            "content": "Always prefer X over Y."
+        });
+        let parsed: CandidateInput = serde_json::from_value(minimal).unwrap();
+        assert_eq!(parsed.destination_kind, DestinationKind::Convention);
+        assert!(parsed.source_excerpt.is_none());
+        assert!(parsed.confidence.is_none());
+        assert_eq!(parsed.destination_hint, json!(null));
+    }
+
+    #[test]
+    fn stage_result_is_tagged_by_outcome() {
+        let staged = serde_json::to_value(StageResult::Staged { id: "c1".into() }).unwrap();
+        assert_eq!(staged["result"], json!("staged"));
+        assert_eq!(staged["id"], json!("c1"));
+
+        let skipped = serde_json::to_value(StageResult::Skipped {
+            reason: "already_committed".into(),
+        })
+        .unwrap();
+        assert_eq!(skipped["result"], json!("skipped"));
+        assert_eq!(skipped["reason"], json!("already_committed"));
+    }
+
+    #[test]
+    fn migration_run_roundtrips() {
+        let run = MigrationRun {
+            id: "r1".into(),
+            org_id: "org1".into(),
+            client_id: Some("cl1".into()),
+            project_id: None,
+            source_kind: SourceKind::RepoDocs,
+            status: "staging".into(),
+            source_ref: Some("./".into()),
+            runner_version: Some("2.1.233".into()),
+            attestation: json!({}),
+            created_by: "u1".into(),
+            created_at: "2026-08-15T00:00:00Z".into(),
+            updated_at: "2026-08-15T00:00:00Z".into(),
+        };
+        let wire = serde_json::to_value(&run).unwrap();
+        assert_eq!(wire["source_kind"], json!("repo-docs"));
+        assert!(
+            wire.get("project_id").is_none(),
+            "None scope fields are omitted, not null"
+        );
+        let back: MigrationRun = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.client_id.as_deref(), Some("cl1"));
     }
 }
