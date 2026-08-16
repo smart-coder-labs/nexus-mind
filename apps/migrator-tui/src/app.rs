@@ -78,6 +78,7 @@ pub enum FieldId {
     MaxTokens,
     ClaudeBin,
     Verbose,
+    Retries,
 }
 
 impl FieldId {
@@ -115,6 +116,7 @@ impl FieldId {
             MaxTokens => "Token budget",
             ClaudeBin => "claude binary",
             Verbose => "Verbose output",
+            Retries => "Retries",
         }
     }
 
@@ -142,6 +144,8 @@ impl FieldId {
             MaxTokens => "Stops the run cleanly when reached. Staged work survives.",
             ClaudeBin => "The headless classifier invoked as `claude -p`.",
             Verbose => "Prints extra diagnostic detail from the runner as it works.",
+            Retries => "How many times to retry a failed step. Empty uses the \
+                         runner's own default.",
         }
     }
 
@@ -161,6 +165,7 @@ impl FieldId {
             Attest => c.attest.clone(),
             MaxTokens => c.max_tokens.clone(),
             ClaudeBin => c.claude_bin.clone(),
+            Retries => c.retries.clone(),
             IncludeSdd => c.include_sdd.to_string(),
             HostScope => c.host_scope.to_string(),
             Supabase => c.supabase.to_string(),
@@ -191,6 +196,7 @@ impl FieldId {
             Attest => &mut c.attest,
             MaxTokens => &mut c.max_tokens,
             ClaudeBin => &mut c.claude_bin,
+            Retries => &mut c.retries,
             _ => return None,
         })
     }
@@ -260,7 +266,7 @@ pub fn fields_for(screen: Screen, source: Source) -> Vec<FieldId> {
                     f.extend([Tables, SampleLimit, RedactPii, Attest]);
                 }
             }
-            f.extend([NoLlm, MaxTokens, ClaudeBin, Verbose]);
+            f.extend([NoLlm, MaxTokens, ClaudeBin, Verbose, Retries]);
             f
         }
         _ => Vec::new(),
@@ -1276,6 +1282,31 @@ mod tests {
         c.include_data = true;
         assert!(is_active(FieldId::Tables, &c));
         assert!(is_active(FieldId::Attest, &c));
+    }
+
+    #[test]
+    fn retries_is_a_text_field_on_the_options_screen_and_survives_no_llm() {
+        let c = RunConfig {
+            source: Source::RepoDocs,
+            ..Default::default()
+        };
+        let fields = fields_for(Screen::Options, c.source);
+        assert!(
+            fields.contains(&FieldId::Retries),
+            "Retries must appear on the Options screen"
+        );
+        assert_eq!(FieldId::Retries.kind(), FieldKind::Text);
+
+        // Unlike MaxTokens/ClaudeBin, Retries is not LLM-specific — it stays
+        // editable even when the LLM step is skipped.
+        let mut c = c;
+        c.no_llm = true;
+        assert!(is_active(FieldId::Retries, &c));
+
+        FieldId::Retries.push_char(&mut c, '5');
+        assert_eq!(FieldId::Retries.value(&c), "5");
+        FieldId::Retries.pop_char(&mut c);
+        assert_eq!(FieldId::Retries.value(&c), "");
     }
 
     #[test]

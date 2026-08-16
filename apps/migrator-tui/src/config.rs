@@ -110,6 +110,7 @@ pub struct RunConfig {
     pub max_tokens: String,
     pub claude_bin: String,
     pub verbose: bool,
+    pub retries: String,
 }
 
 impl Default for RunConfig {
@@ -144,6 +145,7 @@ impl Default for RunConfig {
             max_tokens: String::new(),
             claude_bin: "claude".to_string(),
             verbose: false,
+            retries: String::new(),
         }
     }
 }
@@ -232,6 +234,7 @@ impl RunConfig {
         push_flag(&mut a, "--since-commit", &self.since_commit);
         push_flag(&mut a, "--max-tokens", &self.max_tokens);
         push_flag(&mut a, "--claude-bin", &self.claude_bin);
+        push_flag(&mut a, "--retries", &self.retries);
 
         match self.source {
             Source::RepoDocs if self.include_sdd => a.push("--include-sdd".into()),
@@ -390,6 +393,15 @@ impl RunConfig {
                 b.push(Blocker {
                     field: "max_tokens",
                     why: "the token budget must be a positive number".into(),
+                });
+            }
+        }
+
+        if let Some(raw) = Some(self.retries.trim()).filter(|s| !s.is_empty()) {
+            if raw.parse::<u32>().map(|n| n == 0).unwrap_or(true) {
+                b.push(Blocker {
+                    field: "retries",
+                    why: "the retry count must be a positive number".into(),
                 });
             }
         }
@@ -562,6 +574,27 @@ mod tests {
             let fields: Vec<&str> = cfg.blockers(false).iter().map(|b| b.field).collect();
             assert!(fields.contains(&"sample_limit"), "{bad:?} slipped through");
         }
+    }
+
+    /// Empty means unset — a blank retry count is not itself a blocker — but
+    /// anything present must be a genuine positive number.
+    #[test]
+    fn retries_is_optional_but_must_be_a_positive_number_when_set() {
+        let mut cfg = RunConfig::default();
+        assert!(cfg.blockers(true).is_empty(), "empty retries must not block");
+        assert!(!cfg.to_args(true).contains(&"--retries".to_string()));
+
+        for bad in ["0", "-1", "many"] {
+            cfg.retries = bad.into();
+            let fields: Vec<&str> = cfg.blockers(true).iter().map(|b| b.field).collect();
+            assert!(fields.contains(&"retries"), "{bad:?} slipped through");
+        }
+
+        cfg.retries = "3".into();
+        assert!(cfg.blockers(true).is_empty());
+        let args = cfg.to_args(true);
+        let idx = args.iter().position(|a| a == "--retries").expect("--retries missing");
+        assert_eq!(args[idx + 1], "3");
     }
 
     /// A dry run posts nothing, so it must not demand credentials — otherwise
