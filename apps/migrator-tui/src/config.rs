@@ -109,6 +109,7 @@ pub struct RunConfig {
     pub no_llm: bool,
     pub max_tokens: String,
     pub claude_bin: String,
+    pub verbose: bool,
 }
 
 impl Default for RunConfig {
@@ -142,6 +143,7 @@ impl Default for RunConfig {
             no_llm: false,
             max_tokens: String::new(),
             claude_bin: "claude".to_string(),
+            verbose: false,
         }
     }
 }
@@ -256,6 +258,9 @@ impl RunConfig {
 
         if self.no_llm {
             a.push("--no-llm".into());
+        }
+        if self.verbose {
+            a.push("--verbose".into());
         }
         if dry_run {
             a.push("--dry-run".into());
@@ -612,6 +617,15 @@ mod tests {
     fn db_schema_sends_no_path_because_it_has_none() {
         let args = db_config().to_args(true);
         assert!(!args.contains(&"--path".to_string()));
+    }
+
+    #[test]
+    fn verbose_emits_the_flag_only_when_on() {
+        let mut cfg = RunConfig::default();
+        assert!(!cfg.to_args(true).contains(&"--verbose".to_string()));
+
+        cfg.verbose = true;
+        assert!(cfg.to_args(true).contains(&"--verbose".to_string()));
     }
 
     #[test]

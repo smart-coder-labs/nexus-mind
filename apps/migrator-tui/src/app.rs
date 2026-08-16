@@ -77,6 +77,7 @@ pub enum FieldId {
     NoLlm,
     MaxTokens,
     ClaudeBin,
+    Verbose,
 }
 
 impl FieldId {
@@ -84,7 +85,7 @@ impl FieldId {
         use FieldId::*;
         match self {
             ApiKey => FieldKind::Secret,
-            IncludeSdd | HostScope | Supabase | IncludeData | RedactPii | NoLlm => {
+            IncludeSdd | HostScope | Supabase | IncludeData | RedactPii | NoLlm | Verbose => {
                 FieldKind::Toggle
             }
             _ => FieldKind::Text,
@@ -113,6 +114,7 @@ impl FieldId {
             NoLlm => "Skip the LLM (deterministic only)",
             MaxTokens => "Token budget",
             ClaudeBin => "claude binary",
+            Verbose => "Verbose output",
         }
     }
 
@@ -139,6 +141,7 @@ impl FieldId {
             NoLlm => "Uses each connector's deterministic fallback. Costs nothing.",
             MaxTokens => "Stops the run cleanly when reached. Staged work survives.",
             ClaudeBin => "The headless classifier invoked as `claude -p`.",
+            Verbose => "Prints extra diagnostic detail from the runner as it works.",
         }
     }
 
@@ -164,6 +167,7 @@ impl FieldId {
             IncludeData => c.include_data.to_string(),
             RedactPii => c.redact_pii.to_string(),
             NoLlm => c.no_llm.to_string(),
+            Verbose => c.verbose.to_string(),
         }
     }
 
@@ -217,6 +221,7 @@ impl FieldId {
             Supabase => c.supabase = !c.supabase,
             RedactPii => c.redact_pii = !c.redact_pii,
             NoLlm => c.no_llm = !c.no_llm,
+            Verbose => c.verbose = !c.verbose,
             IncludeData => {
                 c.include_data = !c.include_data;
                 // Turning sampling back off clears the answers that only exist
@@ -255,7 +260,7 @@ pub fn fields_for(screen: Screen, source: Source) -> Vec<FieldId> {
                     f.extend([Tables, SampleLimit, RedactPii, Attest]);
                 }
             }
-            f.extend([NoLlm, MaxTokens, ClaudeBin]);
+            f.extend([NoLlm, MaxTokens, ClaudeBin, Verbose]);
             f
         }
         _ => Vec::new(),
@@ -1289,6 +1294,19 @@ mod tests {
             Some(FieldId::NoLlm),
             "the four locked gates are stepped over, not typed into"
         );
+    }
+
+    #[test]
+    fn verbose_appears_on_options_and_toggles_like_its_peers() {
+        let fields = fields_for(Screen::Options, Source::RepoDocs);
+        assert!(fields.contains(&FieldId::Verbose), "{fields:?}");
+        assert_eq!(FieldId::Verbose.kind(), FieldKind::Toggle);
+
+        let mut c = RunConfig::default();
+        assert!(!FieldId::Verbose.is_on(&c));
+        FieldId::Verbose.toggle(&mut c);
+        assert!(c.verbose);
+        assert!(FieldId::Verbose.is_on(&c));
     }
 
     #[test]
