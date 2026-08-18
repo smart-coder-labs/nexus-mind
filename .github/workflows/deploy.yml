@@ -28,13 +28,10 @@ jobs:
   # to GHCR under `:main-arm64` — a distinct tag from u2s's amd64 `:main`.
   # ---------------------------------------------------------------------------
   backend-oracle-build:
-    name: Build backend image (arm64, QEMU cross-build) and push to GHCR
-    # Free-tier: no ARM-hosted runners on a private repo, so we cross-build
-    # linux/arm64 from an amd64 runner via QEMU. This EMULATES the Rust compile,
-    # which is slow (tens of minutes on a cold cache); the gha cache below keeps
-    # subsequent builds much faster. If you later get native ARM runners, switch
-    # runs-on back to `ubuntu-24.04-arm` and drop the setup-qemu step.
-    runs-on: ubuntu-latest
+    name: Build backend image (arm64) and push to GHCR
+    # Native arm64 hosted runner — compiles the Rust backend directly on ARM
+    # (no QEMU emulation). Same pattern as the vend-accounting-service deploy.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -47,11 +44,6 @@ jobs:
         id: vars
         run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU (enables linux/arm64 emulation)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR (push, via GITHUB_TOKEN)
@@ -61,7 +53,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push backend (linux/arm64)
+      - name: Build & push backend (linux/arm64, native)
         uses: docker/build-push-action@v6
         with:
           context: apps/backend

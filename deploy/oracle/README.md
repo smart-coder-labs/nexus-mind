@@ -6,12 +6,9 @@ calling `https://api.nexusmind.smartcoderlabs.com`; only the backend moves here.
 
 - Box: `agency-os-production`, Oracle Cloud Ampere A1, Ubuntu 22.04, **aarch64**.
 - Stack: `backend` (Rust) behind `caddy` (auto-TLS via Cloudflare DNS-01).
-- Images: cross-built for `linux/arm64` from an amd64 runner via **QEMU**
-  (free-tier has no ARM-hosted runners on a private repo), pushed to GHCR as
-  `nexusmind-backend:main-arm64` (distinct from u2s's amd64 `:main`). The
-  emulated Rust compile is slow on a cold cache (tens of minutes); the gha build
-  cache speeds up later runs. Switch to a native `ubuntu-24.04-arm` runner if one
-  becomes available.
+- Images: built natively for `linux/arm64` on a `ubuntu-24.04-arm` hosted runner
+  (no QEMU emulation), pushed to GHCR as `nexusmind-backend:main-arm64` (distinct
+  from u2s's amd64 `:main`). The gha build cache speeds up repeat runs.
 - CI: the `backend-oracle-*` jobs in `.github/workflows/deploy.yml` run on every
   push to `main`, alongside the existing Fly `backend` job.
 
