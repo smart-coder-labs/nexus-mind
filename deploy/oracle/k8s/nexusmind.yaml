@@ -66,6 +66,9 @@ spec:
           envFrom:
             - secretRef:
                 name: nexusmind-env
+          env:
+            - name: AUTONOMOUS_AGENTS_ENABLED
+              value: "true"
           volumeMounts:
             - name: data
               mountPath: /data
@@ -113,6 +116,9 @@ spec:
           envFrom:
             - secretRef:
                 name: nexusmind-env
+          env:
+            - name: AUTONOMOUS_AGENTS_ENABLED
+              value: "true"
           volumeMounts:
             - name: data
               mountPath: /data
