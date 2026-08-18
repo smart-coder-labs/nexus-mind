@@ -14,9 +14,19 @@ RUN cargo build --release
 # Runtime stage
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates git && rm -rf /var/lib/apt/lists/*
+ARG CLAUDE_CODE_VERSION=2.1.235
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git nodejs npm \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && claude --version \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+ENV HOME=/app \
+    CLAUDE_CODE_BIN=/usr/local/bin/claude \
+    DISABLE_AUTOUPDATER=1
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
 # The SDD importer has to ship with the image, or it cannot be run where it is
@@ -29,7 +39,7 @@ COPY --from=builder /app/target/release/import-sdd /app/import-sdd
 #   nexusmind-seed /data/nexusmind.db
 COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
 
-RUN mkdir -p /data
+RUN mkdir -p /data /app/.claude
 
 EXPOSE 8080
 CMD ["/app/nexusmind"]

@@ -48,6 +48,14 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      initContainers:
+        - name: prepare-autonomous-agent-storage
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          imagePullPolicy: Always
+          command: ["sh", "-c", "mkdir -p /data/claude-code"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: backend
           image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
@@ -69,6 +77,12 @@ spec:
             - name: data
               mountPath: /app/.fastembed_cache
               subPath: fastembed-cache
+            # Claude Code stores its login under HOME/.claude. Keeping this on
+            # the PVC preserves authentication across Recreate rollouts while
+            # still allowing the runtime probe to detect expired sessions.
+            - name: data
+              mountPath: /app/.claude
+              subPath: claude-code
           readinessProbe:
             httpGet:
               path: /v1/health
@@ -84,6 +98,27 @@ spec:
             initialDelaySeconds: 120
             periodSeconds: 20
             failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 6Gi
+        # Exactly one worker for the MVP. It shares SQLite and Claude Code's
+        # persisted host identity with the API container in this single pod.
+        - name: autonomous-worker
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          imagePullPolicy: Always
+          command: ["/app/autonomous_worker"]
+          envFrom:
+            - secretRef:
+                name: nexusmind-env
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: data
+              mountPath: /app/.claude
+              subPath: claude-code
           resources:
             requests:
               cpu: 250m

@@ -2,11 +2,19 @@
 
 ## Single-server setup
 
-Install a reviewed, pinned Claude Code release on the same host as the NexusMind backend. Set `CLAUDE_CODE_BIN` to its absolute executable path and authenticate it interactively as the dedicated backend service account before enabling the worker. Verify as that OS account:
+The production backend image installs a reviewed, pinned Claude Code release at `/usr/local/bin/claude`, disables its auto-updater, and persists `HOME/.claude` on the NexusMind PVC. For a non-container deployment, install the same pinned release on the backend host and set `CLAUDE_CODE_BIN` to its absolute executable path. Authenticate interactively as the dedicated backend service account before enabling the worker. Verify as that OS account:
 
 ```sh
 /absolute/path/to/claude --version
 /absolute/path/to/claude auth status --json
+```
+
+On the Oracle k3s deployment, authenticate inside the API container. The
+worker shares the same persisted credentials:
+
+```bash
+kubectl -n nexusmind exec -it deploy/nexusmind-backend -c backend -- claude
+kubectl -n nexusmind exec deploy/nexusmind-backend -c backend -- claude auth status --json
 ```
 
 Apply the normal backend migration first, then set `AUTONOMOUS_AGENTS_ENABLED=true` for both services. Run the API server and `autonomous_worker` as two separately supervised processes under the same dedicated OS account and against the same absolute `DB_PATH`. The worker refuses an in-memory database or schema older than v62 and never runs migrations itself. It uses disposable system-temporary workspaces. Start exactly one worker in the MVP; keep it absent on API-only replicas.
