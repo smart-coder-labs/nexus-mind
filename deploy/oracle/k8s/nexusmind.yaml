@@ -1,0 +1,151 @@
+# NexusMind backend as a native k3s workload on the oracle box, served through
+# the EXISTING Traefik ingress (no separate Caddy, no host 80/443 grab).
+# This is the coexistence-safe design: Traefik owns 80/443 and routes both the
+# vend platform and api.nexusmind by Host header.
+#
+# Secrets are NOT in this file — created imperatively at deploy time. See README.md:
+#   - ghcr-pull      (imagePullSecret for the private GHCR image)
+#   - nexusmind-env  (all backend env vars)
+# The PVC must be SEEDED with the DB backup before/at first apply (see README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmind
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nexusmind-data
+  namespace: nexusmind
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexusmind-backend
+  namespace: nexusmind
+  labels:
+    app: nexusmind-backend
+spec:
+  replicas: 1
+  # RWO local-path volume can attach to only one pod at a time, so a rolling
+  # update would deadlock (new pod can't mount while old holds it). Recreate.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nexusmind-backend
+  template:
+    metadata:
+      labels:
+        app: nexusmind-backend
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: backend
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          # Stable tag -> Always so a `rollout restart` picks up a new digest.
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: nexusmind-env
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # Persist the fastembed ONNX model cache so it survives restarts.
+            # The runtime download from HuggingFace is flaky (huggingface.co
+            # resolves to IPv6 but the pod has no IPv6 egress, so ~half of cold
+            # starts fail to fetch onnx/model.onnx). Once it downloads once into
+            # this PVC-backed dir, every future start reuses it — no re-download.
+            - name: data
+              mountPath: /app/.fastembed_cache
+              subPath: fastembed-cache
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            # ~2 min budget: the nomic-embed ONNX model init takes ~35s on ARM.
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nexusmind-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexusmind-backend
+  namespace: nexusmind
+spec:
+  selector:
+    app: nexusmind-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexusmind-backend
+  namespace: nexusmind
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    # Real Let's Encrypt cert for the production host, issued by the namespaced
+    # DNS-01 (Cloudflare) Issuer `letsencrypt-dns-cf` into secret `nexusmind-tls`.
+    # nip.io host is intentionally omitted -> served with Traefik's default cert.
+    - hosts:
+        - api.nexusmind.smartcoderlabs.com
+      secretName: nexusmind-tls
+  rules:
+    # Testing host (Traefik default/self-signed cert — like the vend *.nip.io).
+    - host: nexusmind.149.130.166.34.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexusmind-backend
+                port:
+                  number: 8080
+    # Production host for the DNS cutover. Real TLS is a cutover follow-up
+    # (cert-manager + Cloudflare DNS-01, or a TLS secret) — see README.md.
+    - host: api.nexusmind.smartcoderlabs.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexusmind-backend
+                port:
+                  number: 8080
