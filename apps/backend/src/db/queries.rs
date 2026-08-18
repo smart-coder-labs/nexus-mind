@@ -7,32 +7,35 @@ use uuid::Uuid;
 use crate::auth::api_keys;
 use crate::indexer::tree_sitter_chunker::{FileGraph, Persist};
 use crate::models::types::{
-    validate_typed_harness_manifest, Agent, AgentAssignment, ApiKeyWithUser, AuditEntry,
-    AuthContext, Client, ClientMember, CodeChunk, CodeProject, Convention, CreateAgentRequest,
-    CreateConventionRequest,
-    CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
-    CreateWebhookRequest, CustomRole, GitHubConnection, GlobalMetrics, GraphEdgeDto, GraphNodeDto,
-    Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewAuthor,
-    HarnessConfigReviewComment, HarnessDownloadResponse,
-    HarnessInstallResultRequest, HarnessOwner, HarnessRecommendation, HarnessVersion,
-    HarnessVersionSummary, InviteLink, MemGraphEdge, MemGraphNode, Memory, OnboardingItem,
-    OnboardingStatus, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
-    Project, ProjectEventOverrides, ProjectMember, ProjectResolutionReport,
-    PublishHarnessVersionRequest, Session,
-    SessionWithCount, StoreMemoryRequest, ToolUsage, UpdateAgentRequest, UpdateConventionRequest,
-    UnresolvedProject, UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
-};
-use crate::models::types::{
     can_transition, CreateRetrospectiveRequest, CreateSprintRequest, CreateTaskRequest,
     PatchSprintRequest, PatchTaskRequest, Sprint, SprintRetrospective, Task, TaskAssignee,
     TaskComment, TaskStatus,
 };
 use crate::models::types::{
+    validate_typed_harness_manifest, Agent, AgentAssignment, ApiKeyWithUser, AuditEntry,
+    AuthContext, AutonomousAgentConnector, AutonomousAgentDefinition, AutonomousAgentDelivery,
+    AutonomousAgentDetail, AutonomousAgentFinding, AutonomousAgentRevision, AutonomousAgentRun,
+    AutonomousAgentSchedule, Client, ClientMember, CodeChunk, CodeProject, Convention,
+    CreateAgentRequest, CreateAutonomousAgentRequest, CreateConventionRequest,
+    CreateHarnessConfigReviewRequest, CreateHarnessRequest, CreateSessionRequest,
+    CreateWebhookRequest, CustomRole, GitHubConnection, GlobalMetrics, GraphEdgeDto, GraphNodeDto,
+    Harness, HarnessApproval, HarnessApprovalRequest, HarnessConfigReview,
+    HarnessConfigReviewAuthor, HarnessConfigReviewComment, HarnessDownloadResponse,
+    HarnessInstallResultRequest, HarnessOwner, HarnessRecommendation, HarnessVersion,
+    HarnessVersionSummary, InviteLink, MemGraphEdge, MemGraphNode, Memory, OnboardingItem,
+    OnboardingStatus, Org, OrgSettings, OrgStats, OrgWithStats, PatchSessionRequest, Policy,
+    Project, ProjectEventOverrides, ProjectMember, ProjectResolutionReport,
+    PublishHarnessVersionRequest, PutAutonomousAgentConnectorRequest,
+    PutAutonomousAgentScheduleRequest, Session, SessionWithCount, StoreMemoryRequest, ToolUsage,
+    UnresolvedProject, UpdateAgentRequest, UpdateAutonomousAgentRequest, UpdateConventionRequest,
+    UpdateWebhookRequest, User, UserRole, Webhook, WebhookDelivery,
+};
+use crate::models::types::{
     PatchChangeRequest, SaveArtifactRequest, SaveSpecRequest, SddArtifact, SddArtifactDetail,
     SddArtifactKind, SddChange, SddChangeFilters, SddChangeSummary, SddPhase, SddRevision,
     SddRevisionMeta, SddSearchHit, SddSearchResult, SddSpec, SddSpecDetail, SddSpecFilters,
-    SddSpecMerge, SddSpecRevision, SddSpecRevisionMeta, SddSpecSearchHit, SddSpecSummary, SddStatus,
-    UpsertChangeRequest,
+    SddSpecMerge, SddSpecRevision, SddSpecRevisionMeta, SddSpecSearchHit, SddSpecSummary,
+    SddStatus, UpsertChangeRequest,
 };
 use anyhow::anyhow;
 use std::str::FromStr;
@@ -1745,15 +1748,18 @@ pub fn get_harness(
         return Ok(None);
     };
     if let Some(user_id) = viewer_user_id {
-        let allowed = match harness.project_id.as_deref() {
-            Some(project_id) => conn.query_row(
-                "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
-                rusqlite::params![project_id, user_id],
-                |r| r.get::<_, i64>(0),
-            )? > 0,
-            None => harness.owner_user_id == user_id,
-        };
-        if !allowed { return Ok(None); }
+        let allowed =
+            match harness.project_id.as_deref() {
+                Some(project_id) => conn.query_row(
+                    "SELECT COUNT(*) FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+                    rusqlite::params![project_id, user_id],
+                    |r| r.get::<_, i64>(0),
+                )? > 0,
+                None => harness.owner_user_id == user_id,
+            };
+        if !allowed {
+            return Ok(None);
+        }
     }
     harness.latest_version = latest_harness_version_summary(conn, &harness.id)?;
     Ok(Some(harness))
@@ -2236,7 +2242,9 @@ pub fn create_harness_config_review_comment(
 
 const CONFIG_REVIEW_COMMENT_SELECT: &str = "SELECT c.id, c.org_id, c.review_id, c.user_id, c.body, c.created_at, u.name, u.email FROM harness_config_review_comments c LEFT JOIN users u ON u.id = c.user_id";
 
-fn map_config_review_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessConfigReviewComment> {
+fn map_config_review_comment(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<HarnessConfigReviewComment> {
     let user_id: String = row.get(3)?;
     let name: Option<String> = row.get(6)?;
     let email: Option<String> = row.get(7)?;
@@ -2275,7 +2283,10 @@ pub fn list_harness_config_review_comments(
         "{CONFIG_REVIEW_COMMENT_SELECT} WHERE c.org_id = ?1 AND c.review_id = ?2 ORDER BY c.created_at ASC, c.id ASC"
     ))?;
     let rows = stmt
-        .query_map(rusqlite::params![org_id, review_id], map_config_review_comment)?
+        .query_map(
+            rusqlite::params![org_id, review_id],
+            map_config_review_comment,
+        )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -3847,6 +3858,13 @@ pub fn get_role_permissions(
             "migration:read".to_string(),
             "migration:write".to_string(),
             "migration:review".to_string(),
+            "autonomous_agent:read".to_string(),
+            "autonomous_agent:create".to_string(),
+            "autonomous_agent:update".to_string(),
+            "autonomous_agent:enable".to_string(),
+            "autonomous_agent:run".to_string(),
+            "autonomous_agent:cancel".to_string(),
+            "autonomous_agent:manage_connectors".to_string(),
         ]);
     } else if role_name == "super_user" {
         return Ok(vec![
@@ -3908,6 +3926,13 @@ pub fn get_role_permissions(
             "migration:read".to_string(),
             "migration:write".to_string(),
             "migration:review".to_string(),
+            "autonomous_agent:read".to_string(),
+            "autonomous_agent:create".to_string(),
+            "autonomous_agent:update".to_string(),
+            "autonomous_agent:enable".to_string(),
+            "autonomous_agent:run".to_string(),
+            "autonomous_agent:cancel".to_string(),
+            "autonomous_agent:manage_connectors".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -6874,7 +6899,6 @@ fn task_ancestor_depth(conn: &Connection, org_id: &str, task_id: &str) -> Result
     Ok(depth)
 }
 
-
 /// Optional equality/membership filters for [`list_tasks`]/[`count_tasks`].
 #[derive(Debug, Clone, Default)]
 pub struct TaskListFilters {
@@ -6938,7 +6962,9 @@ pub fn create_task(
         let parent = get_task(conn, org_id, parent_id)?
             .ok_or_else(|| anyhow::anyhow!("parent task not found"))?;
         if parent.project != req.project {
-            return Err(anyhow::anyhow!("parent task belongs to a different project"));
+            return Err(anyhow::anyhow!(
+                "parent task belongs to a different project"
+            ));
         }
         // The old rule here was `cannot nest a subtask under a subtask` — two levels,
         // hard-stop. The schema never required it: `tasks.parent_id` is a self-referencing
@@ -7076,11 +7102,13 @@ pub fn patch_task(
         idx += 1;
     }
     if let Some(status) = &req.status {
-        let from = existing.status.parse::<TaskStatus>()
+        let from = existing
+            .status
+            .parse::<TaskStatus>()
             .map_err(|e| anyhow::anyhow!(e))?;
-        let to = status.parse::<TaskStatus>().map_err(|_| {
-            anyhow::anyhow!("invalid_status: unrecognized task status '{status}'")
-        })?;
+        let to = status
+            .parse::<TaskStatus>()
+            .map_err(|_| anyhow::anyhow!("invalid_status: unrecognized task status '{status}'"))?;
         if !can_transition(from, to) {
             return Err(anyhow::anyhow!(
                 "invalid_transition: cannot move task from {from} to {to}"
@@ -7214,8 +7242,14 @@ fn hydrate_tasks(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
     }
 
     let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
-    let placeholders: String = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
-    let id_refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let placeholders: String = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let id_refs: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
 
     let mut assignees_by_task: HashMap<String, Vec<TaskAssignee>> = HashMap::new();
     {
@@ -7228,7 +7262,11 @@ fn hydrate_tasks(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
         let rows = stmt.query_map(id_refs.as_slice(), |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                TaskAssignee { id: row.get(1)?, name: row.get(2)?, email: row.get(3)? },
+                TaskAssignee {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    email: row.get(3)?,
+                },
             ))
         })?;
         for row in rows {
@@ -7346,7 +7384,9 @@ pub fn list_subtasks(conn: &Connection, org_id: &str, parent_id: &str) -> Result
 fn validate_task_priority(priority: &str) -> Result<String> {
     match priority {
         "low" | "medium" | "high" | "urgent" => Ok(priority.to_string()),
-        other => Err(anyhow::anyhow!("invalid_priority: unrecognized task priority '{other}'")),
+        other => Err(anyhow::anyhow!(
+            "invalid_priority: unrecognized task priority '{other}'"
+        )),
     }
 }
 
@@ -7414,7 +7454,11 @@ pub fn list_task_assignees(conn: &Connection, task_id: &str) -> Result<Vec<TaskA
          WHERE ta.task_id = ?1 ORDER BY ta.assigned_at ASC",
     )?;
     let rows = stmt.query_map([task_id], |row| {
-        Ok(TaskAssignee { id: row.get(0)?, name: row.get(1)?, email: row.get(2)? })
+        Ok(TaskAssignee {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            email: row.get(2)?,
+        })
     })?;
     let mut out = Vec::new();
     for row in rows {
@@ -7446,9 +7490,8 @@ pub fn remove_task_label(conn: &Connection, task_id: &str, label: &str) -> Resul
 }
 
 pub fn list_task_labels(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT label FROM task_labels WHERE task_id = ?1 ORDER BY created_at ASC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT label FROM task_labels WHERE task_id = ?1 ORDER BY created_at ASC")?;
     let rows = stmt.query_map([task_id], |row| row.get::<_, String>(0))?;
     let mut out = Vec::new();
     for row in rows {
@@ -7467,7 +7510,9 @@ pub fn add_task_comment(
     body: &str,
 ) -> Result<TaskComment> {
     if body.trim().is_empty() {
-        return Err(anyhow::anyhow!("empty_comment: comment body must not be empty"));
+        return Err(anyhow::anyhow!(
+            "empty_comment: comment body must not be empty"
+        ));
     }
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -7476,9 +7521,18 @@ pub fn add_task_comment(
         rusqlite::params![id, task_id, user_id, body, now],
     )?;
     let author_name: Option<String> = conn
-        .query_row("SELECT name FROM users WHERE id = ?1", [user_id], |r| r.get(0))
+        .query_row("SELECT name FROM users WHERE id = ?1", [user_id], |r| {
+            r.get(0)
+        })
         .optional()?;
-    Ok(TaskComment { id, task_id: task_id.to_string(), user_id: user_id.to_string(), author_name, body: body.to_string(), created_at: now })
+    Ok(TaskComment {
+        id,
+        task_id: task_id.to_string(),
+        user_id: user_id.to_string(),
+        author_name,
+        body: body.to_string(),
+        created_at: now,
+    })
 }
 
 /// Lists a task's comments in chronological order, with denormalized author name.
@@ -7584,7 +7638,10 @@ pub fn resolve_tasks_by_spec(
             ))",
     )?;
     let ids: Vec<String> = stmt
-        .query_map(rusqlite::params![org_id, spec_change_name, viewer_user_id], |row| row.get::<_, String>(0))?
+        .query_map(
+            rusqlite::params![org_id, spec_change_name, viewer_user_id],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     if ids.is_empty() {
@@ -7625,7 +7682,9 @@ const SPRINT_SELECT: &str = "SELECT id, org_id, project, name, goal, starts_at, 
 fn validate_sprint_status(status: &str) -> Result<String> {
     match status {
         "planned" | "active" | "completed" => Ok(status.to_string()),
-        other => Err(anyhow::anyhow!("invalid_status: unrecognized sprint status '{other}'")),
+        other => Err(anyhow::anyhow!(
+            "invalid_status: unrecognized sprint status '{other}'"
+        )),
     }
 }
 
@@ -7671,8 +7730,12 @@ pub fn create_sprint(
 /// Fetches a sprint by id, scoped to org, hydrated with `task_count`.
 pub fn get_sprint(conn: &Connection, org_id: &str, sprint_id: &str) -> Result<Option<Sprint>> {
     let sql = format!("{SPRINT_SELECT} WHERE id = ?1 AND org_id = ?2");
-    let result = conn.query_row(&sql, rusqlite::params![sprint_id, org_id], map_sprint_row).optional()?;
-    let Some(mut sprint) = result else { return Ok(None) };
+    let result = conn
+        .query_row(&sql, rusqlite::params![sprint_id, org_id], map_sprint_row)
+        .optional()?;
+    let Some(mut sprint) = result else {
+        return Ok(None);
+    };
     hydrate_sprint_task_count(conn, &mut sprint)?;
     Ok(Some(sprint))
 }
@@ -7812,7 +7875,9 @@ pub fn list_sprints(
 
 /// Lists tasks currently assigned to a sprint (non-archived).
 pub fn list_tasks_in_sprint(conn: &Connection, sprint_id: &str) -> Result<Vec<Task>> {
-    let sql = format!("{TASK_SELECT} WHERE sprint_id = ?1 AND archived_at IS NULL ORDER BY created_at ASC");
+    let sql = format!(
+        "{TASK_SELECT} WHERE sprint_id = ?1 AND archived_at IS NULL ORDER BY created_at ASC"
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([sprint_id], map_task_row)?;
     let mut tasks = Vec::new();
@@ -7841,7 +7906,9 @@ pub fn create_retrospective(
         rusqlite::params![id, sprint_id, org_id, req.went_well, req.went_wrong, req.action_items, created_by, now],
     )?;
     let author_name: Option<String> = conn
-        .query_row("SELECT name FROM users WHERE id = ?1", [created_by], |r| r.get(0))
+        .query_row("SELECT name FROM users WHERE id = ?1", [created_by], |r| {
+            r.get(0)
+        })
         .optional()?;
     Ok(SprintRetrospective {
         id,
@@ -8047,7 +8114,11 @@ pub fn get_sdd_change_by_name(
 ) -> Result<Option<SddChange>> {
     let sql = format!("{SDD_CHANGE_SELECT} WHERE org_id = ?1 AND project = ?2 AND name = ?3");
     let found = conn
-        .query_row(&sql, rusqlite::params![org_id, project, name], map_sdd_change_row)
+        .query_row(
+            &sql,
+            rusqlite::params![org_id, project, name],
+            map_sdd_change_row,
+        )
         .optional()?;
     let Some(mut change) = found else {
         return Ok(None);
@@ -8136,7 +8207,15 @@ pub fn patch_sdd_change(
             sprint_id  = COALESCE(?4, sprint_id),
             updated_at = ?5
          WHERE id = ?6 AND org_id = ?7",
-        rusqlite::params![req.title, req.status, req.phase, req.sprint_id, now_iso(), id, org_id],
+        rusqlite::params![
+            req.title,
+            req.status,
+            req.phase,
+            req.sprint_id,
+            now_iso(),
+            id,
+            org_id
+        ],
     )?;
 
     get_sdd_change(conn, org_id, id)?.ok_or_else(|| anyhow!("not_found"))
@@ -8275,11 +8354,20 @@ pub fn upsert_sdd_artifact(
     // 5. The FTS index tracks the LATEST revision only — delete-then-insert, so an
     //    artifact contributes exactly one hit no matter how many revisions it has,
     //    and a term deleted by a newer revision stops matching.
-    tx.execute("DELETE FROM sdd_artifacts_fts WHERE artifact_id = ?1", [&artifact_id])?;
+    tx.execute(
+        "DELETE FROM sdd_artifacts_fts WHERE artifact_id = ?1",
+        [&artifact_id],
+    )?;
     tx.execute(
         "INSERT INTO sdd_artifacts_fts (artifact_id, change_name, kind, capability, content)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![artifact_id, req.change_name, req.kind, capability, req.content],
+        rusqlite::params![
+            artifact_id,
+            req.change_name,
+            req.kind,
+            capability,
+            req.content
+        ],
     )?;
 
     let sql = format!("{SDD_ARTIFACT_SELECT} WHERE id = ?1");
@@ -8306,7 +8394,13 @@ fn artifact_detail_from(
         Some((c, h)) => (Some(c), Some(h)),
         None => (None, None),
     };
-    Ok(SddArtifactDetail { artifact, change_name, project, content, content_hash })
+    Ok(SddArtifactDetail {
+        artifact,
+        change_name,
+        project,
+        content,
+        content_hash,
+    })
 }
 
 /// Artifacts carry no `org_id` of their own — it is inherited via `change_id`,
@@ -8335,7 +8429,12 @@ pub fn get_sdd_artifact(
     let Some((artifact, project, change_name)) = found else {
         return Ok(None);
     };
-    Ok(Some(artifact_detail_from(conn, artifact, project, change_name)?))
+    Ok(Some(artifact_detail_from(
+        conn,
+        artifact,
+        project,
+        change_name,
+    )?))
 }
 
 /// Natural-key lookup behind `GET /v1/sdd/artifacts?project=&change_name=&kind=&capability=`.
@@ -8575,8 +8674,10 @@ pub fn list_tasks_for_sdd_change(
          JOIN task_spec_links tsl ON tsl.task_id = t.id
          WHERE t.org_id = ?1 AND tsl.spec_change_name = ?2 AND t.archived_at IS NULL",
     );
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-        vec![Box::new(org_id.to_string()), Box::new(change_name.to_string())];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(org_id.to_string()),
+        Box::new(change_name.to_string()),
+    ];
 
     if let Some(vid) = viewer {
         sql.push_str(
@@ -8729,7 +8830,11 @@ fn spec_detail_from(conn: &Connection, spec: SddSpec) -> Result<SddSpecDetail> {
         Some((c, h)) => (Some(c), Some(h)),
         None => (None, None),
     };
-    Ok(SddSpecDetail { spec, content, content_hash })
+    Ok(SddSpecDetail {
+        spec,
+        content,
+        content_hash,
+    })
 }
 
 /// THE workhorse, and the exact analogue of `upsert_sdd_artifact`. Idempotent by
@@ -8901,7 +9006,11 @@ pub fn get_sdd_spec_by_capability(
 ) -> Result<Option<SddSpecDetail>> {
     let sql = format!("{SDD_SPEC_SELECT} WHERE org_id = ?1 AND project = ?2 AND capability = ?3");
     let found = conn
-        .query_row(&sql, rusqlite::params![org_id, project, capability], map_sdd_spec_row)
+        .query_row(
+            &sql,
+            rusqlite::params![org_id, project, capability],
+            map_sdd_spec_row,
+        )
         .optional()?;
     let Some(mut spec) = found else {
         return Ok(None);
@@ -9043,7 +9152,10 @@ pub fn list_sdd_specs_for_change(
     for row in rows {
         let (mut spec, merged_revision) = row?;
         hydrate_spec_provenance(conn, &mut spec)?;
-        out.push(SddSpecMerge { spec, merged_revision });
+        out.push(SddSpecMerge {
+            spec,
+            merged_revision,
+        });
     }
     Ok(out)
 }
@@ -12270,9 +12382,13 @@ mod tests {
 
         // Before enrollment, the creator can neither see nor access the project.
         let before = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
-        assert!(before.is_empty(), "creator must not see the project before enrollment");
         assert!(
-            !user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            before.is_empty(),
+            "creator must not see the project before enrollment"
+        );
+        assert!(
+            !user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator")
+                .unwrap(),
             "creator must not have access before enrollment"
         );
 
@@ -12283,14 +12399,19 @@ mod tests {
         assert_eq!(after.len(), 1, "creator must see exactly their project");
         assert_eq!(after[0].name, "myapp");
         assert!(
-            user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator").unwrap(),
+            user_can_access_canonical_project_by_name(&conn, &org_id, "myapp", "u-creator")
+                .unwrap(),
             "creator must pass the name-access check (ensure_code_project_name_access)"
         );
 
         // Idempotent — a second enrollment (re-index) must not error or duplicate.
         ensure_code_project_visible_to_creator(&conn, &org_id, "myapp", "u-creator").unwrap();
         let again = list_code_projects_visible(&conn, &org_id, false, Some("u-creator")).unwrap();
-        assert_eq!(again.len(), 1, "re-index must not duplicate the visible project");
+        assert_eq!(
+            again.len(),
+            1,
+            "re-index must not duplicate the visible project"
+        );
     }
 
     #[test]
@@ -12308,14 +12429,18 @@ mod tests {
         let reset = fail_stale_indexing_projects(&conn).unwrap();
         assert_eq!(reset, 2, "only the two 'indexing' rows must be reset");
 
-        let p1 = get_code_project(&org_id, "zombie1", &conn).unwrap().unwrap();
+        let p1 = get_code_project(&org_id, "zombie1", &conn)
+            .unwrap()
+            .unwrap();
         assert_eq!(p1.index_status.as_deref(), Some("error"));
         assert_eq!(
             p1.last_index_error.as_deref(),
             Some("Indexing interrupted (server restart)")
         );
         // The successful project is untouched.
-        let ph = get_code_project(&org_id, "healthy", &conn).unwrap().unwrap();
+        let ph = get_code_project(&org_id, "healthy", &conn)
+            .unwrap()
+            .unwrap();
         assert_eq!(ph.index_status.as_deref(), Some("success"));
 
         // Idempotent: a second call resets nothing.
@@ -12542,13 +12667,30 @@ mod tests {
         let embedding: Vec<u8> = vec![0u8; 32];
         // Embedded chunk with a symbol → included, content NOT loaded by this query.
         insert_code_chunk(
-            &conn, project_id, "src/users.rs", "h1", Some("rust"), Some("list_users"),
-            1, 10, "fn list_users() { /* body */ }", Some(&embedding),
+            &conn,
+            project_id,
+            "src/users.rs",
+            "h1",
+            Some("rust"),
+            Some("list_users"),
+            1,
+            10,
+            "fn list_users() { /* body */ }",
+            Some(&embedding),
         )
         .unwrap();
         // No embedding → excluded (must line up 1:1 with cosine-scored set).
         insert_code_chunk(
-            &conn, project_id, "src/misc.rs", "h2", None, Some("misc"), 1, 5, "code", None,
+            &conn,
+            project_id,
+            "src/misc.rs",
+            "h2",
+            None,
+            Some("misc"),
+            1,
+            5,
+            "code",
+            None,
         )
         .unwrap();
 
@@ -13952,47 +14094,167 @@ pub fn get_memory_health(
     })
 }
 
-pub fn get_dashboard_data(conn: &Connection, org_id: &str, user_id: &str, is_super_user: bool, days: i64) -> Result<crate::models::types::DashboardData> {
+pub fn get_dashboard_data(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    is_super_user: bool,
+    days: i64,
+) -> Result<crate::models::types::DashboardData> {
     use crate::models::types::{DashboardAvailability, DashboardData, OrgStats, ToolUsage};
     if is_super_user {
         let from = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
         return Ok(DashboardData {
-            stats: get_stats(conn, org_id)?, usage: Some(get_usage_stats(conn, org_id)?), trends: get_memory_trends(conn, org_id, days)?,
-            activity: list_audit(conn, org_id, None, None, None, Some(&from), None, None, 20, 0)?,
-            agent_activity: Some(get_agent_activity(conn, org_id, days)?), heatmap: Some(get_memory_heatmap(conn, org_id, days)?), contributors: Some(get_top_contributors(conn, org_id, days)?),
-            health: Some(get_memory_health(conn, org_id)?), users: Some(list_users(conn, org_id)?), onboarding: Some(get_onboarding_status(conn, org_id)?), conventions: Some(list_conventions(conn, org_id, None, None, None, 100, 0)?),
-            availability: DashboardAvailability { usage: true, users: true, onboarding: true, agent_activity: true, health: true, contributors: true, heatmap: true, conventions: true },
+            stats: get_stats(conn, org_id)?,
+            usage: Some(get_usage_stats(conn, org_id)?),
+            trends: get_memory_trends(conn, org_id, days)?,
+            activity: list_audit(
+                conn,
+                org_id,
+                None,
+                None,
+                None,
+                Some(&from),
+                None,
+                None,
+                20,
+                0,
+            )?,
+            agent_activity: Some(get_agent_activity(conn, org_id, days)?),
+            heatmap: Some(get_memory_heatmap(conn, org_id, days)?),
+            contributors: Some(get_top_contributors(conn, org_id, days)?),
+            health: Some(get_memory_health(conn, org_id)?),
+            users: Some(list_users(conn, org_id)?),
+            onboarding: Some(get_onboarding_status(conn, org_id)?),
+            conventions: Some(list_conventions(conn, org_id, None, None, None, 100, 0)?),
+            availability: DashboardAvailability {
+                usage: true,
+                users: true,
+                onboarding: true,
+                agent_activity: true,
+                health: true,
+                contributors: true,
+                heatmap: true,
+                conventions: true,
+            },
         });
     }
     let visible = "m.org_id = ?1 AND EXISTS (SELECT 1 FROM project_visibility pv
                               WHERE pv.org_id = m.org_id AND pv.project_name = m.project AND pv.user_id = ?2)";
-    let total_memories = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
+    let total_memories = conn.query_row(
+        &format!("SELECT COUNT(*) FROM memories m WHERE {visible}"),
+        rusqlite::params![org_id, user_id],
+        |row| row.get(0),
+    )?;
     let active_users_24h = conn.query_row(&format!("SELECT COUNT(DISTINCT a.user_id) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.timestamp > datetime('now', '-24 hours') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
     let searches_today = conn.query_row(&format!("SELECT COUNT(*) FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.action = 'search' AND a.timestamp > datetime('now', 'start of day') AND {visible}"), rusqlite::params![org_id, user_id], |row| row.get(0))?;
     let mut tools = conn.prepare(&format!("SELECT COALESCE(m.tool, 'unknown'), COUNT(*) FROM memories m WHERE {visible} GROUP BY COALESCE(m.tool, 'unknown') ORDER BY COUNT(*) DESC LIMIT 5"))?;
-    let top_tools = tools.query_map(rusqlite::params![org_id, user_id], |row| Ok(ToolUsage { tool: row.get(0)?, count: row.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let top_tools = tools
+        .query_map(rusqlite::params![org_id, user_id], |row| {
+            Ok(ToolUsage {
+                tool: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut events = conn.prepare(&format!("SELECT a.id, a.org_id, a.user_id, a.timestamp, a.action, a.resource_type, a.resource_id, a.previous_hash, a.current_hash FROM audit_logs a JOIN memories m ON m.id = a.resource_id AND m.org_id = a.org_id WHERE a.resource_type = 'memory' AND a.timestamp >= datetime('now', '-' || ?3 || ' days') AND {visible} ORDER BY a.timestamp DESC LIMIT 20"))?;
-    let activity = events.query_map(rusqlite::params![org_id, user_id, days], |row| Ok(crate::models::types::AuditEntry { id: row.get(0)?, org_id: row.get(1)?, user_id: row.get(2)?, timestamp: row.get(3)?, action: row.get(4)?, resource_type: row.get(5)?, resource_id: row.get(6)?, metadata: serde_json::json!({}), previous_hash: row.get(7)?, current_hash: row.get(8)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let activity = events
+        .query_map(rusqlite::params![org_id, user_id, days], |row| {
+            Ok(crate::models::types::AuditEntry {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                user_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                action: row.get(4)?,
+                resource_type: row.get(5)?,
+                resource_id: row.get(6)?,
+                metadata: serde_json::json!({}),
+                previous_hash: row.get(7)?,
+                current_hash: row.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(DashboardData {
-        stats: OrgStats { total_memories, active_users_24h, searches_today, top_tools }, trends: scoped_memory_trends(conn, org_id, user_id, days, visible)?, activity,
-        usage: None, agent_activity: None, heatmap: None, contributors: None, health: None, users: None, onboarding: None, conventions: None,
-        availability: DashboardAvailability { usage: false, users: false, onboarding: false, agent_activity: false, health: false, contributors: false, heatmap: false, conventions: false },
+        stats: OrgStats {
+            total_memories,
+            active_users_24h,
+            searches_today,
+            top_tools,
+        },
+        trends: scoped_memory_trends(conn, org_id, user_id, days, visible)?,
+        activity,
+        usage: None,
+        agent_activity: None,
+        heatmap: None,
+        contributors: None,
+        health: None,
+        users: None,
+        onboarding: None,
+        conventions: None,
+        availability: DashboardAvailability {
+            usage: false,
+            users: false,
+            onboarding: false,
+            agent_activity: false,
+            health: false,
+            contributors: false,
+            heatmap: false,
+            conventions: false,
+        },
     })
 }
 
-fn scoped_memory_trends(conn: &Connection, org_id: &str, user_id: &str, days: i64, visible: &str) -> Result<crate::models::types::MemoryTrends> {
+fn scoped_memory_trends(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    days: i64,
+    visible: &str,
+) -> Result<crate::models::types::MemoryTrends> {
     use crate::models::types::{DailyCount, NameCount};
     let period = "m.created_at >= datetime('now', '-' || ?3 || ' days')";
     let mut daily = conn.prepare(&format!("SELECT date(m.created_at), COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY date(m.created_at) ORDER BY date(m.created_at)"))?;
-    let daily_counts = daily.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(DailyCount { date: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let daily_counts = daily
+        .query_map(rusqlite::params![org_id, user_id, days], |r| {
+            Ok(DailyCount {
+                date: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut types = conn.prepare(&format!("SELECT COALESCE(m.type, 'untyped'), COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY m.type ORDER BY COUNT(*) DESC LIMIT 5"))?;
-    let by_type = types.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(NameCount { name: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let by_type = types
+        .query_map(rusqlite::params![org_id, user_id, days], |r| {
+            Ok(NameCount {
+                name: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut projects = conn.prepare(&format!("SELECT m.project, COUNT(*) FROM memories m WHERE {visible} AND {period} GROUP BY m.project ORDER BY COUNT(*) DESC LIMIT 5"))?;
-    let by_project = projects.query_map(rusqlite::params![org_id, user_id, days], |r| Ok(NameCount { name: r.get(0)?, count: r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let total = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND {period}"), rusqlite::params![org_id, user_id, days], |r| r.get(0))?;
+    let by_project = projects
+        .query_map(rusqlite::params![org_id, user_id, days], |r| {
+            Ok(NameCount {
+                name: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let total = conn.query_row(
+        &format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND {period}"),
+        rusqlite::params![org_id, user_id, days],
+        |r| r.get(0),
+    )?;
     let this_week = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND m.created_at >= datetime('now', '-7 days')"), rusqlite::params![org_id, user_id], |r| r.get(0))?;
     let this_month = conn.query_row(&format!("SELECT COUNT(*) FROM memories m WHERE {visible} AND m.created_at >= datetime('now', '-30 days')"), rusqlite::params![org_id, user_id], |r| r.get(0))?;
-    Ok(crate::models::types::MemoryTrends { daily_counts, by_type, by_project, total, this_week, this_month })
+    Ok(crate::models::types::MemoryTrends {
+        daily_counts,
+        by_type,
+        by_project,
+        total,
+        this_week,
+        this_month,
+    })
 }
 
 /// Merges two memories: appends `merge_id`'s content to `keep_id`'s content (separated by
@@ -15308,7 +15570,8 @@ pub fn list_clients_visible(
             created_at: row.get(6)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn get_client(conn: &Connection, org_id: &str, client_id: &str) -> Result<Option<Client>> {
@@ -15409,7 +15672,8 @@ pub fn list_client_members(conn: &Connection, client_id: &str) -> Result<Vec<Cli
             created_at: row.get(6)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn add_client_member(
@@ -15797,6 +16061,1633 @@ pub fn list_agent_assignments(
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+// ── Autonomous agent definitions ────────────────────────────────────────────
+
+fn autonomous_agent_definition_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AutonomousAgentDefinition> {
+    Ok(AutonomousAgentDefinition {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        template_key: row.get(4)?,
+        template_version: row.get(5)?,
+        status: row.get(6)?,
+        current_revision: row.get(7)?,
+        created_by: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn autonomous_agent_revision_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AutonomousAgentRevision> {
+    let config: String = row.get(3)?;
+    let capabilities: String = row.get(5)?;
+    let budgets: String = row.get(6)?;
+    let validation: Option<String> = row.get(10)?;
+    Ok(AutonomousAgentRevision {
+        id: row.get(0)?,
+        definition_id: row.get(1)?,
+        revision: row.get(2)?,
+        config: serde_json::from_str(&config).unwrap_or(serde_json::Value::Null),
+        config_hash: row.get(4)?,
+        capabilities: serde_json::from_str(&capabilities).unwrap_or_default(),
+        budgets: serde_json::from_str(&budgets).unwrap_or(serde_json::Value::Null),
+        policy_generation: row.get(7)?,
+        validation_status: row.get(8)?,
+        validated_at: row.get(9)?,
+        validation: validation.and_then(|value| serde_json::from_str(&value).ok()),
+        created_by: row.get(11)?,
+        created_at: row.get(12)?,
+    })
+}
+
+fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
+    let capabilities = match template_key {
+        "qa" => vec![
+            "repository:read",
+            "tests:run",
+            "finding:write",
+            "delivery:write",
+        ],
+        "github_issue_resolver" => vec![
+            "repository:read",
+            "repository:branch",
+            "tests:run",
+            "github:draft_pr",
+        ],
+        "github_pr_reviewer" => vec!["repository:read", "tests:run", "github:review"],
+        _ => anyhow::bail!("invalid_template"),
+    };
+    Ok(capabilities.into_iter().map(str::to_string).collect())
+}
+
+fn autonomous_agent_config_hash(
+    template_key: &str,
+    template_version: i64,
+    config: &serde_json::Value,
+    budgets: &serde_json::Value,
+) -> Result<String> {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "template_key": template_key,
+        "template_version": template_version,
+        "config": config,
+        "budgets": budgets,
+    }))?;
+    Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+pub fn list_autonomous_agent_definitions(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<AutonomousAgentDefinition>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+         FROM autonomous_agent_definitions WHERE org_id=?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], autonomous_agent_definition_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn get_autonomous_agent_definition(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentDefinition>> {
+    conn.query_row(
+        "SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+         FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id, id],
+        autonomous_agent_definition_from_row,
+    ).optional().map_err(Into::into)
+}
+
+pub fn get_autonomous_agent_revision(
+    conn: &Connection,
+    definition_id: &str,
+    revision: i64,
+) -> Result<Option<AutonomousAgentRevision>> {
+    conn.query_row(
+        "SELECT r.id,r.definition_id,r.revision,r.config_json,r.config_hash,r.capabilities_json,r.budgets_json,
+                r.policy_generation,COALESCE(v.status,'pending'),v.created_at,v.result_json,r.created_by,r.created_at
+         FROM autonomous_agent_revisions r
+         LEFT JOIN autonomous_agent_validations v ON v.id=(
+            SELECT id FROM autonomous_agent_validations WHERE revision_id=r.id ORDER BY created_at DESC,id DESC LIMIT 1
+         ) WHERE r.definition_id=?1 AND r.revision=?2",
+        rusqlite::params![definition_id, revision],
+        autonomous_agent_revision_from_row,
+    ).optional().map_err(Into::into)
+}
+
+pub fn get_autonomous_agent_detail(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentDetail>> {
+    let Some(definition) = get_autonomous_agent_definition(conn, org_id, id)? else {
+        return Ok(None);
+    };
+    let revision = get_autonomous_agent_revision(conn, id, definition.current_revision)?
+        .ok_or_else(|| anyhow::anyhow!("autonomous_agent_revision_missing"))?;
+    Ok(Some(AutonomousAgentDetail {
+        definition,
+        revision,
+    }))
+}
+
+pub fn create_autonomous_agent_definition(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    req: &CreateAutonomousAgentRequest,
+) -> Result<AutonomousAgentDetail> {
+    if req.name.trim().is_empty() || req.name.len() > 120 {
+        anyhow::bail!("invalid_name");
+    }
+    if !req.config.is_object() || !req.budgets.is_object() {
+        anyhow::bail!("invalid_configuration");
+    }
+    let capabilities = autonomous_agent_capabilities(&req.template_key)?;
+    let definition_id = Uuid::new_v4().to_string();
+    let revision_id = Uuid::new_v4().to_string();
+    let template_version = 1_i64;
+    let config_hash = autonomous_agent_config_hash(
+        &req.template_key,
+        template_version,
+        &req.config,
+        &req.budgets,
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO autonomous_agent_definitions
+         (id,org_id,name,description,template_key,template_version,status,current_revision,created_by)
+         VALUES (?1,?2,?3,?4,?5,?6,'disabled',1,?7)",
+        rusqlite::params![definition_id, org_id, req.name.trim(), req.description, req.template_key, template_version, user_id],
+    )?;
+    tx.execute(
+        "INSERT INTO autonomous_agent_revisions
+         (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,created_by)
+         VALUES (?1,?2,1,?3,?4,?5,?6,?7)",
+        rusqlite::params![revision_id, definition_id, serde_json::to_string(&req.config)?, config_hash,
+            serde_json::to_string(&capabilities)?, serde_json::to_string(&req.budgets)?, user_id],
+    )?;
+    tx.commit()?;
+    get_autonomous_agent_detail(conn, org_id, &definition_id)?
+        .ok_or_else(|| anyhow::anyhow!("autonomous_agent_not_found_after_insert"))
+}
+
+pub fn update_autonomous_agent_definition(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    id: &str,
+    req: &UpdateAutonomousAgentRequest,
+) -> Result<Option<AutonomousAgentDetail>> {
+    let Some(current) = get_autonomous_agent_detail(conn, org_id, id)? else {
+        return Ok(None);
+    };
+    if current.definition.status == "archived" {
+        anyhow::bail!("agent_archived");
+    }
+    let name = req
+        .name
+        .as_deref()
+        .unwrap_or(&current.definition.name)
+        .trim();
+    if name.is_empty() || name.len() > 120 {
+        anyhow::bail!("invalid_name");
+    }
+    let config = req.config.as_ref().unwrap_or(&current.revision.config);
+    let budgets = req.budgets.as_ref().unwrap_or(&current.revision.budgets);
+    if !config.is_object() || !budgets.is_object() {
+        anyhow::bail!("invalid_configuration");
+    }
+    let description = req
+        .description
+        .as_ref()
+        .or(current.definition.description.as_ref());
+    if name == current.definition.name
+        && description == current.definition.description.as_ref()
+        && config == &current.revision.config
+        && budgets == &current.revision.budgets
+    {
+        return Ok(Some(current));
+    }
+    let next_revision = current.definition.current_revision + 1;
+    let revision_id = Uuid::new_v4().to_string();
+    let hash = autonomous_agent_config_hash(
+        &current.definition.template_key,
+        current.definition.template_version,
+        config,
+        budgets,
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE autonomous_agent_definitions SET name=?3,description=COALESCE(?4,description),status='disabled',current_revision=?5,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id,id,name,description,next_revision],
+    )?;
+    tx.execute(
+        "INSERT INTO autonomous_agent_revisions (id,definition_id,revision,config_json,config_hash,capabilities_json,budgets_json,policy_generation,created_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![revision_id,id,next_revision,serde_json::to_string(config)?,hash,serde_json::to_string(&current.revision.capabilities)?,serde_json::to_string(budgets)?,current.revision.policy_generation + 1,user_id],
+    )?;
+    tx.commit()?;
+    get_autonomous_agent_detail(conn, org_id, id)
+}
+
+pub fn validate_autonomous_agent_definition(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentDetail>> {
+    let Some(current) = get_autonomous_agent_detail(conn, org_id, id)? else {
+        return Ok(None);
+    };
+    if current.definition.status == "archived" {
+        anyhow::bail!("agent_archived");
+    }
+    let mut errors = Vec::new();
+    if let Some(seconds) = current
+        .revision
+        .budgets
+        .get("wall_time_seconds")
+        .and_then(|v| v.as_i64())
+    {
+        if !(30..=3600).contains(&seconds) {
+            errors.push("wall_time_out_of_range")
+        }
+    }
+    for field in [
+        "max_definition_concurrency",
+        "max_repository_concurrency",
+        "max_organization_concurrency",
+    ] {
+        if current
+            .revision
+            .budgets
+            .get(field)
+            .and_then(|value| value.as_i64())
+            .is_some_and(|value| !(1..=32).contains(&value))
+        {
+            errors.push("concurrency_out_of_range");
+        }
+    }
+    match current.definition.template_key.as_str() {
+        "qa" => {
+            let outputs = current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array());
+            if outputs.is_none()
+                || outputs.is_some_and(|v| {
+                    v.is_empty()
+                        || v.iter().any(|item| {
+                            !matches!(item.as_str(), Some("nexusmind" | "slack" | "github_issue"))
+                        })
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+            if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("slack")))
+                && current
+                    .revision
+                    .config
+                    .get("slack_connector_id")
+                    .and_then(|v| v.as_str())
+                    .is_none()
+            {
+                errors.push("slack_connector_required")
+            }
+            if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("github_issue")))
+                && (current
+                    .revision
+                    .config
+                    .get("github_connector_id")
+                    .and_then(|v| v.as_str())
+                    .is_none()
+                    || current
+                        .revision
+                        .config
+                        .get("repository")
+                        .and_then(|v| v.as_str())
+                        .is_none())
+            {
+                errors.push("github_configuration_required")
+            }
+        }
+        "github_issue_resolver" | "github_pr_reviewer" => {
+            match current
+                .revision
+                .config
+                .get("repository")
+                .and_then(|v| v.as_str())
+            {
+                Some(value)
+                    if crate::automation::connectors::validate_repository(value).is_ok() => {}
+                _ => errors.push("valid_repository_required"),
+            }
+            if current
+                .revision
+                .config
+                .get("github_connector_id")
+                .and_then(|v| v.as_str())
+                .is_none()
+            {
+                errors.push("github_connector_required")
+            }
+        }
+        _ => errors.push("unsupported_template"),
+    }
+    for field in ["github_connector_id", "slack_connector_id"] {
+        if let Some(connector) = current.revision.config.get(field).and_then(|v| v.as_str()) {
+            let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health='ready')",rusqlite::params![connector,org_id],|r|r.get(0))?;
+            if !exists {
+                errors.push("connector_unavailable")
+            }
+        }
+    }
+    let valid = errors.is_empty();
+    let result = serde_json::json!({"valid":valid,"checks":["schema","template","budgets","connectors"],"errors":errors});
+    conn.execute(
+        "INSERT INTO autonomous_agent_validations (id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![Uuid::new_v4().to_string(),org_id,id,current.revision.id,current.revision.config_hash,if valid{"valid"}else{"invalid"},serde_json::to_string(&result)?,user_id],
+    )?;
+    get_autonomous_agent_detail(conn, org_id, id)
+}
+
+pub fn set_autonomous_agent_status(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    status: &str,
+) -> Result<Option<AutonomousAgentDetail>> {
+    let Some(current) = get_autonomous_agent_detail(conn, org_id, id)? else {
+        return Ok(None);
+    };
+    match status {
+        "enabled" => {
+            if current.revision.validation_status != "valid" {
+                anyhow::bail!("validation_required");
+            }
+        }
+        "disabled" => {}
+        "archived" => {
+            if current.definition.status != "disabled" {
+                anyhow::bail!("agent_must_be_disabled")
+            }
+            let active:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_runs WHERE definition_id=?1 AND status IN ('queued','leased','running'))",[id],|r|r.get(0))?;
+            if active {
+                anyhow::bail!("agent_has_active_runs")
+            }
+        }
+        _ => anyhow::bail!("invalid_status"),
+    }
+    conn.execute(
+        "UPDATE autonomous_agent_definitions SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id,id,status],
+    )?;
+    if status == "archived" {
+        conn.execute("UPDATE autonomous_agent_schedules SET enabled=0,updated_at=datetime('now') WHERE definition_id=?1",[id])?;
+    }
+    get_autonomous_agent_detail(conn, org_id, id)
+}
+
+pub fn save_autonomous_runtime_health(
+    conn: &Connection,
+    health: &crate::automation::runtime::RuntimeHealth,
+) -> Result<()> {
+    let success = health.status == "ready";
+    conn.execute(
+        "INSERT INTO autonomous_runtime_health
+         (id,status,reason_code,claude_version,last_success_at,last_failure_at,checked_at)
+         VALUES (1,?1,?2,?3,CASE WHEN ?4 THEN datetime('now') END,CASE WHEN ?4 THEN NULL ELSE datetime('now') END,datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET status=excluded.status,reason_code=excluded.reason_code,
+           claude_version=excluded.claude_version,
+           last_success_at=CASE WHEN ?4 THEN datetime('now') ELSE autonomous_runtime_health.last_success_at END,
+           last_failure_at=CASE WHEN ?4 THEN autonomous_runtime_health.last_failure_at ELSE datetime('now') END,
+           checked_at=datetime('now')",
+        rusqlite::params![health.status, health.reason_code, health.claude_version, success],
+    )?;
+    Ok(())
+}
+
+pub fn get_autonomous_runtime_health(
+    conn: &Connection,
+) -> Result<Option<crate::automation::runtime::RuntimeHealth>> {
+    conn.query_row(
+        "SELECT status,reason_code,claude_version,checked_at,last_success_at,last_failure_at FROM autonomous_runtime_health WHERE id=1",
+        [],
+        |row| Ok(crate::automation::runtime::RuntimeHealth {
+            status: row.get(0)?, reason_code: row.get(1)?, claude_version: row.get(2)?,
+            checked_at: row.get(3)?, last_success_at: row.get(4)?, last_failure_at: row.get(5)?,
+        }),
+    ).optional().map_err(Into::into)
+}
+
+fn autonomous_schedule_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AutonomousAgentSchedule> {
+    Ok(AutonomousAgentSchedule {
+        id: row.get(0)?,
+        definition_id: row.get(1)?,
+        kind: row.get(2)?,
+        expression: row.get(3)?,
+        timezone: row.get(4)?,
+        misfire_policy: row.get(5)?,
+        next_run_at: row.get(6)?,
+        enabled: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+pub fn put_autonomous_agent_schedule(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    req: &PutAutonomousAgentScheduleRequest,
+) -> Result<Option<AutonomousAgentSchedule>> {
+    let Some(definition) = get_autonomous_agent_definition(conn, org_id, definition_id)? else {
+        return Ok(None);
+    };
+    if definition.status == "archived" {
+        anyhow::bail!("agent_archived");
+    }
+    if !matches!(req.misfire_policy.as_str(), "run_once" | "skip") {
+        anyhow::bail!("invalid_misfire_policy");
+    }
+    let next = crate::automation::scheduler::next_occurrence(
+        &req.kind,
+        req.expression.as_deref(),
+        &req.timezone,
+        chrono::Utc::now(),
+    )?;
+    let next_raw = next.map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string());
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO autonomous_agent_schedules (id,org_id,definition_id,kind,expression,timezone,misfire_policy,next_run_at,enabled)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(definition_id) DO UPDATE SET kind=excluded.kind,expression=excluded.expression,
+         timezone=excluded.timezone,misfire_policy=excluded.misfire_policy,next_run_at=excluded.next_run_at,
+         enabled=excluded.enabled,updated_at=datetime('now')",
+        rusqlite::params![id,org_id,definition_id,req.kind,req.expression,req.timezone,req.misfire_policy,next_raw,req.enabled as i64],
+    )?;
+    get_autonomous_agent_schedule(conn, org_id, definition_id)
+}
+
+pub fn get_autonomous_agent_schedule(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+) -> Result<Option<AutonomousAgentSchedule>> {
+    conn.query_row(
+        "SELECT id,definition_id,kind,expression,timezone,misfire_policy,next_run_at,enabled,created_at,updated_at
+         FROM autonomous_agent_schedules WHERE org_id=?1 AND definition_id=?2",
+        rusqlite::params![org_id,definition_id], autonomous_schedule_from_row,
+    ).optional().map_err(Into::into)
+}
+
+fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentRun> {
+    let budget: String = row.get(8)?;
+    Ok(AutonomousAgentRun {
+        id: row.get(0)?,
+        definition_id: row.get(1)?,
+        revision_id: row.get(2)?,
+        trigger_kind: row.get(3)?,
+        occurrence_key: row.get(4)?,
+        scheduled_for: row.get(5)?,
+        snapshot_sha: row.get(6)?,
+        status: row.get(7)?,
+        budget: serde_json::from_str(&budget).unwrap_or(serde_json::Value::Null),
+        started_at: row.get(9)?,
+        finished_at: row.get(10)?,
+        created_at: row.get(11)?,
+    })
+}
+
+pub fn enqueue_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    trigger_kind: &str,
+    occurrence_key: &str,
+    scheduled_for: Option<&str>,
+) -> Result<Option<AutonomousAgentRun>> {
+    let Some(detail) = get_autonomous_agent_detail(conn, org_id, definition_id)? else {
+        return Ok(None);
+    };
+    if detail.definition.status != "enabled" {
+        anyhow::bail!("agent_not_enabled");
+    }
+    if detail.revision.validation_status != "valid" {
+        anyhow::bail!("validation_required");
+    }
+    let automation_run_id = Uuid::new_v4().to_string();
+    let run_id = Uuid::new_v4().to_string();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
+         VALUES (?1,?2,NULL,?3,?4,?5)",
+        rusqlite::params![automation_run_id,org_id,detail.definition.created_by,format!("{}-v{}",detail.definition.template_key,detail.definition.template_version),detail.revision.policy_generation],
+    )?;
+    tx.execute(
+        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?],
+    )?;
+    tx.commit()?;
+    get_autonomous_agent_run(conn, org_id, &run_id)
+}
+
+pub fn get_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentRun>> {
+    conn.query_row(
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+         FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id,id], autonomous_run_from_row,
+    ).optional().map_err(Into::into)
+}
+
+pub fn autonomous_agent_run_is_cancelled(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT status='cancelled' FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
+            rusqlite::params![org_id, id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(true))
+}
+
+pub fn autonomous_agent_run_publish_authorized(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM autonomous_agent_runs run
+            JOIN autonomous_agent_definitions definition ON definition.id=run.definition_id
+            JOIN autonomous_agent_revisions revision ON revision.id=run.revision_id
+            JOIN organizations org ON org.id=run.org_id
+            WHERE run.id=?2 AND run.org_id=?1
+              AND run.status IN('running','succeeded','partial')
+              AND definition.status='enabled'
+              AND definition.current_revision=revision.revision
+              AND revision.validation_status='valid'
+              AND org.autonomous_agents_enabled=1
+              AND (run.status IN('succeeded','partial') OR EXISTS(
+                    SELECT 1 FROM autonomous_agent_leases lease
+                    WHERE lease.run_id=run.id AND lease.released_at IS NULL
+                      AND lease.expires_at>datetime('now')))
+        )",
+        rusqlite::params![org_id, run_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+pub fn set_autonomous_agent_run_snapshot(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    sha: &str,
+) -> Result<bool> {
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid_snapshot_sha")
+    }
+    Ok(conn.execute("UPDATE autonomous_agent_runs SET snapshot_sha=?3 WHERE org_id=?1 AND id=?2 AND snapshot_sha IS NULL",rusqlite::params![org_id,id,sha])?==1)
+}
+
+pub fn list_autonomous_agent_runs(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: Option<&str>,
+) -> Result<Vec<AutonomousAgentRun>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+         FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![org_id, definition_id],
+        autonomous_run_from_row,
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn cancel_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentRun>> {
+    let active_attempts = conn
+        .prepare(
+            "SELECT attempt_id FROM autonomous_agent_leases
+             WHERE run_id=?1 AND released_at IS NULL",
+        )?
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let changed = conn.execute(
+        "UPDATE autonomous_agent_runs SET status='cancelled',finished_at=datetime('now')
+         WHERE id=?1 AND org_id=?2 AND status IN ('queued','leased','running')",
+        rusqlite::params![id, org_id],
+    )?;
+    if changed == 1 {
+        for attempt_id in active_attempts {
+            revoke_automation_attempt(conn, org_id, &attempt_id, "run_cancelled")?;
+        }
+        conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL", [id])?;
+        append_autonomous_agent_event(conn, org_id, id, "run.cancelled", &serde_json::json!({}))?;
+    }
+    get_autonomous_agent_run(conn, org_id, id)
+}
+
+pub fn list_autonomous_agent_events(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+) -> Result<Vec<crate::models::types::AutonomousAgentEvent>> {
+    let mut stmt=conn.prepare("SELECT sequence,kind,payload_json,created_at FROM autonomous_agent_events WHERE org_id=?1 AND run_id=?2 ORDER BY sequence")?;
+    let rows = stmt.query_map(rusqlite::params![org_id, run_id], |row| {
+        let raw: String = row.get(2)?;
+        Ok(crate::models::types::AutonomousAgentEvent {
+            sequence: row.get(0)?,
+            kind: row.get(1)?,
+            payload: serde_json::from_str(&raw).unwrap_or_default(),
+            created_at: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn enqueue_due_autonomous_agent_runs(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id,s.org_id,s.definition_id,s.kind,s.expression,s.timezone,s.next_run_at,s.misfire_policy
+         FROM autonomous_agent_schedules s JOIN autonomous_agent_definitions d ON d.id=s.definition_id JOIN organizations o ON o.id=s.org_id
+         WHERE s.enabled=1 AND d.status='enabled' AND o.autonomous_agents_enabled=1 AND s.next_run_at IS NOT NULL AND s.next_run_at<=datetime('now')
+         ORDER BY s.next_run_at LIMIT 50",
+    )?;
+    let due = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut created = 0;
+    for (
+        schedule_id,
+        org_id,
+        definition_id,
+        kind,
+        expression,
+        timezone,
+        scheduled_for,
+        misfire_policy,
+    ) in due
+    {
+        let occurrence = hex::encode(Sha256::digest(
+            format!("{schedule_id}|{scheduled_for}").as_bytes(),
+        ));
+        let next = crate::automation::scheduler::next_occurrence(
+            &kind,
+            expression.as_deref(),
+            &timezone,
+            chrono::Utc::now(),
+        )?
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string());
+        let advanced = conn.execute(
+            "UPDATE autonomous_agent_schedules SET next_run_at=?3,updated_at=datetime('now')
+             WHERE id=?1 AND next_run_at=?2",
+            rusqlite::params![schedule_id, scheduled_for, next],
+        )?;
+        if advanced == 0 {
+            continue;
+        }
+        if misfire_policy != "skip" {
+            match enqueue_autonomous_agent_run(
+                conn,
+                &org_id,
+                &definition_id,
+                "schedule",
+                &occurrence,
+                Some(&scheduled_for),
+            ) {
+                Ok(Some(_)) => created += 1,
+                Err(error) if error.to_string().contains("UNIQUE constraint failed") => {}
+                Err(error) => {
+                    conn.execute(
+                        "UPDATE autonomous_agent_schedules SET next_run_at=?2 WHERE id=?1 AND next_run_at IS ?3",
+                        rusqlite::params![schedule_id,scheduled_for,next],
+                    )?;
+                    return Err(error);
+                }
+                Ok(None) => continue,
+            }
+        }
+    }
+    Ok(created)
+}
+
+#[derive(Debug)]
+pub struct ClaimedAutonomousRun {
+    pub org_id: String,
+    pub run: AutonomousAgentRun,
+    pub attempt_id: String,
+    pub claim_token: String,
+    pub template_key: String,
+    pub config: serde_json::Value,
+}
+
+pub fn claim_next_autonomous_agent_run(
+    conn: &Connection,
+    worker_id: &str,
+    lease_seconds: i64,
+) -> Result<Option<ClaimedAutonomousRun>> {
+    let health = get_autonomous_runtime_health(conn)?;
+    if !matches!(
+        health.as_ref().map(|value| value.status.as_str()),
+        Some("ready")
+    ) {
+        return Ok(None);
+    }
+    let expired=conn.prepare("SELECT run_id FROM autonomous_agent_leases WHERE released_at IS NULL AND expires_at<=datetime('now')")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for run_id in expired {
+        let attempt_ids=conn.prepare("SELECT attempt_id FROM autonomous_agent_leases WHERE run_id=?1 AND released_at IS NULL")?.query_map([&run_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let org_id: String = conn.query_row(
+            "SELECT org_id FROM autonomous_agent_runs WHERE id=?1",
+            [&run_id],
+            |r| r.get(0),
+        )?;
+        for attempt_id in attempt_ids {
+            revoke_automation_attempt(conn, &org_id, &attempt_id, "lease_expired")?;
+        }
+        conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND released_at IS NULL",[&run_id])?;
+        conn.execute("UPDATE autonomous_agent_runs SET status='queued',started_at=NULL WHERE id=?1 AND status IN ('leased','running')",[&run_id])?;
+    }
+    conn.execute("UPDATE autonomous_agent_runs SET status='dead_letter',finished_at=datetime('now') WHERE status='queued' AND (SELECT COUNT(*) FROM automation_attempts a WHERE a.run_id=autonomous_agent_runs.automation_run_id)>=COALESCE(json_extract(budget_json,'$.max_attempts'),2)",[])?;
+    let candidate: Option<(String,String)> = conn.query_row(
+        "SELECT r.id,r.org_id
+         FROM autonomous_agent_runs r
+         JOIN organizations o ON o.id=r.org_id
+         LEFT JOIN autonomous_agent_work_items candidate_work ON candidate_work.run_id=r.id
+         LEFT JOIN autonomous_agent_revisions candidate_revision ON candidate_revision.id=r.revision_id
+         WHERE r.status='queued' AND o.autonomous_agents_enabled=1
+           AND (SELECT COUNT(*) FROM autonomous_agent_runs active
+                WHERE active.definition_id=r.definition_id AND active.status IN ('leased','running'))
+               < COALESCE(json_extract(r.budget_json,'$.max_definition_concurrency'),1)
+           AND (SELECT COUNT(*) FROM autonomous_agent_runs active
+                WHERE active.org_id=r.org_id AND active.status IN ('leased','running'))
+               < COALESCE(json_extract(r.budget_json,'$.max_organization_concurrency'),4)
+           AND (
+             COALESCE(candidate_work.repository,json_extract(candidate_revision.config_json,'$.repository')) IS NULL
+             OR (SELECT COUNT(*)
+                 FROM autonomous_agent_runs active
+                 LEFT JOIN autonomous_agent_work_items active_work ON active_work.run_id=active.id
+                 LEFT JOIN autonomous_agent_revisions active_revision ON active_revision.id=active.revision_id
+                 WHERE active.org_id=r.org_id AND active.status IN ('leased','running')
+                   AND COALESCE(active_work.repository,json_extract(active_revision.config_json,'$.repository'))
+                       = COALESCE(candidate_work.repository,json_extract(candidate_revision.config_json,'$.repository')))
+                < COALESCE(json_extract(r.budget_json,'$.max_repository_concurrency'),1)
+           )
+         ORDER BY r.created_at LIMIT 1",
+        [], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).optional()?;
+    let Some((run_id, org_id)) = candidate else {
+        return Ok(None);
+    };
+    let attempt_id = Uuid::new_v4().to_string();
+    let lease_id = Uuid::new_v4().to_string();
+    let claim_token = Uuid::new_v4().to_string();
+    let claim_token_hash = hex::encode(Sha256::digest(claim_token.as_bytes()));
+    let tx = conn.unchecked_transaction()?;
+    let changed = tx.execute(
+        "UPDATE autonomous_agent_runs SET status='leased' WHERE id=?1 AND status='queued'",
+        [&run_id],
+    )?;
+    if changed == 0 {
+        tx.rollback()?;
+        return Ok(None);
+    }
+    let automation_run_id: String = tx.query_row(
+        "SELECT automation_run_id FROM autonomous_agent_runs WHERE id=?1",
+        [&run_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO automation_attempts (id,run_id) VALUES (?1,?2)",
+        rusqlite::params![attempt_id, automation_run_id],
+    )?;
+    tx.execute(
+        "INSERT INTO autonomous_agent_leases (id,run_id,attempt_id,worker_id,claim_token_hash,expires_at) VALUES (?1,?2,?3,?4,?5,datetime('now',?6))",
+        rusqlite::params![lease_id,run_id,attempt_id,worker_id,claim_token_hash,format!("+{lease_seconds} seconds")],
+    )?;
+    tx.commit()?;
+    let run = get_autonomous_agent_run(conn, &org_id, &run_id)?
+        .ok_or_else(|| anyhow::anyhow!("run_missing_after_claim"))?;
+    let (template_key,config_raw): (String,String) = conn.query_row(
+        "SELECT d.template_key,r.config_json FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r ON r.id=?2 WHERE d.id=?1",
+        rusqlite::params![run.definition_id,run.revision_id], |row| Ok((row.get(0)?,row.get(1)?)),
+    )?;
+    let mut config: serde_json::Value = serde_json::from_str(&config_raw)?;
+    if let Some(object) = config.as_object_mut() {
+        let targets = list_autonomous_agent_targets(conn, &org_id, &run.definition_id)?;
+        object.insert(
+            "targets".into(),
+            serde_json::to_value(targets).unwrap_or_else(|_| serde_json::json!([])),
+        );
+        let work:Option<(String,String,i64,Option<String>)>=conn.query_row(
+            "SELECT repository,kind,external_number,head_sha FROM autonomous_agent_work_items WHERE run_id=?1",
+            [&run.id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        ).optional()?;
+        if let Some((repository, kind, number, head_sha)) = work {
+            object.insert("trigger".into(),serde_json::json!({"repository":repository,"kind":kind,"number":number,"head_sha":head_sha}));
+        }
+    }
+    Ok(Some(ClaimedAutonomousRun {
+        org_id,
+        run,
+        attempt_id,
+        claim_token,
+        template_key,
+        config,
+    }))
+}
+
+pub fn requeue_autonomous_agent_run_without_attempt(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    attempt_id: &str,
+    reason: &str,
+) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let automation_run_id: Option<String> = tx
+        .query_row(
+            "SELECT automation_run_id FROM autonomous_agent_runs WHERE id=?1 AND org_id=?2",
+            rusqlite::params![run_id, org_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(automation_run_id) = automation_run_id else {
+        return Ok(false);
+    };
+    tx.execute(
+        "DELETE FROM autonomous_agent_leases WHERE run_id=?1 AND attempt_id=?2",
+        rusqlite::params![run_id, attempt_id],
+    )?;
+    tx.execute(
+        "DELETE FROM automation_attempts WHERE id=?1 AND run_id=?2",
+        rusqlite::params![attempt_id, automation_run_id],
+    )?;
+    let changed=tx.execute("UPDATE autonomous_agent_runs SET status='queued',started_at=NULL WHERE id=?1 AND org_id=?2 AND status IN('leased','running')",rusqlite::params![run_id,org_id])?;
+    tx.commit()?;
+    if changed == 1 {
+        append_autonomous_agent_event(
+            conn,
+            org_id,
+            run_id,
+            "run.requeued",
+            &serde_json::json!({"reason":reason}),
+        )?;
+    }
+    Ok(changed == 1)
+}
+
+pub fn get_autonomous_agent_org_settings(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Option<crate::models::types::AutonomousAgentOrgSettings>> {
+    conn.query_row("SELECT autonomous_agents_enabled,autonomous_agent_retention_days FROM organizations WHERE id=?1",[org_id],|r|Ok(crate::models::types::AutonomousAgentOrgSettings{enabled:r.get::<_,i64>(0)?!=0,retention_days:r.get(1)?})).optional().map_err(Into::into)
+}
+
+pub fn patch_autonomous_agent_org_settings(
+    conn: &Connection,
+    org_id: &str,
+    enabled: Option<bool>,
+    retention_days: Option<i64>,
+) -> Result<Option<crate::models::types::AutonomousAgentOrgSettings>> {
+    if retention_days.is_some_and(|v| !(7..=3650).contains(&v)) {
+        anyhow::bail!("invalid_retention_days")
+    }
+    conn.execute("UPDATE organizations SET autonomous_agents_enabled=COALESCE(?2,autonomous_agents_enabled),autonomous_agent_retention_days=COALESCE(?3,autonomous_agent_retention_days) WHERE id=?1",rusqlite::params![org_id,enabled.map(i64::from),retention_days])?;
+    if enabled == Some(false) {
+        let attempts=conn.prepare("SELECT lease.attempt_id FROM autonomous_agent_leases lease JOIN autonomous_agent_runs run ON run.id=lease.run_id WHERE run.org_id=?1 AND lease.released_at IS NULL")?.query_map([org_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for attempt_id in attempts {
+            revoke_automation_attempt(conn, org_id, &attempt_id, "organization_kill_switch")?;
+        }
+        conn.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE released_at IS NULL AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1)",[org_id])?;
+        conn.execute("UPDATE autonomous_agent_runs SET status='cancelled',finished_at=datetime('now') WHERE org_id=?1 AND status IN ('leased','running')",[org_id])?;
+    }
+    get_autonomous_agent_org_settings(conn, org_id)
+}
+
+pub fn cleanup_autonomous_agent_retention(conn: &Connection) -> Result<usize> {
+    let orgs = conn
+        .prepare("SELECT id,autonomous_agent_retention_days FROM organizations")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut deleted = 0;
+    for (org, days) in orgs {
+        let cutoff = format!("-{} days", days);
+        conn.execute("DELETE FROM autonomous_agent_deliveries WHERE org_id=?1 AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1 AND finished_at<datetime('now',?2))",rusqlite::params![org,cutoff])?;
+        conn.execute("DELETE FROM autonomous_agent_findings WHERE org_id=?1 AND status IN('resolved','ignored') AND updated_at<datetime('now',?2)",rusqlite::params![org,cutoff])?;
+        conn.execute("DELETE FROM autonomous_agent_output_links WHERE org_id=?1 AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1 AND finished_at<datetime('now',?2))",rusqlite::params![org,cutoff])?;
+        conn.execute("DELETE FROM autonomous_agent_work_items WHERE org_id=?1 AND run_id IN(SELECT id FROM autonomous_agent_runs WHERE org_id=?1 AND finished_at<datetime('now',?2))",rusqlite::params![org,cutoff])?;
+        deleted+=conn.execute("DELETE FROM autonomous_agent_runs WHERE org_id=?1 AND finished_at<datetime('now',?2) AND status NOT IN('queued','leased','running') AND NOT EXISTS(SELECT 1 FROM autonomous_agent_findings f WHERE f.run_id=autonomous_agent_runs.id)",rusqlite::params![org,cutoff])?;
+    }
+    Ok(deleted)
+}
+
+pub fn get_autonomous_agent_metrics(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<crate::models::types::AutonomousAgentMetrics> {
+    let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [org_id], |r| r.get(0))?) };
+    let estimated_cost_usd=conn.query_row("SELECT COALESCE(SUM(CAST(json_extract(payload_json,'$.result.total_cost_usd') AS REAL)),0) FROM autonomous_agent_events WHERE org_id=?1 AND kind='run.finished'",[org_id],|r|r.get(0))?;
+    Ok(crate::models::types::AutonomousAgentMetrics{queued:count("SELECT COUNT(*) FROM autonomous_agent_runs WHERE org_id=?1 AND status='queued'")?,running:count("SELECT COUNT(*) FROM autonomous_agent_runs WHERE org_id=?1 AND status IN('leased','running')")?,blocked:count("SELECT COUNT(*) FROM autonomous_agent_runs WHERE org_id=?1 AND status IN('blocked_policy','blocked_runtime','budget_exhausted')")?,open_findings:count("SELECT COUNT(*) FROM autonomous_agent_findings WHERE org_id=?1 AND status='open'")?,failed_deliveries:count("SELECT COUNT(*) FROM autonomous_agent_deliveries WHERE org_id=?1 AND status='failed'")?,dead_letters:count("SELECT (SELECT COUNT(*) FROM autonomous_agent_runs WHERE org_id=?1 AND status='dead_letter')+(SELECT COUNT(*) FROM autonomous_agent_deliveries WHERE org_id=?1 AND status='dead_letter')")?,estimated_cost_usd})
+}
+
+pub fn autonomous_agent_run_has_failed_deliveries(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM autonomous_agent_deliveries WHERE org_id=?1 AND run_id=?2 AND status IN('failed','dead_letter'))",
+        rusqlite::params![org_id, run_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+pub fn start_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    attempt_id: &str,
+    claim_token: &str,
+) -> Result<bool> {
+    let token_hash = hex::encode(Sha256::digest(claim_token.as_bytes()));
+    let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_leases l JOIN autonomous_agent_runs r ON r.id=l.run_id WHERE l.run_id=?1 AND l.attempt_id=?2 AND l.claim_token_hash=?4 AND l.released_at IS NULL AND l.expires_at>datetime('now') AND r.org_id=?3)",rusqlite::params![id,attempt_id,org_id,token_hash],|r|r.get(0))?;
+    if !valid {
+        return Ok(false);
+    }
+    Ok(conn.execute("UPDATE autonomous_agent_runs SET status='running',started_at=COALESCE(started_at,datetime('now')) WHERE id=?1 AND org_id=?2 AND status='leased'",rusqlite::params![id,org_id])?==1)
+}
+
+pub fn heartbeat_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    attempt_id: &str,
+    claim_token: &str,
+    lease_seconds: i64,
+) -> Result<bool> {
+    let token_hash = hex::encode(Sha256::digest(claim_token.as_bytes()));
+    Ok(conn.execute("UPDATE autonomous_agent_leases SET heartbeat_at=datetime('now'),expires_at=datetime('now',?5) WHERE run_id=?1 AND attempt_id=?2 AND claim_token_hash=?3 AND released_at IS NULL AND EXISTS(SELECT 1 FROM autonomous_agent_runs WHERE id=?1 AND org_id=?4 AND status='running')",rusqlite::params![id,attempt_id,token_hash,org_id,format!("+{} seconds",lease_seconds.max(30))])?==1)
+}
+
+pub fn append_autonomous_agent_event(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO autonomous_agent_events (id,org_id,run_id,sequence,kind,payload_json)
+         SELECT ?1,?2,?3,COALESCE(MAX(sequence),0)+1,?4,?5 FROM autonomous_agent_events WHERE run_id=?3",
+        rusqlite::params![Uuid::new_v4().to_string(),org_id,run_id,kind,serde_json::to_string(payload)?],
+    )?;
+    Ok(())
+}
+
+pub fn finish_autonomous_agent_run(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    attempt_id: &str,
+    status: &str,
+    result: &serde_json::Value,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let changed = tx.execute(
+        "UPDATE autonomous_agent_runs SET status=?3,finished_at=datetime('now')
+         WHERE id=?1 AND org_id=?2 AND status IN('leased','running')
+           AND EXISTS(SELECT 1 FROM autonomous_agent_leases lease
+                      WHERE lease.run_id=?1 AND lease.attempt_id=?4 AND lease.released_at IS NULL)",
+        rusqlite::params![run_id, org_id, status, attempt_id],
+    )?;
+    if changed != 1 {
+        tx.rollback()?;
+        anyhow::bail!("run_not_active")
+    }
+    tx.execute(
+        "UPDATE automation_attempts SET status='revoked',revoked_at=datetime('now')
+         WHERE id=?1 AND status='active'",
+        [attempt_id],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO automation_revocations(id,org_id,attempt_id,reason)
+         VALUES(?1,?2,?3,?4)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            org_id,
+            attempt_id,
+            format!("run_finished:{status}")
+        ],
+    )?;
+    tx.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND attempt_id=?2 AND released_at IS NULL", rusqlite::params![run_id,attempt_id])?;
+    tx.commit()?;
+    append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+}
+
+fn autonomous_connector_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AutonomousAgentConnector> {
+    let metadata: String = row.get(3)?;
+    let scopes: String = row.get(4)?;
+    Ok(AutonomousAgentConnector {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        name: row.get(2)?,
+        metadata: serde_json::from_str(&metadata).unwrap_or(serde_json::Value::Null),
+        scopes: serde_json::from_str(&scopes).unwrap_or_default(),
+        health: row.get(5)?,
+        revocation_generation: row.get(6)?,
+        secret_configured: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+pub fn list_autonomous_agent_connectors(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<AutonomousAgentConnector>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,kind,name,metadata_json,scopes_json,health,revocation_generation,secret_ciphertext IS NOT NULL,created_at,updated_at
+         FROM autonomous_agent_connectors WHERE org_id=?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([org_id], autonomous_connector_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn put_autonomous_agent_connector(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    req: &PutAutonomousAgentConnectorRequest,
+) -> Result<AutonomousAgentConnector> {
+    if !matches!(req.kind.as_str(), "github_app" | "slack" | "target_secret") {
+        anyhow::bail!("invalid_connector_kind");
+    }
+    if req.name.trim().is_empty() || !req.metadata.is_object() {
+        anyhow::bail!("invalid_connector");
+    }
+    let required_scopes: &[&str] = match req.kind.as_str() {
+        "github_app" => &[
+            "metadata:read",
+            "contents:write",
+            "issues:write",
+            "pull_requests:write",
+            "checks:read",
+        ],
+        "slack" => &["chat:write"],
+        "target_secret" => &["target:use"],
+        _ => &[],
+    };
+    if required_scopes
+        .iter()
+        .any(|required| !req.scopes.iter().any(|scope| scope == required))
+    {
+        anyhow::bail!("insufficient_connector_scopes")
+    }
+    match req.kind.as_str() {
+        "github_app" => {
+            if req
+                .metadata
+                .get("app_id")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .is_none()
+                || req
+                    .metadata
+                    .get("installation_id")
+                    .and_then(|v| v.as_i64())
+                    .filter(|v| *v > 0)
+                    .is_none()
+            {
+                anyhow::bail!("invalid_github_app_metadata")
+            }
+            if let Some(secret) = req.secret.as_deref() {
+                let value: serde_json::Value = serde_json::from_str(secret)
+                    .map_err(|_| anyhow::anyhow!("invalid_github_app_secret"))?;
+                if value
+                    .get("private_key")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| v.contains("PRIVATE KEY"))
+                    .is_none()
+                    || value
+                        .get("webhook_secret")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| v.len() >= 16)
+                        .is_none()
+                {
+                    anyhow::bail!("invalid_github_app_secret")
+                }
+            }
+        }
+        "slack" => {
+            if let Some(secret) = req.secret.as_deref() {
+                crate::automation::connectors::validate_slack_webhook(secret)?;
+            }
+        }
+        _ => {}
+    }
+    let ciphertext = match req.secret.as_deref() {
+        Some(secret) if !secret.is_empty() => Some(
+            crate::crypto::encrypt(secret).ok_or_else(|| anyhow::anyhow!("encryption_required"))?,
+        ),
+        Some(_) => anyhow::bail!("invalid_connector_secret"),
+        None => None,
+    };
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8)
+         ON CONFLICT(org_id,kind,name) DO UPDATE SET
+           secret_ciphertext=COALESCE(excluded.secret_ciphertext,autonomous_agent_connectors.secret_ciphertext),
+           metadata_json=excluded.metadata_json,scopes_json=excluded.scopes_json,health=CASE WHEN excluded.secret_ciphertext IS NULL AND autonomous_agent_connectors.secret_ciphertext IS NULL THEN 'unknown' ELSE 'ready' END,
+           revocation_generation=autonomous_agent_connectors.revocation_generation+1,updated_at=datetime('now')",
+        rusqlite::params![id,org_id,req.kind,req.name.trim(),ciphertext,serde_json::to_string(&req.metadata)?,serde_json::to_string(&req.scopes)?,user_id],
+    )?;
+    conn.query_row(
+        "SELECT id,kind,name,metadata_json,scopes_json,health,revocation_generation,secret_ciphertext IS NOT NULL,created_at,updated_at
+         FROM autonomous_agent_connectors WHERE org_id=?1 AND kind=?2 AND name=?3",
+        rusqlite::params![org_id,req.kind,req.name.trim()], autonomous_connector_from_row,
+    ).map_err(Into::into)
+}
+
+pub fn revoke_autonomous_agent_connector(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE autonomous_agent_connectors SET secret_ciphertext=NULL,health='revoked',revocation_generation=revocation_generation+1,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id,id],
+    )? == 1)
+}
+
+pub fn get_autonomous_agent_connector_secret(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<(AutonomousAgentConnector, String)>> {
+    let value: Option<(AutonomousAgentConnector,String)> = conn.query_row(
+        "SELECT id,kind,name,metadata_json,scopes_json,health,revocation_generation,secret_ciphertext IS NOT NULL,created_at,updated_at,secret_ciphertext
+         FROM autonomous_agent_connectors WHERE org_id=?1 AND id=?2 AND health!='revoked'",
+        rusqlite::params![org_id,id], |row| {
+            let connector = autonomous_connector_from_row(row)?;
+            let ciphertext: String = row.get(10)?;
+            Ok((connector,ciphertext))
+        },
+    ).optional()?;
+    match value {
+        Some((connector, ciphertext)) => Ok(Some((
+            connector,
+            crate::crypto::decrypt(&ciphertext)
+                .ok_or_else(|| anyhow::anyhow!("connector_decrypt_failed"))?,
+        ))),
+        None => Ok(None),
+    }
+}
+
+pub fn find_github_app_webhook_connector(
+    conn: &Connection,
+    installation_id: i64,
+) -> Result<Option<(String, String, String)>> {
+    let value: Option<(String,String,String)> = conn.query_row(
+        "SELECT org_id,id,secret_ciphertext FROM autonomous_agent_connectors
+         WHERE kind='github_app' AND health!='revoked' AND json_extract(metadata_json,'$.installation_id')=?1",
+        [installation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional()?;
+    match value {
+        Some((org_id, id, ciphertext)) => Ok(Some((
+            org_id,
+            id,
+            crate::crypto::decrypt(&ciphertext)
+                .ok_or_else(|| anyhow::anyhow!("connector_decrypt_failed"))?,
+        ))),
+        None => Ok(None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_github_webhook_delivery(
+    conn: &Connection,
+    org_id: &str,
+    connector_id: &str,
+    delivery_id: &str,
+    event_name: &str,
+    action: Option<&str>,
+    repository: Option<&str>,
+    payload_hash: &str,
+) -> Result<bool> {
+    let existing: Option<String> = conn.query_row(
+        "SELECT payload_hash FROM autonomous_github_deliveries WHERE connector_id=?1 AND delivery_id=?2",
+        rusqlite::params![connector_id,delivery_id], |row| row.get(0),
+    ).optional()?;
+    if let Some(existing) = existing {
+        if existing == payload_hash {
+            return Ok(false);
+        }
+        anyhow::bail!("github_delivery_payload_mismatch");
+    }
+    conn.execute(
+        "INSERT INTO autonomous_github_deliveries (id,org_id,connector_id,delivery_id,event_name,action,repository,payload_hash)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![Uuid::new_v4().to_string(),org_id,connector_id,delivery_id,event_name,action,repository,payload_hash],
+    )?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn enqueue_github_webhook_agents(
+    conn: &Connection,
+    org_id: &str,
+    _delivery_id: &str,
+    repository: &str,
+    kind: &str,
+    external_number: i64,
+    head_sha: Option<&str>,
+    payload_hash: &str,
+) -> Result<usize> {
+    let template = match kind {
+        "github_issue" => "github_issue_resolver",
+        "github_pr" => "github_pr_reviewer",
+        _ => anyhow::bail!("invalid_work_item_kind"),
+    };
+    let mut stmt = conn.prepare(
+        "SELECT d.id FROM autonomous_agent_definitions d JOIN autonomous_agent_revisions r
+         ON r.definition_id=d.id AND r.revision=d.current_revision
+         WHERE d.org_id=?1 AND d.status='enabled' AND d.template_key=?2
+           AND json_extract(r.config_json,'$.repository')=?3 AND r.validation_status='valid'",
+    )?;
+    let ids = stmt
+        .query_map(rusqlite::params![org_id, template, repository], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut created = 0;
+    for definition_id in ids {
+        if kind == "github_issue" {
+            let already_owned: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM autonomous_agent_work_items work
+                    WHERE work.definition_id=?1 AND work.repository=?2
+                      AND work.kind='github_issue' AND work.external_number=?3
+                      AND work.eligibility IN('pending','eligible','completed')
+                )",
+                rusqlite::params![definition_id,repository,external_number],
+                |row| row.get(0),
+            )?;
+            if already_owned {
+                continue;
+            }
+        }
+        let identity = head_sha.unwrap_or(payload_hash);
+        let occurrence = format!(
+            "github:{}",
+            hex::encode(Sha256::digest(
+                format!("{definition_id}|{repository}|{kind}|{external_number}|{identity}")
+                    .as_bytes()
+            ))
+        );
+        let run = match enqueue_autonomous_agent_run(
+            conn,
+            org_id,
+            &definition_id,
+            "github_webhook",
+            &occurrence,
+            None,
+        ) {
+            Ok(Some(run)) => run,
+            Err(error) if error.to_string().contains("UNIQUE constraint failed") => continue,
+            Ok(None) => continue,
+            Err(error) => return Err(error),
+        };
+        conn.execute(
+            "UPDATE autonomous_agent_runs SET snapshot_sha=?2 WHERE id=?1",
+            rusqlite::params![run.id, head_sha],
+        )?;
+        conn.execute("INSERT OR IGNORE INTO autonomous_agent_work_items(id,org_id,definition_id,run_id,repository,kind,external_number,head_sha,payload_hash,eligibility) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'eligible')",rusqlite::params![Uuid::new_v4().to_string(),org_id,definition_id,run.id,repository,kind,external_number,head_sha,payload_hash])?;
+        created += 1;
+    }
+    Ok(created)
+}
+
+#[derive(Debug)]
+pub struct GithubReconciliationSource {
+    pub org_id: String,
+    pub template_key: String,
+    pub repository: String,
+    pub connector_id: String,
+}
+
+pub fn list_github_reconciliation_sources(
+    conn: &Connection,
+) -> Result<Vec<GithubReconciliationSource>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT d.org_id,d.template_key,
+                json_extract(r.config_json,'$.repository'),
+                json_extract(r.config_json,'$.github_connector_id')
+         FROM autonomous_agent_definitions d
+         JOIN autonomous_agent_revisions r
+           ON r.definition_id=d.id AND r.revision=d.current_revision
+         JOIN organizations o ON o.id=d.org_id
+         JOIN autonomous_agent_connectors c
+           ON c.id=json_extract(r.config_json,'$.github_connector_id')
+          AND c.org_id=d.org_id
+         WHERE d.status='enabled' AND o.autonomous_agents_enabled=1
+           AND r.validation_status='valid' AND c.health='ready'
+           AND d.template_key IN('github_issue_resolver','github_pr_reviewer')
+           AND json_extract(r.config_json,'$.repository') IS NOT NULL
+         ORDER BY d.org_id,d.template_key,json_extract(r.config_json,'$.repository')
+         LIMIT 100",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(GithubReconciliationSource {
+            org_id: row.get(0)?,
+            template_key: row.get(1)?,
+            repository: row.get(2)?,
+            connector_id: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn create_autonomous_output_link(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    kind: &str,
+    external_id: &str,
+    external_url: Option<&str>,
+) -> Result<()> {
+    conn.execute("INSERT OR IGNORE INTO autonomous_agent_output_links(id,org_id,run_id,work_item_id,kind,external_id,external_url) VALUES(?1,?2,?3,(SELECT id FROM autonomous_agent_work_items WHERE run_id=?3),?4,?5,?6)",rusqlite::params![Uuid::new_v4().to_string(),org_id,run_id,kind,external_id,external_url])?;
+    conn.execute(
+        "UPDATE autonomous_agent_work_items SET eligibility='completed' WHERE run_id=?1",
+        [run_id],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_autonomous_agent_finding(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    run_id: &str,
+    fingerprint: &str,
+    title: &str,
+    severity: &str,
+    summary: &str,
+    evidence: &serde_json::Value,
+) -> Result<AutonomousAgentFinding> {
+    if !matches!(severity, "info" | "low" | "medium" | "high" | "critical") {
+        anyhow::bail!("invalid_severity");
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO autonomous_agent_findings (id,org_id,definition_id,run_id,fingerprint,title,severity,summary,evidence_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(org_id,definition_id,fingerprint) DO UPDATE SET run_id=excluded.run_id,title=excluded.title,
+         severity=excluded.severity,summary=excluded.summary,evidence_json=excluded.evidence_json,
+         occurrence_count=autonomous_agent_findings.occurrence_count+1,updated_at=datetime('now')",
+        rusqlite::params![id,org_id,definition_id,run_id,fingerprint,title,severity,summary,serde_json::to_string(evidence)?],
+    )?;
+    conn.query_row(
+        "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at
+         FROM autonomous_agent_findings WHERE org_id=?1 AND definition_id=?2 AND fingerprint=?3",
+        rusqlite::params![org_id,definition_id,fingerprint], finding_from_row,
+    ).map_err(Into::into)
+}
+
+fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentFinding> {
+    let evidence: String = row.get(8)?;
+    Ok(AutonomousAgentFinding {
+        id: row.get(0)?,
+        definition_id: row.get(1)?,
+        run_id: row.get(2)?,
+        fingerprint: row.get(3)?,
+        title: row.get(4)?,
+        severity: row.get(5)?,
+        status: row.get(6)?,
+        summary: row.get(7)?,
+        evidence: serde_json::from_str(&evidence).unwrap_or_default(),
+        occurrence_count: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+pub fn list_autonomous_agent_findings(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<AutonomousAgentFinding>> {
+    let mut stmt=conn.prepare("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 ORDER BY updated_at DESC")?;
+    let rows = stmt.query_map([org_id], finding_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn patch_autonomous_agent_finding(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    status: &str,
+) -> Result<Option<AutonomousAgentFinding>> {
+    if !matches!(status, "open" | "resolved" | "ignored") {
+        anyhow::bail!("invalid_finding_status")
+    }
+    conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,status])?;
+    conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
+}
+
+pub fn list_autonomous_agent_deliveries(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<AutonomousAgentDelivery>> {
+    let mut stmt=conn.prepare("SELECT id,run_id,finding_id,channel,status,external_id,external_url,attempts,last_error_code,created_at,updated_at FROM autonomous_agent_deliveries WHERE org_id=?1 ORDER BY updated_at DESC")?;
+    let rows = stmt.query_map([org_id], delivery_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn retry_autonomous_agent_delivery(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentDelivery>> {
+    conn.execute("UPDATE autonomous_agent_deliveries SET status='pending',last_error_code=NULL,next_attempt_at=datetime('now'),updated_at=datetime('now') WHERE org_id=?1 AND id=?2 AND status IN ('failed','dead_letter')",rusqlite::params![org_id,id])?;
+    conn.query_row("SELECT id,run_id,finding_id,channel,status,external_id,external_url,attempts,last_error_code,created_at,updated_at FROM autonomous_agent_deliveries WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],delivery_from_row).optional().map_err(Into::into)
+}
+
+pub struct PendingAutonomousDelivery {
+    pub org_id: String,
+    pub delivery: AutonomousAgentDelivery,
+    pub finding: AutonomousAgentFinding,
+    pub config: serde_json::Value,
+}
+
+pub fn next_pending_autonomous_delivery(
+    conn: &Connection,
+) -> Result<Option<PendingAutonomousDelivery>> {
+    conn.query_row("SELECT d.org_id,d.id,d.run_id,d.finding_id,d.channel,d.status,d.external_id,d.external_url,d.attempts,d.last_error_code,d.created_at,d.updated_at,f.id,f.definition_id,f.run_id,f.fingerprint,f.title,f.severity,f.status,f.summary,f.evidence_json,f.occurrence_count,f.created_at,f.updated_at,r.config_json FROM autonomous_agent_deliveries d JOIN autonomous_agent_findings f ON f.id=d.finding_id JOIN autonomous_agent_definitions a ON a.id=f.definition_id JOIN autonomous_agent_revisions r ON r.definition_id=a.id AND r.revision=a.current_revision WHERE ((d.status='pending' AND d.attempts>0) OR (d.status='failed' AND d.next_attempt_at<=datetime('now'))) AND d.channel IN ('slack','github_issue') ORDER BY d.updated_at LIMIT 1",[],|row|{
+        let evidence:String=row.get(20)?;let config:String=row.get(24)?;
+        Ok(PendingAutonomousDelivery{org_id:row.get(0)?,delivery:AutonomousAgentDelivery{id:row.get(1)?,run_id:row.get(2)?,finding_id:row.get(3)?,channel:row.get(4)?,status:row.get(5)?,external_id:row.get(6)?,external_url:row.get(7)?,attempts:row.get(8)?,last_error_code:row.get(9)?,created_at:row.get(10)?,updated_at:row.get(11)?},finding:AutonomousAgentFinding{id:row.get(12)?,definition_id:row.get(13)?,run_id:row.get(14)?,fingerprint:row.get(15)?,title:row.get(16)?,severity:row.get(17)?,status:row.get(18)?,summary:row.get(19)?,evidence:serde_json::from_str(&evidence).unwrap_or_default(),occurrence_count:row.get(21)?,created_at:row.get(22)?,updated_at:row.get(23)?},config:serde_json::from_str(&config).unwrap_or_default()})
+    }).optional().map_err(Into::into)
+}
+
+fn autonomous_target_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::types::AutonomousAgentTarget> {
+    let raw: String = row.get(4)?;
+    Ok(crate::models::types::AutonomousAgentTarget {
+        id: row.get(0)?,
+        definition_id: row.get(1)?,
+        kind: row.get(2)?,
+        name: row.get(3)?,
+        config: serde_json::from_str(&raw).unwrap_or_default(),
+        credential_connector_id: row.get(5)?,
+        enabled: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+pub fn list_autonomous_agent_targets(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+) -> Result<Vec<crate::models::types::AutonomousAgentTarget>> {
+    let mut stmt=conn.prepare("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE org_id=?1 AND definition_id=?2 ORDER BY created_at")?;
+    let rows = stmt.query_map(
+        rusqlite::params![org_id, definition_id],
+        autonomous_target_from_row,
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn put_autonomous_agent_target(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    req: &crate::models::types::PutAutonomousAgentTargetRequest,
+) -> Result<Option<crate::models::types::AutonomousAgentTarget>> {
+    if get_autonomous_agent_definition(conn, org_id, definition_id)?.is_none() {
+        return Ok(None);
+    }
+    if !matches!(
+        req.kind.as_str(),
+        "repository" | "web_application" | "project"
+    ) {
+        anyhow::bail!("invalid_target_kind")
+    }
+    if req.name.trim().is_empty() || !req.config.is_object() {
+        anyhow::bail!("invalid_target")
+    }
+    if let Some(connector) = req.credential_connector_id.as_deref() {
+        let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health!='revoked')",rusqlite::params![connector,org_id],|r|r.get(0))?;
+        if !exists {
+            anyhow::bail!("invalid_target_connector")
+        }
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
+    conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
+}
+
+pub fn create_autonomous_agent_delivery(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    finding_id: Option<&str>,
+    channel: &str,
+    key: &str,
+) -> Result<AutonomousAgentDelivery> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute("INSERT INTO autonomous_agent_deliveries (id,org_id,run_id,finding_id,channel,idempotency_key) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(org_id,channel,idempotency_key) DO NOTHING",rusqlite::params![id,org_id,run_id,finding_id,channel,key])?;
+    conn.query_row("SELECT id,run_id,finding_id,channel,status,external_id,external_url,attempts,last_error_code,created_at,updated_at FROM autonomous_agent_deliveries WHERE org_id=?1 AND channel=?2 AND idempotency_key=?3",rusqlite::params![org_id,channel,key],delivery_from_row).map_err(Into::into)
+}
+
+fn delivery_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomousAgentDelivery> {
+    Ok(AutonomousAgentDelivery {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        finding_id: row.get(2)?,
+        channel: row.get(3)?,
+        status: row.get(4)?,
+        external_id: row.get(5)?,
+        external_url: row.get(6)?,
+        attempts: row.get(7)?,
+        last_error_code: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+pub fn complete_autonomous_agent_delivery(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    external_id: Option<&str>,
+    external_url: Option<&str>,
+) -> Result<()> {
+    conn.execute("UPDATE autonomous_agent_deliveries SET status='delivered',external_id=?3,external_url=?4,attempts=attempts+1,last_error_code=NULL,next_attempt_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,external_id,external_url])?;
+    Ok(())
+}
+
+pub fn fail_autonomous_agent_delivery(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    code: &str,
+) -> Result<()> {
+    conn.execute("UPDATE autonomous_agent_deliveries SET status=CASE WHEN attempts>=2 THEN 'dead_letter' ELSE 'failed' END,attempts=attempts+1,last_error_code=?3,next_attempt_at=CASE WHEN attempts>=2 THEN NULL ELSE datetime('now',printf('+%d seconds',30*(1 << attempts))) END,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,code])?;
+    Ok(())
 }
 
 // ── Code knowledge graph persistence ─────────────────────────────────────────
@@ -17452,7 +19343,8 @@ mod task_query_tests {
     fn setup() -> (Connection, String, String) {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
-        let (org, user, _key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, _key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         (conn, org.id, user.id)
     }
 
@@ -17494,7 +19386,9 @@ mod task_query_tests {
         };
         let result = create_task(&conn, &org, &user, &req);
         assert!(result.is_err());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0, "no row should be created on invalid status");
     }
 
@@ -17520,10 +19414,17 @@ mod task_query_tests {
     fn patch_task_updates_fields_and_bumps_updated_at() {
         let (conn, org, user) = setup();
         let task = mk_task(&conn, &org, &user, "proj", "Original");
-        let patched = patch_task(&conn, &org, &task.id, &PatchTaskRequest {
-            title: Some("Updated".to_string()),
-            ..Default::default()
-        }).unwrap().unwrap();
+        let patched = patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                title: Some("Updated".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(patched.title, "Updated");
         // `updated_at` is always rewritten by the explicit `SET updated_at = ?1` clause in
         // `patch_task`; second-resolution timestamps make a value-inequality assertion flaky
@@ -17536,13 +19437,21 @@ mod task_query_tests {
         let (conn, org, user) = setup();
         let task = mk_task(&conn, &org, &user, "proj", "T");
         // backlog -> done is not an allowed edge.
-        let result = patch_task(&conn, &org, &task.id, &PatchTaskRequest {
-            status: Some("done".to_string()),
-            ..Default::default()
-        });
+        let result = patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                status: Some("done".to_string()),
+                ..Default::default()
+            },
+        );
         assert!(result.is_err());
         let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
-        assert_eq!(reloaded.status, "backlog", "status must be unchanged on rejected transition");
+        assert_eq!(
+            reloaded.status, "backlog",
+            "status must be unchanged on rejected transition"
+        );
     }
 
     #[test]
@@ -17554,7 +19463,10 @@ mod task_query_tests {
         let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
         assert!(reloaded.archived_at.is_some());
         // list_tasks excludes archived tasks by default (include_archived: false).
-        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            project: Some("proj".to_string()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert!(listed.iter().all(|t| t.id != task.id));
     }
@@ -17564,14 +19476,29 @@ mod task_query_tests {
         let (conn, org, user) = setup();
         mk_task(&conn, &org, &user, "proj-a", "A1");
         let b = mk_task(&conn, &org, &user, "proj-b", "B1");
-        patch_task(&conn, &org, &b.id, &PatchTaskRequest { status: Some("todo".to_string()), ..Default::default() }).unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &b.id,
+            &PatchTaskRequest {
+                status: Some("todo".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let filters = TaskListFilters { project: Some("proj-b".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            project: Some("proj-b".to_string()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, b.id);
 
-        let filters_status = TaskListFilters { status: Some("todo".to_string()), ..Default::default() };
+        let filters_status = TaskListFilters {
+            status: Some("todo".to_string()),
+            ..Default::default()
+        };
         let listed_status = list_tasks(&conn, &org, None, &filters_status, i64::MAX, 0).unwrap();
         assert_eq!(listed_status.len(), 1);
         assert_eq!(listed_status[0].id, b.id);
@@ -17583,7 +19510,10 @@ mod task_query_tests {
         mk_task(&conn, &org, &user, "proj", "A");
         mk_task(&conn, &org, &user, "proj", "B");
         mk_task(&conn, &org, &user, "other", "C");
-        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            project: Some("proj".to_string()),
+            ..Default::default()
+        };
         let count = count_tasks(&conn, &org, None, &filters).unwrap();
         assert_eq!(count, 2);
     }
@@ -17614,7 +19544,13 @@ mod task_query_tests {
         let fake_user_id = uuid::Uuid::new_v4().to_string();
         let result = set_task_assignees(&conn, &org, &task.id, &user, &[fake_user_id]);
         assert!(result.is_err());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1",
+                [&task.id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "no partial write on rejected assignment");
     }
 
@@ -17622,7 +19558,13 @@ mod task_query_tests {
     fn set_task_assignees_rejects_nonexistent_user() {
         let (conn, org, user) = setup();
         let task = mk_task(&conn, &org, &user, "proj", "T");
-        let result = set_task_assignees(&conn, &org, &task.id, &user, &["does-not-exist".to_string()]);
+        let result = set_task_assignees(
+            &conn,
+            &org,
+            &task.id,
+            &user,
+            &["does-not-exist".to_string()],
+        );
         assert!(result.is_err());
     }
 
@@ -17632,7 +19574,13 @@ mod task_query_tests {
         let task = mk_task(&conn, &org, &user, "proj", "T");
         set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
         set_task_assignees(&conn, &org, &task.id, &user, &[user.clone()]).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1",
+                [&task.id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -17648,7 +19596,8 @@ mod task_query_tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, 'other@acme.com', 'Other', 'member', 'active', datetime('now'))",
             rusqlite::params![other_id, org],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Hard-delete the task row (simulating a concurrent delete) right before the
         // insert loop runs, so every INSERT INTO task_assignees hits a dangling FK on
@@ -17656,14 +19605,25 @@ mod task_query_tests {
         // "one INSERT per user_id, no transaction" implementation this would already
         // fail atomically for THIS exact case too — the regression this test guards is
         // that a real `tx.commit()`-or-rollback path exists at all, not ad hoc success.
-        conn.execute("DELETE FROM tasks WHERE id = ?1", [&task.id]).unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [&task.id])
+            .unwrap();
 
         let result = set_task_assignees(&conn, &org, &task.id, &user, &[user.clone(), other_id]);
-        assert!(result.is_err(), "insert against a deleted task must fail (FK violation)");
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task.id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(count, 0, "no partial writes must survive a mid-loop failure");
+        assert!(
+            result.is_err(),
+            "insert against a deleted task must fail (FK violation)"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1",
+                [&task.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "no partial writes must survive a mid-loop failure"
+        );
     }
 
     #[test]
@@ -17691,7 +19651,10 @@ mod task_query_tests {
         mk_task(&conn, &org, &user, "proj", "Unassigned");
         set_task_assignees(&conn, &org, &assigned.id, &user, &[user.clone()]).unwrap();
 
-        let filters = TaskListFilters { assignee_user_id: Some(user.clone()), ..Default::default() };
+        let filters = TaskListFilters {
+            assignee_user_id: Some(user.clone()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, assigned.id);
@@ -17723,7 +19686,10 @@ mod task_query_tests {
         mk_task(&conn, &org, &user, "proj", "B");
         add_task_label(&conn, &a.id, "urgent-fix").unwrap();
 
-        let filters = TaskListFilters { label: Some("urgent-fix".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            label: Some("urgent-fix".to_string()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, a.id);
@@ -17741,7 +19707,10 @@ mod task_query_tests {
         add_task_label(&conn, &task.id, "bug").unwrap();
         mk_task(&conn, &org, &user, "proj", "Other"); // no assignees/labels
 
-        let filters = TaskListFilters { project: Some("proj".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            project: Some("proj".to_string()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 2);
         let listed_task = listed.iter().find(|t| t.id == task.id).unwrap();
@@ -17758,9 +19727,16 @@ mod task_query_tests {
     fn list_tasks_in_sprint_hydrates_assignees_and_labels() {
         let (conn, org, user) = setup();
         let sprint = create_sprint(
-            &conn, &org, &user,
-            &CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() },
-        ).unwrap();
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let req = CreateTaskRequest {
             project: "proj".to_string(),
             title: "In sprint".to_string(),
@@ -17781,7 +19757,10 @@ mod task_query_tests {
     #[test]
     fn list_tasks_empty_result_hydrates_without_error() {
         let (conn, org, _user) = setup();
-        let filters = TaskListFilters { project: Some("does-not-exist".to_string()), ..Default::default() };
+        let filters = TaskListFilters {
+            project: Some("does-not-exist".to_string()),
+            ..Default::default()
+        };
         let listed = list_tasks(&conn, &org, None, &filters, i64::MAX, 0).unwrap();
         assert!(listed.is_empty());
     }
@@ -17802,7 +19781,6 @@ mod task_query_tests {
         assert_eq!(children[0].id, child.id);
     }
 
-
     #[test]
     fn create_task_rejects_cross_project_parent() {
         let (conn, org, user) = setup();
@@ -17815,7 +19793,13 @@ mod task_query_tests {
         };
         let result = create_task(&conn, &org, &user, &child_req);
         assert!(result.is_err());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Child'", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE title = 'Child'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -17825,9 +19809,17 @@ mod task_query_tests {
     #[test]
     fn create_task_rejects_sprint_from_different_project() {
         let (conn, org, user) = setup();
-        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj-x".to_string(), name: "Sprint 1".to_string(), ..Default::default()
-        }).unwrap();
+        let sprint = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj-x".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let req = CreateTaskRequest {
             project: "proj-y".to_string(),
             title: "T".to_string(),
@@ -17836,7 +19828,11 @@ mod task_query_tests {
         };
         let result = create_task(&conn, &org, &user, &req);
         assert!(result.is_err());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE title = 'T'", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks WHERE title = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 0, "no task row created when sprint validation fails");
     }
 
@@ -17856,9 +19852,17 @@ mod task_query_tests {
     #[test]
     fn create_task_accepts_sprint_from_same_project() {
         let (conn, org, user) = setup();
-        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
-        }).unwrap();
+        let sprint = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let req = CreateTaskRequest {
             project: "proj".to_string(),
             title: "T".to_string(),
@@ -17883,8 +19887,14 @@ mod task_query_tests {
 
         assert!(soft_delete_task(&conn, &org, &parent.id).unwrap());
         let reloaded_child = get_task(&conn, &org, &child.id).unwrap().unwrap();
-        assert!(reloaded_child.archived_at.is_none(), "subtask must remain non-archived");
-        assert_eq!(reloaded_child.parent_id.as_deref(), Some(parent.id.as_str()));
+        assert!(
+            reloaded_child.archived_at.is_none(),
+            "subtask must remain non-archived"
+        );
+        assert_eq!(
+            reloaded_child.parent_id.as_deref(),
+            Some(parent.id.as_str())
+        );
     }
 
     #[test]
@@ -17898,7 +19908,16 @@ mod task_query_tests {
             ..Default::default()
         };
         let child = create_task(&conn, &org, &user, &child_req).unwrap();
-        patch_task(&conn, &org, &child.id, &PatchTaskRequest { status: Some("todo".to_string()), ..Default::default() }).unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &child.id,
+            &PatchTaskRequest {
+                status: Some("todo".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let reloaded_parent = get_task(&conn, &org, &parent.id).unwrap().unwrap();
         assert_eq!(reloaded_parent.status, "backlog");
     }
@@ -17952,7 +19971,10 @@ mod task_query_tests {
         let (conn, org, user) = setup();
         let task = mk_task(&conn, &org, &user, "proj", "T");
         link_task_spec(&conn, &task.id, &user, "team-tasks").unwrap();
-        assert_eq!(list_task_spec_links(&conn, &task.id).unwrap(), vec!["team-tasks".to_string()]);
+        assert_eq!(
+            list_task_spec_links(&conn, &task.id).unwrap(),
+            vec!["team-tasks".to_string()]
+        );
     }
 
     #[test]
@@ -17965,7 +19987,10 @@ mod task_query_tests {
         link_task_spec(&conn, &t2.id, &user, "change-a").unwrap();
 
         assert_eq!(list_task_spec_links(&conn, &t1.id).unwrap().len(), 2);
-        assert_eq!(list_task_spec_links(&conn, &t2.id).unwrap(), vec!["change-a".to_string()]);
+        assert_eq!(
+            list_task_spec_links(&conn, &t2.id).unwrap(),
+            vec!["change-a".to_string()]
+        );
     }
 
     #[test]
@@ -18008,7 +20033,16 @@ mod task_query_tests {
         let t = mk_task(&conn, &org, &user, "proj", "T");
         link_task_spec(&conn, &t.id, &user, "team-tasks").unwrap();
         // Route it to cancelled via a legal path: backlog -> cancelled.
-        patch_task(&conn, &org, &t.id, &PatchTaskRequest { status: Some("cancelled".to_string()), ..Default::default() }).unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &t.id,
+            &PatchTaskRequest {
+                status: Some("cancelled".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let resolved = resolve_tasks_by_spec(&conn, &org, "team-tasks", None).unwrap();
         assert!(resolved.is_empty());
@@ -18021,7 +20055,11 @@ mod task_query_tests {
     #[test]
     fn create_sprint_scoped_to_project() {
         let (conn, org, user) = setup();
-        let req = CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() };
+        let req = CreateSprintRequest {
+            project: "proj".to_string(),
+            name: "Sprint 1".to_string(),
+            ..Default::default()
+        };
         let sprint = create_sprint(&conn, &org, &user, &req).unwrap();
         assert_eq!(sprint.status, "planned");
         assert_eq!(sprint.project, "proj");
@@ -18030,34 +20068,64 @@ mod task_query_tests {
     #[test]
     fn get_patch_soft_delete_list_sprints_round_trip() {
         let (conn, org, user) = setup();
-        let req = CreateSprintRequest { project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default() };
+        let req = CreateSprintRequest {
+            project: "proj".to_string(),
+            name: "Sprint 1".to_string(),
+            ..Default::default()
+        };
         let sprint = create_sprint(&conn, &org, &user, &req).unwrap();
 
         let fetched = get_sprint(&conn, &org, &sprint.id).unwrap().unwrap();
         assert_eq!(fetched.id, sprint.id);
 
-        let patched = patch_sprint(&conn, &org, &sprint.id, &PatchSprintRequest {
-            status: Some("active".to_string()),
-            ..Default::default()
-        }).unwrap().unwrap();
+        let patched = patch_sprint(
+            &conn,
+            &org,
+            &sprint.id,
+            &PatchSprintRequest {
+                status: Some("active".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(patched.status, "active");
 
-        let listed = list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
+        let listed =
+            list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
         assert_eq!(listed.len(), 1);
 
         assert!(soft_delete_sprint(&conn, &org, &sprint.id).unwrap());
-        let listed_after = list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
+        let listed_after =
+            list_sprints(&conn, &org, None, Some("proj"), None, false, i64::MAX, 0).unwrap();
         assert!(listed_after.is_empty());
     }
 
     #[test]
     fn assign_task_to_sprint_appears_in_sprint_task_list() {
         let (conn, org, user) = setup();
-        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
-        }).unwrap();
+        let sprint = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let task = mk_task(&conn, &org, &user, "proj", "T");
-        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint.id.clone()), ..Default::default() }).unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                sprint_id: Some(sprint.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let in_sprint = list_tasks_in_sprint(&conn, &sprint.id).unwrap();
         assert_eq!(in_sprint.len(), 1);
@@ -18067,11 +20135,27 @@ mod task_query_tests {
     #[test]
     fn assign_task_to_sprint_rejects_cross_project() {
         let (conn, org, user) = setup();
-        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj-x".to_string(), name: "Sprint 1".to_string(), ..Default::default()
-        }).unwrap();
+        let sprint = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj-x".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let task = mk_task(&conn, &org, &user, "proj-y", "T");
-        let result = patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint.id.clone()), ..Default::default() });
+        let result = patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                sprint_id: Some(sprint.id.clone()),
+                ..Default::default()
+            },
+        );
         assert!(result.is_err());
         let reloaded = get_task(&conn, &org, &task.id).unwrap().unwrap();
         assert!(reloaded.sprint_id.is_none());
@@ -18080,30 +20164,81 @@ mod task_query_tests {
     #[test]
     fn moving_task_to_new_sprint_removes_from_prior() {
         let (conn, org, user) = setup();
-        let sprint_a = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj".to_string(), name: "Sprint A".to_string(), ..Default::default()
-        }).unwrap();
-        let sprint_b = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj".to_string(), name: "Sprint B".to_string(), ..Default::default()
-        }).unwrap();
+        let sprint_a = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint A".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sprint_b = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint B".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let task = mk_task(&conn, &org, &user, "proj", "T");
-        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint_a.id.clone()), ..Default::default() }).unwrap();
-        patch_task(&conn, &org, &task.id, &PatchTaskRequest { sprint_id: Some(sprint_b.id.clone()), ..Default::default() }).unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                sprint_id: Some(sprint_a.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        patch_task(
+            &conn,
+            &org,
+            &task.id,
+            &PatchTaskRequest {
+                sprint_id: Some(sprint_b.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        assert!(list_tasks_in_sprint(&conn, &sprint_a.id).unwrap().is_empty());
+        assert!(list_tasks_in_sprint(&conn, &sprint_a.id)
+            .unwrap()
+            .is_empty());
         assert_eq!(list_tasks_in_sprint(&conn, &sprint_b.id).unwrap().len(), 1);
     }
 
     #[test]
     fn create_retrospective_persists_and_associates_with_sprint() {
         let (conn, org, user) = setup();
-        let sprint = create_sprint(&conn, &org, &user, &CreateSprintRequest {
-            project: "proj".to_string(), name: "Sprint 1".to_string(), ..Default::default()
-        }).unwrap();
-        let retro = create_retrospective(&conn, &sprint.id, &org, &user, &CreateRetrospectiveRequest {
-            went_well: Some("Good pace".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let sprint = create_sprint(
+            &conn,
+            &org,
+            &user,
+            &CreateSprintRequest {
+                project: "proj".to_string(),
+                name: "Sprint 1".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let retro = create_retrospective(
+            &conn,
+            &sprint.id,
+            &org,
+            &user,
+            &CreateRetrospectiveRequest {
+                went_well: Some("Good pace".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(retro.sprint_id, sprint.id);
         assert_eq!(retro.went_well.as_deref(), Some("Good pace"));
 
@@ -18126,13 +20261,24 @@ mod task_nesting_tests {
         (conn, org.id, user.id)
     }
 
-    fn mk(conn: &Connection, org: &str, user: &str, title: &str, parent: Option<&str>) -> Result<Task> {
-        create_task(conn, org, user, &CreateTaskRequest {
-            project: "p".into(),
-            title: title.into(),
-            parent_id: parent.map(str::to_string),
-            ..Default::default()
-        })
+    fn mk(
+        conn: &Connection,
+        org: &str,
+        user: &str,
+        title: &str,
+        parent: Option<&str>,
+    ) -> Result<Task> {
+        create_task(
+            conn,
+            org,
+            user,
+            &CreateTaskRequest {
+                project: "p".into(),
+                title: title.into(),
+                parent_id: parent.map(str::to_string),
+                ..Default::default()
+            },
+        )
     }
 
     /// The shape of real work is three levels deep, and the old rule forbade it:
@@ -18161,7 +20307,9 @@ mod task_nesting_tests {
         // MAX_TASK_DEPTH levels are reachable...
         for i in 1..MAX_TASK_DEPTH {
             parent = mk(&conn, &org, &user, &format!("level {i}"), Some(&parent.id))
-                .unwrap_or_else(|e| panic!("level {i} must be allowed (cap is {MAX_TASK_DEPTH}): {e}"));
+                .unwrap_or_else(|e| {
+                    panic!("level {i} must be allowed (cap is {MAX_TASK_DEPTH}): {e}")
+                });
         }
         // ...and the one past it is not.
         let err = mk(&conn, &org, &user, "too deep", Some(&parent.id)).unwrap_err();
@@ -18171,7 +20319,11 @@ mod task_nesting_tests {
         );
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks WHERE title = 'too deep'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE title = 'too deep'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0, "a refused create must write no row");
     }
@@ -18190,7 +20342,10 @@ mod task_nesting_tests {
         let listed = list_tasks(&conn, &org, None, &TaskListFilters::default(), 100, 0).unwrap();
 
         let p = listed.iter().find(|t| t.id == parent.id).unwrap();
-        assert_eq!(p.subtask_count, 3, "the list must report the real count, not 0");
+        assert_eq!(
+            p.subtask_count, 3,
+            "the list must report the real count, not 0"
+        );
 
         let l = listed.iter().find(|t| t.id == lonely.id).unwrap();
         assert_eq!(l.subtask_count, 0);
@@ -18200,9 +20355,17 @@ mod task_nesting_tests {
     #[test]
     fn a_parent_in_another_project_is_still_refused() {
         let (conn, org, user) = setup();
-        let other = create_task(&conn, &org, &user, &CreateTaskRequest {
-            project: "other-project".into(), title: "elsewhere".into(), ..Default::default()
-        }).unwrap();
+        let other = create_task(
+            &conn,
+            &org,
+            &user,
+            &CreateTaskRequest {
+                project: "other-project".into(),
+                title: "elsewhere".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let err = mk(&conn, &org, &user, "child", Some(&other.id)).unwrap_err();
         assert!(err.to_string().contains("different project"));
@@ -18217,8 +20380,11 @@ mod task_nesting_tests {
         let a = mk(&conn, &org, &user, "a", None).unwrap();
         let b = mk(&conn, &org, &user, "b", Some(&a.id)).unwrap();
         // Forge a cycle behind create_task's back — only corruption could do this.
-        conn.execute("UPDATE tasks SET parent_id = ?1 WHERE id = ?2", rusqlite::params![b.id, a.id])
-            .unwrap();
+        conn.execute(
+            "UPDATE tasks SET parent_id = ?1 WHERE id = ?2",
+            rusqlite::params![b.id, a.id],
+        )
+        .unwrap();
 
         let err = task_ancestor_depth(&conn, &org, &b.id).unwrap_err();
         assert!(err.to_string().contains("cyclic"), "got: {err}");
@@ -18234,7 +20400,8 @@ mod sdd_query_tests {
     fn setup() -> (Connection, String, String) {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
-        let (org, user, _key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let (org, user, _key) =
+            bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
         (conn, org.id, user.id)
     }
 
@@ -18323,7 +20490,10 @@ mod sdd_query_tests {
         };
         let second = upsert_sdd_change(&conn, &org, &user, &req).unwrap();
 
-        assert_eq!(first.id, second.id, "the same (org, project, name) must upsert, not duplicate");
+        assert_eq!(
+            first.id, second.id,
+            "the same (org, project, name) must upsert, not duplicate"
+        );
         assert_eq!(second.title.as_deref(), Some("Team Tasks"));
 
         let count: i64 = conn
@@ -18350,7 +20520,13 @@ mod sdd_query_tests {
     #[test]
     fn upsert_sdd_change_accepts_an_unregistered_project_name() {
         let (conn, org, user) = setup();
-        let change = mk_change(&conn, &org, &user, "never-registered-anywhere", "some-change");
+        let change = mk_change(
+            &conn,
+            &org,
+            &user,
+            "never-registered-anywhere",
+            "some-change",
+        );
         assert_eq!(change.project, "never-registered-anywhere");
 
         let registered: i64 = conn
@@ -18367,10 +20543,26 @@ mod sdd_query_tests {
     #[test]
     fn get_sdd_change_hydrates_artifact_inventory() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "proposal", "P"), "agent").unwrap();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "proposal", "P"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "D"),
+            "agent",
+        )
+        .unwrap();
 
-        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c")
+            .unwrap()
+            .unwrap();
         let fetched = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
 
         assert_eq!(fetched.artifacts.len(), 2);
@@ -18400,9 +20592,16 @@ mod sdd_query_tests {
         let a = mk_change(&conn, &org, &user, "nexus-mind", "team-tasks");
         mk_change(&conn, &org, &user, "kasymir", "team-tasks");
 
-        let found = get_sdd_change_by_name(&conn, &org, "nexus-mind", "team-tasks").unwrap().unwrap();
-        assert_eq!(found.id, a.id, "must resolve the change in the requested project only");
-        assert!(get_sdd_change_by_name(&conn, &org, "other", "team-tasks").unwrap().is_none());
+        let found = get_sdd_change_by_name(&conn, &org, "nexus-mind", "team-tasks")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            found.id, a.id,
+            "must resolve the change in the requested project only"
+        );
+        assert!(get_sdd_change_by_name(&conn, &org, "other", "team-tasks")
+            .unwrap()
+            .is_none());
     }
 
     /// 2.13
@@ -18417,7 +20616,10 @@ mod sdd_query_tests {
             &conn,
             &org,
             &gamma.id,
-            &PatchChangeRequest { phase: Some("design".into()), ..Default::default() },
+            &PatchChangeRequest {
+                phase: Some("design".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -18432,14 +20634,20 @@ mod sdd_query_tests {
             &conn,
             &org,
             &gamma.id,
-            &PatchChangeRequest { sprint_id: Some(sprint_id.clone()), ..Default::default() },
+            &PatchChangeRequest {
+                sprint_id: Some(sprint_id.clone()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
         let by_project = list_sdd_changes(
             &conn,
             &org,
-            &SddChangeFilters { project: Some("nexus-mind".into()), ..Default::default() },
+            &SddChangeFilters {
+                project: Some("nexus-mind".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(by_project.len(), 2);
@@ -18447,7 +20655,10 @@ mod sdd_query_tests {
         let by_phase = list_sdd_changes(
             &conn,
             &org,
-            &SddChangeFilters { phase: Some("design".into()), ..Default::default() },
+            &SddChangeFilters {
+                phase: Some("design".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(by_phase.len(), 1);
@@ -18456,15 +20667,24 @@ mod sdd_query_tests {
         let by_sprint = list_sdd_changes(
             &conn,
             &org,
-            &SddChangeFilters { sprint_id: Some(sprint_id), ..Default::default() },
+            &SddChangeFilters {
+                sprint_id: Some(sprint_id),
+                ..Default::default()
+            },
         )
         .unwrap();
-        assert_eq!(by_sprint.len(), 1, "exactly the changes assigned to that sprint");
+        assert_eq!(
+            by_sprint.len(),
+            1,
+            "exactly the changes assigned to that sprint"
+        );
 
         // A change with no sprint is still returned by an unfiltered list.
         let all = list_sdd_changes(&conn, &org, &SddChangeFilters::default()).unwrap();
         assert_eq!(all.len(), 3);
-        assert!(all.iter().any(|c| c.name == "alpha" && c.sprint_id.is_none()));
+        assert!(all
+            .iter()
+            .any(|c| c.name == "alpha" && c.sprint_id.is_none()));
     }
 
     /// 2.15
@@ -18482,7 +20702,10 @@ mod sdd_query_tests {
         let with_archived = list_sdd_changes(
             &conn,
             &org,
-            &SddChangeFilters { include_archived: true, ..Default::default() },
+            &SddChangeFilters {
+                include_archived: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(with_archived.len(), 2);
@@ -18522,7 +20745,10 @@ mod sdd_query_tests {
             &conn,
             &org,
             &change.id,
-            &PatchChangeRequest { title: Some("x".into()), ..Default::default() },
+            &PatchChangeRequest {
+                title: Some("x".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -18552,15 +20778,27 @@ mod sdd_query_tests {
 
         let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
         assert_eq!(after.phase, "propose", "phase unchanged");
-        assert!(after.title.is_none(), "the title in the same rejected patch must NOT have landed");
+        assert!(
+            after.title.is_none(),
+            "the title in the same rejected patch must NOT have landed"
+        );
     }
 
     /// 2.23 — soft delete; artifacts survive.
     #[test]
     fn archive_sdd_change_sets_archived_at_and_preserves_artifacts() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
-        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "D"),
+            "agent",
+        )
+        .unwrap();
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c")
+            .unwrap()
+            .unwrap();
 
         assert!(archive_sdd_change(&conn, &org, &change.id).unwrap());
 
@@ -18592,7 +20830,10 @@ mod sdd_query_tests {
         assert_eq!(revision_count(&conn, &artifact.id), 1);
 
         let change = get_sdd_change_by_name(&conn, &org, "nexus-mind", "brand-new").unwrap();
-        assert!(change.is_some(), "saving to an unknown change creates the change");
+        assert!(
+            change.is_some(),
+            "saving to an unknown change creates the change"
+        );
     }
 
     /// 2.27 — THE de-dup contract (D2).
@@ -18607,26 +20848,51 @@ mod sdd_query_tests {
 
         let (again, created) = upsert_sdd_artifact(&conn, &org, &user, &req, "agent").unwrap();
         assert!(!created, "an identical re-save must NOT create a revision");
-        assert_eq!(revision_count(&conn, &artifact.id), 1, "still exactly one revision");
+        assert_eq!(
+            revision_count(&conn, &artifact.id),
+            1,
+            "still exactly one revision"
+        );
         assert_eq!(again.latest_revision, 1);
-        assert_eq!(again.updated_at, updated_at_before, "updated_at must NOT be bumped");
-        assert_eq!(fts_row_count(&conn, &artifact.id), 1, "the index must not be disturbed");
+        assert_eq!(
+            again.updated_at, updated_at_before,
+            "updated_at must NOT be bumped"
+        );
+        assert_eq!(
+            fts_row_count(&conn, &artifact.id),
+            1,
+            "the index must not be disturbed"
+        );
     }
 
     /// 2.29
     #[test]
     fn upsert_sdd_artifact_appends_revision_2_on_changed_content() {
         let (conn, org, user) = setup();
-        let (artifact, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
-        let (artifact2, created) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+        let (artifact, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v1"),
+            "agent",
+        )
+        .unwrap();
+        let (artifact2, created) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v2"),
+            "agent",
+        )
+        .unwrap();
 
         assert!(created);
         assert_eq!(artifact2.latest_revision, 2);
         assert_eq!(artifact2.id, artifact.id, "same artifact, new revision");
 
-        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev1.content, "v1", "revision 1 is immutable");
         assert_eq!(rev1.byte_size, 2);
     }
@@ -18635,38 +20901,98 @@ mod sdd_query_tests {
     #[test]
     fn upsert_sdd_artifact_revert_to_earlier_content_appends_revision_3() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "A"), "agent").unwrap();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "B"), "agent").unwrap();
-        let (artifact, created) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "A"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "A"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "B"),
+            "agent",
+        )
+        .unwrap();
+        let (artifact, created) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "A"),
+            "agent",
+        )
+        .unwrap();
 
-        assert!(created, "reverting to earlier content is a real event and MUST append");
-        assert_eq!(artifact.latest_revision, 3, "revision 3, not a resurrection of revision 1");
+        assert!(
+            created,
+            "reverting to earlier content is a real event and MUST append"
+        );
+        assert_eq!(
+            artifact.latest_revision, 3,
+            "revision 3, not a resurrection of revision 1"
+        );
         assert_eq!(revision_count(&conn, &artifact.id), 3);
 
-        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
-        let rev3 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 3).unwrap().unwrap();
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
+        let rev3 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 3)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev1.content, "A");
         assert_eq!(rev3.content, "A");
-        assert_ne!(rev1.id, rev3.id, "two distinct revision rows with the same content");
+        assert_ne!(
+            rev1.id, rev3.id,
+            "two distinct revision rows with the same content"
+        );
     }
 
     /// 2.33
     #[test]
     fn upsert_sdd_artifact_revision_numbering_is_monotonic_per_artifact() {
         let (conn, org, user) = setup();
-        let (design, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d1"), "agent").unwrap();
-        let (proposal, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "proposal", "p1"), "agent").unwrap();
+        let (design, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "d1"),
+            "agent",
+        )
+        .unwrap();
+        let (proposal, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "proposal", "p1"),
+            "agent",
+        )
+        .unwrap();
 
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d2"), "agent").unwrap();
-        let (design3, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "d3"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "d2"),
+            "agent",
+        )
+        .unwrap();
+        let (design3, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "d3"),
+            "agent",
+        )
+        .unwrap();
 
         assert_eq!(design3.latest_revision, 3);
 
-        let proposal_after = get_sdd_artifact(&conn, &org, &proposal.id).unwrap().unwrap();
+        let proposal_after = get_sdd_artifact(&conn, &org, &proposal.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             proposal_after.artifact.latest_revision, 1,
             "revisions are per-artifact, not a global counter"
@@ -18700,7 +21026,10 @@ mod sdd_query_tests {
         .unwrap();
 
         let alpha = search_sdd_artifacts(&conn, &org, "ALPHAWORD", 10).unwrap();
-        assert!(alpha.is_empty(), "a term removed by a newer revision must stop matching");
+        assert!(
+            alpha.is_empty(),
+            "a term removed by a newer revision must stop matching"
+        );
 
         let beta = search_sdd_artifacts(&conn, &org, "BETAWORD", 10).unwrap();
         assert_eq!(beta.len(), 1, "the latest revision's term matches");
@@ -18729,26 +21058,53 @@ mod sdd_query_tests {
         assert!(err.to_string().contains("artifact_too_large"));
 
         let changes: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sdd_changes WHERE name = 'oversized'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sdd_changes WHERE name = 'oversized'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        let artifacts: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sdd_artifacts", [], |r| r.get(0)).unwrap();
+        let artifacts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_artifacts", [], |r| r.get(0))
+            .unwrap();
         let revisions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sdd_artifact_revisions", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM sdd_artifact_revisions", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(changes, 0, "a rejected save must leave NO change row");
         assert_eq!(artifacts, 0, "…NO artifact row");
         assert_eq!(revisions, 0, "…and NO revision row");
 
         // And against a pre-existing artifact: nothing moves.
-        let (existing, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "small"), "agent").unwrap();
-        let before = get_sdd_artifact(&conn, &org, &existing.id).unwrap().unwrap();
+        let (existing, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "small"),
+            "agent",
+        )
+        .unwrap();
+        let before = get_sdd_artifact(&conn, &org, &existing.id)
+            .unwrap()
+            .unwrap();
 
-        assert!(upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &huge), "agent").is_err());
+        assert!(upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", &huge),
+            "agent"
+        )
+        .is_err());
 
-        let after = get_sdd_artifact(&conn, &org, &existing.id).unwrap().unwrap();
-        assert_eq!(after.artifact.latest_revision, before.artifact.latest_revision);
+        let after = get_sdd_artifact(&conn, &org, &existing.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.artifact.latest_revision,
+            before.artifact.latest_revision
+        );
         assert_eq!(after.artifact.updated_at, before.artifact.updated_at);
     }
 
@@ -18757,11 +21113,19 @@ mod sdd_query_tests {
     fn upsert_sdd_artifact_accepts_content_just_under_the_cap() {
         let (conn, org, user) = setup();
         let big = "y".repeat(1_048_575);
-        let (artifact, created) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &big), "agent").unwrap();
+        let (artifact, created) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", &big),
+            "agent",
+        )
+        .unwrap();
         assert!(created);
 
-        let rev = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        let rev = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev.byte_size, 1_048_575, "byte_size is bytes, not chars");
     }
 
@@ -18769,9 +21133,18 @@ mod sdd_query_tests {
     #[test]
     fn upsert_sdd_artifact_defaults_capability_to_empty_string() {
         let (conn, org, user) = setup();
-        let (a1, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
-        assert_eq!(a1.capability, "", "an omitted capability persists as '' — never NULL");
+        let (a1, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v1"),
+            "agent",
+        )
+        .unwrap();
+        assert_eq!(
+            a1.capability, "",
+            "an omitted capability persists as '' — never NULL"
+        );
 
         // An explicit `None` must converge on the SAME artifact row, not a duplicate.
         let mut req = save_req("p", "c", "design", "v2");
@@ -18779,8 +21152,14 @@ mod sdd_query_tests {
         let (a2, _) = upsert_sdd_artifact(&conn, &org, &user, &req, "agent").unwrap();
         assert_eq!(a2.id, a1.id);
 
-        let change = get_sdd_change_by_name(&conn, &org, "p", "c").unwrap().unwrap();
-        assert_eq!(change.artifacts.len(), 1, "two saves of the same kind converge on ONE artifact");
+        let change = get_sdd_change_by_name(&conn, &org, "p", "c")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            change.artifacts.len(),
+            1,
+            "two saves of the same kind converge on ONE artifact"
+        );
     }
 
     /// 2.43
@@ -18801,7 +21180,10 @@ mod sdd_query_tests {
         assert_eq!(store_b.latest_revision, 2);
 
         let links_after = get_sdd_artifact(&conn, &org, &links_a.id).unwrap().unwrap();
-        assert_eq!(links_after.artifact.latest_revision, 1, "the other capability is untouched");
+        assert_eq!(
+            links_after.artifact.latest_revision, 1,
+            "the other capability is untouched"
+        );
     }
 
     /// 2.45
@@ -18813,17 +21195,35 @@ mod sdd_query_tests {
         req.git_commit = Some("abc123".into());
         let (artifact, _) = upsert_sdd_artifact(&conn, &org, &user, &req, "import").unwrap();
 
-        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev1.git_commit.as_deref(), Some("abc123"));
-        assert_eq!(rev1.git_path.as_deref(), Some("openspec/changes/c/design.md"));
+        assert_eq!(
+            rev1.git_path.as_deref(),
+            Some("openspec/changes/c/design.md")
+        );
         assert_eq!(rev1.source, "import");
         assert_eq!(rev1.byte_size, 2);
 
         // A later revision with NO provenance must not overwrite revision 1's.
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v2"),
+            "agent",
+        )
+        .unwrap();
 
-        let rev1_again = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
-        assert_eq!(rev1_again.git_commit.as_deref(), Some("abc123"), "revisions are immutable");
+        let rev1_again = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rev1_again.git_commit.as_deref(),
+            Some("abc123"),
+            "revisions are immutable"
+        );
         assert_eq!(rev1_again.source, "import");
     }
 
@@ -18858,19 +21258,37 @@ mod sdd_query_tests {
             &conn,
             &org,
             &change.id,
-            &PatchChangeRequest { phase: Some("spec".into()), ..Default::default() },
+            &PatchChangeRequest {
+                phase: Some("spec".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "D"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "D"),
+            "agent",
+        )
+        .unwrap();
         let after = get_sdd_change(&conn, &org, &change.id).unwrap().unwrap();
         assert_eq!(after.phase, "spec", "a save must not advance the phase");
 
         // Out-of-order saves are accepted, not rejected.
         let early = mk_change(&conn, &org, &user, "p", "early");
-        let result =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "early", "verify-report", "V"), "agent");
-        assert!(result.is_ok(), "a verify-report on a change in `propose` must be accepted");
+        let result = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "early", "verify-report", "V"),
+            "agent",
+        );
+        assert!(
+            result.is_ok(),
+            "a verify-report on a change in `propose` must be accepted"
+        );
         let after_early = get_sdd_change(&conn, &org, &early.id).unwrap().unwrap();
         assert_eq!(after_early.phase, "propose");
     }
@@ -18881,15 +21299,34 @@ mod sdd_query_tests {
         let (conn, org_a, user_a) = setup();
         let (org_b, user_b) = second_org(&conn);
 
-        let (a, _) =
-            upsert_sdd_artifact(&conn, &org_a, &user_a, &save_req("p", "c", "design", "org A"), "agent").unwrap();
-        let (b, _) =
-            upsert_sdd_artifact(&conn, &org_b, &user_b, &save_req("p", "c", "design", "org B"), "agent").unwrap();
+        let (a, _) = upsert_sdd_artifact(
+            &conn,
+            &org_a,
+            &user_a,
+            &save_req("p", "c", "design", "org A"),
+            "agent",
+        )
+        .unwrap();
+        let (b, _) = upsert_sdd_artifact(
+            &conn,
+            &org_b,
+            &user_b,
+            &save_req("p", "c", "design", "org B"),
+            "agent",
+        )
+        .unwrap();
 
-        assert_ne!(a.id, b.id, "org B must get its own change and artifact, not hijack org A's");
+        assert_ne!(
+            a.id, b.id,
+            "org B must get its own change and artifact, not hijack org A's"
+        );
 
         let a_detail = get_sdd_artifact(&conn, &org_a, &a.id).unwrap().unwrap();
-        assert_eq!(a_detail.content.as_deref(), Some("org A"), "org A's content is unmodified");
+        assert_eq!(
+            a_detail.content.as_deref(),
+            Some("org A"),
+            "org A's content is unmodified"
+        );
         assert!(get_sdd_artifact(&conn, &org_b, &a.id).unwrap().is_none());
     }
 
@@ -18900,12 +21337,31 @@ mod sdd_query_tests {
     fn get_sdd_artifact_returns_latest_revision_content() {
         let (conn, org, user) = setup();
         let long = "a very long design document ".repeat(500);
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "old"), "agent").unwrap();
-        let (artifact, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", &long), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "old"),
+            "agent",
+        )
+        .unwrap();
+        let (artifact, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", &long),
+            "agent",
+        )
+        .unwrap();
 
-        let detail = get_sdd_artifact(&conn, &org, &artifact.id).unwrap().unwrap();
-        assert_eq!(detail.content.as_deref(), Some(long.as_str()), "complete and untruncated");
+        let detail = get_sdd_artifact(&conn, &org, &artifact.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detail.content.as_deref(),
+            Some(long.as_str()),
+            "complete and untruncated"
+        );
         assert_eq!(detail.artifact.latest_revision, 2);
         assert_eq!(detail.change_name, "c");
         assert_eq!(detail.project, "p");
@@ -18922,19 +21378,32 @@ mod sdd_query_tests {
         links.capability = Some("sdd-artifact-links".into());
         upsert_sdd_artifact(&conn, &org, &user, &store, "agent").unwrap();
         upsert_sdd_artifact(&conn, &org, &user, &links, "agent").unwrap();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "DESIGN"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "DESIGN"),
+            "agent",
+        )
+        .unwrap();
 
         let found =
-            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "spec", Some("sdd-artifact-store")).unwrap().unwrap();
+            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "spec", Some("sdd-artifact-store"))
+                .unwrap()
+                .unwrap();
         assert_eq!(found.content.as_deref(), Some("STORE SPEC"));
 
         // The '' sentinel resolves a non-spec kind.
-        let design = get_sdd_artifact_by_kind(&conn, &org, "p", "c", "design", None).unwrap().unwrap();
+        let design = get_sdd_artifact_by_kind(&conn, &org, "p", "c", "design", None)
+            .unwrap()
+            .unwrap();
         assert_eq!(design.content.as_deref(), Some("DESIGN"));
 
         // A kind with no artifact is not-found — NOT an artifact with empty content.
         assert!(
-            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "tasks", None).unwrap().is_none(),
+            get_sdd_artifact_by_kind(&conn, &org, "p", "c", "tasks", None)
+                .unwrap()
+                .is_none(),
             "a missing artifact must report not-found, not an empty document"
         );
     }
@@ -18943,9 +21412,22 @@ mod sdd_query_tests {
     #[test]
     fn list_sdd_artifact_revisions_returns_metadata_only_newest_first() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v1"), "agent").unwrap();
-        let (artifact, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "v2"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v1"),
+            "agent",
+        )
+        .unwrap();
+        let (artifact, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "v2"),
+            "agent",
+        )
+        .unwrap();
 
         let revs = list_sdd_artifact_revisions(&conn, &org, &artifact.id).unwrap();
         assert_eq!(revs.len(), 2);
@@ -18956,21 +21438,51 @@ mod sdd_query_tests {
 
         // The type itself cannot hold content — assert the serialized shape too.
         let json = serde_json::to_value(&revs[0]).unwrap();
-        assert!(json.get("content").is_none(), "revision metadata must never carry content");
+        assert!(
+            json.get("content").is_none(),
+            "revision metadata must never carry content"
+        );
     }
 
     /// 2.59
     #[test]
     fn get_sdd_artifact_revision_returns_full_content_for_a_specific_rev() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "first"), "agent").unwrap();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "second"), "agent").unwrap();
-        let (artifact, _) =
-            upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "third"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "first"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "second"),
+            "agent",
+        )
+        .unwrap();
+        let (artifact, _) = upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "third"),
+            "agent",
+        )
+        .unwrap();
 
-        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1).unwrap().unwrap();
-        assert_eq!(rev1.content, "first", "byte-for-byte, and not revision 3's content");
-        assert!(get_sdd_artifact_revision(&conn, &org, &artifact.id, 99).unwrap().is_none());
+        let rev1 = get_sdd_artifact_revision(&conn, &org, &artifact.id, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rev1.content, "first",
+            "byte-for-byte, and not revision 3's content"
+        );
+        assert!(get_sdd_artifact_revision(&conn, &org, &artifact.id, 99)
+            .unwrap()
+            .is_none());
     }
 
     // ── Search ───────────────────────────────────────────────────────────
@@ -18993,7 +21505,12 @@ mod sdd_query_tests {
             &conn,
             &org_b,
             &user_b,
-            &save_req("p", "secret", "design", "the rate limiter is org B's secret"),
+            &save_req(
+                "p",
+                "secret",
+                "design",
+                "the rate limiter is org B's secret",
+            ),
             "agent",
         )
         .unwrap();
@@ -19002,7 +21519,10 @@ mod sdd_query_tests {
         assert_eq!(hits.len(), 1, "search must never cross the org boundary");
         assert_eq!(hits[0].change_name, "c");
         assert_eq!(hits[0].kind, "design");
-        assert!(hits[0].snippet.contains("limiter"), "the snippet must show the match");
+        assert!(
+            hits[0].snippet.contains("limiter"),
+            "the snippet must show the match"
+        );
     }
 
     /// 2.63
@@ -19031,12 +21551,22 @@ mod sdd_query_tests {
     #[test]
     fn search_sdd_artifacts_sanitizes_fts_query_syntax() {
         let (conn, org, user) = setup();
-        upsert_sdd_artifact(&conn, &org, &user, &save_req("p", "c", "design", "hello world"), "agent").unwrap();
+        upsert_sdd_artifact(
+            &conn,
+            &org,
+            &user,
+            &save_req("p", "c", "design", "hello world"),
+            "agent",
+        )
+        .unwrap();
 
         // FTS5 metacharacters must not blow up the statement.
         for query in ["foo\"bar", "*", "a AND (b", "^^^", "-- drop"] {
             let result = search_sdd_artifacts(&conn, &org, query, 10);
-            assert!(result.is_ok(), "query {query:?} must not propagate a SqliteFailure");
+            assert!(
+                result.is_ok(),
+                "query {query:?} must not propagate a SqliteFailure"
+            );
         }
     }
 
@@ -19069,7 +21599,8 @@ mod sdd_query_tests {
             .unwrap();
         assert_eq!(count, 1, "re-linking the same pair creates no duplicate");
 
-        let err = link_sdd_change_memory(&conn, &org_a, &change.id, &foreign, "produced", &user_a).unwrap_err();
+        let err = link_sdd_change_memory(&conn, &org_a, &change.id, &foreign, "produced", &user_a)
+            .unwrap_err();
         assert!(err.to_string().contains("memory_not_found"));
         let count_after: i64 = conn
             .query_row("SELECT COUNT(*) FROM sdd_change_memories", [], |r| r.get(0))
@@ -19095,7 +21626,10 @@ mod sdd_query_tests {
             )
             .unwrap();
         assert_eq!(count, 1, "still exactly one link row");
-        assert_eq!(relation, "produced", "the relation was UPDATED, not ignored");
+        assert_eq!(
+            relation, "produced",
+            "the relation was UPDATED, not ignored"
+        );
     }
 
     /// 2.71
@@ -19113,9 +21647,16 @@ mod sdd_query_tests {
         );
 
         let memory_still_there: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE id = ?1", [&memory], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                [&memory],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(memory_still_there, 1, "unlinking must not delete the memory");
+        assert_eq!(
+            memory_still_there, 1,
+            "unlinking must not delete the memory"
+        );
     }
 
     /// 2.73
@@ -19174,7 +21715,11 @@ mod sdd_query_tests {
             &conn,
             &org,
             &user,
-            &CreateTaskRequest { project: "p".into(), title: "Early".into(), ..Default::default() },
+            &CreateTaskRequest {
+                project: "p".into(),
+                title: "Early".into(),
+                ..Default::default()
+            },
         )
         .unwrap();
         // No sdd_changes row of this name exists yet. The link is still recorded.
@@ -19210,7 +21755,9 @@ mod sdd_query_tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert!(
-            !cols.iter().any(|c| c == "change_id" || c == "sdd_change_id"),
+            !cols
+                .iter()
+                .any(|c| c == "change_id" || c == "sdd_change_id"),
             "tasks must join by NAME (task_spec_links), not by a second FK — D3"
         );
     }
@@ -19261,9 +21808,11 @@ mod sdd_query_tests {
     }
 
     fn spec_fts_row_count(conn: &Connection, spec_id: &str) -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM sdd_specs_fts WHERE spec_id = ?1", [spec_id], |r| {
-            r.get(0)
-        })
+        conn.query_row(
+            "SELECT COUNT(*) FROM sdd_specs_fts WHERE spec_id = ?1",
+            [spec_id],
+            |r| r.get(0),
+        )
         .unwrap()
     }
 
@@ -19293,8 +21842,9 @@ mod sdd_query_tests {
         let (conn, org, user) = setup();
         upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "text"), "agent").unwrap();
 
-        let changes: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0)).unwrap();
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_changes", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(
             changes, 0,
             "a living specification belongs to the PROJECT — it must not conjure a change to hang off"
@@ -19312,10 +21862,21 @@ mod sdd_query_tests {
 
         let (again, created) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
         assert!(!created, "an identical re-save must NOT create a revision");
-        assert_eq!(spec_revision_count(&conn, &spec.id), 1, "still exactly one revision");
+        assert_eq!(
+            spec_revision_count(&conn, &spec.id),
+            1,
+            "still exactly one revision"
+        );
         assert_eq!(again.latest_revision, 1);
-        assert_eq!(again.updated_at, updated_at_before, "updated_at must NOT be bumped");
-        assert_eq!(spec_fts_row_count(&conn, &spec.id), 1, "the index must not be disturbed");
+        assert_eq!(
+            again.updated_at, updated_at_before,
+            "updated_at must NOT be bumped"
+        );
+        assert_eq!(
+            spec_fts_row_count(&conn, &spec.id),
+            1,
+            "the index must not be disturbed"
+        );
     }
 
     #[test]
@@ -19330,7 +21891,9 @@ mod sdd_query_tests {
         assert_eq!(spec2.latest_revision, 2);
         assert_eq!(spec2.id, spec.id, "same spec, new revision");
 
-        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev1.content, "v1", "revision 1 is immutable");
         assert_eq!(rev1.byte_size, 2);
     }
@@ -19345,15 +21908,28 @@ mod sdd_query_tests {
         let (spec, created) =
             upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "A"), "agent").unwrap();
 
-        assert!(created, "reverting to earlier content is a real event and MUST append");
-        assert_eq!(spec.latest_revision, 3, "revision 3, not a resurrection of revision 1");
+        assert!(
+            created,
+            "reverting to earlier content is a real event and MUST append"
+        );
+        assert_eq!(
+            spec.latest_revision, 3,
+            "revision 3, not a resurrection of revision 1"
+        );
         assert_eq!(spec_revision_count(&conn, &spec.id), 3);
 
-        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
-        let rev3 = get_sdd_spec_revision(&conn, &org, &spec.id, 3).unwrap().unwrap();
+        let rev1 = get_sdd_spec_revision(&conn, &org, &spec.id, 1)
+            .unwrap()
+            .unwrap();
+        let rev3 = get_sdd_spec_revision(&conn, &org, &spec.id, 3)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev1.content, "A");
         assert_eq!(rev3.content, "A");
-        assert_ne!(rev1.id, rev3.id, "two distinct revisions that happen to agree");
+        assert_ne!(
+            rev1.id, rev3.id,
+            "two distinct revisions that happen to agree"
+        );
     }
 
     /// A2 — the 1 MB rejection is ATOMIC: it happens before the transaction opens, so
@@ -19363,14 +21939,22 @@ mod sdd_query_tests {
         let (conn, org, user) = setup();
         let huge = "x".repeat(1_048_577);
 
-        let err = upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "oversized", &huge), "agent")
-            .unwrap_err();
+        let err = upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "oversized", &huge),
+            "agent",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("spec_too_large"));
 
-        let specs: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0)).unwrap();
-        let revisions: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0)).unwrap();
+        let specs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0))
+            .unwrap();
+        let revisions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_spec_revisions", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(specs, 0, "a rejected save must leave NO spec row");
         assert_eq!(revisions, 0, "…and NO revision row");
 
@@ -19379,12 +21963,18 @@ mod sdd_query_tests {
             upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "small"), "agent").unwrap();
         let before = get_sdd_spec(&conn, &org, &existing.id).unwrap().unwrap();
 
-        assert!(upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", &huge), "agent").is_err());
+        assert!(
+            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", &huge), "agent").is_err()
+        );
 
         let after = get_sdd_spec(&conn, &org, &existing.id).unwrap().unwrap();
         assert_eq!(after.spec.latest_revision, before.spec.latest_revision);
         assert_eq!(after.spec.updated_at, before.spec.updated_at);
-        assert_eq!(after.content.as_deref(), Some("small"), "the contract is untouched");
+        assert_eq!(
+            after.content.as_deref(),
+            Some("small"),
+            "the contract is untouched"
+        );
     }
 
     #[test]
@@ -19394,7 +21984,9 @@ mod sdd_query_tests {
         let (spec, created) =
             upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", &big), "agent").unwrap();
         assert!(created);
-        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev.byte_size, 1_048_575);
     }
 
@@ -19411,8 +22003,14 @@ mod sdd_query_tests {
             "agent",
         )
         .unwrap();
-        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "the throttle uses windows"), "agent")
-            .unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "cap", "the throttle uses windows"),
+            "agent",
+        )
+        .unwrap();
 
         assert_eq!(
             spec_fts_row_count(&conn, &spec.id),
@@ -19420,7 +22018,10 @@ mod sdd_query_tests {
             "the index must never accumulate one row per revision"
         );
         let stale = search_sdd_specs(&conn, &org, "leaky", 10).unwrap();
-        assert!(stale.is_empty(), "a term deleted by a newer revision must stop matching");
+        assert!(
+            stale.is_empty(),
+            "a term deleted by a newer revision must stop matching"
+        );
         let fresh = search_sdd_specs(&conn, &org, "windows", 10).unwrap();
         assert_eq!(fresh.len(), 1, "the latest revision's text must match");
     }
@@ -19431,14 +22032,27 @@ mod sdd_query_tests {
         let (conn, org_a, user_a) = setup();
         let (org_b, user_b) = second_org(&conn);
 
-        let (spec_a, _) =
-            upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "A's contract"), "agent")
-                .unwrap();
-        let (spec_b, _) =
-            upsert_sdd_spec(&conn, &org_b, &user_b, &spec_req("p", "cap", "B's contract"), "agent")
-                .unwrap();
+        let (spec_a, _) = upsert_sdd_spec(
+            &conn,
+            &org_a,
+            &user_a,
+            &spec_req("p", "cap", "A's contract"),
+            "agent",
+        )
+        .unwrap();
+        let (spec_b, _) = upsert_sdd_spec(
+            &conn,
+            &org_b,
+            &user_b,
+            &spec_req("p", "cap", "B's contract"),
+            "agent",
+        )
+        .unwrap();
 
-        assert_ne!(spec_a.id, spec_b.id, "same natural key in two orgs = two specs");
+        assert_ne!(
+            spec_a.id, spec_b.id,
+            "same natural key in two orgs = two specs"
+        );
         assert!(
             get_sdd_spec(&conn, &org_b, &spec_a.id).unwrap().is_none(),
             "org B must not see org A's spec by id — Ok(None), which the API turns into a 404"
@@ -19468,16 +22082,31 @@ mod sdd_query_tests {
         let (spec, _) = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
 
         // Spec → change.
-        assert_eq!(spec.last_merged_from_change_id.as_deref(), Some(change.id.as_str()));
-        assert_eq!(spec.last_merged_from_change_name.as_deref(), Some("sdd-specs"));
+        assert_eq!(
+            spec.last_merged_from_change_id.as_deref(),
+            Some(change.id.as_str())
+        );
+        assert_eq!(
+            spec.last_merged_from_change_name.as_deref(),
+            Some("sdd-specs")
+        );
 
-        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
-        assert_eq!(rev.merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rev.merged_from_change_id.as_deref(),
+            Some(change.id.as_str())
+        );
         assert_eq!(rev.merged_from_change_name.as_deref(), Some("sdd-specs"));
 
         // Change → spec.
         let merged = list_sdd_specs_for_change(&conn, &org, &change.id).unwrap();
-        assert_eq!(merged.len(), 1, "the change must report the spec it merged into");
+        assert_eq!(
+            merged.len(),
+            1,
+            "the change must report the spec it merged into"
+        );
         assert_eq!(merged[0].spec.id, spec.id);
         assert_eq!(merged[0].merged_revision, 1);
     }
@@ -19487,9 +22116,17 @@ mod sdd_query_tests {
     #[test]
     fn upsert_sdd_spec_without_a_change_name_has_null_provenance() {
         let (conn, org, user) = setup();
-        let (spec, _) =
-            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "imported"), "import").unwrap();
-        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1).unwrap().unwrap();
+        let (spec, _) = upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "cap", "imported"),
+            "import",
+        )
+        .unwrap();
+        let rev = get_sdd_spec_revision(&conn, &org, &spec.id, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(rev.merged_from_change_id, None);
         assert_eq!(rev.source, "import");
         assert_eq!(spec.last_merged_from_change_id, None);
@@ -19507,8 +22144,9 @@ mod sdd_query_tests {
         let err = upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap_err();
         assert!(err.to_string().contains("change_not_found"));
 
-        let specs: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0)).unwrap();
+        let specs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sdd_specs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(specs, 0, "the rejected save must leave no spec behind");
     }
 
@@ -19550,7 +22188,10 @@ mod sdd_query_tests {
         let merged = list_sdd_specs_for_change(&conn, &org, &change.id).unwrap();
         assert_eq!(merged.len(), 2, "two specs, not three rows — one per spec");
         assert_eq!(merged[0].spec.capability, "auth", "ordered by capability");
-        assert_eq!(merged[0].merged_revision, 2, "the newest revision this change produced");
+        assert_eq!(
+            merged[0].merged_revision, 2,
+            "the newest revision this change produced"
+        );
         assert_eq!(merged[1].spec.capability, "billing");
         assert_eq!(merged[1].merged_revision, 1);
     }
@@ -19560,7 +22201,9 @@ mod sdd_query_tests {
     fn list_sdd_specs_for_change_is_empty_for_a_change_that_merged_nothing() {
         let (conn, org, user) = setup();
         let change = mk_change(&conn, &org, &user, "p", "drafting");
-        assert!(list_sdd_specs_for_change(&conn, &org, &change.id).unwrap().is_empty());
+        assert!(list_sdd_specs_for_change(&conn, &org, &change.id)
+            .unwrap()
+            .is_empty());
     }
 
     // ── Spec reads ───────────────────────────────────────────────────────
@@ -19569,8 +22212,14 @@ mod sdd_query_tests {
     fn get_sdd_spec_returns_latest_revision_content() {
         let (conn, org, user) = setup();
         upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "old"), "agent").unwrap();
-        let (spec, _) =
-            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "current"), "agent").unwrap();
+        let (spec, _) = upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "cap", "current"),
+            "agent",
+        )
+        .unwrap();
 
         let detail = get_sdd_spec(&conn, &org, &spec.id).unwrap().unwrap();
         assert_eq!(detail.content.as_deref(), Some("current"));
@@ -19584,12 +22233,18 @@ mod sdd_query_tests {
         let (conn, org, user) = setup();
         upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "text"), "agent").unwrap();
 
-        assert!(get_sdd_spec_by_capability(&conn, &org, "p", "nope").unwrap().is_none());
+        assert!(get_sdd_spec_by_capability(&conn, &org, "p", "nope")
+            .unwrap()
+            .is_none());
         assert!(
-            get_sdd_spec_by_capability(&conn, &org, "other-project", "cap").unwrap().is_none(),
+            get_sdd_spec_by_capability(&conn, &org, "other-project", "cap")
+                .unwrap()
+                .is_none(),
             "the capability is scoped to its project"
         );
-        let found = get_sdd_spec_by_capability(&conn, &org, "p", "cap").unwrap().unwrap();
+        let found = get_sdd_spec_by_capability(&conn, &org, "p", "cap")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.content.as_deref(), Some("text"));
     }
 
@@ -19606,7 +22261,14 @@ mod sdd_query_tests {
             ..spec_req("p", "alpha", "a")
         };
         upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
-        upsert_sdd_spec(&conn, &org, &user, &spec_req("other", "gamma", "g"), "agent").unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("other", "gamma", "g"),
+            "agent",
+        )
+        .unwrap();
 
         let all = list_sdd_specs(&conn, &org, &SddSpecFilters::default()).unwrap();
         assert_eq!(all.len(), 3);
@@ -19614,7 +22276,10 @@ mod sdd_query_tests {
         let filtered = list_sdd_specs(
             &conn,
             &org,
-            &SddSpecFilters { project: Some("p".to_string()), ..Default::default() },
+            &SddSpecFilters {
+                project: Some("p".to_string()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(filtered.len(), 2, "filtered to the project");
@@ -19624,7 +22289,10 @@ mod sdd_query_tests {
             Some("c1"),
             "the list carries the change that last merged into each contract"
         );
-        assert_eq!(filtered[0].last_merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(
+            filtered[0].last_merged_from_change_id.as_deref(),
+            Some(change.id.as_str())
+        );
         assert_eq!(filtered[1].capability, "zeta");
         assert_eq!(filtered[1].last_merged_from_change_name, None);
     }
@@ -19633,12 +22301,29 @@ mod sdd_query_tests {
     fn list_sdd_specs_org_isolation() {
         let (conn, org_a, user_a) = setup();
         let (org_b, user_b) = second_org(&conn);
-        upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "a-cap", "x"), "agent").unwrap();
-        upsert_sdd_spec(&conn, &org_b, &user_b, &spec_req("p", "b-cap", "y"), "agent").unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org_a,
+            &user_a,
+            &spec_req("p", "a-cap", "x"),
+            "agent",
+        )
+        .unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org_b,
+            &user_b,
+            &spec_req("p", "b-cap", "y"),
+            "agent",
+        )
+        .unwrap();
 
         let a = list_sdd_specs(&conn, &org_a, &SddSpecFilters::default()).unwrap();
         assert_eq!(a.len(), 1);
-        assert_eq!(a[0].capability, "a-cap", "org A must not see org B's contracts");
+        assert_eq!(
+            a[0].capability, "a-cap",
+            "org A must not see org B's contracts"
+        );
     }
 
     #[test]
@@ -19655,7 +22340,10 @@ mod sdd_query_tests {
         let revs = list_sdd_spec_revisions(&conn, &org, &spec.id).unwrap();
         assert_eq!(revs.len(), 2);
         assert_eq!(revs[0].revision, 2, "newest first");
-        assert_eq!(revs[0].merged_from_change_id.as_deref(), Some(change.id.as_str()));
+        assert_eq!(
+            revs[0].merged_from_change_id.as_deref(),
+            Some(change.id.as_str())
+        );
         assert_eq!(revs[0].merged_from_change_name.as_deref(), Some("c1"));
         assert_eq!(revs[1].revision, 1);
         assert_eq!(revs[1].source, "import");
@@ -19667,18 +22355,40 @@ mod sdd_query_tests {
     fn get_sdd_spec_revision_returns_full_content_and_respects_org() {
         let (conn, org_a, user_a) = setup();
         let (org_b, _user_b) = second_org(&conn);
-        upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "first"), "agent").unwrap();
-        let (spec, _) =
-            upsert_sdd_spec(&conn, &org_a, &user_a, &spec_req("p", "cap", "second"), "agent").unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org_a,
+            &user_a,
+            &spec_req("p", "cap", "first"),
+            "agent",
+        )
+        .unwrap();
+        let (spec, _) = upsert_sdd_spec(
+            &conn,
+            &org_a,
+            &user_a,
+            &spec_req("p", "cap", "second"),
+            "agent",
+        )
+        .unwrap();
 
-        let rev1 = get_sdd_spec_revision(&conn, &org_a, &spec.id, 1).unwrap().unwrap();
-        assert_eq!(rev1.content, "first", "an older revision is retrievable in full");
+        let rev1 = get_sdd_spec_revision(&conn, &org_a, &spec.id, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rev1.content, "first",
+            "an older revision is retrievable in full"
+        );
 
         assert!(
-            get_sdd_spec_revision(&conn, &org_b, &spec.id, 1).unwrap().is_none(),
+            get_sdd_spec_revision(&conn, &org_b, &spec.id, 1)
+                .unwrap()
+                .is_none(),
             "another org's revision is Ok(None), which the API turns into a 404"
         );
-        assert!(get_sdd_spec_revision(&conn, &org_a, &spec.id, 99).unwrap().is_none());
+        assert!(get_sdd_spec_revision(&conn, &org_a, &spec.id, 99)
+            .unwrap()
+            .is_none());
     }
 
     // ── Spec search ──────────────────────────────────────────────────────
@@ -19691,7 +22401,11 @@ mod sdd_query_tests {
             &conn,
             &org_a,
             &user_a,
-            &spec_req("p", "throttling", "requests are subject to rate limiting per key"),
+            &spec_req(
+                "p",
+                "throttling",
+                "requests are subject to rate limiting per key",
+            ),
             "agent",
         )
         .unwrap();
@@ -19707,13 +22421,23 @@ mod sdd_query_tests {
         let hits = search_sdd_specs(&conn, &org_a, "rate limiting", 10).unwrap();
         assert_eq!(hits.len(), 1, "org B's contract must not appear");
         assert_eq!(hits[0].capability, "throttling");
-        assert!(hits[0].snippet.contains("<b>"), "the snippet must be highlighted");
+        assert!(
+            hits[0].snippet.contains("<b>"),
+            "the snippet must be highlighted"
+        );
     }
 
     #[test]
     fn search_sdd_specs_sanitizes_fts_query_syntax() {
         let (conn, org, user) = setup();
-        upsert_sdd_spec(&conn, &org, &user, &spec_req("p", "cap", "plain text"), "agent").unwrap();
+        upsert_sdd_spec(
+            &conn,
+            &org,
+            &user,
+            &spec_req("p", "cap", "plain text"),
+            "agent",
+        )
+        .unwrap();
         // Raw FTS operators must not blow up the query.
         assert!(search_sdd_specs(&conn, &org, "\"unbalanced", 10).is_ok());
         assert!(search_sdd_specs(&conn, &org, "AND OR NOT", 10).is_ok());
@@ -19728,7 +22452,12 @@ mod sdd_query_tests {
             &conn,
             &org,
             &user,
-            &save_req("p", "throttle-work", "design", "we will add rate limiting to the gateway"),
+            &save_req(
+                "p",
+                "throttle-work",
+                "design",
+                "we will add rate limiting to the gateway",
+            ),
             "agent",
         )
         .unwrap();
@@ -19736,7 +22465,11 @@ mod sdd_query_tests {
             &conn,
             &org,
             &user,
-            &spec_req("p", "gateway", "the gateway MUST apply rate limiting per api key"),
+            &spec_req(
+                "p",
+                "gateway",
+                "the gateway MUST apply rate limiting per api key",
+            ),
             "agent",
         )
         .unwrap();
@@ -19744,13 +22477,21 @@ mod sdd_query_tests {
         let hits = search_sdd_all(&conn, &org, "rate limiting", 10).unwrap();
         assert_eq!(hits.len(), 2, "both trees are searched");
 
-        let spec_hit = hits.iter().find(|h| h.hit_type == "spec").expect("the contract must be found");
+        let spec_hit = hits
+            .iter()
+            .find(|h| h.hit_type == "spec")
+            .expect("the contract must be found");
         assert_eq!(spec_hit.capability, "gateway");
         assert!(spec_hit.spec_id.is_some());
-        assert!(spec_hit.change_id.is_none(), "a spec hit has no change — it outlives them");
+        assert!(
+            spec_hit.change_id.is_none(),
+            "a spec hit has no change — it outlives them"
+        );
 
-        let art_hit =
-            hits.iter().find(|h| h.hit_type == "artifact").expect("the draft must be found too");
+        let art_hit = hits
+            .iter()
+            .find(|h| h.hit_type == "artifact")
+            .expect("the draft must be found too");
         assert_eq!(art_hit.change_name.as_deref(), Some("throttle-work"));
         assert_eq!(art_hit.kind.as_deref(), Some("design"));
         assert!(art_hit.spec_id.is_none());
@@ -19765,8 +22506,14 @@ mod sdd_query_tests {
     fn search_sdd_all_honours_the_limit_across_both_trees() {
         let (conn, org, user) = setup();
         for i in 0..3 {
-            upsert_sdd_spec(&conn, &org, &user, &spec_req("p", &format!("cap{i}"), "widget"), "agent")
-                .unwrap();
+            upsert_sdd_spec(
+                &conn,
+                &org,
+                &user,
+                &spec_req("p", &format!("cap{i}"), "widget"),
+                "agent",
+            )
+            .unwrap();
             upsert_sdd_artifact(
                 &conn,
                 &org,
@@ -19777,7 +22524,11 @@ mod sdd_query_tests {
             .unwrap();
         }
         let hits = search_sdd_all(&conn, &org, "widget", 4).unwrap();
-        assert_eq!(hits.len(), 4, "the limit caps the MERGED result set, not each tree");
+        assert_eq!(
+            hits.len(),
+            4,
+            "the limit caps the MERGED result set, not each tree"
+        );
     }
 
     #[test]
@@ -19785,7 +22536,11 @@ mod sdd_query_tests {
         let (conn, org, user) = setup();
         let req = SaveSpecRequest {
             title: Some("Harness Library".to_string()),
-            ..spec_req("p", "harness-library", "body text mentioning nothing relevant")
+            ..spec_req(
+                "p",
+                "harness-library",
+                "body text mentioning nothing relevant",
+            )
         };
         upsert_sdd_spec(&conn, &org, &user, &req, "agent").unwrap();
 
@@ -19798,7 +22553,9 @@ mod sdd_query_tests {
         assert_eq!(by_title.len(), 1, "the title matches too");
 
         assert!(
-            search_sdd_specs_by_query(&conn, &org, "unrelated", 10).unwrap().is_empty(),
+            search_sdd_specs_by_query(&conn, &org, "unrelated", 10)
+                .unwrap()
+                .is_empty(),
             "global_search is keyword-only over capability/title, not full text"
         );
     }
@@ -19908,7 +22665,6 @@ mod privileged_permission_tests {
     }
 }
 
-
 // ── Client isolation tests (the acceptance gates of the client model) ─────────
 #[cfg(test)]
 mod client_isolation_tests {
@@ -19944,7 +22700,11 @@ mod client_isolation_tests {
         conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a1', 'org1', 'a-billing', 'cli_a')", []).unwrap();
         conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a2', 'org1', 'a-web', 'cli_a')", []).unwrap();
         conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_b1', 'org1', 'b-api', 'cli_b')", []).unwrap();
-        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal-tooling')", []).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal-tooling')",
+            [],
+        )
+        .unwrap();
         // u_a is a member of client A; u_b of client B.
         add_client_member(&conn, "cli_a", "u_a", "member").unwrap();
         add_client_member(&conn, "cli_b", "u_b", "member").unwrap();
@@ -19973,7 +22733,10 @@ mod client_isolation_tests {
     fn non_member_cannot_see_other_client_projects() {
         let f = setup();
         let seen = visible_projects(&f.conn, "u_a");
-        assert!(!seen.contains(&"b-api".to_string()), "client A must not see client B's project");
+        assert!(
+            !seen.contains(&"b-api".to_string()),
+            "client A must not see client B's project"
+        );
         assert!(!user_can_view_client(&f.conn, "org1", "cli_b", Some("u_a")).unwrap());
     }
 
@@ -19986,7 +22749,10 @@ mod client_isolation_tests {
             .unwrap();
         let seen = visible_projects(&f.conn, "u_b");
         assert!(seen.contains(&"a-billing".to_string()));
-        assert!(!seen.contains(&"a-web".to_string()), "project membership must not leak the client's other projects");
+        assert!(
+            !seen.contains(&"a-web".to_string()),
+            "project membership must not leak the client's other projects"
+        );
     }
 
     /// super_user (viewer_user_id = None) is the only org-wide reader.
@@ -20072,20 +22838,30 @@ mod client_isolation_tests {
     #[test]
     fn report_project_resolution_counts_without_mutating() {
         let f = setup();
-        f.conn.execute(
-            "INSERT INTO memories (id, org_id, user_id, project, tool, content)
+        f.conn
+            .execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content)
              VALUES ('m1', 'org1', 'u_a', 'a-billing', 'claude-code', 'resolved one')",
-            [],
-        ).unwrap();
-        f.conn.execute(
-            "INSERT INTO memories (id, org_id, user_id, project, tool, content)
+                [],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content)
              VALUES ('m2', 'org1', 'u_a', 'ghost-project', 'claude-code', 'unresolved one')",
-            [],
-        ).unwrap();
+                [],
+            )
+            .unwrap();
 
-        let before: i64 = f.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
+        let before: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
         let report = report_project_resolution(&f.conn, "org1").unwrap();
-        let after: i64 = f.conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
+        let after: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
 
         assert_eq!(report.resolved, 1);
         assert_eq!(report.unresolved, 1);
@@ -20103,7 +22879,11 @@ mod promotion_tests {
     fn setup() -> Connection {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
-        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')", []).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'a@u2s.io', 'A', 'member')", []).unwrap();
         conn
     }
@@ -20120,11 +22900,17 @@ mod promotion_tests {
     fn promote_creates_org_scoped_copy_with_lineage() {
         let conn = setup();
         insert_memory(&conn, "src1", "client");
-        let promoted = promote_memory(&conn, "org1", "src1", "u1").unwrap().unwrap();
+        let promoted = promote_memory(&conn, "org1", "src1", "u1")
+            .unwrap()
+            .unwrap();
         assert_eq!(promoted.scope, "org");
         assert_ne!(promoted.id, "src1");
         let lineage: Option<String> = conn
-            .query_row("SELECT promoted_from FROM memories WHERE id = ?1", [&promoted.id], |r| r.get(0))
+            .query_row(
+                "SELECT promoted_from FROM memories WHERE id = ?1",
+                [&promoted.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(lineage.as_deref(), Some("src1"));
     }
@@ -20134,9 +22920,13 @@ mod promotion_tests {
     fn promote_leaves_source_unchanged() {
         let conn = setup();
         insert_memory(&conn, "src2", "project");
-        promote_memory(&conn, "org1", "src2", "u1").unwrap().unwrap();
+        promote_memory(&conn, "org1", "src2", "u1")
+            .unwrap()
+            .unwrap();
         let scope: String = conn
-            .query_row("SELECT scope FROM memories WHERE id = 'src2'", [], |r| r.get(0))
+            .query_row("SELECT scope FROM memories WHERE id = 'src2'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(scope, "project", "the source memory must not be modified");
     }
@@ -20165,13 +22955,29 @@ mod inheritance_tests {
     fn setup() -> Connection {
         let conn = connect(":memory:").unwrap();
         migrations::run_all(&conn).unwrap();
-        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')", []).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'u2s', 'u2s')",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'a@u2s.io', 'A', 'member')", []).unwrap();
-        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_a', 'org1', 'A', 'a')", []).unwrap();
-        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_b', 'org1', 'B', 'b')", []).unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_a', 'org1', 'A', 'a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_b', 'org1', 'B', 'b')",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_a', 'org1', 'a-billing', 'cli_a')", []).unwrap();
         conn.execute("INSERT INTO projects (id, org_id, name, client_id) VALUES ('p_b', 'org1', 'b-api', 'cli_b')", []).unwrap();
-        conn.execute("INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal')", []).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, org_id, name) VALUES ('p_int', 'org1', 'internal')",
+            [],
+        )
+        .unwrap();
         conn
     }
 
@@ -20186,11 +22992,21 @@ mod inheritance_tests {
     fn titles(conn: &Connection, project: &str) -> Vec<String> {
         let client = get_project_client_id(conn, "org1", project).unwrap();
         let pid = get_project_id_by_name(conn, "org1", project).unwrap();
-        list_conventions_visible(conn, "org1", None, Some(false), pid.as_deref(), client.as_deref(), 50, 0, None)
-            .unwrap()
-            .into_iter()
-            .map(|c| c.title)
-            .collect()
+        list_conventions_visible(
+            conn,
+            "org1",
+            None,
+            Some(false),
+            pid.as_deref(),
+            client.as_deref(),
+            50,
+            0,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|c| c.title)
+        .collect()
     }
 
     #[test]
@@ -20211,8 +23027,14 @@ mod inheritance_tests {
         add_convention(&conn, "org-wide", None, None);
         add_convention(&conn, "client-a-rule", Some("cli_a"), None);
         let seen = titles(&conn, "a-billing");
-        assert!(seen.contains(&"org-wide".to_string()), "org level must survive");
-        assert!(seen.contains(&"client-a-rule".to_string()), "client level must apply");
+        assert!(
+            seen.contains(&"org-wide".to_string()),
+            "org level must survive"
+        );
+        assert!(
+            seen.contains(&"client-a-rule".to_string()),
+            "client level must apply"
+        );
         assert_eq!(seen.len(), 2);
     }
 
@@ -20234,7 +23056,10 @@ mod inheritance_tests {
         let seen = titles(&conn, "internal");
         assert!(seen.contains(&"org-wide".to_string()));
         assert!(seen.contains(&"internal-rule".to_string()));
-        assert!(!seen.contains(&"client-a-rule".to_string()), "a client's rules must not reach internal work");
+        assert!(
+            !seen.contains(&"client-a-rule".to_string()),
+            "a client's rules must not reach internal work"
+        );
     }
 
     #[test]
@@ -20249,9 +23074,20 @@ mod inheritance_tests {
     #[test]
     fn get_project_client_id_distinguishes_internal_from_missing() {
         let conn = setup();
-        assert_eq!(get_project_client_id(&conn, "org1", "a-billing").unwrap().as_deref(), Some("cli_a"));
-        assert_eq!(get_project_client_id(&conn, "org1", "internal").unwrap(), None);
-        assert_eq!(get_project_client_id(&conn, "org1", "no-such-project").unwrap(), None);
+        assert_eq!(
+            get_project_client_id(&conn, "org1", "a-billing")
+                .unwrap()
+                .as_deref(),
+            Some("cli_a")
+        );
+        assert_eq!(
+            get_project_client_id(&conn, "org1", "internal").unwrap(),
+            None
+        );
+        assert_eq!(
+            get_project_client_id(&conn, "org1", "no-such-project").unwrap(),
+            None
+        );
     }
 
     // ── T-12: project creation and repo linking ──────────────────────────────
@@ -20259,9 +23095,22 @@ mod inheritance_tests {
     #[test]
     fn create_project_without_client_is_internal() {
         let conn = setup();
-        let p = create_project_with_creator_membership(&conn, "org1", "u1", "new-internal", None, None, None).unwrap();
+        let p = create_project_with_creator_membership(
+            &conn,
+            "org1",
+            "u1",
+            "new-internal",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let cid: Option<String> = conn
-            .query_row("SELECT client_id FROM projects WHERE id = ?1", [&p.id], |r| r.get(0))
+            .query_row(
+                "SELECT client_id FROM projects WHERE id = ?1",
+                [&p.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(cid.is_none());
     }
@@ -20269,9 +23118,22 @@ mod inheritance_tests {
     #[test]
     fn create_project_attaches_to_client() {
         let conn = setup();
-        let p = create_project_with_creator_membership(&conn, "org1", "u1", "a-new", None, None, Some("cli_a")).unwrap();
+        let p = create_project_with_creator_membership(
+            &conn,
+            "org1",
+            "u1",
+            "a-new",
+            None,
+            None,
+            Some("cli_a"),
+        )
+        .unwrap();
         let cid: Option<String> = conn
-            .query_row("SELECT client_id FROM projects WHERE id = ?1", [&p.id], |r| r.get(0))
+            .query_row(
+                "SELECT client_id FROM projects WHERE id = ?1",
+                [&p.id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(cid.as_deref(), Some("cli_a"));
     }
@@ -20280,9 +23142,26 @@ mod inheritance_tests {
     #[test]
     fn create_project_rejects_client_from_another_org() {
         let conn = setup();
-        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')", []).unwrap();
-        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')", []).unwrap();
-        assert!(create_project_with_creator_membership(&conn, "org1", "u1", "bad", None, None, Some("cli_x")).is_err());
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')",
+            [],
+        )
+        .unwrap();
+        assert!(create_project_with_creator_membership(
+            &conn,
+            "org1",
+            "u1",
+            "bad",
+            None,
+            None,
+            Some("cli_x")
+        )
+        .is_err());
     }
 
     // ── update_project: client reassignment + partial-update semantics ────────
@@ -20291,7 +23170,12 @@ mod inheritance_tests {
         conn.query_row(
             "SELECT parent_id, client_id FROM projects WHERE id = ?1",
             [id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
         )
         .unwrap()
     }
@@ -20312,20 +23196,35 @@ mod inheritance_tests {
         let found = update_project(&conn, "org1", "p_a", None, Some(None)).unwrap();
         assert!(found);
         let (_, client) = project_parent_and_client(&conn, "p_a");
-        assert!(client.is_none(), "null client_id must clear the project to Internal");
+        assert!(
+            client.is_none(),
+            "null client_id must clear the project to Internal"
+        );
     }
 
     #[test]
     fn update_project_rejects_client_from_another_org() {
         let conn = setup();
-        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')", []).unwrap();
-        conn.execute("INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')", []).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clients (id, org_id, name, slug) VALUES ('cli_x', 'org2', 'X', 'x')",
+            [],
+        )
+        .unwrap();
         let err = update_project(&conn, "org1", "p_a", None, Some(Some("cli_x")));
         assert!(err.is_err(), "a client from another org must be rejected");
         assert!(err.unwrap_err().to_string().contains("client_not_found"));
         // The offending update must not have partially applied.
         let (_, client) = project_parent_and_client(&conn, "p_a");
-        assert_eq!(client.as_deref(), Some("cli_a"), "rejected update must leave client untouched");
+        assert_eq!(
+            client.as_deref(),
+            Some("cli_a"),
+            "rejected update must leave client untouched"
+        );
     }
 
     #[test]
@@ -20340,21 +23239,38 @@ mod inheritance_tests {
         // Sending only client_id must NOT null out parent_id.
         update_project(&conn, "org1", "p_a", None, Some(Some("cli_b"))).unwrap();
         let (parent, client) = project_parent_and_client(&conn, "p_a");
-        assert_eq!(parent.as_deref(), Some("p_int"), "client-only update must not touch parent_id");
+        assert_eq!(
+            parent.as_deref(),
+            Some("p_int"),
+            "client-only update must not touch parent_id"
+        );
         assert_eq!(client.as_deref(), Some("cli_b"));
 
         // Sending only parent_id must NOT null out client_id.
         update_project(&conn, "org1", "p_a", Some(None), None).unwrap();
         let (parent, client) = project_parent_and_client(&conn, "p_a");
-        assert!(parent.is_none(), "parent-only update to null must detach to root");
-        assert_eq!(client.as_deref(), Some("cli_b"), "parent-only update must not touch client_id");
+        assert!(
+            parent.is_none(),
+            "parent-only update to null must detach to root"
+        );
+        assert_eq!(
+            client.as_deref(),
+            Some("cli_b"),
+            "parent-only update must not touch client_id"
+        );
     }
 
     #[test]
     fn update_project_no_fields_reports_existence() {
         let conn = setup();
-        assert!(update_project(&conn, "org1", "p_a", None, None).unwrap(), "existing project returns true");
-        assert!(!update_project(&conn, "org1", "nope", None, None).unwrap(), "missing project returns false");
+        assert!(
+            update_project(&conn, "org1", "p_a", None, None).unwrap(),
+            "existing project returns true"
+        );
+        assert!(
+            !update_project(&conn, "org1", "nope", None, None).unwrap(),
+            "missing project returns false"
+        );
     }
 
     #[test]
@@ -20375,6 +23291,7 @@ mod inheritance_tests {
         let conn = setup();
         conn.execute("INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'repo-one', '/a')", []).unwrap();
         link_code_project_to_project(&conn, "org1", 1, "p_a").unwrap();
-        link_code_project_to_project(&conn, "org1", 1, "p_a").expect("re-linking the same repo must be a no-op");
+        link_code_project_to_project(&conn, "org1", 1, "p_a")
+            .expect("re-linking the same repo must be a no-op");
     }
 }

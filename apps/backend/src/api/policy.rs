@@ -70,24 +70,32 @@ fn validate_config(
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     match rule_type {
         "model_whitelist" => {
-            let models = config
-                .get("allowed_models")
-                .and_then(|v| v.as_array());
+            let models = config.get("allowed_models").and_then(|v| v.as_array());
             match models {
-                None => return Err(bad_request(
-                    "config.allowed_models must be a non-empty array",
-                    "invalid_config",
-                )),
-                Some(arr) if arr.is_empty() => return Err(bad_request(
-                    "config.allowed_models must be a non-empty array",
-                    "invalid_config",
-                )),
+                None => {
+                    return Err(bad_request(
+                        "config.allowed_models must be a non-empty array",
+                        "invalid_config",
+                    ))
+                }
+                Some(arr) if arr.is_empty() => {
+                    return Err(bad_request(
+                        "config.allowed_models must be a non-empty array",
+                        "invalid_config",
+                    ))
+                }
                 _ => {}
             }
         }
         "budget_limit" => {
-            let has_tokens = config.get("max_tokens_per_day").and_then(|v| v.as_i64()).is_some();
-            let has_requests = config.get("max_requests_per_day").and_then(|v| v.as_i64()).is_some();
+            let has_tokens = config
+                .get("max_tokens_per_day")
+                .and_then(|v| v.as_i64())
+                .is_some();
+            let has_requests = config
+                .get("max_requests_per_day")
+                .and_then(|v| v.as_i64())
+                .is_some();
             if !has_tokens && !has_requests {
                 return Err(bad_request(
                     "config must have at least one of max_tokens_per_day or max_requests_per_day",
@@ -96,28 +104,36 @@ fn validate_config(
             }
             if let Some(v) = config.get("max_tokens_per_day").and_then(|v| v.as_i64()) {
                 if v <= 0 {
-                    return Err(bad_request("max_tokens_per_day must be positive", "invalid_config"));
+                    return Err(bad_request(
+                        "max_tokens_per_day must be positive",
+                        "invalid_config",
+                    ));
                 }
             }
             if let Some(v) = config.get("max_requests_per_day").and_then(|v| v.as_i64()) {
                 if v <= 0 {
-                    return Err(bad_request("max_requests_per_day must be positive", "invalid_config"));
+                    return Err(bad_request(
+                        "max_requests_per_day must be positive",
+                        "invalid_config",
+                    ));
                 }
             }
         }
         "pii_redact" => {
-            let patterns = config
-                .get("patterns")
-                .and_then(|v| v.as_array());
+            let patterns = config.get("patterns").and_then(|v| v.as_array());
             match patterns {
-                None => return Err(bad_request(
-                    "config.patterns must be a non-empty array",
-                    "invalid_config",
-                )),
-                Some(arr) if arr.is_empty() => return Err(bad_request(
-                    "config.patterns must be a non-empty array",
-                    "invalid_config",
-                )),
+                None => {
+                    return Err(bad_request(
+                        "config.patterns must be a non-empty array",
+                        "invalid_config",
+                    ))
+                }
+                Some(arr) if arr.is_empty() => {
+                    return Err(bad_request(
+                        "config.patterns must be a non-empty array",
+                        "invalid_config",
+                    ))
+                }
                 Some(arr) => {
                     for p in arr {
                         if let Some(s) = p.as_str() {
@@ -127,10 +143,12 @@ fn validate_config(
                                     "invalid_config",
                                 ));
                             }
-                            regex::Regex::new(s).map_err(|_| bad_request(
-                                &format!("pattern '{}' is not a valid regex", s),
-                                "invalid_config",
-                            ))?;
+                            regex::Regex::new(s).map_err(|_| {
+                                bad_request(
+                                    &format!("pattern '{}' is not a valid regex", s),
+                                    "invalid_config",
+                                )
+                            })?;
                         }
                     }
                 }
@@ -199,7 +217,11 @@ pub async fn list_policies(
     require_permission(&conn, &ctx, None, "policy:read")?;
 
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let viewer = if ctx.role.is_super_user() { None } else { Some(ctx.user_id.as_str()) };
+    let viewer = if ctx.role.is_super_user() {
+        None
+    } else {
+        Some(ctx.user_id.as_str())
+    };
     let policies = queries::list_policies_visible(&conn, &ctx.org_id, limit, offset, viewer)
         .map_err(internal_error)?;
     Ok(Json(PoliciesResponse { policies }))
@@ -218,7 +240,10 @@ pub async fn create_policy(
         return Err(bad_request("name must not be empty", "invalid_name"));
     }
     if name.len() > 128 {
-        return Err(bad_request("name must be at most 128 characters", "invalid_name"));
+        return Err(bad_request(
+            "name must be at most 128 characters",
+            "invalid_name",
+        ));
     }
 
     // Validate rule_type is one of the known variants.
@@ -286,7 +311,10 @@ pub async fn update_policy(
             return Err(bad_request("name must not be empty", "invalid_name"));
         }
         if trimmed.len() > 128 {
-            return Err(bad_request("name must be at most 128 characters", "invalid_name"));
+            return Err(bad_request(
+                "name must be at most 128 characters",
+                "invalid_name",
+            ));
         }
     }
 
@@ -352,7 +380,11 @@ pub async fn check_policy(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let viewer = if ctx.role.is_super_user() { None } else { Some(ctx.user_id.as_str()) };
+    let viewer = if ctx.role.is_super_user() {
+        None
+    } else {
+        Some(ctx.user_id.as_str())
+    };
     if let (Some(project_id), Some(user_id)) = (req.project.as_deref(), viewer) {
         let is_member = queries::user_is_project_member(&conn, &ctx.org_id, project_id, user_id)
             .map_err(internal_error)?;
@@ -369,15 +401,15 @@ pub async fn check_policy(
         }
     }
 
-    let policies = queries::list_enabled_policies_visible(&conn, &ctx.org_id, req.project.as_deref(), viewer)
-        .map_err(internal_error)?;
+    let policies =
+        queries::list_enabled_policies_visible(&conn, &ctx.org_id, req.project.as_deref(), viewer)
+            .map_err(internal_error)?;
     let stats = queries::fetch_daily_stats(&conn, &ctx.org_id).map_err(internal_error)?;
 
     // prompt_tokens counts as +1 to requests_used for budget check.
-    let requests_used = stats.requests_today as u64
-        + if req.prompt_tokens.is_some() { 1 } else { 0 };
-    let tokens_used = stats.tokens_today as u64
-        + req.prompt_tokens.unwrap_or(0).max(0) as u64;
+    let requests_used =
+        stats.requests_today as u64 + if req.prompt_tokens.is_some() { 1 } else { 0 };
+    let tokens_used = stats.tokens_today as u64 + req.prompt_tokens.unwrap_or(0).max(0) as u64;
 
     let response = crate::policy::evaluate(&policies, &req, tokens_used, requests_used);
     Ok(Json(response))
@@ -397,8 +429,8 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::api::middleware as auth_mw;
-    use crate::db::{connection::connect, migrations};
     use crate::db::queries::bootstrap;
+    use crate::db::{connection::connect, migrations};
     use crate::store::sqlite::SqliteStore;
 
     fn make_store() -> SqliteStore {
@@ -409,7 +441,10 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/policies", get(super::list_policies).post(super::create_policy))
+            .route(
+                "/v1/policies",
+                get(super::list_policies).post(super::create_policy),
+            )
             .route(
                 "/v1/policies/:id",
                 patch(super::update_policy).delete(super::delete_policy),
@@ -431,7 +466,11 @@ mod tests {
         let key = admin_key(store);
         let db = store.conn();
         let conn = db.lock().unwrap();
-        conn.execute("UPDATE users SET role = 'super_user' WHERE email = 'admin@acme.com'", []).unwrap();
+        conn.execute(
+            "UPDATE users SET role = 'super_user' WHERE email = 'admin@acme.com'",
+            [],
+        )
+        .unwrap();
         key
     }
 
@@ -459,7 +498,9 @@ mod tests {
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -623,16 +664,54 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let member_id: String = conn.query_row("SELECT id FROM users WHERE email = 'member@test.com'", [], |r| r.get(0)).unwrap();
-            let shared = crate::db::queries::create_project(&conn, &org_id, "shared", None, None).unwrap();
-            let secret = crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            let member_id: String = conn
+                .query_row(
+                    "SELECT id FROM users WHERE email = 'member@test.com'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let shared =
+                crate::db::queries::create_project(&conn, &org_id, "shared", None, None).unwrap();
+            let secret =
+                crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
             conn.execute(
                 "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES ('pm_shared', ?1, ?2, 'member', datetime('now'))",
                 rusqlite::params![shared.id, member_id],
             ).unwrap();
-            crate::db::queries::insert_policy(&conn, "pol_global", &org_id, "Global Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, None).unwrap();
-            crate::db::queries::insert_policy(&conn, "pol_shared", &org_id, "Shared Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, Some(&shared.id)).unwrap();
-            crate::db::queries::insert_policy(&conn, "pol_secret", &org_id, "Secret Policy", "model_whitelist", r#"{"allowed_models":["claude"]}"#, true, Some(&secret.id)).unwrap();
+            crate::db::queries::insert_policy(
+                &conn,
+                "pol_global",
+                &org_id,
+                "Global Policy",
+                "model_whitelist",
+                r#"{"allowed_models":["claude"]}"#,
+                true,
+                None,
+            )
+            .unwrap();
+            crate::db::queries::insert_policy(
+                &conn,
+                "pol_shared",
+                &org_id,
+                "Shared Policy",
+                "model_whitelist",
+                r#"{"allowed_models":["claude"]}"#,
+                true,
+                Some(&shared.id),
+            )
+            .unwrap();
+            crate::db::queries::insert_policy(
+                &conn,
+                "pol_secret",
+                &org_id,
+                "Secret Policy",
+                "model_whitelist",
+                r#"{"allowed_models":["claude"]}"#,
+                true,
+                Some(&secret.id),
+            )
+            .unwrap();
         }
 
         let resp = app(store)
@@ -648,7 +727,12 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        let names: Vec<&str> = body["policies"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = body["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
         assert!(names.contains(&"Global Policy"));
         assert!(names.contains(&"Shared Policy"));
         assert!(!names.contains(&"Secret Policy"));
@@ -1016,8 +1100,12 @@ mod tests {
             let org_id: String = conn
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
-            let a = crate::db::queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap().id;
-            let b = crate::db::queries::create_project(&conn, &org_id, "proj-b", None, None).unwrap().id;
+            let a = crate::db::queries::create_project(&conn, &org_id, "proj-a", None, None)
+                .unwrap()
+                .id;
+            let b = crate::db::queries::create_project(&conn, &org_id, "proj-b", None, None)
+                .unwrap()
+                .id;
             (a, b)
         };
 
@@ -1056,7 +1144,10 @@ mod tests {
             .await
             .unwrap();
         let body_a = body_json(resp_a).await;
-        assert_eq!(body_a["allowed"], false, "project_a scoped policy must apply when checking project_a");
+        assert_eq!(
+            body_a["allowed"], false,
+            "project_a scoped policy must apply when checking project_a"
+        );
 
         // Checking against project_b (a different project) must be allowed — the
         // project-scoped policy must not leak into another project.
@@ -1074,7 +1165,10 @@ mod tests {
             .await
             .unwrap();
         let body_b = body_json(resp_b).await;
-        assert_eq!(body_b["allowed"], true, "project_a scoped policy must NOT apply when checking project_b");
+        assert_eq!(
+            body_b["allowed"], true,
+            "project_a scoped policy must NOT apply when checking project_b"
+        );
     }
 
     #[tokio::test]
@@ -1091,7 +1185,8 @@ mod tests {
         let secret_project = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let secret = crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
+            let secret =
+                crate::db::queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
             crate::db::queries::insert_policy(
                 &conn,
                 "pol_secret",
@@ -1101,7 +1196,8 @@ mod tests {
                 r#"{"allowed_models":["gpt-4"]}"#,
                 true,
                 Some(&secret.id),
-            ).unwrap();
+            )
+            .unwrap();
             secret.id
         };
 
@@ -1163,7 +1259,10 @@ mod tests {
             .await
             .unwrap();
         let body = body_json(resp).await;
-        assert_eq!(body["allowed"], false, "org-wide policy must apply regardless of project");
+        assert_eq!(
+            body["allowed"], false,
+            "org-wide policy must apply regardless of project"
+        );
     }
 
     // ── pagination tests ──────────────────────────────────────────────────────
@@ -1175,13 +1274,21 @@ mod tests {
         let conn = db.lock().unwrap();
         let id = format!("p_{}", uuid::Uuid::new_v4().simple());
         crate::db::queries::insert_policy(
-            &conn, &id, org_id, name, "model_whitelist",
-            r#"{"allowed_models":["claude"]}"#, true, None,
-        ).unwrap();
+            &conn,
+            &id,
+            org_id,
+            name,
+            "model_whitelist",
+            r#"{"allowed_models":["claude"]}"#,
+            true,
+            None,
+        )
+        .unwrap();
         conn.execute(
             "UPDATE policies SET created_at = ?1 WHERE id = ?2",
             rusqlite::params![created_at, id],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1191,10 +1298,18 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         for i in 0..3 {
-            insert_policy_at(&store, &org_id, &format!("P{i}"), &format!("2025-01-0{}T00:00:00.000Z", i + 1));
+            insert_policy_at(
+                &store,
+                &org_id,
+                &format!("P{i}"),
+                &format!("2025-01-0{}T00:00:00.000Z", i + 1),
+            );
         }
 
         let resp = app(store)
@@ -1210,7 +1325,11 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        assert_eq!(body["policies"].as_array().unwrap().len(), 3, "no limit/offset must still return everything under the default cap");
+        assert_eq!(
+            body["policies"].as_array().unwrap().len(),
+            3,
+            "no limit/offset must still return everything under the default cap"
+        );
     }
 
     #[tokio::test]
@@ -1224,7 +1343,10 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         {
             let db = store.conn();
@@ -1232,9 +1354,16 @@ mod tests {
             for i in 0..150 {
                 let id = format!("p_{}", uuid::Uuid::new_v4().simple());
                 crate::db::queries::insert_policy(
-                    &conn, &id, &org_id, &format!("P{i}"), "model_whitelist",
-                    r#"{"allowed_models":["claude"]}"#, true, None,
-                ).unwrap();
+                    &conn,
+                    &id,
+                    &org_id,
+                    &format!("P{i}"),
+                    "model_whitelist",
+                    r#"{"allowed_models":["claude"]}"#,
+                    true,
+                    None,
+                )
+                .unwrap();
             }
         }
 
@@ -1252,7 +1381,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
         assert_eq!(
-            body["policies"].as_array().unwrap().len(), 150,
+            body["policies"].as_array().unwrap().len(),
+            150,
             "no limit/offset must return the full unbounded list, not truncate at 100"
         );
     }
@@ -1264,11 +1394,19 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         // created_at DESC ordering: newest first → P5, P4, P3, P2, P1
         for i in 1..=5 {
-            insert_policy_at(&store, &org_id, &format!("P{i}"), &format!("2025-01-0{i}T00:00:00.000Z"));
+            insert_policy_at(
+                &store,
+                &org_id,
+                &format!("P{i}"),
+                &format!("2025-01-0{i}T00:00:00.000Z"),
+            );
         }
 
         let resp = app(store)
@@ -1284,8 +1422,17 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        let names: Vec<&str> = body["policies"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["P4", "P3"], "limit=2&offset=1 must return the 2nd and 3rd most recent policies");
+        let names: Vec<&str> = body["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["P4", "P3"],
+            "limit=2&offset=1 must return the 2nd and 3rd most recent policies"
+        );
     }
 
     #[tokio::test]
@@ -1295,7 +1442,10 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         {
             let db = store.conn();
@@ -1303,9 +1453,16 @@ mod tests {
             for i in 0..505 {
                 let id = format!("p_{}", uuid::Uuid::new_v4().simple());
                 crate::db::queries::insert_policy(
-                    &conn, &id, &org_id, &format!("P{i}"), "model_whitelist",
-                    r#"{"allowed_models":["claude"]}"#, true, None,
-                ).unwrap();
+                    &conn,
+                    &id,
+                    &org_id,
+                    &format!("P{i}"),
+                    "model_whitelist",
+                    r#"{"allowed_models":["claude"]}"#,
+                    true,
+                    None,
+                )
+                .unwrap();
             }
         }
 
@@ -1320,9 +1477,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "an over-max limit must be clamped, never rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "an over-max limit must be clamped, never rejected"
+        );
         let body = body_json(resp).await;
-        assert_eq!(body["policies"].as_array().unwrap().len(), 500, "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows");
+        assert_eq!(
+            body["policies"].as_array().unwrap().len(),
+            500,
+            "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows"
+        );
     }
 
     #[tokio::test]
@@ -1332,7 +1497,10 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         insert_policy_at(&store, &org_id, "P0", "2025-01-01T00:00:00.000Z");
 
@@ -1349,7 +1517,11 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK, "limit=0 must not error");
         let body = body_json(resp).await;
-        assert_eq!(body["policies"].as_array().unwrap().len(), 0, "limit=0 must return an empty list");
+        assert_eq!(
+            body["policies"].as_array().unwrap().len(),
+            0,
+            "limit=0 must return an empty list"
+        );
     }
 
     #[tokio::test]
@@ -1359,7 +1531,10 @@ mod tests {
         let org_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
         };
         insert_policy_at(&store, &org_id, "P0", "2025-01-01T00:00:00.000Z");
 
@@ -1374,8 +1549,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "negative limit must not error");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "negative limit must not error"
+        );
         let body = body_json(resp).await;
-        assert_eq!(body["policies"].as_array().unwrap().len(), 0, "negative limit must be clamped to 0 rows, not treated as unbounded");
+        assert_eq!(
+            body["policies"].as_array().unwrap().len(),
+            0,
+            "negative limit must be clamped to 0 rows, not treated as unbounded"
+        );
     }
 }

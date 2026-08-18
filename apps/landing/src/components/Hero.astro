@@ -1,6 +1,7 @@
 ---
 import HeroBadge from './react/HeroBadge.tsx';
 import CTAButtons from './react/CTAButtons.tsx';
+import HeroRobot from './react/HeroRobot.tsx';
 
 const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY || '';
@@ -29,12 +30,17 @@ const heroReserved = heroCount + 30;
   <div class="absolute inset-0 hero-gradient pointer-events-none"></div>
 
   <div class="max-w-6xl mx-auto px-4 w-full relative z-10 pt-24 pb-16">
+    <div class="flex justify-center mb-4 relative">
+      <div aria-hidden="true" class="absolute pointer-events-none" style="width:340px; height:120px; bottom:-6px; left:50%; transform:translateX(-50%); background:radial-gradient(ellipse at center, rgba(0,102,204,0.38), transparent 70%); filter:blur(10px);"></div>
+      <HeroRobot client:load height={200} />
+    </div>
+
     <div id="heroBadge" class="flex justify-center mb-8" style="opacity:0; transform: translateY(10px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1);">
       <HeroBadge client:load />
     </div>
 
     <div class="text-center max-w-4xl mx-auto">
-      <h1 id="heroTitle" class="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.05]" style="opacity:0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;">
+      <h1 id="heroTitle" class="font-display text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.03]" style="opacity:0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;">
         No necesitas otra herramienta AI.<br/>
         <span class="text-gradient-accent">Necesitas quien las gobierne.</span>
       </h1>

@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y ca-certificates git && rm -rf /var/lib/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
+COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
 #   import-sdd --db /data/nexusmind.db --org-id <id> --root <checkout> [--dry-run]

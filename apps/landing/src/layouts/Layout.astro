@@ -16,11 +16,48 @@ const { title = 'NexusMind — AI Control Plane', description = 'El control plan
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <!-- TEMP: Figma capture (remove after capturing) -->
+    <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
   </head>
   <body class="overflow-x-hidden">
     <slot />
+
+    <script>
+      // Cinematic motion foundation: Lenis smooth-scroll synced to GSAP
+      // ScrollTrigger, plus a generic scroll-reveal for [data-anim] elements.
+      // Fully disabled under prefers-reduced-motion (content stays visible).
+      import Lenis from 'lenis';
+      import { gsap } from 'gsap';
+      import { ScrollTrigger } from 'gsap/ScrollTrigger';
+
+      gsap.registerPlugin(ScrollTrigger);
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      if (!reduce) {
+        const lenis = new Lenis({ duration: 1.1, smoothWheel: true });
+        lenis.on('scroll', ScrollTrigger.update);
+        gsap.ticker.add((time) => lenis.raf(time * 1000));
+        gsap.ticker.lagSmoothing(0);
+        // expose for other islands that want to control scroll
+        (window as any).__lenis = lenis;
+
+        // Generic cinematic reveal: fade + rise as elements enter the viewport.
+        gsap.utils.toArray<HTMLElement>('[data-anim]').forEach((el) => {
+          const y = Number(el.dataset.animY ?? 32);
+          const delay = Number(el.dataset.animDelay ?? 0);
+          gsap.from(el, {
+            opacity: 0,
+            y,
+            duration: 0.9,
+            delay,
+            ease: 'power3.out',
+            scrollTrigger: { trigger: el, start: 'top 88%', once: true },
+          });
+        });
+      }
+    </script>
   </body>
 </html>

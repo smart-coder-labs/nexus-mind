@@ -1,5 +1,5 @@
-use axum::{extract::State, http::StatusCode, Extension, Json};
 use crate::api::helpers::AppJson;
+use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 use tower_cookies::{Cookie, Cookies};
@@ -151,12 +151,15 @@ pub async fn me(
         .map_err(|_| internal_err("db error"))?
         .ok_or_else(|| internal_err("user not found"))?;
 
-    let permissions = queries::get_role_permissions(&conn, &auth.org_id, auth.role.as_str())
-        .unwrap_or_default();
+    let permissions =
+        queries::get_role_permissions(&conn, &auth.org_id, auth.role.as_str()).unwrap_or_default();
 
     let mut user_json = serde_json::to_value(&user).unwrap_or_default();
     if let Some(obj) = user_json.as_object_mut() {
-        obj.insert("permissions".to_string(), serde_json::to_value(&permissions).unwrap_or_default());
+        obj.insert(
+            "permissions".to_string(),
+            serde_json::to_value(&permissions).unwrap_or_default(),
+        );
     }
 
     Ok(Json(serde_json::json!({
@@ -177,7 +180,9 @@ pub async fn logout(
         drop(cookie);
         let hash = api_keys::hash_key(&token);
         let db = store.conn();
-        let _ = db.lock().map(|conn| queries::revoke_key_by_hash(&conn, &hash));
+        let _ = db
+            .lock()
+            .map(|conn| queries::revoke_key_by_hash(&conn, &hash));
     }
 
     // Clear the cookie by setting Max-Age=0
@@ -208,7 +213,10 @@ pub async fn set_password(
     AppJson(input): AppJson<SetPasswordInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     if input.password.len() < 8 {
-        return Err(bad_request("Password must be at least 8 characters", "password_too_short"));
+        return Err(bad_request(
+            "Password must be at least 8 characters",
+            "password_too_short",
+        ));
     }
 
     let db = store.conn();
@@ -221,10 +229,11 @@ pub async fn set_password(
     let hashed = crate::auth::password::hash_password(&input.password)
         .map_err(|_| internal_err("password hashing error"))?;
 
-    queries::set_user_password(&conn, &user_id, &hashed)
-        .map_err(|_| internal_err("db error"))?;
+    queries::set_user_password(&conn, &user_id, &hashed).map_err(|_| internal_err("db error"))?;
 
-    Ok(Json(serde_json::json!({ "message": "Password set successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Password set successfully" }),
+    ))
 }
 
 // ── POST /v1/admin/auth/request-reset ────────────────────────────────────────
@@ -244,7 +253,12 @@ pub async fn request_reset(
 
     let (user, _) = queries::find_admin_by_email(&conn, &input.email)
         .map_err(|_| internal_err("db error"))?
-        .ok_or_else(|| bad_request("No account found with that email address.", "email_not_found"))?;
+        .ok_or_else(|| {
+            bad_request(
+                "No account found with that email address.",
+                "email_not_found",
+            )
+        })?;
 
     let (raw_token, _) = queries::create_password_reset_token(&conn, &user.id)
         .map_err(|_| internal_err("db error"))?;
@@ -261,10 +275,16 @@ pub async fn request_reset(
             }
         });
     } else {
-        tracing::warn!("SMTP not configured — reset token for {} (not sent): {}", user.email, raw_token);
+        tracing::warn!(
+            "SMTP not configured — reset token for {} (not sent): {}",
+            user.email,
+            raw_token
+        );
     }
 
-    Ok(Json(serde_json::json!({ "message": "Reset link sent. Check your email." })))
+    Ok(Json(
+        serde_json::json!({ "message": "Reset link sent. Check your email." }),
+    ))
 }
 
 // ── POST /v1/admin/auth/change-password ───────────────────────────────────────
@@ -284,8 +304,7 @@ pub async fn change_password(
     let conn = db.lock().map_err(|_| internal_err("db lock error"))?;
 
     // Enforce org-level minimum password length (default 8 if not set)
-    let org_settings = queries::get_org_settings(&conn, &auth.org_id)
-        .unwrap_or_default();
+    let org_settings = queries::get_org_settings(&conn, &auth.org_id).unwrap_or_default();
     let min_len = org_settings.min_password_length.unwrap_or(8) as usize;
     if input.new_password.len() < min_len {
         return Err(bad_request(
@@ -296,7 +315,12 @@ pub async fn change_password(
 
     let current_hash = queries::get_user_password_hash(&conn, &auth.user_id)
         .map_err(|_| internal_err("db error"))?
-        .ok_or_else(|| bad_request("No password set. Use the setup link sent to your email.", "no_password"))?;
+        .ok_or_else(|| {
+            bad_request(
+                "No password set. Use the setup link sent to your email.",
+                "no_password",
+            )
+        })?;
 
     let valid = verify_password(&input.current_password, &current_hash)
         .map_err(|_| internal_err("password verification error"))?;
@@ -311,5 +335,7 @@ pub async fn change_password(
     queries::set_user_password(&conn, &auth.user_id, &new_hash)
         .map_err(|_| internal_err("db error"))?;
 
-    Ok(Json(serde_json::json!({ "message": "Password updated successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Password updated successfully" }),
+    ))
 }

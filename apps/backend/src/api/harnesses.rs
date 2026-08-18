@@ -12,8 +12,8 @@ use crate::{
         ApiError, AuthContext, CreateHarnessConfigReviewCommentRequest,
         CreateHarnessConfigReviewRequest, CreateHarnessRequest, Harness, HarnessApproval,
         HarnessApprovalRequest, HarnessConfigReview, HarnessConfigReviewComment,
-        HarnessDownloadResponse, HarnessInstallResultRequest, HarnessRecommendation, HarnessVersion,
-        PublishHarnessVersionRequest,
+        HarnessDownloadResponse, HarnessInstallResultRequest, HarnessRecommendation,
+        HarnessVersion, PublishHarnessVersionRequest,
     },
     store::sqlite::SqliteStore,
 };
@@ -71,21 +71,30 @@ fn load_visible_harness(
     id: &str,
     method: &str,
 ) -> Result<Harness, (StatusCode, Json<ApiError>)> {
-    if let Some(harness) = queries::get_harness(
-        conn,
-        &auth.org_id,
-        id,
-        viewer_user_id(auth),
-    )
-    .map_err(db_err)? {
+    if let Some(harness) =
+        queries::get_harness(conn, &auth.org_id, id, viewer_user_id(auth)).map_err(db_err)?
+    {
         return Ok(harness);
     }
-    if queries::get_harness(conn, &auth.org_id, id, None).map_err(db_err)?.is_some() {
-        return Err(hidden_resource_not_found(conn, auth, "harness", id, method, "harnesses"));
+    if queries::get_harness(conn, &auth.org_id, id, None)
+        .map_err(db_err)?
+        .is_some()
+    {
+        return Err(hidden_resource_not_found(
+            conn,
+            auth,
+            "harness",
+            id,
+            method,
+            "harnesses",
+        ));
     }
     Err((
         StatusCode::NOT_FOUND,
-        Json(ApiError { error: "Harness not found".to_string(), code: "not_found".to_string() }),
+        Json(ApiError {
+            error: "Harness not found".to_string(),
+            code: "not_found".to_string(),
+        }),
     ))
 }
 
@@ -95,19 +104,32 @@ fn load_visible_config_review(
     id: &str,
     method: &str,
 ) -> Result<HarnessConfigReview, (StatusCode, Json<ApiError>)> {
-    if let Some(review) = queries::get_harness_config_review_visible(
-        conn, &auth.org_id, id, viewer_user_id(auth),
-    ).map_err(db_err)? {
+    if let Some(review) =
+        queries::get_harness_config_review_visible(conn, &auth.org_id, id, viewer_user_id(auth))
+            .map_err(db_err)?
+    {
         return Ok(review);
     }
-    if queries::get_harness_config_review(conn, &auth.org_id, id).map_err(db_err)?.is_some() {
+    if queries::get_harness_config_review(conn, &auth.org_id, id)
+        .map_err(db_err)?
+        .is_some()
+    {
         return Err(hidden_resource_not_found(
-            conn, auth, "harness_config_review", id, method, "harnesses",
+            conn,
+            auth,
+            "harness_config_review",
+            id,
+            method,
+            "harnesses",
         ));
     }
-    Err((StatusCode::NOT_FOUND, Json(ApiError {
-        error: "Config review not found".to_string(), code: "not_found".to_string(),
-    })))
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(ApiError {
+            error: "Config review not found".to_string(),
+            code: "not_found".to_string(),
+        }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,8 +420,12 @@ pub async fn list_config_reviews(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
     let reviews = queries::list_harness_config_reviews_visible(
-        &conn, &auth.org_id, params.status.as_deref(), viewer_user_id(&auth),
-    ).map_err(db_err)?;
+        &conn,
+        &auth.org_id,
+        params.status.as_deref(),
+        viewer_user_id(&auth),
+    )
+    .map_err(db_err)?;
     Ok(Json(reviews))
 }
 
@@ -424,8 +450,8 @@ pub async fn list_config_review_comments(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "harness:review_config")?;
     load_visible_config_review(&conn, &auth, &id, "GET")?;
-    let comments = queries::list_harness_config_review_comments(&conn, &auth.org_id, &id)
-        .map_err(db_err)?;
+    let comments =
+        queries::list_harness_config_review_comments(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(comments))
 }
 
@@ -525,7 +551,11 @@ mod tests {
             let conn = db.lock().unwrap();
             let (org, admin, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE id = ?1",
+                [&admin.id],
+            )
+            .unwrap();
             (key, org.id, admin.id)
         };
         (store, admin_key, org_id, admin_id)
@@ -1375,10 +1405,16 @@ mod tests {
         let (store, super_user_key, org_id, _) = setup_org();
         let admin_key = create_member_key(&store, &org_id, "admin");
         let review_id = create_shared_review(&store, &super_user_key).await;
-        let response = app(store.clone()).oneshot(
-            Request::builder().uri(format!("/v1/harness-config-reviews/{review_id}"))
-                .header("Authorization", format!("Bearer {admin_key}")).body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let response = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/harness-config-reviews/{review_id}"))
+                    .header("Authorization", format!("Bearer {admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let db = store.conn();
         let conn = db.lock().unwrap();

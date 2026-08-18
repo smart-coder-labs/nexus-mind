@@ -10,7 +10,11 @@ use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower_cookies::Cookies;
 
-use crate::{auth::api_keys, db::queries, models::types::{ApiError, AuthContext}};
+use crate::{
+    auth::api_keys,
+    db::queries,
+    models::types::{ApiError, AuthContext},
+};
 
 pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
     if let Some(accept) = req.headers().get(axum::http::header::ACCEPT) {
@@ -66,16 +70,24 @@ pub async fn auth(
 
     let validate_result = {
         let conn = db.lock().map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
-                error: "Internal server error".to_string(),
-                code: "internal_error".to_string(),
-            })).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Internal server error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+                .into_response()
         })?;
         queries::validate_api_key(&conn, &hash).map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
-                error: "Internal server error".to_string(),
-                code: "internal_error".to_string(),
-            })).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Internal server error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+                .into_response()
         })?
     };
 
@@ -86,10 +98,14 @@ pub async fn auth(
             // Check if the key exists but the account is disabled
             let is_disabled = {
                 let conn = db.lock().map_err(|_| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError {
-                        error: "Internal server error".to_string(),
-                        code: "internal_error".to_string(),
-                    })).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError {
+                            error: "Internal server error".to_string(),
+                            code: "internal_error".to_string(),
+                        }),
+                    )
+                        .into_response()
                 })?;
                 queries::is_key_account_disabled(&conn, &hash).map_err(|_| unauthorized())?
             };
@@ -205,11 +221,34 @@ fn derive_audit(method: &Method, pattern: &str, actual: &str) -> (String, String
 
     // If the last literal segment names an explicit action, use it as the verb.
     const VERB_SEGMENTS: &[&str] = &[
-        "archive", "restore", "reindex", "index", "disable", "enable", "rotate",
-        "revoke", "reset-key", "test", "retry", "impersonate", "suspend", "redeem",
-        "merge", "import", "bulk-tag", "rename", "logout", "login", "change-password",
-        "set-password", "request-reset", "forgot-password", "reset-password",
-        "mark-all-read", "disconnect", "callback",
+        "archive",
+        "restore",
+        "reindex",
+        "index",
+        "disable",
+        "enable",
+        "rotate",
+        "revoke",
+        "reset-key",
+        "test",
+        "retry",
+        "impersonate",
+        "suspend",
+        "redeem",
+        "merge",
+        "import",
+        "bulk-tag",
+        "rename",
+        "logout",
+        "login",
+        "change-password",
+        "set-password",
+        "request-reset",
+        "forgot-password",
+        "reset-password",
+        "mark-all-read",
+        "disconnect",
+        "callback",
     ];
     let last = meaningful.last().copied().unwrap_or("");
     let action = if meaningful.len() > 1 && VERB_SEGMENTS.contains(&last) {
@@ -242,12 +281,54 @@ mod tests {
     #[test]
     fn derive_audit_maps_routes_to_actions() {
         let cases = [
-            (Method::POST, "/v1/policies", "/v1/policies", "policy.created", "policy", None),
-            (Method::DELETE, "/v1/webhooks/:id", "/v1/webhooks/wh_1", "webhook.deleted", "webhook", Some("wh_1")),
-            (Method::POST, "/v1/conventions/:id/archive", "/v1/conventions/c9/archive", "convention.archive", "convention", Some("c9")),
-            (Method::POST, "/v1/sessions", "/v1/sessions", "session.created", "session", None),
-            (Method::POST, "/v1/code/projects/:id/reindex", "/v1/code/projects/p2/reindex", "code.reindex", "code", Some("p2")),
-            (Method::PATCH, "/v1/admin/org", "/v1/admin/org", "org.updated", "org", None),
+            (
+                Method::POST,
+                "/v1/policies",
+                "/v1/policies",
+                "policy.created",
+                "policy",
+                None,
+            ),
+            (
+                Method::DELETE,
+                "/v1/webhooks/:id",
+                "/v1/webhooks/wh_1",
+                "webhook.deleted",
+                "webhook",
+                Some("wh_1"),
+            ),
+            (
+                Method::POST,
+                "/v1/conventions/:id/archive",
+                "/v1/conventions/c9/archive",
+                "convention.archive",
+                "convention",
+                Some("c9"),
+            ),
+            (
+                Method::POST,
+                "/v1/sessions",
+                "/v1/sessions",
+                "session.created",
+                "session",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/code/projects/:id/reindex",
+                "/v1/code/projects/p2/reindex",
+                "code.reindex",
+                "code",
+                Some("p2"),
+            ),
+            (
+                Method::PATCH,
+                "/v1/admin/org",
+                "/v1/admin/org",
+                "org.updated",
+                "org",
+                None,
+            ),
         ];
         for (method, pattern, actual, action, resource, id) in cases {
             let (a, r, rid) = derive_audit(&method, pattern, actual);
@@ -340,7 +421,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "Unsupported media type in Accept header");
         assert_eq!(json["supported"], serde_json::json!(["application/json"]));
@@ -445,7 +528,8 @@ mod tests {
 
         let raw_key = {
             let conn = db.lock().unwrap();
-            let (_org, user, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (_org, user, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             // Disable the user
             q::disable_user(&conn, &user.org_id, &user.id).unwrap();
             key
@@ -465,7 +549,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Parse body to confirm the error code
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "account_disabled");
     }

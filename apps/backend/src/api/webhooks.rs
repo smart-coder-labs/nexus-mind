@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     api::helpers::{require_permission, AppJson},
     db::queries,
-    models::types::{ApiError, AuthContext, CreateWebhookRequest, UpdateWebhookRequest, Webhook, WebhookDelivery, WebhookTestResult},
+    models::types::{
+        ApiError, AuthContext, CreateWebhookRequest, UpdateWebhookRequest, Webhook,
+        WebhookDelivery, WebhookTestResult,
+    },
     store::sqlite::SqliteStore,
 };
 
@@ -95,15 +98,24 @@ pub async fn create_webhook(
         return Err(bad_request("name must not be empty", "invalid_name"));
     }
     if name.len() > 128 {
-        return Err(bad_request("name must be at most 128 characters", "invalid_name"));
+        return Err(bad_request(
+            "name must be at most 128 characters",
+            "invalid_name",
+        ));
     }
 
     let target_url = req.target_url.trim().to_string();
     if target_url.is_empty() {
-        return Err(bad_request("target_url must not be empty", "invalid_target_url"));
+        return Err(bad_request(
+            "target_url must not be empty",
+            "invalid_target_url",
+        ));
     }
     if !target_url.starts_with("http://") && !target_url.starts_with("https://") {
-        return Err(bad_request("target_url must start with http:// or https://", "invalid_target_url"));
+        return Err(bad_request(
+            "target_url must start with http:// or https://",
+            "invalid_target_url",
+        ));
     }
 
     let clean_req = CreateWebhookRequest {
@@ -117,8 +129,8 @@ pub async fn create_webhook(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &ctx, None, "settings:write")?;
 
-    let webhook = queries::create_webhook(&conn, &ctx.org_id, &clean_req)
-        .map_err(internal_error)?;
+    let webhook =
+        queries::create_webhook(&conn, &ctx.org_id, &clean_req).map_err(internal_error)?;
 
     Ok((StatusCode::CREATED, Json(webhook)))
 }
@@ -211,7 +223,11 @@ pub async fn test_webhook(
             WebhookTestResult {
                 success,
                 status_code: Some(status_code),
-                error: if success { None } else { Some(format!("Received HTTP {status_code}")) },
+                error: if success {
+                    None
+                } else {
+                    Some(format!("Received HTTP {status_code}"))
+                },
             }
         }
         Err(e) => WebhookTestResult {
@@ -266,8 +282,8 @@ pub async fn list_deliveries(
     require_permission(&conn, &ctx, None, "settings:write")?;
 
     let limit = params.limit.unwrap_or(20).min(100);
-    let deliveries = queries::list_webhook_deliveries(&conn, &ctx.org_id, &id, limit)
-        .map_err(internal_error)?;
+    let deliveries =
+        queries::list_webhook_deliveries(&conn, &ctx.org_id, &id, limit).map_err(internal_error)?;
 
     Ok(Json(DeliveriesResponse { deliveries }))
 }
@@ -293,24 +309,28 @@ pub async fn retry_delivery(
         // Fetch original delivery
         let delivery = queries::get_webhook_delivery(&conn, &ctx.org_id, &delivery_id)
             .map_err(internal_error)?
-            .ok_or_else(|| (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Delivery not found".to_string(),
-                    code: "delivery_not_found".to_string(),
-                }),
-            ))?;
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "Delivery not found".to_string(),
+                        code: "delivery_not_found".to_string(),
+                    }),
+                )
+            })?;
 
         // Fetch the associated webhook to get the URL
         let webhook = queries::get_webhook(&conn, &delivery.webhook_id, &ctx.org_id)
             .map_err(internal_error)?
-            .ok_or_else(|| (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Webhook not found".to_string(),
-                    code: "webhook_not_found".to_string(),
-                }),
-            ))?;
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "Webhook not found".to_string(),
+                        code: "webhook_not_found".to_string(),
+                    }),
+                )
+            })?;
 
         (delivery, webhook)
     };
@@ -332,7 +352,11 @@ pub async fn retry_delivery(
         Ok(response) => {
             let status_code = response.status().as_u16();
             let success = (200..300).contains(&status_code);
-            let err = if success { None } else { Some(format!("Received HTTP {status_code}")) };
+            let err = if success {
+                None
+            } else {
+                Some(format!("Received HTTP {status_code}"))
+            };
             (Some(status_code as i64), success, err)
         }
         Err(e) => (None, false, Some(e.to_string())),
@@ -375,8 +399,8 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::api::middleware as auth_mw;
-    use crate::db::{connection::connect, migrations};
     use crate::db::queries::bootstrap;
+    use crate::db::{connection::connect, migrations};
     use crate::store::sqlite::SqliteStore;
 
     fn make_store() -> SqliteStore {
@@ -387,7 +411,10 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/webhooks", get(super::list_webhooks).post(super::create_webhook))
+            .route(
+                "/v1/webhooks",
+                get(super::list_webhooks).post(super::create_webhook),
+            )
             .route(
                 "/v1/webhooks/:id",
                 patch(super::update_webhook).delete(super::delete_webhook),
@@ -407,7 +434,9 @@ mod tests {
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -657,8 +686,8 @@ mod tests {
 
     #[test]
     fn log_delivery_and_list_returns_it() {
+        use crate::db::queries::{bootstrap, list_webhook_deliveries, log_webhook_delivery};
         use crate::db::{connection::connect, migrations};
-        use crate::db::queries::{bootstrap, log_webhook_delivery, list_webhook_deliveries};
 
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
@@ -670,11 +699,10 @@ mod tests {
             "INSERT INTO webhooks (id, org_id, name, target_url, events, active, created_at)
              VALUES (?1, ?2, 'hook', 'https://example.com', '[\"*\"]', 1, datetime('now'))",
             rusqlite::params![wh_id, org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
-        log_webhook_delivery(
-            &conn, &org.id, &wh_id, "test", "{}", Some(200), true, None,
-        ).unwrap();
+        log_webhook_delivery(&conn, &org.id, &wh_id, "test", "{}", Some(200), true, None).unwrap();
 
         let deliveries = list_webhook_deliveries(&conn, &org.id, &wh_id, 20).unwrap();
         assert_eq!(deliveries.len(), 1, "must have exactly 1 delivery");
@@ -685,8 +713,8 @@ mod tests {
 
     #[test]
     fn list_deliveries_respects_limit() {
+        use crate::db::queries::{bootstrap, list_webhook_deliveries, log_webhook_delivery};
         use crate::db::{connection::connect, migrations};
-        use crate::db::queries::{bootstrap, log_webhook_delivery, list_webhook_deliveries};
 
         let conn = connect(":memory:").unwrap();
         migrations::run(&conn).unwrap();
@@ -697,18 +725,31 @@ mod tests {
             "INSERT INTO webhooks (id, org_id, name, target_url, events, active, created_at)
              VALUES (?1, ?2, 'hook2', 'https://example.com', '[\"*\"]', 1, datetime('now'))",
             rusqlite::params![wh_id, org.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Log 5 deliveries.
         for i in 0..5 {
             log_webhook_delivery(
-                &conn, &org.id, &wh_id, "test", "{}", Some(200 + i), true, None,
-            ).unwrap();
+                &conn,
+                &org.id,
+                &wh_id,
+                "test",
+                "{}",
+                Some(200 + i),
+                true,
+                None,
+            )
+            .unwrap();
         }
 
         // Limit to 3.
         let deliveries = list_webhook_deliveries(&conn, &org.id, &wh_id, 3).unwrap();
-        assert_eq!(deliveries.len(), 3, "limit=3 must return exactly 3 deliveries");
+        assert_eq!(
+            deliveries.len(),
+            3,
+            "limit=3 must return exactly 3 deliveries"
+        );
     }
 
     #[tokio::test]

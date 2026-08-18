@@ -1,27 +1,51 @@
-use axum::{extract::{Path, Query, State}, http::StatusCode, Extension, Json};
 use crate::api::helpers::AppJson;
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Extension, Json,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
     db::queries,
     email::{send_password_setup, EmailConfig},
-    models::types::{ApiError, AuditEntry, GlobalMetrics, InternalSearchResult, Org, OrgWithStats, User},
+    models::types::{
+        ApiError, AuditEntry, GlobalMetrics, InternalSearchResult, Org, OrgWithStats, User,
+    },
     store::sqlite::SqliteStore,
 };
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
 fn lock_err() -> (StatusCode, Json<ApiError>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "Database lock error".to_string(), code: "internal_error".to_string() }))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError {
+            error: "Database lock error".to_string(),
+            code: "internal_error".to_string(),
+        }),
+    )
 }
 
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: e.to_string(), code: "internal_error".to_string() }))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError {
+            error: e.to_string(),
+            code: "internal_error".to_string(),
+        }),
+    )
 }
 
 fn unauthorized() -> (StatusCode, Json<ApiError>) {
-    (StatusCode::UNAUTHORIZED, Json(ApiError { error: "Valid superuser key required".to_string(), code: "unauthorized".to_string() }))
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ApiError {
+            error: "Valid superuser key required".to_string(),
+            code: "unauthorized".to_string(),
+        }),
+    )
 }
 
 // ── Superuser guard ───────────────────────────────────────────────────────────
@@ -89,15 +113,27 @@ pub async fn create_org(
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         let (org, user, api_key) = queries::create_org(
-            &conn, &input.org_name, &input.org_slug, &input.admin_email, &input.admin_name,
-        ).map_err(|e| {
+            &conn,
+            &input.org_name,
+            &input.org_slug,
+            &input.admin_email,
+            &input.admin_name,
+        )
+        .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
-                (StatusCode::CONFLICT, Json(ApiError { error: "Organization slug already exists".to_string(), code: "slug_conflict".to_string() }))
+                (
+                    StatusCode::CONFLICT,
+                    Json(ApiError {
+                        error: "Organization slug already exists".to_string(),
+                        code: "slug_conflict".to_string(),
+                    }),
+                )
             } else {
                 db_err(e)
             }
         })?;
-        let (raw_token, _) = queries::create_password_reset_token(&conn, &user.id).map_err(db_err)?;
+        let (raw_token, _) =
+            queries::create_password_reset_token(&conn, &user.id).map_err(db_err)?;
         (org, user, api_key, raw_token)
     };
 
@@ -113,7 +149,10 @@ pub async fn create_org(
         });
     }
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "org": org, "user": user, "api_key": api_key }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "org": org, "user": user, "api_key": api_key })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -189,7 +228,8 @@ pub async fn list_audit(
         params.to.as_deref(),
         limit,
         offset,
-    ).map_err(db_err)?;
+    )
+    .map_err(db_err)?;
     Ok(Json(entries))
 }
 
@@ -205,7 +245,15 @@ pub async fn get_org(
     queries::get_org_with_stats(&conn, &org_id)
         .map_err(db_err)?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError { error: "Organization not found".to_string(), code: "not_found".to_string() })))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Organization not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            )
+        })
 }
 
 pub async fn delete_org(
@@ -221,7 +269,13 @@ pub async fn delete_org(
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, Json(ApiError { error: "Organization not found".to_string(), code: "not_found".to_string() })))
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "Organization not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
     }
 }
 
@@ -236,7 +290,15 @@ pub async fn impersonate_org(
     let conn = db.lock().map_err(|_| lock_err())?;
     let token = queries::get_org_admin_key(&conn, &org_id)
         .map_err(db_err)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError { error: "No active admin found for this organization".to_string(), code: "no_admin".to_string() })))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "No active admin found for this organization".to_string(),
+                    code: "no_admin".to_string(),
+                }),
+            )
+        })?;
     Ok(Json(serde_json::json!({ "token": token })))
 }
 
@@ -253,7 +315,13 @@ pub async fn suspend_user(
     if updated {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found or already suspended".to_string(), code: "not_found".to_string() })))
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User not found or already suspended".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ))
     }
 }
 
@@ -281,7 +349,10 @@ pub async fn internal_search(
 
     let q = params.q.trim();
     if q.is_empty() {
-        return Ok(Json(InternalSearchResult { orgs: vec![], users: vec![] }));
+        return Ok(Json(InternalSearchResult {
+            orgs: vec![],
+            users: vec![],
+        }));
     }
 
     let limit = params.limit.clamp(1, 50);

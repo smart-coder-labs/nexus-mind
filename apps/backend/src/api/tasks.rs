@@ -39,20 +39,32 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     };
-    (status, Json(ApiError { error: msg, code: code.to_string() }))
+    (
+        status,
+        Json(ApiError {
+            error: msg,
+            code: code.to_string(),
+        }),
+    )
 }
 
 fn lock_err() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError { error: "Database lock error".to_string(), code: "internal_error".to_string() }),
+        Json(ApiError {
+            error: "Database lock error".to_string(),
+            code: "internal_error".to_string(),
+        }),
     )
 }
 
 fn not_found(what: &str) -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError { error: format!("{what} not found"), code: "not_found".to_string() }),
+        Json(ApiError {
+            error: format!("{what} not found"),
+            code: "not_found".to_string(),
+        }),
     )
 }
 
@@ -266,8 +278,14 @@ pub async fn assign_task_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     let task = load_visible_task(&conn, &auth, &id)?;
     require_permission(&conn, &auth, Some(&task.project), "task:assign")?;
-    let assignees = queries::set_task_assignees(&conn, &auth.org_id, &task.id, &auth.user_id, &input.user_ids)
-        .map_err(db_err)?;
+    let assignees = queries::set_task_assignees(
+        &conn,
+        &auth.org_id,
+        &task.id,
+        &auth.user_id,
+        &input.user_ids,
+    )
+    .map_err(db_err)?;
     Ok(Json(assignees))
 }
 
@@ -338,7 +356,8 @@ pub async fn add_task_comment_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     let task = load_visible_task(&conn, &auth, &id)?;
     require_permission(&conn, &auth, Some(&task.project), "task:write")?;
-    let comment = queries::add_task_comment(&conn, &task.id, &auth.user_id, &input.body).map_err(db_err)?;
+    let comment =
+        queries::add_task_comment(&conn, &task.id, &auth.user_id, &input.body).map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(comment)))
 }
 
@@ -351,7 +370,9 @@ pub async fn delete_task_comment_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     let task = load_visible_task(&conn, &auth, &id)?;
 
-    let Some((comment_task_id, author_id)) = queries::get_task_comment(&conn, &comment_id).map_err(db_err)? else {
+    let Some((comment_task_id, author_id)) =
+        queries::get_task_comment(&conn, &comment_id).map_err(db_err)?
+    else {
         return Err(not_found("Comment"));
     };
     if comment_task_id != task.id {
@@ -418,7 +439,10 @@ pub fn spec_change_exists(root: &std::path::Path, name: &str) -> bool {
     let archive_dir = root.join("openspec/changes/archive");
     match std::fs::read_dir(&archive_dir) {
         Ok(entries) => entries.filter_map(|e| e.ok()).any(|entry| {
-            entry.file_name().to_string_lossy().ends_with(&format!("-{name}"))
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(&format!("-{name}"))
                 || entry.file_name().to_string_lossy() == name
         }),
         Err(_) => {
@@ -506,7 +530,8 @@ pub async fn link_task_spec_handler(
         return Err(unknown_spec());
     }
 
-    queries::link_task_spec(&conn, &task.id, &auth.user_id, &input.spec_change_name).map_err(db_err)?;
+    queries::link_task_spec(&conn, &task.id, &auth.user_id, &input.spec_change_name)
+        .map_err(db_err)?;
     Ok(StatusCode::CREATED)
 }
 
@@ -537,8 +562,13 @@ pub async fn resolve_by_spec_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "task:write")?;
-    let resolved = queries::resolve_tasks_by_spec(&conn, &auth.org_id, &input.spec_change_name, viewer_user_id(&auth))
-        .map_err(db_err)?;
+    let resolved = queries::resolve_tasks_by_spec(
+        &conn,
+        &auth.org_id,
+        &input.spec_change_name,
+        viewer_user_id(&auth),
+    )
+    .map_err(db_err)?;
     Ok(Json(ResolveBySpecResponse { resolved }))
 }
 
@@ -576,7 +606,8 @@ pub async fn create_sprint_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, Some(&input.project), "task:manage")?;
-    let sprint = queries::create_sprint(&conn, &auth.org_id, &auth.user_id, &input).map_err(db_err)?;
+    let sprint =
+        queries::create_sprint(&conn, &auth.org_id, &auth.user_id, &input).map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(sprint)))
 }
 
@@ -645,15 +676,22 @@ pub async fn create_retrospective_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     let sprint = load_visible_sprint(&conn, &auth, &id)?;
     require_permission(&conn, &auth, Some(&sprint.project), "task:manage")?;
-    let retro = queries::create_retrospective(&conn, &sprint.id, &auth.org_id, &auth.user_id, &input)
-        .map_err(db_err)?;
+    let retro =
+        queries::create_retrospective(&conn, &sprint.id, &auth.org_id, &auth.user_id, &input)
+            .map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(retro)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request, middleware, routing::{delete, get, post}, Router};
+    use axum::{
+        body::Body,
+        http::Request,
+        middleware,
+        routing::{delete, get, post},
+        Router,
+    };
     use tower::util::ServiceExt;
 
     use crate::{
@@ -680,31 +718,53 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/tasks", get(list_tasks_handler).post(create_task_handler))
+            .route(
+                "/v1/tasks",
+                get(list_tasks_handler).post(create_task_handler),
+            )
             .route("/v1/tasks/resolve-by-spec", post(resolve_by_spec_handler))
             .route(
                 "/v1/tasks/:id",
-                get(get_task_handler).patch(patch_task_handler).delete(delete_task_handler),
+                get(get_task_handler)
+                    .patch(patch_task_handler)
+                    .delete(delete_task_handler),
             )
             .route("/v1/tasks/:id/subtasks", get(list_subtasks_handler))
             .route("/v1/tasks/:id/assignees", post(assign_task_handler))
-            .route("/v1/tasks/:id/assignees/:user_id", delete(unassign_task_handler))
+            .route(
+                "/v1/tasks/:id/assignees/:user_id",
+                delete(unassign_task_handler),
+            )
             .route("/v1/tasks/:id/labels", post(add_task_label_handler))
-            .route("/v1/tasks/:id/labels/:label", delete(remove_task_label_handler))
+            .route(
+                "/v1/tasks/:id/labels/:label",
+                delete(remove_task_label_handler),
+            )
             .route(
                 "/v1/tasks/:id/comments",
                 get(list_task_comments_handler).post(add_task_comment_handler),
             )
-            .route("/v1/tasks/:id/comments/:comment_id", delete(delete_task_comment_handler))
+            .route(
+                "/v1/tasks/:id/comments/:comment_id",
+                delete(delete_task_comment_handler),
+            )
             .route(
                 "/v1/tasks/:id/spec-links",
                 get(list_task_spec_links_handler).post(link_task_spec_handler),
             )
-            .route("/v1/tasks/:id/spec-links/:name", delete(unlink_task_spec_handler))
-            .route("/v1/sprints", get(list_sprints_handler).post(create_sprint_handler))
+            .route(
+                "/v1/tasks/:id/spec-links/:name",
+                delete(unlink_task_spec_handler),
+            )
+            .route(
+                "/v1/sprints",
+                get(list_sprints_handler).post(create_sprint_handler),
+            )
             .route(
                 "/v1/sprints/:id",
-                get(get_sprint_handler).patch(patch_sprint_handler).delete(delete_sprint_handler),
+                get(get_sprint_handler)
+                    .patch(patch_sprint_handler)
+                    .delete(delete_sprint_handler),
             )
             .route(
                 "/v1/sprints/:id/retrospectives",
@@ -720,7 +780,8 @@ mod tests {
         let (org_id, raw_key) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, _user, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (org, _user, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             (org.id, key)
         };
         (store, raw_key, org_id)
@@ -735,22 +796,34 @@ mod tests {
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
-            rusqlite::params![user_id, org_id, format!("{}-{role}@test.com", &user_id[..8]), role],
-        ).unwrap();
+            rusqlite::params![
+                user_id,
+                org_id,
+                format!("{}-{role}@test.com", &user_id[..8]),
+                role
+            ],
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         (raw_key, user_id)
     }
 
     fn admin_user_id(store: &SqliteStore, org_id: &str) -> String {
         let db = store.conn();
         let conn = db.lock().unwrap();
-        q::list_users(&conn, org_id).unwrap().into_iter().next().unwrap().id
+        q::list_users(&conn, org_id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id
     }
 
     fn add_member_to_project(store: &SqliteStore, org_id: &str, project: &str, user_id: &str) {
@@ -761,17 +834,25 @@ mod tests {
             "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
               VALUES (?1, ?2, ?3, 'dev-senior', datetime('now'))",
             rusqlite::params![uuid::Uuid::new_v4().to_string(), project_id, user_id],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
-    async fn post_json(store: &SqliteStore, key: &str, uri: &str, body: serde_json::Value) -> axum::response::Response {
+    async fn post_json(
+        store: &SqliteStore,
+        key: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
         app(store.clone())
             .oneshot(
                 Request::builder()
-                    .method("POST").uri(uri)
+                    .method("POST")
+                    .uri(uri)
                     .header("Authorization", format!("Bearer {key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(body.to_string())).unwrap(),
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
             )
             .await
             .unwrap()
@@ -780,16 +861,20 @@ mod tests {
     async fn get_req(store: &SqliteStore, key: &str, uri: &str) -> axum::response::Response {
         app(store.clone())
             .oneshot(
-                Request::builder().uri(uri)
+                Request::builder()
+                    .uri(uri)
                     .header("Authorization", format!("Bearer {key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap()
     }
 
     async fn json_body(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -799,7 +884,13 @@ mod tests {
     async fn create_task_creates_and_returns_201() {
         let (store, admin_key, org_id) = setup_with_key();
         let _ = org_id;
-        let resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "First task" })).await;
+        let resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "First task" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::CREATED);
         let json = json_body(resp).await;
         assert_eq!(json["title"], "First task");
@@ -811,18 +902,32 @@ mod tests {
         let (store, _admin_key, org_id) = setup_with_key();
         // security_officer template has task:read only, not task:write.
         let (member_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
-        let resp = post_json(&store, &member_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "X" })).await;
+        let resp = post_json(
+            &store,
+            &member_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "X" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0, "no row created on 403");
     }
 
     #[tokio::test]
     async fn get_task_returns_404_for_non_member() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "secret-proj", "title": "T" })).await;
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "secret-proj", "title": "T" }),
+        )
+        .await;
         let created = json_body(create_resp).await;
         let task_id = created["id"].as_str().unwrap().to_string();
 
@@ -841,7 +946,13 @@ mod tests {
     #[tokio::test]
     async fn list_tasks_scoped_to_membership() {
         let (store, admin_key, org_id) = setup_with_key();
-        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "shared-proj", "title": "Shared" })).await;
+        post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "shared-proj", "title": "Shared" }),
+        )
+        .await;
 
         let (member_key, member_id) = create_member_with_id(&store, &org_id, "dev-senior");
         add_member_to_project(&store, &org_id, "shared-proj", &member_id);
@@ -857,10 +968,16 @@ mod tests {
         let (store, admin_key, org_id) = setup_with_key();
         let admin_id = admin_user_id(&store, &org_id);
         add_member_to_project(&store, &org_id, "private-proj", &admin_id);
-        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
-            "project": "private-proj",
-            "title": "Private task"
-        })).await;
+        post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({
+                "project": "private-proj",
+                "title": "Private task"
+            }),
+        )
+        .await;
 
         let (other_admin_key, _) = create_member_with_id(&store, &org_id, "admin");
         let resp = get_req(&store, &other_admin_key, "/v1/tasks").await;
@@ -871,19 +988,31 @@ mod tests {
     #[tokio::test]
     async fn patch_task_denied_without_write_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
         let created = json_body(create_resp).await;
         let task_id = created["id"].as_str().unwrap().to_string();
 
         let (member_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("PATCH").uri(format!("/v1/tasks/{task_id}"))
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/tasks/{task_id}"))
                     .header("Authorization", format!("Bearer {member_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "title": "Hijacked" }).to_string())).unwrap(),
+                    .body(Body::from(
+                        serde_json::json!({ "title": "Hijacked" }).to_string(),
+                    ))
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         let reloaded = get_req(&store, &admin_key, &format!("/v1/tasks/{task_id}")).await;
@@ -894,7 +1023,13 @@ mod tests {
     #[tokio::test]
     async fn delete_task_requires_delete_permission_not_just_write() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
         let created = json_body(create_resp).await;
         let task_id = created["id"].as_str().unwrap().to_string();
 
@@ -902,11 +1037,15 @@ mod tests {
         let (member_key, _uid) = create_member_with_id(&store, &org_id, "dev-junior");
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/v1/tasks/{task_id}"))
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/tasks/{task_id}"))
                     .header("Authorization", format!("Bearer {member_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         let reloaded = get_req(&store, &admin_key, &format!("/v1/tasks/{task_id}")).await;
@@ -919,11 +1058,15 @@ mod tests {
         let (store, admin_key, _org_id) = setup_with_key();
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri("/v1/tasks/does-not-exist")
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/tasks/does-not-exist")
                     .header("Authorization", format!("Bearer {admin_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -931,9 +1074,20 @@ mod tests {
     async fn list_tasks_pagination_reports_accurate_total() {
         let (store, admin_key, _org_id) = setup_with_key();
         for i in 0..5 {
-            post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": format!("T{i}") })).await;
+            post_json(
+                &store,
+                &admin_key,
+                "/v1/tasks",
+                serde_json::json!({ "project": "proj", "title": format!("T{i}") }),
+            )
+            .await;
         }
-        let resp = get_req(&store, &admin_key, "/v1/tasks?project=proj&limit=2&offset=0").await;
+        let resp = get_req(
+            &store,
+            &admin_key,
+            "/v1/tasks?project=proj&limit=2&offset=0",
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 2);
@@ -944,28 +1098,64 @@ mod tests {
     #[tokio::test]
     async fn assign_denied_without_task_assign() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // dev_junior has task:write but not task:assign.
         let (member_key, member_id) = create_member_with_id(&store, &org_id, "dev-junior");
-        let resp = post_json(&store, &member_key, &format!("/v1/tasks/{task_id}/assignees"), serde_json::json!({ "user_ids": [member_id] })).await;
+        let resp = post_json(
+            &store,
+            &member_key,
+            &format!("/v1/tasks/{task_id}/assignees"),
+            serde_json::json!({ "user_ids": [member_id] }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1", [&task_id], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_assignees WHERE task_id = ?1",
+                [&task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn assign_succeeds_with_task_assign_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let (senior_key, senior_id) = create_member_with_id(&store, &org_id, "dev-senior");
-        let resp = post_json(&store, &senior_key, &format!("/v1/tasks/{task_id}/assignees"), serde_json::json!({ "user_ids": [senior_id] })).await;
+        let resp = post_json(
+            &store,
+            &senior_key,
+            &format!("/v1/tasks/{task_id}/assignees"),
+            serde_json::json!({ "user_ids": [senior_id] }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
@@ -974,29 +1164,63 @@ mod tests {
     #[tokio::test]
     async fn unassign_denied_without_task_assign() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (senior_key, senior_id) = create_member_with_id(&store, &org_id, "dev-senior");
-        post_json(&store, &senior_key, &format!("/v1/tasks/{task_id}/assignees"), serde_json::json!({ "user_ids": [senior_id] })).await;
+        post_json(
+            &store,
+            &senior_key,
+            &format!("/v1/tasks/{task_id}/assignees"),
+            serde_json::json!({ "user_ids": [senior_id] }),
+        )
+        .await;
 
         let (junior_key, _jid) = create_member_with_id(&store, &org_id, "dev-junior");
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/v1/tasks/{task_id}/assignees/{senior_id}"))
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/tasks/{task_id}/assignees/{senior_id}"))
                     .header("Authorization", format!("Bearer {junior_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn read_assignees_requires_only_task_read() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (senior_key, senior_id) = create_member_with_id(&store, &org_id, "dev-senior");
-        post_json(&store, &senior_key, &format!("/v1/tasks/{task_id}/assignees"), serde_json::json!({ "user_ids": [senior_id] })).await;
+        post_json(
+            &store,
+            &senior_key,
+            &format!("/v1/tasks/{task_id}/assignees"),
+            serde_json::json!({ "user_ids": [senior_id] }),
+        )
+        .await;
 
         let (readonly_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
         let resp = get_req(&store, &readonly_key, &format!("/v1/tasks/{task_id}")).await;
@@ -1010,21 +1234,56 @@ mod tests {
     #[tokio::test]
     async fn label_write_denied_without_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (readonly_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
-        let resp = post_json(&store, &readonly_key, &format!("/v1/tasks/{task_id}/labels"), serde_json::json!({ "label": "bug" })).await;
+        let resp = post_json(
+            &store,
+            &readonly_key,
+            &format!("/v1/tasks/{task_id}/labels"),
+            serde_json::json!({ "label": "bug" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn get_subtasks_endpoint_returns_children() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let parent_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "Parent" })).await;
-        let parent_id = json_body(parent_resp).await["id"].as_str().unwrap().to_string();
-        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "Child", "parent_id": parent_id })).await;
+        let parent_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "Parent" }),
+        )
+        .await;
+        let parent_id = json_body(parent_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "Child", "parent_id": parent_id }),
+        )
+        .await;
 
-        let resp = get_req(&store, &admin_key, &format!("/v1/tasks/{parent_id}/subtasks")).await;
+        let resp = get_req(
+            &store,
+            &admin_key,
+            &format!("/v1/tasks/{parent_id}/subtasks"),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
@@ -1035,69 +1294,148 @@ mod tests {
     #[tokio::test]
     async fn add_comment_denied_without_write_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (readonly_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
-        let resp = post_json(&store, &readonly_key, &format!("/v1/tasks/{task_id}/comments"), serde_json::json!({ "body": "hi" })).await;
+        let resp = post_json(
+            &store,
+            &readonly_key,
+            &format!("/v1/tasks/{task_id}/comments"),
+            serde_json::json!({ "body": "hi" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM task_comments WHERE task_id = ?1", [&task_id], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id = ?1",
+                [&task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn list_comments_non_member_returns_404() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "secret-proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "secret-proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
             q::get_or_create_project(&conn, &org_id, "secret-proj").unwrap();
         }
         let (member_key, _uid) = create_member_with_id(&store, &org_id, "dev-senior");
-        let resp = get_req(&store, &member_key, &format!("/v1/tasks/{task_id}/comments")).await;
+        let resp = get_req(
+            &store,
+            &member_key,
+            &format!("/v1/tasks/{task_id}/comments"),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn delete_comment_by_manager_succeeds_for_others_comment() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (author_key, _aid) = create_member_with_id(&store, &org_id, "dev-junior");
-        let comment_resp = post_json(&store, &author_key, &format!("/v1/tasks/{task_id}/comments"), serde_json::json!({ "body": "hello" })).await;
-        let comment_id = json_body(comment_resp).await["id"].as_str().unwrap().to_string();
+        let comment_resp = post_json(
+            &store,
+            &author_key,
+            &format!("/v1/tasks/{task_id}/comments"),
+            serde_json::json!({ "body": "hello" }),
+        )
+        .await;
+        let comment_id = json_body(comment_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // Admin is privileged and bypasses require_permission (task:manage).
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/v1/tasks/{task_id}/comments/{comment_id}"))
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/tasks/{task_id}/comments/{comment_id}"))
                     .header("Authorization", format!("Bearer {admin_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn delete_comment_denied_for_non_author_non_manager() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (author_key, _aid) = create_member_with_id(&store, &org_id, "dev-junior");
-        let comment_resp = post_json(&store, &author_key, &format!("/v1/tasks/{task_id}/comments"), serde_json::json!({ "body": "hello" })).await;
-        let comment_id = json_body(comment_resp).await["id"].as_str().unwrap().to_string();
+        let comment_resp = post_json(
+            &store,
+            &author_key,
+            &format!("/v1/tasks/{task_id}/comments"),
+            serde_json::json!({ "body": "hello" }),
+        )
+        .await;
+        let comment_id = json_body(comment_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let (other_key, _oid) = create_member_with_id(&store, &org_id, "dev-junior");
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/v1/tasks/{task_id}/comments/{comment_id}"))
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/tasks/{task_id}/comments/{comment_id}"))
                     .header("Authorization", format!("Bearer {other_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
@@ -1129,7 +1467,8 @@ mod tests {
 
     #[tokio::test]
     async fn spec_change_exists_treats_unreadable_root_as_advisory_pass() {
-        let tmp = std::env::temp_dir().join(format!("nm-spec-test-nonexistent-{}", uuid::Uuid::new_v4()));
+        let tmp =
+            std::env::temp_dir().join(format!("nm-spec-test-nonexistent-{}", uuid::Uuid::new_v4()));
         // Root does not exist at all — cannot confirm, advisory pass.
         assert!(spec_change_exists(&tmp, "anything"));
     }
@@ -1192,23 +1531,37 @@ mod tests {
 
         let resolved = resolve_openspec_root(Some(tmp.to_string_lossy().to_string()), &tmp);
         assert_eq!(resolved, tmp);
-        assert!(spec_change_exists(&resolved, "anything"), "advisory pass when tree absent under explicit root");
+        assert!(
+            spec_change_exists(&resolved, "anything"),
+            "advisory pass when tree absent under explicit root"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
     async fn link_task_spec_handler_rejects_unknown_via_openspec_root_env() {
-        let _guard = openspec_root_env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = std::env::temp_dir().join(format!("nm-link-handler-env-{}", uuid::Uuid::new_v4()));
+        let _guard = openspec_root_env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp =
+            std::env::temp_dir().join(format!("nm-link-handler-env-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(tmp.join("openspec/changes/known-change")).unwrap();
 
         std::env::set_var("OPENSPEC_ROOT", &tmp);
 
         let (store, admin_key, _org_id) = setup_with_key();
-        let create_resp =
-            post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let ok_resp = post_json(
             &store,
@@ -1245,15 +1598,26 @@ mod tests {
     /// Now `sdd_changes` is the referent. With no tree AND no DB row, the answer is no.
     #[tokio::test]
     async fn link_task_spec_handler_rejects_unknown_change_when_no_openspec_tree() {
-        let _guard = openspec_root_env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = std::env::temp_dir().join(format!("nm-link-handler-noroot-{}", uuid::Uuid::new_v4()));
+        let _guard = openspec_root_env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp =
+            std::env::temp_dir().join(format!("nm-link-handler-noroot-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("OPENSPEC_ROOT", &tmp);
 
         let (store, admin_key, _org_id) = setup_with_key();
-        let create_resp =
-            post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let resp = post_json(
             &store,
@@ -1275,15 +1639,29 @@ mod tests {
     #[tokio::test]
     async fn get_spec_links_returns_list() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let admin_id = admin_user_id(&store, &org_id);
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
             queries::link_task_spec(&conn, &task_id, &admin_id, "team-tasks").unwrap();
         }
-        let resp = get_req(&store, &admin_key, &format!("/v1/tasks/{task_id}/spec-links")).await;
+        let resp = get_req(
+            &store,
+            &admin_key,
+            &format!("/v1/tasks/{task_id}/spec-links"),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
@@ -1292,8 +1670,17 @@ mod tests {
     #[tokio::test]
     async fn read_task_with_dangling_spec_link_still_succeeds() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let admin_id = admin_user_id(&store, &org_id);
         {
             let db = store.conn();
@@ -1309,8 +1696,17 @@ mod tests {
     #[tokio::test]
     async fn remove_spec_link_denied_without_write_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let admin_id = admin_user_id(&store, &org_id);
         {
             let db = store.conn();
@@ -1320,20 +1716,36 @@ mod tests {
         let (readonly_key, _uid) = create_member_with_id(&store, &org_id, "security-officer");
         let resp = app(store.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/v1/tasks/{task_id}/spec-links/team-tasks"))
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/tasks/{task_id}/spec-links/team-tasks"))
                     .header("Authorization", format!("Bearer {readonly_key}"))
-                    .body(Body::empty()).unwrap(),
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn resolve_by_spec_transitions_member_projects_with_task_write() {
         let (store, admin_key, org_id) = setup_with_key();
-        let t1_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj-a", "title": "T1" })).await;
+        let t1_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj-a", "title": "T1" }),
+        )
+        .await;
         let t1 = json_body(t1_resp).await["id"].as_str().unwrap().to_string();
-        let t2_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj-b", "title": "T2" })).await;
+        let t2_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj-b", "title": "T2" }),
+        )
+        .await;
         let t2 = json_body(t2_resp).await["id"].as_str().unwrap().to_string();
         let admin_id = admin_user_id(&store, &org_id);
         {
@@ -1347,7 +1759,13 @@ mod tests {
         add_member_to_project(&store, &org_id, "proj-a", &member_id);
         add_member_to_project(&store, &org_id, "proj-b", &member_id);
 
-        let resp = post_json(&store, &member_key, "/v1/tasks/resolve-by-spec", serde_json::json!({ "spec_change_name": "team-tasks" })).await;
+        let resp = post_json(
+            &store,
+            &member_key,
+            "/v1/tasks/resolve-by-spec",
+            serde_json::json!({ "spec_change_name": "team-tasks" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json["resolved"], serde_json::json!([t1, t2]));
@@ -1360,32 +1778,75 @@ mod tests {
         let (store, _admin_key, org_id) = setup_with_key();
         // dev_senior has task:write/assign/delete but not task:manage.
         let (senior_key, _uid) = create_member_with_id(&store, &org_id, "dev-senior");
-        let resp = post_json(&store, &senior_key, "/v1/sprints", serde_json::json!({ "project": "proj", "name": "Sprint 1" })).await;
+        let resp = post_json(
+            &store,
+            &senior_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "proj", "name": "Sprint 1" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM sprints", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sprints", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn create_retrospective_denied_without_manage_permission() {
         let (store, admin_key, org_id) = setup_with_key();
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj", "name": "Sprint 1" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "proj", "name": "Sprint 1" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let (senior_key, _uid) = create_member_with_id(&store, &org_id, "dev-senior");
-        let resp = post_json(&store, &senior_key, &format!("/v1/sprints/{sprint_id}/retrospectives"), serde_json::json!({ "went_well": "ok" })).await;
+        let resp = post_json(
+            &store,
+            &senior_key,
+            &format!("/v1/sprints/{sprint_id}/retrospectives"),
+            serde_json::json!({ "went_well": "ok" }),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn retrospective_retrievable_via_read_path() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj", "name": "Sprint 1" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
-        post_json(&store, &admin_key, &format!("/v1/sprints/{sprint_id}/retrospectives"), serde_json::json!({ "went_well": "Great pace" })).await;
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "proj", "name": "Sprint 1" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        post_json(
+            &store,
+            &admin_key,
+            &format!("/v1/sprints/{sprint_id}/retrospectives"),
+            serde_json::json!({ "went_well": "Great pace" }),
+        )
+        .await;
 
-        let resp = get_req(&store, &admin_key, &format!("/v1/sprints/{sprint_id}/retrospectives")).await;
+        let resp = get_req(
+            &store,
+            &admin_key,
+            &format!("/v1/sprints/{sprint_id}/retrospectives"),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let json = json_body(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
@@ -1395,8 +1856,17 @@ mod tests {
     #[tokio::test]
     async fn sprint_and_retrospective_reads_scoped_to_membership() {
         let (store, admin_key, org_id) = setup_with_key();
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "secret-proj", "name": "Sprint 1" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "secret-proj", "name": "Sprint 1" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
@@ -1405,7 +1875,12 @@ mod tests {
         let (member_key, _uid) = create_member_with_id(&store, &org_id, "dev-senior");
         let resp = get_req(&store, &member_key, &format!("/v1/sprints/{sprint_id}")).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let retro_resp = get_req(&store, &member_key, &format!("/v1/sprints/{sprint_id}/retrospectives")).await;
+        let retro_resp = get_req(
+            &store,
+            &member_key,
+            &format!("/v1/sprints/{sprint_id}/retrospectives"),
+        )
+        .await;
         assert_eq!(retro_resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1414,11 +1889,17 @@ mod tests {
         let (store, _admin_key, _org_id) = setup_with_key();
         let resp = app(store)
             .oneshot(
-                Request::builder().method("POST").uri("/v1/tasks")
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tasks")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "project": "proj", "title": "T" }).to_string())).unwrap(),
+                    .body(Body::from(
+                        serde_json::json!({ "project": "proj", "title": "T" }).to_string(),
+                    ))
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -1429,7 +1910,13 @@ mod tests {
     // ONLY when the handler threads `Some(&project)` into require_permission. Passing
     // `None` (the pre-fix behavior) ignores the override and always falls back to the
     // global role, producing a false 403 for a project-scoped grant.
-    fn add_member_with_project_role(store: &SqliteStore, org_id: &str, project: &str, user_id: &str, role: &str) {
+    fn add_member_with_project_role(
+        store: &SqliteStore,
+        org_id: &str,
+        project: &str,
+        user_id: &str,
+        role: &str,
+    ) {
         let db = store.conn();
         let conn = db.lock().unwrap();
         let project_id = q::get_or_create_project(&conn, org_id, project).unwrap();
@@ -1437,12 +1924,14 @@ mod tests {
             "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
              VALUES (?1, ?2, ?3, ?4, datetime('now'))",
             rusqlite::params![uuid::Uuid::new_v4().to_string(), project_id, user_id, role],
-        ).unwrap();
+        )
+        .unwrap();
         // Overwrite in case get_or_create_project auto-seeded a 'member' row for this user.
         conn.execute(
             "UPDATE project_members SET role = ?1 WHERE project_id = ?2 AND user_id = ?3",
             rusqlite::params![role, project_id, user_id],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1455,9 +1944,24 @@ mod tests {
         add_member_with_project_role(&store, &org_id, "scoped-proj", &viewer_id, "dev-junior");
 
         // Task + subtask.
-        let task_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "scoped-proj", "title": "Parent" })).await;
-        let task_id = json_body(task_resp).await["id"].as_str().unwrap().to_string();
-        post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "scoped-proj", "title": "Child", "parent_id": task_id })).await;
+        let task_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "scoped-proj", "title": "Parent" }),
+        )
+        .await;
+        let task_id = json_body(task_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "scoped-proj", "title": "Child", "parent_id": task_id }),
+        )
+        .await;
 
         // Comment.
         let admin_id = admin_user_id(&store, &org_id);
@@ -1469,23 +1973,92 @@ mod tests {
         }
 
         // Sprint + retrospective.
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "scoped-proj", "name": "Sprint 1" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "scoped-proj", "name": "Sprint 1" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
             queries::create_retrospective(
-                &conn, &sprint_id, &org_id, &admin_id,
-                &CreateRetrospectiveRequest { went_well: Some("ok".to_string()), went_wrong: None, action_items: None },
-            ).unwrap();
+                &conn,
+                &sprint_id,
+                &org_id,
+                &admin_id,
+                &CreateRetrospectiveRequest {
+                    went_well: Some("ok".to_string()),
+                    went_wrong: None,
+                    action_items: None,
+                },
+            )
+            .unwrap();
         }
 
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}")).await.status(), StatusCode::OK, "get_task_handler must honor project-scoped role override");
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/subtasks")).await.status(), StatusCode::OK, "list_subtasks_handler must honor project-scoped role override");
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/comments")).await.status(), StatusCode::OK, "list_task_comments_handler must honor project-scoped role override");
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}/spec-links")).await.status(), StatusCode::OK, "list_task_spec_links_handler must honor project-scoped role override");
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/sprints/{sprint_id}")).await.status(), StatusCode::OK, "get_sprint_handler must honor project-scoped role override");
-        assert_eq!(get_req(&store, &viewer_key, &format!("/v1/sprints/{sprint_id}/retrospectives")).await.status(), StatusCode::OK, "list_retrospectives_handler must honor project-scoped role override");
+        assert_eq!(
+            get_req(&store, &viewer_key, &format!("/v1/tasks/{task_id}"))
+                .await
+                .status(),
+            StatusCode::OK,
+            "get_task_handler must honor project-scoped role override"
+        );
+        assert_eq!(
+            get_req(
+                &store,
+                &viewer_key,
+                &format!("/v1/tasks/{task_id}/subtasks")
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "list_subtasks_handler must honor project-scoped role override"
+        );
+        assert_eq!(
+            get_req(
+                &store,
+                &viewer_key,
+                &format!("/v1/tasks/{task_id}/comments")
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "list_task_comments_handler must honor project-scoped role override"
+        );
+        assert_eq!(
+            get_req(
+                &store,
+                &viewer_key,
+                &format!("/v1/tasks/{task_id}/spec-links")
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "list_task_spec_links_handler must honor project-scoped role override"
+        );
+        assert_eq!(
+            get_req(&store, &viewer_key, &format!("/v1/sprints/{sprint_id}"))
+                .await
+                .status(),
+            StatusCode::OK,
+            "get_sprint_handler must honor project-scoped role override"
+        );
+        assert_eq!(
+            get_req(
+                &store,
+                &viewer_key,
+                &format!("/v1/sprints/{sprint_id}/retrospectives")
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "list_retrospectives_handler must honor project-scoped role override"
+        );
     }
 
     // ── FIX 2: create_task must validate sprint_id like patch_task does ────
@@ -1493,27 +2066,62 @@ mod tests {
     #[tokio::test]
     async fn create_task_rejects_sprint_from_different_project() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj-a", "name": "Sprint A" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "proj-a", "name": "Sprint A" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
-            "project": "proj-b", "title": "T", "sprint_id": sprint_id
-        })).await;
-        assert!(resp.status().is_client_error(), "expected 4xx, got {}", resp.status());
+        let resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({
+                "project": "proj-b", "title": "T", "sprint_id": sprint_id
+            }),
+        )
+        .await;
+        assert!(
+            resp.status().is_client_error(),
+            "expected 4xx, got {}",
+            resp.status()
+        );
 
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks WHERE project = 'proj-b'", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE project = 'proj-b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "no task row created when sprint validation fails");
     }
 
     #[tokio::test]
     async fn create_task_rejects_nonexistent_sprint_id() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({
-            "project": "proj-a", "title": "T", "sprint_id": "does-not-exist"
-        })).await;
-        assert!(resp.status().is_client_error(), "expected 4xx, got {}", resp.status());
+        let resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({
+                "project": "proj-a", "title": "T", "sprint_id": "does-not-exist"
+            }),
+        )
+        .await;
+        assert!(
+            resp.status().is_client_error(),
+            "expected 4xx, got {}",
+            resp.status()
+        );
     }
 
     // ── FIX 4: 401 (unauthenticated) coverage beyond create_task ───────────
@@ -1522,34 +2130,70 @@ mod tests {
     async fn list_tasks_unauthenticated_returns_401() {
         let (store, _admin_key, _org_id) = setup_with_key();
         let resp = app(store)
-            .oneshot(Request::builder().uri("/v1/tasks").body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn assign_task_unauthenticated_returns_401() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let create_resp = post_json(&store, &admin_key, "/v1/tasks", serde_json::json!({ "project": "proj", "title": "T" })).await;
-        let task_id = json_body(create_resp).await["id"].as_str().unwrap().to_string();
+        let create_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/tasks",
+            serde_json::json!({ "project": "proj", "title": "T" }),
+        )
+        .await;
+        let task_id = json_body(create_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let resp = app(store)
             .oneshot(
-                Request::builder().method("POST").uri(format!("/v1/tasks/{task_id}/assignees"))
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/tasks/{task_id}/assignees"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "user_ids": [] }).to_string())).unwrap(),
+                    .body(Body::from(
+                        serde_json::json!({ "user_ids": [] }).to_string(),
+                    ))
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn get_sprint_unauthenticated_returns_401() {
         let (store, admin_key, _org_id) = setup_with_key();
-        let sprint_resp = post_json(&store, &admin_key, "/v1/sprints", serde_json::json!({ "project": "proj", "name": "Sprint 1" })).await;
-        let sprint_id = json_body(sprint_resp).await["id"].as_str().unwrap().to_string();
+        let sprint_resp = post_json(
+            &store,
+            &admin_key,
+            "/v1/sprints",
+            serde_json::json!({ "project": "proj", "name": "Sprint 1" }),
+        )
+        .await;
+        let sprint_id = json_body(sprint_resp).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let resp = app(store)
-            .oneshot(Request::builder().uri(format!("/v1/sprints/{sprint_id}")).body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/sprints/{sprint_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

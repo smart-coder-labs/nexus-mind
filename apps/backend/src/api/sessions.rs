@@ -1,13 +1,15 @@
+use crate::api::helpers::AppJson;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Extension, Json,
 };
-use crate::api::helpers::AppJson;
 
 use crate::{
     db::queries,
-    models::types::{ApiError, AuthContext, CreateSessionRequest, Memory, PatchSessionRequest, Session},
+    models::types::{
+        ApiError, AuthContext, CreateSessionRequest, Memory, PatchSessionRequest, Session,
+    },
     store::sqlite::SqliteStore,
 };
 
@@ -58,7 +60,11 @@ fn session_project_visible(
     auth: &AuthContext,
     project: &str,
 ) -> Result<bool, (StatusCode, Json<ApiError>)> {
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     queries::user_can_view_project_name(conn, &auth.org_id, project, viewer).map_err(db_err)
 }
 
@@ -85,7 +91,13 @@ pub async fn create_session_handler(
 
     let session = queries::create_session(&conn, &auth.org_id, &input).map_err(db_err)?;
 
-    Ok((StatusCode::CREATED, Json(CreateSessionResponse { id: session.id, name: session.name })))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateSessionResponse {
+            id: session.id,
+            name: session.name,
+        }),
+    ))
 }
 
 pub async fn get_session_handler(
@@ -101,7 +113,9 @@ pub async fn get_session_handler(
     match result {
         // Non-admins may only read a session whose project they can see; otherwise 404
         // (indistinguishable from a non-existent session — no existence leak).
-        Some(session) if session_project_visible(&conn, &auth, &session.project)? => Ok(Json(session)),
+        Some(session) if session_project_visible(&conn, &auth, &session.project)? => {
+            Ok(Json(session))
+        }
         _ => Err(not_found()),
     }
 }
@@ -122,8 +136,8 @@ pub async fn patch_session_handler(
         _ => return Err(not_found()),
     }
 
-    let result = queries::patch_session(&conn, &auth.org_id, &session_id, &input)
-        .map_err(db_err)?;
+    let result =
+        queries::patch_session(&conn, &auth.org_id, &session_id, &input).map_err(db_err)?;
 
     match result {
         Some(session) => Ok(Json(session)),
@@ -138,7 +152,11 @@ pub async fn list_sessions_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     let sessions = queries::list_sessions_visible(&conn, &auth.org_id, viewer).map_err(db_err)?;
 
     Ok(Json(sessions))
@@ -160,7 +178,11 @@ pub async fn list_session_memories_handler(
         _ => return Err(not_found()),
     }
 
-    let viewer = if auth.role.is_privileged() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_privileged() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     let memories = queries::list_memories_visible(
         &conn,
         &auth.org_id,
@@ -210,9 +232,18 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/sessions", get(list_sessions_handler).post(create_session_handler))
-            .route("/v1/sessions/:id", get(get_session_handler).patch(patch_session_handler))
-            .route("/v1/sessions/:id/memories", get(list_session_memories_handler))
+            .route(
+                "/v1/sessions",
+                get(list_sessions_handler).post(create_session_handler),
+            )
+            .route(
+                "/v1/sessions/:id",
+                get(get_session_handler).patch(patch_session_handler),
+            )
+            .route(
+                "/v1/sessions/:id/memories",
+                get(list_session_memories_handler),
+            )
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -239,15 +270,22 @@ mod tests {
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
-            rusqlite::params![user_id, org_id, format!("{}-{role}@test.com", &user_id[..8]), role],
-        ).unwrap();
+            rusqlite::params![
+                user_id,
+                org_id,
+                format!("{}-{role}@test.com", &user_id[..8]),
+                role
+            ],
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         (raw_key, user_id)
     }
 
@@ -263,9 +301,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let arr: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        arr.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+        arr.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect()
     }
 
     async fn get_session_status(store: &SqliteStore, key: &str, id: &str) -> StatusCode {
@@ -291,7 +335,8 @@ mod tests {
         let org_id: String = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap()
         };
 
         // Registered projects (create_project does NOT auto-seed members) and one org-shared
@@ -300,10 +345,23 @@ mod tests {
             let db = store.conn();
             let conn = db.lock().unwrap();
             let _secret = q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
-            let shared_id = q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap().id;
-            let mk = |p: &str| q::create_session(&conn, &org_id, &crate::models::types::CreateSessionRequest {
-                project: p.to_string(), name: None, directory: None, summary: None,
-            }).unwrap().id;
+            let shared_id = q::create_project(&conn, &org_id, "proj-shared", None, None)
+                .unwrap()
+                .id;
+            let mk = |p: &str| {
+                q::create_session(
+                    &conn,
+                    &org_id,
+                    &crate::models::types::CreateSessionRequest {
+                        project: p.to_string(),
+                        name: None,
+                        directory: None,
+                        summary: None,
+                    },
+                )
+                .unwrap()
+                .id
+            };
             let secret_sid = mk("proj-secret");
             let shared_sid = mk("proj-shared");
             let orphan_sid = mk("no-such-project"); // org-shared: no projects row
@@ -312,23 +370,40 @@ mod tests {
             // Member belongs to proj-shared only.
             let db2 = store.conn();
             let conn2 = db2.lock().unwrap();
-            conn2.execute(
-                "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+            conn2
+                .execute(
+                    "INSERT INTO project_members (id, project_id, user_id, role, created_at)
                  VALUES (?1, ?2, ?3, 'member', datetime('now'))",
-                rusqlite::params![uuid::Uuid::new_v4().to_string(), shared_id, member_id],
-            ).unwrap();
+                    rusqlite::params![uuid::Uuid::new_v4().to_string(), shared_id, member_id],
+                )
+                .unwrap();
             (secret_sid, shared_sid, orphan_sid, member_key)
         };
 
         // LIST: member sees shared + orphan, not secret.
         let ids = session_ids(&store, &member_key).await;
-        assert!(ids.contains(&shared_sid), "member must see their project's session");
-        assert!(ids.contains(&orphan_sid), "member must see org-shared session");
-        assert!(!ids.contains(&secret_sid), "member must NOT see a non-member project's session");
+        assert!(
+            ids.contains(&shared_sid),
+            "member must see their project's session"
+        );
+        assert!(
+            ids.contains(&orphan_sid),
+            "member must see org-shared session"
+        );
+        assert!(
+            !ids.contains(&secret_sid),
+            "member must NOT see a non-member project's session"
+        );
 
         // GET by id: 404 for secret, 200 for shared.
-        assert_eq!(get_session_status(&store, &member_key, &secret_sid).await, StatusCode::NOT_FOUND);
-        assert_eq!(get_session_status(&store, &member_key, &shared_sid).await, StatusCode::OK);
+        assert_eq!(
+            get_session_status(&store, &member_key, &secret_sid).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get_session_status(&store, &member_key, &shared_sid).await,
+            StatusCode::OK
+        );
 
         // SESSION MEMORIES: 404 for a session the member cannot see.
         let mem_status = app(store.clone())
@@ -346,7 +421,11 @@ mod tests {
 
         // ADMIN sees all three sessions.
         let admin_ids = session_ids(&store, &admin_key).await;
-        assert!(admin_ids.contains(&secret_sid) && admin_ids.contains(&shared_sid) && admin_ids.contains(&orphan_sid));
+        assert!(
+            admin_ids.contains(&secret_sid)
+                && admin_ids.contains(&shared_sid)
+                && admin_ids.contains(&orphan_sid)
+        );
     }
 
     /// A non-admin cannot create a session under a real project they are not a member of
@@ -357,22 +436,27 @@ mod tests {
         let org_id: String = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap()
         };
         let (member_key, member_id) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let shared = q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap().id;
+            let shared = q::create_project(&conn, &org_id, "proj-shared", None, None)
+                .unwrap()
+                .id;
             q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
             drop(conn);
             let (mk, mid) = create_member_with_id(&store, &org_id, "member");
             let db2 = store.conn();
             let conn2 = db2.lock().unwrap();
-            conn2.execute(
-                "INSERT INTO project_members (id, project_id, user_id, role, created_at)
+            conn2
+                .execute(
+                    "INSERT INTO project_members (id, project_id, user_id, role, created_at)
                  VALUES (?1, ?2, ?3, 'member', datetime('now'))",
-                rusqlite::params![uuid::Uuid::new_v4().to_string(), shared, mid],
-            ).unwrap();
+                    rusqlite::params![uuid::Uuid::new_v4().to_string(), shared, mid],
+                )
+                .unwrap();
             (mk, mid)
         };
         let _ = member_id;
@@ -382,18 +466,39 @@ mod tests {
             let key = member_key.clone();
             let project = project.to_string();
             async move {
-                app(store).oneshot(
-                    Request::builder().method("POST").uri("/v1/sessions")
-                        .header("Authorization", format!("Bearer {key}"))
-                        .header("Content-Type", "application/json")
-                        .body(Body::from(serde_json::json!({ "project": project }).to_string())).unwrap(),
-                ).await.unwrap().status()
+                app(store)
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/sessions")
+                            .header("Authorization", format!("Bearer {key}"))
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(
+                                serde_json::json!({ "project": project }).to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
             }
         };
 
-        assert_eq!(create("proj-secret").await, StatusCode::FORBIDDEN, "non-member project must be 403");
-        assert_eq!(create("proj-shared").await, StatusCode::CREATED, "member's own project must be allowed");
-        assert_eq!(create("scratch-adhoc").await, StatusCode::CREATED, "org-shared/unregistered project must be allowed");
+        assert_eq!(
+            create("proj-secret").await,
+            StatusCode::FORBIDDEN,
+            "non-member project must be 403"
+        );
+        assert_eq!(
+            create("proj-shared").await,
+            StatusCode::CREATED,
+            "member's own project must be allowed"
+        );
+        assert_eq!(
+            create("scratch-adhoc").await,
+            StatusCode::CREATED,
+            "org-shared/unregistered project must be allowed"
+        );
     }
 
     /// A non-member cannot patch a session belonging to a project they can't see: 404
@@ -404,15 +509,25 @@ mod tests {
         let org_id: String = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap()
         };
         let (secret_sid, member_key) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
             q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
-            let sid = q::create_session(&conn, &org_id, &crate::models::types::CreateSessionRequest {
-                project: "proj-secret".to_string(), name: None, directory: None, summary: None,
-            }).unwrap().id;
+            let sid = q::create_session(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateSessionRequest {
+                    project: "proj-secret".to_string(),
+                    name: None,
+                    directory: None,
+                    summary: None,
+                },
+            )
+            .unwrap()
+            .id;
             drop(conn);
             let (mk, _mid) = create_member_with_id(&store, &org_id, "member");
             (sid, mk)
@@ -420,14 +535,23 @@ mod tests {
 
         let resp = app(store)
             .oneshot(
-                Request::builder().method("PATCH").uri(format!("/v1/sessions/{secret_sid}"))
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/sessions/{secret_sid}"))
                     .header("Authorization", format!("Bearer {member_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "summary": "hijacked" }).to_string())).unwrap(),
+                    .body(Body::from(
+                        serde_json::json!({ "summary": "hijacked" }).to_string(),
+                    ))
+                    .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "patching a non-member project's session must be 404");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "patching a non-member project's session must be 404"
+        );
     }
 
     #[tokio::test]
@@ -450,7 +574,9 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["id"].is_string(), "response must include an id field");
         assert!(!json["id"].as_str().unwrap().is_empty());
@@ -495,7 +621,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let session_id = create_json["id"].as_str().unwrap().to_string();
 
@@ -518,7 +646,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(patch_resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(patch_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(patch_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let patch_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(patch_json["ended_at"], "2026-01-01T01:00:00Z");
         assert_eq!(patch_json["summary"], "Session complete");
@@ -562,7 +692,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
@@ -602,7 +734,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -627,7 +761,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let session_id = create_json["id"].as_str().unwrap().to_string();
 
@@ -644,7 +780,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["id"], session_id);
         assert_eq!(json["project"], "nexusmind");
@@ -708,7 +846,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(create_resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let session_id = create_json["id"].as_str().unwrap().to_string();
 
@@ -752,7 +892,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -797,7 +939,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let session_id = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["id"]
             .as_str()
             .unwrap()
@@ -816,7 +960,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json.as_array().unwrap().is_empty());
     }

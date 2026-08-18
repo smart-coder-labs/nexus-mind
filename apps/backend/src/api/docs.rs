@@ -225,12 +225,19 @@ mod tests {
         let Json(resp) = search(
             State(store.clone()),
             Extension(auth()),
-            Query(DocSearchParams { q: "BYOM".to_string(), limit: None, mode: None }),
+            Query(DocSearchParams {
+                q: "BYOM".to_string(),
+                limit: None,
+                mode: None,
+            }),
         )
         .await
         .unwrap();
 
-        assert_eq!(resp.mode, "keyword", "no embed service configured → keyword");
+        assert_eq!(
+            resp.mode, "keyword",
+            "no embed service configured → keyword"
+        );
         assert!(!resp.hits.is_empty());
         assert!(
             resp.hits.iter().all(|h| h.path.ends_with(".md")),
@@ -258,7 +265,11 @@ mod tests {
         let err = search(
             State(store),
             Extension(auth()),
-            Query(DocSearchParams { q: "   ".to_string(), limit: None, mode: None }),
+            Query(DocSearchParams {
+                q: "   ".to_string(),
+                limit: None,
+                mode: None,
+            }),
         )
         .await
         .expect_err("an empty query must not scan the corpus");

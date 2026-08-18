@@ -1,8 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Extension, Json,
-};
+use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -11,8 +7,7 @@ use crate::{
     config::Config,
     db::queries as db_queries,
     models::types::{
-        ApiError, AuthContext, GitHubAuthUrlResponse, GitHubCallbackRequest,
-        GitHubConnectionStatus,
+        ApiError, AuthContext, GitHubAuthUrlResponse, GitHubCallbackRequest, GitHubConnectionStatus,
     },
     store::sqlite::SqliteStore,
 };
@@ -76,7 +71,10 @@ pub async fn get_auth_url(
         require_permission(&conn, &auth, None, "memory:write")?;
     }
 
-    let client_id = config.github_client_id.as_deref().ok_or_else(not_configured)?;
+    let client_id = config
+        .github_client_id
+        .as_deref()
+        .ok_or_else(not_configured)?;
     let redirect_uri = config.github_redirect_uri.as_deref().unwrap_or("");
 
     let state = hex::encode(rand::random::<[u8; 16]>());
@@ -108,9 +106,19 @@ pub async fn post_callback(
         require_permission(&conn, &auth, None, "memory:write")?;
     }
 
-    let client_id = config.github_client_id.as_deref().ok_or_else(not_configured)?;
-    let client_secret = config.github_client_secret.as_deref().ok_or_else(not_configured)?;
-    let redirect_uri = config.github_redirect_uri.as_deref().unwrap_or("").to_string();
+    let client_id = config
+        .github_client_id
+        .as_deref()
+        .ok_or_else(not_configured)?;
+    let client_secret = config
+        .github_client_secret
+        .as_deref()
+        .ok_or_else(not_configured)?;
+    let redirect_uri = config
+        .github_redirect_uri
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
 
     // Exchange code for access token
     let http = reqwest::Client::new();
@@ -171,7 +179,10 @@ pub async fn post_callback(
     // Fetch authenticated user info
     let user_res: GitHubUserResponse = http
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token_res.access_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", token_res.access_token),
+        )
         .header("User-Agent", "nexusmind")
         .send()
         .await

@@ -1,11 +1,15 @@
-use axum::{extract::{Query, State}, http::StatusCode, Extension, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Extension, Json,
+};
 use serde::Deserialize;
 
 use crate::{
+    api::helpers::require_permission,
     db::queries,
     models::types::{ApiError, AuthContext, GlobalSearchResult},
     store::sqlite::SqliteStore,
-    api::helpers::require_permission,
 };
 
 #[derive(Deserialize)]
@@ -64,13 +68,16 @@ pub async fn get_global_search(
 
     let limit = params.limit.clamp(1, 50);
 
-    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
-    let memories = queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer)
-        .map_err(db_err)?;
+    let viewer = if auth.role.is_super_user() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
+    let memories =
+        queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer).map_err(db_err)?;
 
     let users = if auth.role.is_super_user() {
-        queries::search_users_by_query(&conn, &auth.org_id, q, limit)
-            .map_err(db_err)?
+        queries::search_users_by_query(&conn, &auth.org_id, q, limit).map_err(db_err)?
     } else {
         vec![]
     };
@@ -81,8 +88,9 @@ pub async fn get_global_search(
     let policies = queries::search_policies_by_query_visible(&conn, &auth.org_id, q, limit, viewer)
         .map_err(db_err)?;
 
-    let conventions = queries::search_conventions_by_query_visible(&conn, &auth.org_id, q, limit, viewer)
-        .map_err(db_err)?;
+    let conventions =
+        queries::search_conventions_by_query_visible(&conn, &auth.org_id, q, limit, viewer)
+            .map_err(db_err)?;
 
     // A4 — an EMPTY facet, never a 403. Gating the whole of global search on a
     // brand-new permission would break it for every user who does not have
@@ -150,7 +158,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Test Org', 'test-org')",
             [&org_id],
-        ).unwrap();
+        )
+        .unwrap();
         org_id
     }
 
@@ -159,18 +168,22 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Member', 'member', 'active', '2026-01-01T00:00:00Z')",
             rusqlite::params![user_id, org_id, format!("{user_id}@acme.com")],
-        ).unwrap();
+        )
+        .unwrap();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'test', '2026-01-01T00:00:00Z')",
             rusqlite::params![format!("key_{user_id}"), user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         raw_key
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -189,13 +202,19 @@ mod tests {
         conn.execute("INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope, revision_count, project_id) VALUES ('mo', ?1, 'm1', 'default', 'claude', 'ZEBRAWORD orgless note', '[]', datetime('now'), 'project', 1, NULL)", [&org_id]).unwrap();
 
         // Member: shared + orgless, not secret.
-        let mut member = queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, Some("m1")).unwrap();
+        let mut member =
+            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, Some("m1")).unwrap();
         member.sort_by(|a, b| a.id.cmp(&b.id));
         let ids: Vec<&str> = member.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["mh", "mo"], "member sees shared + org-less, not secret");
+        assert_eq!(
+            ids,
+            vec!["mh", "mo"],
+            "member sees shared + org-less, not secret"
+        );
 
         // Admin (None): all three.
-        let admin = queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, None).unwrap();
+        let admin =
+            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, None).unwrap();
         assert_eq!(admin.len(), 3, "admin sees everything");
     }
 
@@ -232,9 +251,24 @@ mod tests {
 
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
         let body = body_json(resp).await;
-        let project_names: Vec<&str> = body["projects"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-        let policy_names: Vec<&str> = body["policies"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-        let convention_titles: Vec<&str> = body["conventions"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+        let project_names: Vec<&str> = body["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        let policy_names: Vec<&str> = body["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        let convention_titles: Vec<&str> = body["conventions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["title"].as_str().unwrap())
+            .collect();
         assert_eq!(project_names, vec!["leak-shared-project"]);
         assert!(policy_names.contains(&"leak shared policy"));
         assert!(policy_names.contains(&"leak global policy"));
@@ -290,7 +324,8 @@ mod tests {
         let results_all = queries::search_projects_by_query(&conn, &org_id, "service", 10).unwrap();
         assert_eq!(results_all.len(), 2);
 
-        let results_none = queries::search_projects_by_query(&conn, &org_id, "nonexistent", 10).unwrap();
+        let results_none =
+            queries::search_projects_by_query(&conn, &org_id, "nonexistent", 10).unwrap();
         assert!(results_none.is_empty());
     }
 
@@ -302,7 +337,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org B', 'org-b')",
             [&org_b],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES ('u_b', ?1, 'carol@b.com', 'Carol', 'member', 'active', '2026-01-01T00:00:00Z')",
@@ -332,11 +368,13 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Block GPT Models");
 
-        let results_budget = queries::search_policies_by_query(&conn, &org_id, "budget", 10).unwrap();
+        let results_budget =
+            queries::search_policies_by_query(&conn, &org_id, "budget", 10).unwrap();
         assert_eq!(results_budget.len(), 1);
         assert_eq!(results_budget[0].name, "Budget Cap");
 
-        let results_none = queries::search_policies_by_query(&conn, &org_id, "nonexistent", 10).unwrap();
+        let results_none =
+            queries::search_policies_by_query(&conn, &org_id, "nonexistent", 10).unwrap();
         assert!(results_none.is_empty());
     }
 
@@ -361,12 +399,14 @@ mod tests {
         assert_eq!(by_title[0].title, "Use snake_case");
 
         // match by content
-        let by_content = queries::search_conventions_by_query(&conn, &org_id, "anyhow", 10).unwrap();
+        let by_content =
+            queries::search_conventions_by_query(&conn, &org_id, "anyhow", 10).unwrap();
         assert_eq!(by_content.len(), 1);
         assert_eq!(by_content[0].title, "Error handling");
 
         // no match
-        let no_match = queries::search_conventions_by_query(&conn, &org_id, "typescript", 10).unwrap();
+        let no_match =
+            queries::search_conventions_by_query(&conn, &org_id, "typescript", 10).unwrap();
         assert!(no_match.is_empty());
     }
 
@@ -383,7 +423,8 @@ mod tests {
             "INSERT INTO conventions (org_id, title, content, category, weight, tags)
              VALUES (?1, 'Old active convention', 'This is active', 'naming', 50, '[]')",
             [&org_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         let results = queries::search_conventions_by_query(&conn, &org_id, "old", 10).unwrap();
         assert_eq!(results.len(), 1, "archived convention must be excluded");
@@ -398,7 +439,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org B', 'org-b')",
             [&org_b],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO policies (id, org_id, name, rule_type, config, enabled, created_at, updated_at)
              VALUES ('pol_b', ?1, 'B Policy', 'model_whitelist', '{}', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
@@ -417,14 +459,17 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES (?1, 'Org B', 'org-b')",
             [&org_b],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO conventions (org_id, title, content, category, weight, tags)
              VALUES (?1, 'B Convention', 'some content', 'general', 100, '[]')",
             [&org_b],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let results = queries::search_conventions_by_query(&conn, &org_a, "convention", 10).unwrap();
+        let results =
+            queries::search_conventions_by_query(&conn, &org_a, "convention", 10).unwrap();
         assert!(results.is_empty(), "org_a must not see org_b conventions");
     }
 }

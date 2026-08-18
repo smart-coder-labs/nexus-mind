@@ -1,5 +1,11 @@
 # Tasks: Autonomous Loop Engineering
 
+> Ownership reconciliation (2026-08-18): migration v57, profiles, policy and
+> provenance remain authoritative foundations. All unfinished autonomous-agent
+> product/runtime tasks below are superseded by
+> `../autonomous-agents-mvp/`, which owns the same-host Claude Code worker,
+> scheduling, GitHub App, QA, issue resolver, PR reviewer and admin surface.
+
 ## Review Workload Forecast
 
 | Field | Value |
@@ -26,18 +32,18 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Worker and Governed Execution
 
-- [ ] 2.1 RED: In `workers/src/claude_code.test.ts`, reject injected argv, shell/path escape, TTY, unpinned extensions, and malformed stream events.
-- [ ] 2.2 GREEN: Create `workers/src/{worker,provider,claude_code,sandbox,events}.ts` with fixed noninteractive invocation, strict settings, caps, redaction, and secret teardown.
-- [ ] 2.3 RED: Test deterministic manifests, expired/cancelled lease, cost/tool/network cap, and evaluator block in `apps/backend/tests/automation_orchestration.rs`.
-- [ ] 2.4 GREEN: Add `apps/backend/src/automation/leases.rs`, context/gates/evaluation wiring, and `lib.rs`/`config.rs` registration.
+- [x] 2.1 Superseded by `autonomous-agents-mvp` Phase 3 malicious/runtime tests.
+- [x] 2.2 Superseded by the colocated Rust worker owned by `autonomous-agents-mvp`.
+- [x] 2.3 Superseded by `autonomous-agents-mvp` lease, manifest, budget and evaluator tests.
+- [x] 2.4 Superseded by `autonomous-agents-mvp` scheduling/lease/runtime implementation.
 
 ## Phase 3: GitHub, QA, and Dashboard
 
-- [ ] 3.1 RED: Test signature/replay/org-repo binding and revocation-before-recheck prevents merge/handoff in `apps/backend/tests/automation_github.rs`.
-- [ ] 3.2 GREEN: Add App-only writes and preserved QA handoff in `apps/backend/src/automation/{github,qa}.rs` and `api/webhooks.rs`.
-- [ ] 3.3 RED/GREEN: Add `apps/admin/src/pages/Automation.test.tsx` then `Automation.tsx`, `types.ts`, `api/client.ts`, `App.tsx`, and `Layout.tsx` for RBAC, evidence, deny, cancel, revoke, and QA branch validation.
+- [x] 3.1 Superseded by `autonomous-agents-mvp` Phase 4 and revocation-race gates.
+- [x] 3.2 Superseded by the GitHub App and QA implementations owned by `autonomous-agents-mvp`.
+- [x] 3.3 Superseded by the permission-gated Autonomous Agents admin surface.
 
 ## Phase 4: End-to-End Verification
 
-- [ ] 4.1 Add `tests/automation/e2e.test.ts` proving receipt provenance, no post-stop writes, QA human validation, and rollback evidence across fake worker/App.
-- [ ] 4.2 Document profile flags, pilot rollout, user-applied migration, and kill-switch verification in `docs/automation-operations.md`.
+- [x] 4.1 Superseded by the `autonomous-agents-mvp` external-contract and pilot gates.
+- [x] 4.2 Superseded by `docs/autonomous-agents-operations.md`; v57 profile guidance remains retained.

@@ -147,9 +147,9 @@ impl RateLimitState {
 ///
 /// Called lazily every 1024 requests.
 fn evict_stale(state: &RateLimitState, now: Instant, max_age: Duration) {
-    state.buckets.retain(|_, bucket| {
-        now.duration_since(bucket.last_seen) < max_age
-    });
+    state
+        .buckets
+        .retain(|_, bucket| now.duration_since(bucket.last_seen) < max_age);
 }
 
 // ── Plan lookup ───────────────────────────────────────────────────────────────
@@ -175,9 +175,7 @@ fn lookup_plan(conn: &Arc<Mutex<Connection>>, org_id: &str) -> String {
 /// and logs the user out — so a burst of dashboard navigation could sign an admin
 /// out. These endpoints are already gated by valid auth and are cheap, so exempting
 /// them removes the logout failure mode without weakening tenant limits on real work.
-const RATE_LIMIT_EXEMPT_PATHS: &[&str] = &[
-    "/v1/admin/auth/me",
-];
+const RATE_LIMIT_EXEMPT_PATHS: &[&str] = &["/v1/admin/auth/me"];
 
 // ── Middleware function ───────────────────────────────────────────────────────
 
@@ -205,9 +203,7 @@ pub async fn rate_limit(
     let user_key = auth.user_id.clone();
 
     // Lazy eviction every 1024 requests.
-    let count = state
-        .request_counter
-        .fetch_add(1, Ordering::Relaxed);
+    let count = state.request_counter.fetch_add(1, Ordering::Relaxed);
     if count % 1024 == 0 && count > 0 {
         evict_stale(&state, now, Duration::from_secs(120));
     }
@@ -281,8 +277,8 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::api::middleware as auth_mw;
-    use crate::db::{connection::connect, migrations};
     use crate::db::queries::bootstrap;
+    use crate::db::{connection::connect, migrations};
     use crate::store::sqlite::SqliteStore;
 
     fn make_db() -> Arc<Mutex<Connection>> {
@@ -347,11 +343,17 @@ mod tests {
         // the assertion.
         let mut throttled = None;
         for _ in 0..500 {
-            let resp = app.clone().oneshot(
-                Request::builder().uri("/v1/test")
-                    .header("Authorization", format!("Bearer {api_key}"))
-                    .body(Body::empty()).unwrap(),
-            ).await.unwrap();
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/test")
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             if resp.status() == StatusCode::TOO_MANY_REQUESTS {
                 throttled = Some(resp);
                 break;
@@ -364,12 +366,22 @@ mod tests {
         assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
 
         // The auth bootstrap path must STILL succeed — no logout.
-        let me = app.clone().oneshot(
-            Request::builder().uri("/v1/admin/auth/me")
-                .header("Authorization", format!("Bearer {api_key}"))
-                .body(Body::empty()).unwrap(),
-        ).await.unwrap();
-        assert_eq!(me.status(), StatusCode::OK, "auth/me bootstrap must be exempt from rate limiting");
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/auth/me")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            me.status(),
+            StatusCode::OK,
+            "auth/me bootstrap must be exempt from rate limiting"
+        );
     }
 
     // ── Unit tests for Bucket logic ──────────────────────────────────────────
@@ -383,10 +395,16 @@ mod tests {
 
         // Consume 99 tokens — still allowed.
         for _ in 0..99 {
-            assert!(bucket.try_consume(now), "each of the first 99 requests must be allowed");
+            assert!(
+                bucket.try_consume(now),
+                "each of the first 99 requests must be allowed"
+            );
         }
         // 100th (last token) — still allowed.
-        assert!(bucket.try_consume(now), "100th request must be allowed on free tier");
+        assert!(
+            bucket.try_consume(now),
+            "100th request must be allowed on free tier"
+        );
     }
 
     /// After exhausting the free-tier bucket the 101st call must be rejected and
@@ -422,7 +440,10 @@ mod tests {
         for _ in 0..100 {
             bucket.try_consume(now);
         }
-        assert!(!bucket.try_consume(now), "bucket must be empty after 100 requests");
+        assert!(
+            !bucket.try_consume(now),
+            "bucket must be empty after 100 requests"
+        );
 
         // Advance the clock by 61 seconds (> 1-minute window).
         let future = now + Duration::from_secs(61);
@@ -694,6 +715,9 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse().ok())
             .expect("X-RateLimit-Remaining must be a valid integer");
-        assert_eq!(remaining, 0, "X-RateLimit-Remaining must be 0 when rate-limited");
+        assert_eq!(
+            remaining, 0,
+            "X-RateLimit-Remaining must be 0 when rate-limited"
+        );
     }
 }

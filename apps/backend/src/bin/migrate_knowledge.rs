@@ -780,6 +780,181 @@ pub fn build_candidates(
     (candidates, summary)
 }
 
+/// The fate of one item, collected out of order by the pool and reassembled by
+/// index in [`assemble_parallel`].
+enum ItemOutcome {
+    Classified(CandidatePayload),
+    Fallback(CandidatePayload),
+    Failed,
+}
+
+/// Reassembles the workers' out-of-order results into the same ordered output
+/// the serial path produces, and tallies the summary from it.
+///
+/// Split out from the threading on purpose: the part most likely to hide a bug —
+/// ordering, the hole a budget abort leaves where an item never ran, counting —
+/// is a pure function with a test, not something only a live `claude` can reach.
+fn assemble_parallel(
+    mut results: Vec<(usize, ItemOutcome)>,
+    scanned: usize,
+    aborted_on_budget: bool,
+    tokens_spent: i64,
+) -> (Vec<CandidatePayload>, RunSummary) {
+    results.sort_by_key(|(i, _)| *i);
+    let mut summary = RunSummary {
+        scanned,
+        aborted_on_budget,
+        tokens_spent,
+        ..Default::default()
+    };
+    let mut candidates = Vec::new();
+    for (_, outcome) in results {
+        match outcome {
+            ItemOutcome::Classified(c) => {
+                summary.classified += 1;
+                candidates.push(c);
+            }
+            ItemOutcome::Fallback(c) => {
+                summary.fallbacks += 1;
+                candidates.push(c);
+            }
+            ItemOutcome::Failed => summary.failed += 1,
+        }
+    }
+    (candidates, summary)
+}
+
+/// The per-item classifier, run across a small pool of workers.
+///
+/// # Why this exists beside `build_candidates`
+///
+/// One `claude -p` per unit is ~32 s of mostly waiting: the process blocks on
+/// the model. A few of those at once cut the wall clock by roughly the pool
+/// size without changing what any single call does — every invariant of the
+/// serial path is preserved here deliberately, including that usage is recorded
+/// whether or not the answer turned out usable.
+///
+/// It does NOT reduce spend: each item still costs its full call, so the budget
+/// behaves as in the serial path (`--bulk` is the mode that lowers cost). It
+/// does add *bounded* overshoot — with N workers, up to N-1 calls can already
+/// be in flight when the ceiling trips, so the budget is honoured to within one
+/// round of concurrency, not to the token.
+///
+/// Prompts and drafts are built up front, single-threaded, so the workers never
+/// touch the connector. That is what lets `Connector` stay non-`Sync` — the DB
+/// connector wraps a reader that is not `Sync`, and requiring it here would stop
+/// that connector compiling.
+fn build_candidates_parallel(
+    connector: &dyn Connector,
+    items: &[SourceItem],
+    classifier: &ClaudeCli,
+    budget: &mut Budget,
+    sink: &EventSink,
+    workers: usize,
+) -> (Vec<CandidatePayload>, RunSummary) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let total = items.len();
+    // Built before the pool starts; the workers only ever read these.
+    let prompts: Vec<String> = items.iter().map(|i| connector.classify_prompt(i)).collect();
+    let drafts: Vec<Option<CandidatePayload>> =
+        items.iter().map(|i| connector.fallback(i)).collect();
+
+    let budget_m = Mutex::new(std::mem::take(budget));
+    let cursor = AtomicUsize::new(0);
+    let aborted = AtomicBool::new(false);
+    let results: Mutex<Vec<(usize, ItemOutcome)>> = Mutex::new(Vec::with_capacity(total));
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers.max(1) {
+            scope.spawn(|| loop {
+                let i = cursor.fetch_add(1, Ordering::Relaxed);
+                if i >= total {
+                    break;
+                }
+                if aborted.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The budget gate, under the lock. Once the ceiling is reached
+                // no worker takes new work; whatever is already running finishes
+                // and is counted — that is the bounded overshoot above.
+                if budget_m.lock().unwrap().would_exceed() {
+                    aborted.store(true, Ordering::Relaxed);
+                    break;
+                }
+
+                let item = &items[i];
+                let index = i + 1;
+                let prompt = &prompts[i];
+                sink.emit(&RunEvent::Classifying {
+                    index,
+                    total,
+                    origin: item.display_origin.clone(),
+                });
+
+                let started = std::time::Instant::now();
+                let (usage, outcome, answer) = match classifier.classify(prompt, item) {
+                    Ok(out) => (out.usage, out.candidate, out.raw_response),
+                    Err(e) => (None, Err(format!("{e:#}")), String::new()),
+                };
+                // This call's own tokens, taken from its own usage rather than a
+                // before/after diff of the shared budget: under concurrency that
+                // diff would fold other workers' spend into this item's number.
+                let spent = usage.map(|u| u.input + u.output).unwrap_or(0);
+                budget_m.lock().unwrap().record(usage);
+
+                if sink.is_enabled() {
+                    sink.emit(&RunEvent::Agent {
+                        index,
+                        total,
+                        origin: item.display_origin.clone(),
+                        prompt: clip(prompt, AGENT_CLIP),
+                        response: clip(&answer, AGENT_CLIP),
+                        ok: outcome.is_ok(),
+                        error: outcome.as_ref().err().cloned(),
+                        tokens_spent: spent,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                }
+
+                let resolved = match outcome {
+                    Ok(candidate) => {
+                        emit_classified(sink, index, total, item, &candidate, "classified", spent);
+                        ItemOutcome::Classified(candidate)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "classifier failed for {}: {e}; falling back",
+                            item.display_origin
+                        );
+                        match drafts[i].clone() {
+                            Some(c) => {
+                                emit_classified(sink, index, total, item, &c, "fallback", spent);
+                                ItemOutcome::Fallback(c)
+                            }
+                            None => {
+                                emit_failed(sink, index, total, item, spent);
+                                ItemOutcome::Failed
+                            }
+                        }
+                    }
+                };
+                results.lock().unwrap().push((i, resolved));
+            });
+        }
+    });
+
+    *budget = budget_m.into_inner().unwrap();
+    let results = results.into_inner().unwrap();
+    assemble_parallel(
+        results,
+        total,
+        aborted.load(Ordering::Relaxed),
+        budget.spent,
+    )
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
@@ -804,6 +979,19 @@ struct Args {
     /// Items per batch in `--bulk`. Capped by a byte budget as well.
     #[arg(long, default_value_t = BULK_MAX_ITEMS)]
     batch_size: usize,
+
+    /// Classify this many units at once, each in its own `claude` call.
+    ///
+    /// The per-item path is otherwise one call at a time, and each call is ~30 s
+    /// of mostly waiting on the model — so a 249-unit source spends over two
+    /// hours almost entirely idle. A small pool cuts the wall clock by roughly
+    /// this factor. Default 1 (serial, unchanged).
+    ///
+    /// This does NOT lower token spend: every unit still costs its own call —
+    /// `--bulk` is the mode for that, and this flag is ignored under it. Values
+    /// much above ~6 risk the provider rate-limiting the concurrent calls.
+    #[arg(long, default_value_t = 1)]
+    parallel: usize,
 
     /// Emit NDJSON progress events on stdout instead of prose.
     ///
@@ -1291,6 +1479,16 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
                 &mut budget,
                 sink,
                 args.batch_size.max(1),
+            ),
+            // Parallel is the per-item path with a worker pool; it remains
+            // scoped to the resolved client/project execution group.
+            (Some(cli), false) if args.parallel > 1 => build_candidates_parallel(
+                connector.as_ref(),
+                &group_items,
+                cli,
+                &mut budget,
+                sink,
+                args.parallel,
             ),
             _ => build_candidates(
                 connector.as_ref(),
@@ -1924,6 +2122,52 @@ mod tests {
         assert_eq!(summary.scanned, 3);
     }
 
+    /// The pool delivers items in whatever order they finish, and a budget abort
+    /// leaves a hole where an item never ran. Reassembly must restore item order,
+    /// drop nothing that produced a candidate, and count each fate once.
+    #[test]
+    fn parallel_results_reassemble_in_index_order_with_holes() {
+        let cand = |id: &str| CandidatePayload {
+            source_identity: id.into(),
+            destination_kind: "memory".into(),
+            content: "c".into(),
+            destination_hint: serde_json::json!({}),
+            source_excerpt: None,
+            confidence: None,
+            provenance_kind: None,
+        };
+        // Arrive out of order; index 1 is missing — its worker broke on the
+        // budget before running it.
+        let results = vec![
+            (2, ItemOutcome::Fallback(cand("c2"))),
+            (0, ItemOutcome::Classified(cand("c0"))),
+            (3, ItemOutcome::Failed),
+            (4, ItemOutcome::Classified(cand("c4"))),
+        ];
+        let (candidates, summary) = assemble_parallel(results, 5, true, 1234);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.source_identity.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c0", "c2", "c4"],
+            "output follows item index, not completion order; failed/skipped add nothing"
+        );
+        assert_eq!(summary.classified, 2);
+        assert_eq!(summary.fallbacks, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(
+            summary.scanned, 5,
+            "scanned counts the whole source, holes included"
+        );
+        assert!(
+            summary.aborted_on_budget,
+            "the abort must survive reassembly"
+        );
+        assert_eq!(summary.tokens_spent, 1234);
+    }
+
     #[test]
     fn no_budget_means_no_ceiling() {
         let mut b = Budget::default();
@@ -1941,6 +2185,7 @@ mod tests {
             json: false,
             bulk: false,
             batch_size: BULK_MAX_ITEMS,
+            parallel: 1,
             source: source.to_string(),
             path: ".".to_string(),
             config: None,

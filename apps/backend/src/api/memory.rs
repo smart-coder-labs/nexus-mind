@@ -7,10 +7,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    db::queries as db_queries,
-    models::types::{ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, MemoryPreview, PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest, UserRole},
-    store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
     api::helpers::{require_permission, AppJson, JsonBody},
+    db::queries as db_queries,
+    models::types::{
+        ApiError, AuthContext, Memory, MemoryGraphResponse, MemoryPage, MemoryPreview,
+        PolicyCheckRequest, StoreMemoryRequest, UpdateMemoryRequest, UserRole,
+    },
+    store::{sqlite::SqliteStore, MemoryFilters, MemoryStore, SearchMode},
 };
 
 const EXPORT_HARD_CAP: i64 = 10_000;
@@ -60,7 +63,21 @@ fn memory_rows_to_csv(memories: &[Memory]) -> anyhow::Result<Vec<u8>> {
         .quote_style(csv::QuoteStyle::Necessary)
         .from_writer(Vec::new());
 
-    wtr.write_record(["id", "title", "type", "scope", "project", "tool", "content", "tags", "topic_key", "session_id", "revision_count", "pinned", "created_at"])?;
+    wtr.write_record([
+        "id",
+        "title",
+        "type",
+        "scope",
+        "project",
+        "tool",
+        "content",
+        "tags",
+        "topic_key",
+        "session_id",
+        "revision_count",
+        "pinned",
+        "created_at",
+    ])?;
 
     for m in memories {
         let title = m.title.as_deref().unwrap_or("");
@@ -98,13 +115,15 @@ pub async fn export(
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
     {
         let db = store.conn();
-        let conn = db.lock().map_err(|_| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database lock error".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        ))?;
+        let conn = db.lock().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database lock error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+        })?;
         require_permission(&conn, &auth, None, "memory:read")?;
     }
 
@@ -139,8 +158,8 @@ pub async fn export(
             )
         }
         ExportFormat::Json => {
-            let body = serde_json::to_vec_pretty(&memories)
-                .map_err(|e| store_err(anyhow::anyhow!(e)))?;
+            let body =
+                serde_json::to_vec_pretty(&memories).map_err(|e| store_err(anyhow::anyhow!(e)))?;
             (
                 "application/json; charset=utf-8",
                 format!("memories-{today}.json"),
@@ -222,7 +241,8 @@ fn store_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
-                error: msg.replacen("invalid_session_id:", "session_id '", 1) + "' not found for this org",
+                error: msg.replacen("invalid_session_id:", "session_id '", 1)
+                    + "' not found for this org",
                 code: "invalid_session_id".to_string(),
             }),
         );
@@ -275,9 +295,7 @@ fn validate_and_normalize_tags(
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(ApiError {
-                    error: format!(
-                        "Tag exceeds maximum length of {MAX_TAG_LENGTH} characters"
-                    ),
+                    error: format!("Tag exceeds maximum length of {MAX_TAG_LENGTH} characters"),
                     code: "validation_error".to_string(),
                 }),
             ));
@@ -297,7 +315,10 @@ pub async fn store(
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(ApiError {
-                error: format!("content exceeds maximum allowed size of {} bytes", MAX_CONTENT_BYTES),
+                error: format!(
+                    "content exceeds maximum allowed size of {} bytes",
+                    MAX_CONTENT_BYTES
+                ),
                 code: "content_too_large".to_string(),
             }),
         ));
@@ -306,23 +327,26 @@ pub async fn store(
 
     let db = store.conn();
     {
-        let conn = db.lock().map_err(|_| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database lock error".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        ))?;
+        let conn = db.lock().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database lock error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+        })?;
         let project = input.project.as_deref().unwrap_or("default");
         require_permission(&conn, &auth, Some(project), "memory:write")?;
 
         // Enforce pii_redact policies against memory content before storing.
         // Scoped to org-wide + this memory's project (project ADDS to org-wide).
-        let pii_policies: Vec<_> = db_queries::list_enabled_policies(&conn, &auth.org_id, input.project.as_deref())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| p.rule_type == "pii_redact")
-            .collect();
+        let pii_policies: Vec<_> =
+            db_queries::list_enabled_policies(&conn, &auth.org_id, input.project.as_deref())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.rule_type == "pii_redact")
+                .collect();
 
         if !pii_policies.is_empty() {
             let check_req = PolicyCheckRequest {
@@ -334,7 +358,11 @@ pub async fn store(
             };
             let result = crate::policy::evaluate(&pii_policies, &check_req, 0, 0);
             if !result.allowed {
-                let reasons: Vec<&str> = result.violations.iter().map(|v| v.reason.as_str()).collect();
+                let reasons: Vec<&str> = result
+                    .violations
+                    .iter()
+                    .map(|v| v.reason.as_str())
+                    .collect();
                 return Err((
                     StatusCode::UNPROCESSABLE_ENTITY,
                     Json(ApiError {
@@ -347,7 +375,9 @@ pub async fn store(
     }
 
     let is_upsert = input.topic_key.is_some();
-    let memory = store.store(&auth.org_id, &auth.user_id, &input).map_err(store_err)?;
+    let memory = store
+        .store(&auth.org_id, &auth.user_id, &input)
+        .map_err(store_err)?;
 
     let status = if is_upsert && memory.revision_count > 1 {
         StatusCode::OK
@@ -365,18 +395,25 @@ pub async fn search(
 ) -> Result<Json<MemoryPageResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
-        let conn = db.lock().map_err(|_| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database lock error".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        ))?;
+        let conn = db.lock().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database lock error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+        })?;
         require_permission(&conn, &auth, None, "memory:read")?;
     }
 
     let limit = input.limit.unwrap_or(20);
-    let mode = input.mode.as_deref().unwrap_or("hybrid").parse::<SearchMode>().unwrap_or(SearchMode::Hybrid);
+    let mode = input
+        .mode
+        .as_deref()
+        .unwrap_or("hybrid")
+        .parse::<SearchMode>()
+        .unwrap_or(SearchMode::Hybrid);
     // `store.search` silently downgrades semantic/hybrid to keyword search when no
     // embed service is configured (see SqliteStore::will_degrade) — surface that
     // here so callers know results are degraded rather than assuming semantic ranking.
@@ -386,7 +423,14 @@ pub async fn search(
         None
     };
     let mut memories = store
-        .search(&auth.org_id, &auth.user_id, &input.query, limit, mode, viewer_scope(&auth))
+        .search(
+            &auth.org_id,
+            &auth.user_id,
+            &input.query,
+            limit,
+            mode,
+            viewer_scope(&auth),
+        )
         .map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.
     if !auth.role.is_privileged() {
@@ -446,7 +490,13 @@ pub async fn search(
         })));
     }
 
-    Ok(Json(MemoryPageResponse::Full(MemoryPage { memories, total, limit, offset: 0, degraded })))
+    Ok(Json(MemoryPageResponse::Full(MemoryPage {
+        memories,
+        total,
+        limit,
+        offset: 0,
+        degraded,
+    })))
 }
 
 pub async fn list(
@@ -456,13 +506,15 @@ pub async fn list(
 ) -> Result<Json<MemoryPageResponse>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
-        let conn = db.lock().map_err(|_| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database lock error".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        ))?;
+        let conn = db.lock().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "Database lock error".to_string(),
+                    code: "internal_error".to_string(),
+                }),
+            )
+        })?;
         require_permission(&conn, &auth, params.project.as_deref(), "memory:read")?;
 
         // Admins bypass require_permission's project-membership check (is_privileged()),
@@ -471,15 +523,21 @@ pub async fn list(
         let is_super_user = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
         if !is_super_user && auth.role.is_admin() {
             if let Some(ref project_name) = params.project {
-                let project_id = db_queries::get_project_id_by_name(&conn, &auth.org_id, project_name)
-                    .map_err(store_err)?;
+                let project_id =
+                    db_queries::get_project_id_by_name(&conn, &auth.org_id, project_name)
+                        .map_err(store_err)?;
                 match project_id {
                     None => {
-                        return Err(store_err(anyhow::anyhow!("project_not_found:{project_name}")));
+                        return Err(store_err(anyhow::anyhow!(
+                            "project_not_found:{project_name}"
+                        )));
                     }
                     Some(pid) => {
                         let is_member = db_queries::user_is_project_member(
-                            &conn, &auth.org_id, &pid, &auth.user_id,
+                            &conn,
+                            &auth.org_id,
+                            &pid,
+                            &auth.user_id,
                         )
                         .map_err(store_err)?;
                         if !is_member {
@@ -563,10 +621,12 @@ pub async fn get_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<Memory>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
-    let memory = db_queries::get_memory_by_id_for_org(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let memory =
+        db_queries::get_memory_by_id_for_org(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match memory {
         None => Err((
@@ -595,23 +655,33 @@ pub async fn delete(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
     {
-        let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+        let conn = db
+            .lock()
+            .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
         // Fetch owner and project to enforce project overrides and ownership
-        let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
+        let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
+            .map_err(store_err)?;
 
         match details {
-            None => return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "Memory not found".to_string(),
-                    code: "not_found".to_string(),
-                }),
-            )),
+            None => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "Memory not found".to_string(),
+                        code: "not_found".to_string(),
+                    }),
+                ))
+            }
             Some((ref owner_id, ref project_name)) => {
                 require_permission(&conn, &auth, Some(project_name), "memory:delete")?;
 
                 if *owner_id != auth.user_id && !auth.role.is_privileged() {
-                    let is_project_admin = match db_queries::get_project_member_role(&conn, &auth.org_id, project_name, &auth.user_id) {
+                    let is_project_admin = match db_queries::get_project_member_role(
+                        &conn,
+                        &auth.org_id,
+                        project_name,
+                        &auth.user_id,
+                    ) {
                         Ok(Some(role_str)) => role_str == "admin",
                         _ => false,
                     };
@@ -679,15 +749,18 @@ pub async fn bulk_delete(
     }
 
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
     // Require memory:delete on the default project as the gate.
     // Per-item ownership is enforced inside bulk_delete_memories.
     require_permission(&conn, &auth, None, "memory:delete")?;
 
     let is_admin = auth.role.is_privileged();
-    let deleted = db_queries::bulk_delete_memories(&conn, &auth.org_id, &input.ids, is_admin, &auth.user_id)
-        .map_err(|e| store_err(anyhow::anyhow!(e)))?;
+    let deleted =
+        db_queries::bulk_delete_memories(&conn, &auth.org_id, &input.ids, is_admin, &auth.user_id)
+            .map_err(|e| store_err(anyhow::anyhow!(e)))?;
 
     Ok(Json(BulkDeleteResponse { deleted }))
 }
@@ -713,7 +786,10 @@ pub async fn update(
             return Err((
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(ApiError {
-                    error: format!("content exceeds maximum allowed size of {} bytes", MAX_CONTENT_BYTES),
+                    error: format!(
+                        "content exceeds maximum allowed size of {} bytes",
+                        MAX_CONTENT_BYTES
+                    ),
                     code: "content_too_large".to_string(),
                 }),
             ));
@@ -732,11 +808,13 @@ pub async fn update(
     }
 
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
     // Fetch the memory to check org ownership and project permissions
-    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match details {
         None => Err((
@@ -814,8 +892,8 @@ pub async fn promote(
     };
     require_permission(&conn, &auth, Some(project_name), "memory:write")?;
 
-    let promoted = db_queries::promote_memory(&conn, &auth.org_id, &id, &auth.user_id).map_err(
-        |e| {
+    let promoted =
+        db_queries::promote_memory(&conn, &auth.org_id, &id, &auth.user_id).map_err(|e| {
             // A wrong source scope is the caller's mistake, not a server fault.
             if e.to_string().contains("can be promoted") {
                 (
@@ -828,8 +906,7 @@ pub async fn promote(
             } else {
                 store_err(e)
             }
-        },
-    )?;
+        })?;
 
     match promoted {
         Some(memory) => {
@@ -860,27 +937,30 @@ pub async fn archive(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
     // Verify ownership / permission (same pattern as delete)
-    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match details {
-        None => return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Memory not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Memory not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ))
+        }
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
         }
     }
 
-    let updated = db_queries::archive_memory(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let updated = db_queries::archive_memory(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     if updated {
         Ok(StatusCode::NO_CONTENT)
@@ -901,27 +981,30 @@ pub async fn restore(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
     // Verify ownership / permission
-    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match details {
-        None => return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Memory not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Memory not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ))
+        }
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
         }
     }
 
-    let updated = db_queries::restore_memory(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let updated = db_queries::restore_memory(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     if updated {
         Ok(StatusCode::NO_CONTENT)
@@ -942,26 +1025,29 @@ pub async fn pin(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
-    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match details {
-        None => return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Memory not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Memory not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ))
+        }
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
         }
     }
 
-    let updated = db_queries::pin_memory(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let updated = db_queries::pin_memory(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     if updated {
         Ok(StatusCode::NO_CONTENT)
@@ -982,26 +1068,29 @@ pub async fn unpin(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| store_err(anyhow::anyhow!("db lock poisoned")))?;
 
-    let details = db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let details =
+        db_queries::get_memory_owner_and_project(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     match details {
-        None => return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "Memory not found".to_string(),
-                code: "not_found".to_string(),
-            }),
-        )),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Memory not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            ))
+        }
         Some((_, ref project_name)) => {
             require_permission(&conn, &auth, Some(project_name), "memory:write")?;
         }
     }
 
-    let updated = db_queries::unpin_memory(&conn, &auth.org_id, &id)
-        .map_err(store_err)?;
+    let updated = db_queries::unpin_memory(&conn, &auth.org_id, &id).map_err(store_err)?;
 
     if updated {
         Ok(StatusCode::NO_CONTENT)
@@ -1067,8 +1156,18 @@ pub async fn get_graph(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<GetMemoryGraphQuery>,
 ) -> Result<Json<MemoryGraphResponse>, (StatusCode, Json<ApiError>)> {
-    let project_id = params.project_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let project_name = params.project.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let project_id = params
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let project_name = params
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     if project_id.is_none() && project_name.is_none() {
         return Err((
@@ -1081,21 +1180,23 @@ pub async fn get_graph(
     }
 
     let db = store.conn();
-    let conn = db.lock().map_err(|_| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ApiError {
-            error: "Database lock error".to_string(),
-            code: "internal_error".to_string(),
-        }),
-    ))?;
+    let conn = db.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "Database lock error".to_string(),
+                code: "internal_error".to_string(),
+            }),
+        )
+    })?;
 
     // Family-scoped path: resolve the root + descendants and merge per-project
     // graphs into one dedup'd response. The `projects` array describes the
     // family so the frontend can paint a legend and color memory nodes by
     // their owning project.
     if let Some(root) = project_id.as_deref() {
-        let family = db_queries::resolve_project_family(&conn, &auth.org_id, root)
-            .map_err(store_err)?;
+        let family =
+            db_queries::resolve_project_family(&conn, &auth.org_id, root).map_err(store_err)?;
         if family.is_empty() {
             return Err((
                 StatusCode::NOT_FOUND,
@@ -1134,9 +1235,9 @@ pub async fn get_graph(
         let project_infos: Vec<crate::models::types::ProjectGraphInfo> = family
             .iter()
             .map(|p| crate::models::types::ProjectGraphInfo {
-                id:        p.id.clone(),
-                name:      p.name.clone(),
-                color:     db_queries::color_for_project_id(&p.id),
+                id: p.id.clone(),
+                name: p.name.clone(),
+                color: db_queries::color_for_project_id(&p.id),
                 parent_id: p.parent_id.clone(),
             })
             .collect();
@@ -1210,8 +1311,8 @@ fn build_single_project_info(
     if let Some(p) = q::get_project_by_id(conn, org_id, project).ok().flatten() {
         let color = q::color_for_project_id(&p.id);
         return vec![crate::models::types::ProjectGraphInfo {
-            id:        p.id,
-            name:      p.name,
+            id: p.id,
+            name: p.name,
             color,
             parent_id: p.parent_id,
         }];
@@ -1228,7 +1329,7 @@ fn build_single_project_info(
         let color = q::color_for_project_id(&id);
         return vec![crate::models::types::ProjectGraphInfo {
             id,
-            name:      project.to_string(),
+            name: project.to_string(),
             color,
             parent_id,
         }];
@@ -1253,8 +1354,8 @@ mod tests {
 
     use crate::{
         api::middleware as auth_mw,
-        db::{connection::connect, migrations},
         db::queries as q,
+        db::{connection::connect, migrations},
         store::sqlite::SqliteStore,
     };
 
@@ -1269,7 +1370,12 @@ mod tests {
             .route("/v1/memory/store", post(super::store))
             .route("/v1/memory/search", post(search))
             .route("/v1/memory/bulk", delete(super::bulk_delete))
-            .route("/v1/memory/:id", get(super::get_by_id).delete(super::delete).patch(super::update))
+            .route(
+                "/v1/memory/:id",
+                get(super::get_by_id)
+                    .delete(super::delete)
+                    .patch(super::update),
+            )
             .route("/v1/memory/:id/pin", post(super::pin).delete(super::unpin))
             .route("/v1/memory/:id/unpin", post(super::unpin))
             .route("/v1/memory", get(list))
@@ -1283,7 +1389,8 @@ mod tests {
         let raw_key = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (_, _, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             key
         };
         (store, raw_key)
@@ -1295,7 +1402,8 @@ mod tests {
         let (admin_key, org_id) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, _, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (org, _, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             (key, org.id)
         };
         (store, admin_key, org_id)
@@ -1312,14 +1420,16 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
             rusqlite::params![user_id, org_id, format!("{role}@test.com"), role],
-        ).unwrap();
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         raw_key
     }
 
@@ -1333,20 +1443,33 @@ mod tests {
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
-            rusqlite::params![user_id, org_id, format!("{}-{role}@test.com", &user_id[..8]), role],
-        ).unwrap();
+            rusqlite::params![
+                user_id,
+                org_id,
+                format!("{}-{role}@test.com", &user_id[..8]),
+                role
+            ],
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         (raw_key, user_id)
     }
 
     /// Adds `user_id` to the project named `project_name` (auto-creating the project row).
-    fn add_member_to_project(store: &SqliteStore, org_id: &str, project_name: &str, user_id: &str, role: &str) {
+    fn add_member_to_project(
+        store: &SqliteStore,
+        org_id: &str,
+        project_name: &str,
+        user_id: &str,
+        role: &str,
+    ) {
         use uuid::Uuid;
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -1355,11 +1478,17 @@ mod tests {
             "INSERT OR IGNORE INTO project_members (id, project_id, user_id, role, created_at)
              VALUES (?1, ?2, ?3, ?4, datetime('now'))",
             rusqlite::params![Uuid::new_v4().to_string(), project_id, user_id, role],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     /// Stores a memory in `project` via `key`, returns its id.
-    async fn store_in_project(store: &SqliteStore, key: &str, project: &str, content: &str) -> String {
+    async fn store_in_project(
+        store: &SqliteStore,
+        key: &str,
+        project: &str,
+        content: &str,
+    ) -> String {
         let body = serde_json::json!({ "tool": "claude", "project": project, "content": content });
         let resp = app(store.clone())
             .oneshot(
@@ -1374,7 +1503,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         mem["id"].as_str().unwrap().to_string()
     }
@@ -1403,9 +1534,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        page["memories"].as_array().unwrap().iter()
+        page["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|m| m["id"].as_str().unwrap().to_string())
             .collect()
     }
@@ -1425,9 +1561,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        page["memories"].as_array().unwrap().iter()
+        page["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|m| m["content"].as_str().unwrap_or("").to_string())
             .collect()
     }
@@ -1439,7 +1580,8 @@ mod tests {
     async fn store_to_nonexistent_project_is_rejected_and_creates_nothing() {
         let (store, admin_key, org_id) = setup_org();
 
-        let body = serde_json::json!({ "tool": "claude", "project": "ghost-project", "content": "x" });
+        let body =
+            serde_json::json!({ "tool": "claude", "project": "ghost-project", "content": "x" });
         let resp = app(store.clone())
             .oneshot(
                 Request::builder()
@@ -1452,8 +1594,14 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "store to a nonexistent project must be 404");
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "store to a nonexistent project must be 404"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"], "project_not_found");
 
@@ -1461,15 +1609,21 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let proj_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM projects WHERE org_id = ?1 AND name = 'ghost-project'",
-                rusqlite::params![org_id], |r| r.get(0),
-            ).unwrap();
+            let proj_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM projects WHERE org_id = ?1 AND name = 'ghost-project'",
+                    rusqlite::params![org_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(proj_count, 0, "no project must be created");
-            let mem_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND project = 'ghost-project'",
-                rusqlite::params![org_id], |r| r.get(0),
-            ).unwrap();
+            let mem_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE org_id = ?1 AND project = 'ghost-project'",
+                    rusqlite::params![org_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(mem_count, 0, "no memory must be stored");
         }
 
@@ -1487,7 +1641,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(ok.status(), StatusCode::CREATED, "no-project store must still succeed");
+        assert_eq!(
+            ok.status(),
+            StatusCode::CREATED,
+            "no-project store must still succeed"
+        );
     }
 
     /// Core proof: a non-admin member sees only memories of projects they belong to,
@@ -1507,12 +1665,19 @@ mod tests {
             q::create_project(&conn, &org_id, "proj-secret", None, None).unwrap();
             q::create_project(&conn, &org_id, "proj-shared", None, None).unwrap();
         }
-        let secret_id = store_in_project(&store, &admin_key, "proj-secret", "SECRETALPHA nuclear codes").await;
+        let secret_id = store_in_project(
+            &store,
+            &admin_key,
+            "proj-secret",
+            "SECRETALPHA nuclear codes",
+        )
+        .await;
 
         let (member_key, member_id) = create_test_user_with_id(&store, &org_id, "member");
 
         // Member's own project + explicit membership.
-        let shared_id = store_in_project(&store, &admin_key, "proj-shared", "SHAREDALPHA team notes").await;
+        let shared_id =
+            store_in_project(&store, &admin_key, "proj-shared", "SHAREDALPHA team notes").await;
         add_member_to_project(&store, &org_id, "proj-shared", &member_id, "member");
 
         // A project-less (org-shared) memory, inserted directly with project_id = NULL.
@@ -1528,15 +1693,31 @@ mod tests {
 
         // LIST (no project param): member sees shared + org-less, NOT secret.
         let ids = list_ids(&store, &member_key).await;
-        assert!(ids.contains(&shared_id), "member must see their project's memory");
-        assert!(ids.contains(&"orgless-1".to_string()), "member must see project-less memory");
-        assert!(!ids.contains(&secret_id), "member must NOT see a non-member project's memory via list");
+        assert!(
+            ids.contains(&shared_id),
+            "member must see their project's memory"
+        );
+        assert!(
+            ids.contains(&"orgless-1".to_string()),
+            "member must see project-less memory"
+        );
+        assert!(
+            !ids.contains(&secret_id),
+            "member must NOT see a non-member project's memory via list"
+        );
 
         // SEARCH: same visibility rule applies.
         let secret_hits = search_contents(&store, &member_key, "SECRETALPHA").await;
-        assert!(secret_hits.is_empty(), "member must NOT find a non-member project's memory via search");
+        assert!(
+            secret_hits.is_empty(),
+            "member must NOT find a non-member project's memory via search"
+        );
         let shared_hits = search_contents(&store, &member_key, "SHAREDALPHA").await;
-        assert_eq!(shared_hits.len(), 1, "member must find their own project's memory via search");
+        assert_eq!(
+            shared_hits.len(),
+            1,
+            "member must find their own project's memory via search"
+        );
 
         // EXPORT: the export body must not contain the secret content.
         let resp = app_rw(store.clone())
@@ -1550,10 +1731,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body = std::str::from_utf8(&bytes).unwrap();
-        assert!(!body.contains("SECRETALPHA"), "export must NOT leak a non-member project's memory");
-        assert!(body.contains("SHAREDALPHA"), "export must include the member's own project memory");
+        assert!(
+            !body.contains("SECRETALPHA"),
+            "export must NOT leak a non-member project's memory"
+        );
+        assert!(
+            body.contains("SHAREDALPHA"),
+            "export must include the member's own project memory"
+        );
 
         // ADMIN follows the same project-membership rules as other roles.
         // Only super_user bypasses all project filters.
@@ -1579,7 +1768,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         mem["id"].as_str().unwrap().to_string()
     }
@@ -1733,7 +1924,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store_resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(store_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(store_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let mem_id = mem["id"].as_str().unwrap().to_string();
 
@@ -1794,7 +1987,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(store_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(store_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let mem_id = mem["id"].as_str().unwrap().to_string();
 
@@ -1853,11 +2048,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(mem["id"].as_str().unwrap(), mem_id);
         // project_id field must be present (may be null but the key must exist)
-        assert!(mem.get("project_id").is_some(), "response must include project_id field");
+        assert!(
+            mem.get("project_id").is_some(),
+            "response must include project_id field"
+        );
     }
 
     #[tokio::test]
@@ -1885,7 +2085,10 @@ mod tests {
         Router::new()
             .route("/v1/memory/store", post(super::store))
             .route("/v1/memory/export", get(super::export))
-            .route("/v1/memory/:id", get(super::get_by_id).delete(super::delete))
+            .route(
+                "/v1/memory/:id",
+                get(super::get_by_id).delete(super::delete),
+            )
             .route("/v1/memory", get(list))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -1908,7 +2111,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/csv"), "expected text/csv, got: {ct}");
     }
 
@@ -1927,7 +2135,9 @@ mod tests {
             .await
             .unwrap();
 
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body = std::str::from_utf8(&bytes).unwrap();
         let first_line = body.lines().next().unwrap_or("");
         assert_eq!(
@@ -1953,8 +2163,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-        assert!(ct.contains("application/json"), "expected application/json, got: {ct}");
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected application/json, got: {ct}"
+        );
     }
 
     #[tokio::test]
@@ -1989,14 +2207,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = std::str::from_utf8(&bytes).unwrap();
         // The data row content cell must be truncated (500 chars + "…" = 501+ char cell, not 600)
         // The CSV has: id,title,type,scope,project,tool,content,created_at
         // content cell must end with "…" (the ellipsis character)
-        assert!(body_str.contains('…'), "truncated content must end with … character");
+        assert!(
+            body_str.contains('…'),
+            "truncated content must end with … character"
+        );
         // Full 600-char content must NOT appear verbatim
-        assert!(!body_str.contains(&"a".repeat(501)), "content must be truncated at 500 chars");
+        assert!(
+            !body_str.contains(&"a".repeat(501)),
+            "content must be truncated at 500 chars"
+        );
     }
 
     #[tokio::test]
@@ -2064,7 +2290,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(result["deleted"], 2);
 
@@ -2101,7 +2329,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(result["deleted"], 0);
     }
@@ -2170,7 +2400,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(mem["content"].as_str().unwrap(), "updated content");
         assert_eq!(mem["id"].as_str().unwrap(), mem_id);
@@ -2196,9 +2428,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(mem["revision_count"].as_i64().unwrap(), 2, "first PATCH must set revision_count to 2");
+        assert_eq!(
+            mem["revision_count"].as_i64().unwrap(),
+            2,
+            "first PATCH must set revision_count to 2"
+        );
 
         // Second PATCH: revision_count must go from 2 → 3
         let body = serde_json::json!({ "content": "v3" });
@@ -2215,9 +2453,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(mem["revision_count"].as_i64().unwrap(), 3, "second PATCH must set revision_count to 3");
+        assert_eq!(
+            mem["revision_count"].as_i64().unwrap(),
+            3,
+            "second PATCH must set revision_count to 3"
+        );
     }
 
     #[tokio::test]
@@ -2270,7 +2514,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let mem_id = mem["id"].as_str().unwrap().to_string();
 
@@ -2290,10 +2536,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(updated["title"].as_str().unwrap(), "new title", "title must be updated");
-        assert_eq!(updated["content"].as_str().unwrap(), "original content", "content must be unchanged");
+        assert_eq!(
+            updated["title"].as_str().unwrap(),
+            "new title",
+            "title must be updated"
+        );
+        assert_eq!(
+            updated["content"].as_str().unwrap(),
+            "original content",
+            "content must be unchanged"
+        );
     }
 
     #[tokio::test]
@@ -2316,7 +2572,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(updated["content"].as_str().unwrap(), "new content");
         assert_eq!(updated["title"].as_str().unwrap(), "new title");
@@ -2342,11 +2600,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-        assert!(ct.contains("application/json"), "error must be JSON, got: {ct}");
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "error must be JSON, got: {ct}"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(err["error"].as_str().is_some(), "error field must be present");
+        assert!(
+            err["error"].as_str().is_some(),
+            "error field must be present"
+        );
     }
 
     #[tokio::test]
@@ -2371,8 +2642,16 @@ mod tests {
 
         // Must succeed (200) with JSON body, NOT 422 text/plain
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-        assert!(ct.contains("application/json"), "response must be JSON, got: {ct}");
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "response must be JSON, got: {ct}"
+        );
     }
 
     // ── POST /v1/memory/:id/pin + /unpin tests ────────────────────────────────
@@ -2409,7 +2688,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(mem["pinned"].as_bool().unwrap());
     }
@@ -2457,7 +2738,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(!mem["pinned"].as_bool().unwrap());
     }
@@ -2562,7 +2845,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(!mem["pinned"].as_bool().unwrap());
     }
@@ -2585,7 +2870,8 @@ mod tests {
                 "Read Only",
                 &["memory:read".to_string()],
                 None,
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // Create a user with the custom role
@@ -2606,12 +2892,14 @@ mod tests {
                 "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
                 rusqlite::params![key_id, user_id, org_id, key_hash],
-            ).unwrap();
+            )
+            .unwrap();
             raw_key
         };
 
         // Admin stores a memory with a unique term
-        let body = serde_json::json!({ "tool": "claude", "content": "nexusmind_unique_searchable_term" });
+        let body =
+            serde_json::json!({ "tool": "claude", "content": "nexusmind_unique_searchable_term" });
         app(store.clone())
             .oneshot(
                 Request::builder()
@@ -2640,10 +2928,18 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "custom memory:read role must be able to search");
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "custom memory:read role must be able to search"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let results: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let arr = results["memories"].as_array().expect("search returns MemoryPage with memories array");
+        let arr = results["memories"]
+            .as_array()
+            .expect("search returns MemoryPage with memories array");
         assert!(!arr.is_empty(), "search must return the seeded memory");
     }
 
@@ -2656,14 +2952,7 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            q::create_role(
-                &conn,
-                &org_id,
-                "noperms",
-                "No Perms",
-                &[],
-                None,
-            ).unwrap();
+            q::create_role(&conn, &org_id, "noperms", "No Perms", &[], None).unwrap();
         }
 
         let noperms_key = {
@@ -2683,7 +2972,8 @@ mod tests {
                 "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
                 rusqlite::params![key_id, user_id, org_id, key_hash],
-            ).unwrap();
+            )
+            .unwrap();
             raw_key
         };
 
@@ -2729,7 +3019,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             body["degraded"].as_str(),
@@ -2758,7 +3050,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["degraded"].as_str(), Some("keyword-fallback"));
     }
@@ -2783,7 +3077,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             body.get("degraded").is_none() || body["degraded"].is_null(),
@@ -2811,7 +3107,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(r1.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(r1.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let m1: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id1 = m1["id"].as_str().unwrap().to_string();
 
@@ -2827,7 +3125,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(r2.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(r2.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let m2: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id2 = m2["id"].as_str().unwrap().to_string();
 
@@ -2857,19 +3157,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let memories = page["memories"].as_array().unwrap();
         assert!(!memories.is_empty(), "should have memories");
-        assert_eq!(memories[0]["id"].as_str().unwrap(), id1, "pinned memory must be first");
-        assert_eq!(memories[1]["id"].as_str().unwrap(), id2, "unpinned memory must follow");
-        assert!(page["total"].as_i64().unwrap() >= 2, "total must be present and >= 2");
+        assert_eq!(
+            memories[0]["id"].as_str().unwrap(),
+            id1,
+            "pinned memory must be first"
+        );
+        assert_eq!(
+            memories[1]["id"].as_str().unwrap(),
+            id2,
+            "unpinned memory must follow"
+        );
+        assert!(
+            page["total"].as_i64().unwrap() >= 2,
+            "total must be present and >= 2"
+        );
     }
 
     // ── compact response shape tests ──────────────────────────────────────────
 
     const COMPACT_FIELDS: &[&str] = &[
-        "id", "title", "type", "project", "tags", "pinned", "created_at", "preview",
+        "id",
+        "title",
+        "type",
+        "project",
+        "tags",
+        "pinned",
+        "created_at",
+        "preview",
     ];
 
     #[tokio::test]
@@ -2902,18 +3222,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let memories = page["memories"].as_array().unwrap();
         assert_eq!(memories.len(), 1);
         let item = &memories[0];
         let obj = item.as_object().unwrap();
         for field in COMPACT_FIELDS {
-            assert!(obj.contains_key(*field), "compact item must contain '{field}', got: {item}");
+            assert!(
+                obj.contains_key(*field),
+                "compact item must contain '{field}', got: {item}"
+            );
         }
-        assert!(obj.get("content").is_none(), "compact item must not include full content");
+        assert!(
+            obj.get("content").is_none(),
+            "compact item must not include full content"
+        );
         let preview = item["preview"].as_str().unwrap();
-        assert_eq!(preview.chars().count(), 200, "preview must be the first 200 chars of content");
+        assert_eq!(
+            preview.chars().count(),
+            200,
+            "preview must be the first 200 chars of content"
+        );
     }
 
     #[tokio::test]
@@ -2934,7 +3266,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let memories = page["memories"].as_array().unwrap();
         assert!(!memories.is_empty());
@@ -2981,13 +3315,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let memories = page["memories"].as_array().unwrap();
         assert_eq!(memories.len(), 1);
         let obj = memories[0].as_object().unwrap();
         for field in COMPACT_FIELDS {
-            assert!(obj.contains_key(*field), "compact search item must contain '{field}'");
+            assert!(
+                obj.contains_key(*field),
+                "compact search item must contain '{field}'"
+            );
         }
         assert!(obj.get("content").is_none());
     }
@@ -3012,7 +3351,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let memories = page["memories"].as_array().unwrap();
         assert!(!memories.is_empty());
@@ -3051,8 +3392,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "must not panic on multi-byte UTF-8 truncation");
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "must not panic on multi-byte UTF-8 truncation"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let preview = page["memories"][0]["preview"]
             .as_str()
@@ -3082,7 +3429,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "content_too_large");
     }
@@ -3130,7 +3479,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "content_too_large");
     }
@@ -3160,7 +3511,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let tags = mem["tags"].as_array().unwrap();
         assert_eq!(tags.len(), 1, "empty/whitespace tags must be filtered out");
@@ -3190,10 +3543,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let mem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let tags: Vec<&str> = mem["tags"].as_array().unwrap()
-            .iter().map(|v| v.as_str().unwrap()).collect();
+        let tags: Vec<&str> = mem["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(tags, vec!["leading", "trailing", "both"]);
     }
 
@@ -3221,7 +3580,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "validation_error");
     }
@@ -3250,7 +3611,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "validation_error");
     }
@@ -3298,7 +3661,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"].as_str().unwrap(), "validation_error");
     }
@@ -3319,7 +3684,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["project"], "nonexistent");
         assert_eq!(body["node_count"], 0);
@@ -3345,11 +3712,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         let node_count = body["node_count"].as_u64().unwrap();
-        assert!(node_count >= 1, "must include at least the Memory node, got {node_count}");
+        assert!(
+            node_count >= 1,
+            "must include at least the Memory node, got {node_count}"
+        );
         assert_eq!(
             node_count as usize,
             body["nodes"].as_array().unwrap().len(),
@@ -3363,7 +3735,9 @@ mod tests {
 
         // No dangling edges — every edge references a node in the returned set.
         let node_ids: std::collections::HashSet<String> = body["nodes"]
-            .as_array().unwrap().iter()
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|n| n["id"].as_str().unwrap().to_string())
             .collect();
         for edge in body["edges"].as_array().unwrap() {
@@ -3382,7 +3756,8 @@ mod tests {
         let key_b = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (_, _, key) = q::create_org(&conn, "OrgB", "orgb", "admin@orgb.com", "Admin").unwrap();
+            let (_, _, key) =
+                q::create_org(&conn, "OrgB", "orgb", "admin@orgb.com", "Admin").unwrap();
             key
         };
 
@@ -3398,7 +3773,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["node_count"], 0, "org B must not see org A's memories");
     }
@@ -3416,7 +3793,8 @@ mod tests {
             conn.execute(
                 "UPDATE memories SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
                 rusqlite::params![old_id],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let resp = graph_app(store)
@@ -3431,12 +3809,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let memory_nodes: Vec<_> = body["nodes"].as_array().unwrap().iter()
+        let memory_nodes: Vec<_> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
             .filter(|n| n["type"] == "Memory")
             .collect();
-        assert_eq!(memory_nodes.len(), 1, "only the recent memory must be included");
+        assert_eq!(
+            memory_nodes.len(),
+            1,
+            "only the recent memory must be included"
+        );
     }
 
     #[tokio::test]
@@ -3483,12 +3870,13 @@ mod tests {
                 "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
                  VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
                 rusqlite::params![&id, org_id, name, now, parent],
-            ).unwrap();
+            )
+            .unwrap();
             (id, name.to_string())
         };
         let (parent_id, _parent_name) = mk("parent", None);
-        let (_a_id,      a_name)      = mk("a",      Some(&parent_id));
-        let (_a1_id,     a1_name)     = mk("a1",     Some(&parent_id));
+        let (_a_id, a_name) = mk("a", Some(&parent_id));
+        let (_a1_id, a1_name) = mk("a1", Some(&parent_id));
         let _ = (a_name, a1_name);
 
         // The two rows above are placeholders to keep this initial pass
@@ -3496,23 +3884,27 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.execute("DELETE FROM projects WHERE org_id = ?1", rusqlite::params![org_id]).unwrap();
+            conn.execute(
+                "DELETE FROM projects WHERE org_id = ?1",
+                rusqlite::params![org_id],
+            )
+            .unwrap();
         }
         let (parent_id, parent_name) = mk("parent", None);
-        let (a_id,       a_name)      = mk("a",      Some(&parent_id));
-        let (a1_id,      a1_name)     = mk("a1",     Some(&a_id));
-        let (a2_id,      a2_name)     = mk("a2",     Some(&a_id));
-        let (b_id,       b_name)      = mk("b",      Some(&parent_id));
-        let (b1_id,      b1_name)     = mk("b1",     Some(&b_id));
+        let (a_id, a_name) = mk("a", Some(&parent_id));
+        let (a1_id, a1_name) = mk("a1", Some(&a_id));
+        let (a2_id, a2_name) = mk("a2", Some(&a_id));
+        let (b_id, b_name) = mk("b", Some(&parent_id));
+        let (b1_id, b1_name) = mk("b1", Some(&b_id));
 
         // Seed one memory per project so the family graph has real data.
         for ((id, name), content) in [
             ((parent_id.clone(), parent_name.clone()), "p"),
-            ((a_id.clone(),      a_name.clone()),      "a"),
-            ((a1_id.clone(),     a1_name.clone()),     "a1"),
-            ((a2_id.clone(),     a2_name.clone()),     "a2"),
-            ((b_id.clone(),      b_name.clone()),      "b"),
-            ((b1_id.clone(),     b1_name.clone()),     "b1"),
+            ((a_id.clone(), a_name.clone()), "a"),
+            ((a1_id.clone(), a1_name.clone()), "a1"),
+            ((a2_id.clone(), a2_name.clone()), "a2"),
+            ((b_id.clone(), b_name.clone()), "b"),
+            ((b1_id.clone(), b1_name.clone()), "b1"),
         ] {
             let body = serde_json::json!({
                 "tool": "claude",
@@ -3530,7 +3922,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(resp.status(), StatusCode::CREATED, "store into {name} must succeed");
+            assert_eq!(
+                resp.status(),
+                StatusCode::CREATED,
+                "store into {name} must succeed"
+            );
             // The public POST API doesn't accept a project param, so the row
             // landed in the default project. Move it to the target project so
             // the family resolution picks it up. The legacy `project` column
@@ -3542,7 +3938,8 @@ mod tests {
                 "UPDATE memories SET project = ?1, project_id = ?2 \
                  WHERE id = (SELECT id FROM memories WHERE rowid = last_insert_rowid())",
                 rusqlite::params![&name, &id],
-            ).unwrap();
+            )
+            .unwrap();
         }
         (store, parent_id)
     }
@@ -3563,12 +3960,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         // `projects` array contains the full family (6 projects).
         let projects = body["projects"].as_array().unwrap();
-        assert_eq!(projects.len(), 6, "family must list 6 projects (parent + 5 descendants)");
+        assert_eq!(
+            projects.len(),
+            6,
+            "family must list 6 projects (parent + 5 descendants)"
+        );
         let names: std::collections::HashSet<String> = projects
             .iter()
             .map(|p| p["name"].as_str().unwrap().to_string())
@@ -3579,21 +3982,38 @@ mod tests {
         // Every project in `projects` carries a stable color string.
         for p in projects {
             assert!(p["color"].is_string(), "project must carry a color");
-            assert!(p["color"].as_str().unwrap().starts_with('#'),
-                "color must be a CSS hex string, got {:?}", p["color"]);
+            assert!(
+                p["color"].as_str().unwrap().starts_with('#'),
+                "color must be a CSS hex string, got {:?}",
+                p["color"]
+            );
         }
 
         // Memory nodes cover every project — one memory per project in this test.
-        let memory_nodes: Vec<_> = body["nodes"].as_array().unwrap().iter()
+        let memory_nodes: Vec<_> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
             .filter(|n| n["type"] == "Memory")
             .collect();
-        assert_eq!(memory_nodes.len(), 6, "one memory per project must be in the family graph");
+        assert_eq!(
+            memory_nodes.len(),
+            6,
+            "one memory per project must be in the family graph"
+        );
 
         // Hierarchy edges: parent <-> a, parent <-> b, a <-> a1, a <-> a2, b <-> b1 = 5 edges.
-        let child_of_edges: Vec<_> = body["edges"].as_array().unwrap().iter()
+        let child_of_edges: Vec<_> = body["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
             .filter(|e| e["type"] == "child_of")
             .collect();
-        assert_eq!(child_of_edges.len(), 5, "five child_of edges for the 5 parent links");
+        assert_eq!(
+            child_of_edges.len(),
+            5,
+            "five child_of edges for the 5 parent links"
+        );
     }
 
     #[tokio::test]
@@ -3608,7 +4028,8 @@ mod tests {
                 "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin' LIMIT 1",
                 rusqlite::params![org_id],
                 |row| row.get(0),
-            ).unwrap()
+            )
+            .unwrap()
         };
         let (store, parent) = build_family_hierarchy(store, &org_id, &admin_key).await;
 
@@ -3622,7 +4043,8 @@ mod tests {
                 "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
                  VALUES (?1, ?2, 'sibling', NULL, ?3, NULL)",
                 rusqlite::params![&id, org_id, now],
-            ).unwrap();
+            )
+            .unwrap();
             // Seed a memory into `sibling` so we'd notice if it leaked in.
             conn.execute(
                 "INSERT INTO memories (id, org_id, user_id, project, project_id, tool, content, tags, created_at, scope, revision_count) \
@@ -3643,23 +4065,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         // Family must NOT include the sibling.
         let project_ids: std::collections::HashSet<String> = body["projects"]
-            .as_array().unwrap().iter()
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|p| p["id"].as_str().unwrap().to_string())
             .collect();
-        assert!(!project_ids.contains(&sibling_id), "sibling must not be in the family");
+        assert!(
+            !project_ids.contains(&sibling_id),
+            "sibling must not be in the family"
+        );
         // And the sibling memory must not appear in the node list.
         let memory_ids: std::collections::HashSet<String> = body["nodes"]
-            .as_array().unwrap().iter()
+            .as_array()
+            .unwrap()
+            .iter()
             .filter(|n| n["type"] == "Memory")
             .map(|n| n["id"].as_str().unwrap().to_string())
             .collect();
-        assert!(!memory_ids.iter().any(|id| id.contains("sibling-mem-1")),
-            "sibling memory must not leak into the family graph");
+        assert!(
+            !memory_ids.iter().any(|id| id.contains("sibling-mem-1")),
+            "sibling memory must not leak into the family graph"
+        );
     }
 
     #[tokio::test]
@@ -3682,7 +4115,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["projects"].as_array().unwrap().len(), 6);
         // Sanity: the response's `project` field is the resolved name.
@@ -3704,7 +4139,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err["code"], "project_not_found");
     }
@@ -3726,18 +4163,21 @@ mod tests {
                 "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
                  VALUES (?1, ?2, 'a', NULL, ?3, NULL)",
                 rusqlite::params![a, org_id, now],
-            ).unwrap();
+            )
+            .unwrap();
             conn.execute(
                 "INSERT INTO projects (id, org_id, name, description, created_at, parent_id) \
                  VALUES (?1, ?2, 'b', NULL, ?3, ?4)",
                 rusqlite::params![b, org_id, now, &a],
-            ).unwrap();
+            )
+            .unwrap();
             // Close the cycle. FK is ON DELETE SET NULL, no ON UPDATE rule,
             // so this update is permitted.
             conn.execute(
                 "UPDATE projects SET parent_id = ?1 WHERE id = ?2",
                 rusqlite::params![&b, &a],
-            ).unwrap();
+            )
+            .unwrap();
             (a, b)
         };
 
@@ -3753,13 +4193,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let ids: std::collections::HashSet<String> = body["projects"]
-            .as_array().unwrap().iter()
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|p| p["id"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(ids.len(), 2, "family must contain both a and b, not duplicate them");
+        assert_eq!(
+            ids.len(),
+            2,
+            "family must contain both a and b, not duplicate them"
+        );
         assert!(ids.contains(&a_id) && ids.contains(&b_id));
     }
 }

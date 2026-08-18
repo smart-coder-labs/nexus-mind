@@ -17,7 +17,9 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::{
-    api::helpers::{hidden_resource_not_found, project_is_visible_to_actor, require_permission, AppJson},
+    api::helpers::{
+        hidden_resource_not_found, project_is_visible_to_actor, require_permission, AppJson,
+    },
     db::queries,
     models::types::{
         ApiError, AuthContext, LinkChangeMemoryRequest, Memory, PatchChangeRequest,
@@ -57,7 +59,13 @@ fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     };
-    (status, Json(ApiError { error: msg, code: code.to_string() }))
+    (
+        status,
+        Json(ApiError {
+            error: msg,
+            code: code.to_string(),
+        }),
+    )
 }
 
 fn lock_err() -> (StatusCode, Json<ApiError>) {
@@ -73,7 +81,10 @@ fn lock_err() -> (StatusCode, Json<ApiError>) {
 fn not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ApiError { error: "Not found".to_string(), code: "not_found".to_string() }),
+        Json(ApiError {
+            error: "Not found".to_string(),
+            code: "not_found".to_string(),
+        }),
     )
 }
 
@@ -86,7 +97,14 @@ fn require_visible_project(
     if project_is_visible_to_actor(conn, auth, project).map_err(db_err)? {
         Ok(())
     } else {
-        Err(hidden_resource_not_found(conn, auth, "sdd_project", project, method, "sdd"))
+        Err(hidden_resource_not_found(
+            conn,
+            auth,
+            "sdd_project",
+            project,
+            method,
+            "sdd",
+        ))
     }
 }
 
@@ -128,7 +146,9 @@ pub async fn list_changes_handler(
         include_archived: params.include_archived,
     };
     let mut changes = queries::list_sdd_changes(&conn, &auth.org_id, &filters).map_err(db_err)?;
-    changes.retain(|change| project_is_visible_to_actor(&conn, &auth, &change.project).unwrap_or(false));
+    changes.retain(|change| {
+        project_is_visible_to_actor(&conn, &auth, &change.project).unwrap_or(false)
+    });
     Ok(Json(changes))
 }
 
@@ -142,8 +162,8 @@ pub async fn create_change_handler(
     require_permission(&conn, &auth, Some(&input.project), "sdd:write")?;
     require_visible_project(&conn, &auth, &input.project, "POST")?;
 
-    let change = queries::upsert_sdd_change(&conn, &auth.org_id, &auth.user_id, &input)
-        .map_err(db_err)?;
+    let change =
+        queries::upsert_sdd_change(&conn, &auth.org_id, &auth.user_id, &input).map_err(db_err)?;
     Ok(Json(change))
 }
 
@@ -159,12 +179,17 @@ pub async fn get_change_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(mut change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+    let Some(mut change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)?
+    else {
         return Err(not_found());
     };
     require_visible_change(&conn, &auth, &change, "GET")?;
 
-    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     change.task_links =
         queries::list_tasks_for_sdd_change(&conn, &auth.org_id, &change.name, viewer)
             .map_err(db_err)?;
@@ -183,7 +208,9 @@ pub async fn patch_change_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
 
-    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_change(&conn, &auth, &existing, "PATCH")?;
     let change = queries::patch_sdd_change(&conn, &auth.org_id, &id, &input).map_err(db_err)?;
     Ok(Json(change))
@@ -198,7 +225,9 @@ pub async fn delete_change_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:delete")?;
 
-    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(existing) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_change(&conn, &auth, &existing, "DELETE")?;
     if queries::archive_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? {
         Ok(StatusCode::NO_CONTENT)
@@ -237,7 +266,11 @@ pub async fn list_change_tasks_handler(
         return Err(not_found());
     };
     require_visible_change(&conn, &auth, &change, "GET")?;
-    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     let tasks = queries::list_tasks_for_sdd_change(&conn, &auth.org_id, &change.name, viewer)
         .map_err(db_err)?;
     Ok(Json(tasks))
@@ -330,7 +363,10 @@ pub async fn get_artifact_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)?
+    else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &artifact.project, "GET")?;
     Ok(Json(artifact))
 }
@@ -344,7 +380,10 @@ pub async fn list_artifact_revisions_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)?
+    else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &artifact.project, "GET")?;
     let revisions =
         queries::list_sdd_artifact_revisions(&conn, &auth.org_id, &id).map_err(db_err)?;
@@ -360,9 +399,15 @@ pub async fn get_artifact_revision_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(artifact) = queries::get_sdd_artifact(&conn, &auth.org_id, &id).map_err(db_err)?
+    else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &artifact.project, "GET")?;
-    queries::get_sdd_artifact_revision(&conn, &auth.org_id, &id, revision).map_err(db_err)?.map(Json).ok_or_else(not_found)
+    queries::get_sdd_artifact_revision(&conn, &auth.org_id, &id, revision)
+        .map_err(db_err)?
+        .map(Json)
+        .ok_or_else(not_found)
 }
 
 // ── Specs — the living specification ────────────────────────────────────────
@@ -463,7 +508,9 @@ pub async fn get_spec_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
     Ok(Json(spec))
 }
@@ -477,7 +524,9 @@ pub async fn list_spec_revisions_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
     let revisions = queries::list_sdd_spec_revisions(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(revisions))
@@ -492,9 +541,14 @@ pub async fn get_spec_revision_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(spec) = queries::get_sdd_spec(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_project(&conn, &auth, &spec.spec.project, "GET")?;
-    queries::get_sdd_spec_revision(&conn, &auth.org_id, &id, revision).map_err(db_err)?.map(Json).ok_or_else(not_found)
+    queries::get_sdd_spec_revision(&conn, &auth.org_id, &id, revision)
+        .map_err(db_err)?
+        .map(Json)
+        .ok_or_else(not_found)
 }
 
 /// The edge that joins the two trees: which living specifications has this change
@@ -508,7 +562,9 @@ pub async fn list_change_specs_handler(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:read")?;
 
-    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_change(&conn, &auth, &change, "GET")?;
     let specs = queries::list_sdd_specs_for_change(&conn, &auth.org_id, &id).map_err(db_err)?;
     Ok(Json(specs))
@@ -539,7 +595,8 @@ pub async fn search_handler(
         return Ok(Json(Vec::new()));
     }
     let limit = params.limit.unwrap_or(20).clamp(1, 50);
-    let mut hits = queries::search_sdd_all(&conn, &auth.org_id, &params.q, limit).map_err(db_err)?;
+    let mut hits =
+        queries::search_sdd_all(&conn, &auth.org_id, &params.q, limit).map_err(db_err)?;
     hits.retain(|hit| project_is_visible_to_actor(&conn, &auth, &hit.project).unwrap_or(false));
     Ok(Json(hits))
 }
@@ -555,7 +612,9 @@ pub async fn link_change_memory_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
-    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_change(&conn, &auth, &change, "POST")?;
 
     let relation = input.relation.as_deref().unwrap_or("produced");
@@ -581,7 +640,9 @@ pub async fn unlink_change_memory_handler(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "sdd:write")?;
-    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else { return Err(not_found()); };
+    let Some(change) = queries::get_sdd_change(&conn, &auth.org_id, &id).map_err(db_err)? else {
+        return Err(not_found());
+    };
     require_visible_change(&conn, &auth, &change, "DELETE")?;
 
     if queries::unlink_sdd_change_memory(&conn, &auth.org_id, &id, &memory_id).map_err(db_err)? {
@@ -619,24 +680,56 @@ mod tests {
     fn app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/sdd/search", get(search_handler))
-            .route("/v1/sdd/artifacts", get(get_artifact_by_key_handler).put(put_artifact_handler))
+            .route(
+                "/v1/sdd/artifacts",
+                get(get_artifact_by_key_handler).put(put_artifact_handler),
+            )
             .route("/v1/sdd/artifacts/:id", get(get_artifact_handler))
-            .route("/v1/sdd/artifacts/:id/revisions", get(list_artifact_revisions_handler))
-            .route("/v1/sdd/artifacts/:id/revisions/:rev", get(get_artifact_revision_handler))
-            .route("/v1/sdd/changes", get(list_changes_handler).post(create_change_handler))
+            .route(
+                "/v1/sdd/artifacts/:id/revisions",
+                get(list_artifact_revisions_handler),
+            )
+            .route(
+                "/v1/sdd/artifacts/:id/revisions/:rev",
+                get(get_artifact_revision_handler),
+            )
+            .route(
+                "/v1/sdd/changes",
+                get(list_changes_handler).post(create_change_handler),
+            )
             .route(
                 "/v1/sdd/changes/:id",
-                get(get_change_handler).patch(patch_change_handler).delete(delete_change_handler),
+                get(get_change_handler)
+                    .patch(patch_change_handler)
+                    .delete(delete_change_handler),
             )
-            .route("/v1/sdd/changes/:id/artifacts", get(list_change_artifacts_handler))
+            .route(
+                "/v1/sdd/changes/:id/artifacts",
+                get(list_change_artifacts_handler),
+            )
             .route("/v1/sdd/changes/:id/tasks", get(list_change_tasks_handler))
-            .route("/v1/sdd/changes/:id/memories", post(link_change_memory_handler))
-            .route("/v1/sdd/changes/:id/memories/:memory_id", delete(unlink_change_memory_handler))
+            .route(
+                "/v1/sdd/changes/:id/memories",
+                post(link_change_memory_handler),
+            )
+            .route(
+                "/v1/sdd/changes/:id/memories/:memory_id",
+                delete(unlink_change_memory_handler),
+            )
             .route("/v1/sdd/changes/:id/specs", get(list_change_specs_handler))
-            .route("/v1/sdd/specs", get(get_specs_handler).put(put_spec_handler))
+            .route(
+                "/v1/sdd/specs",
+                get(get_specs_handler).put(put_spec_handler),
+            )
             .route("/v1/sdd/specs/:id", get(get_spec_handler))
-            .route("/v1/sdd/specs/:id/revisions", get(list_spec_revisions_handler))
-            .route("/v1/sdd/specs/:id/revisions/:rev", get(get_spec_revision_handler))
+            .route(
+                "/v1/sdd/specs/:id/revisions",
+                get(list_spec_revisions_handler),
+            )
+            .route(
+                "/v1/sdd/specs/:id/revisions/:rev",
+                get(get_spec_revision_handler),
+            )
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -656,7 +749,11 @@ mod tests {
 
     /// Creates a user whose role is a custom role holding EXACTLY `perms` — so a test can
     /// isolate one permission string at a time (e.g. sdd:write without sdd:read).
-    pub(super) fn member_with_perms(store: &SqliteStore, org_id: &str, perms: &[&str]) -> (String, String) {
+    pub(super) fn member_with_perms(
+        store: &SqliteStore,
+        org_id: &str,
+        perms: &[&str],
+    ) -> (String, String) {
         use crate::auth::api_keys;
         use uuid::Uuid;
         let db = store.conn();
@@ -743,11 +840,16 @@ mod tests {
             Some(v) => Body::from(v.to_string()),
             None => Body::empty(),
         };
-        app(store.clone()).oneshot(builder.body(body).unwrap()).await.unwrap()
+        app(store.clone())
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap()
     }
 
     pub(super) async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -772,7 +874,13 @@ mod tests {
         }
     }
 
-    pub(super) async fn save_artifact(store: &SqliteStore, key: &str, change: &str, kind: &str, content: &str) -> serde_json::Value {
+    pub(super) async fn save_artifact(
+        store: &SqliteStore,
+        key: &str,
+        change: &str,
+        kind: &str,
+        content: &str,
+    ) -> serde_json::Value {
         let resp = req(
             store,
             key,
@@ -793,7 +901,8 @@ mod tests {
     pub(super) fn count(store: &SqliteStore, table: &str) -> i64 {
         let db = store.conn();
         let conn = db.lock().unwrap();
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
     }
 
     // ── Permissions ──────────────────────────────────────────────────────
@@ -804,7 +913,11 @@ mod tests {
         let (store, _admin, org_id) = setup_with_key();
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
         let resp = req(&store, &key, "GET", "/v1/sdd/changes", None).await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "sdd:write alone must not grant reads");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "sdd:write alone must not grant reads"
+        );
     }
 
     /// 3.9 — privileged roles bypass, with no explicit sdd:* grant anywhere.
@@ -817,18 +930,37 @@ mod tests {
 
         save_artifact(&store, &admin_key, "c", "design", "D").await;
 
-        let created =
-            req(&store, &admin_key, "POST", "/v1/sdd/changes", Some(serde_json::json!({
+        let created = req(
+            &store,
+            &admin_key,
+            "POST",
+            "/v1/sdd/changes",
+            Some(serde_json::json!({
                 "project": "nexus-mind", "name": "another"
-            })))
-            .await;
+            })),
+        )
+        .await;
         assert_eq!(created.status(), StatusCode::OK);
         let id = body_json(created).await["id"].as_str().unwrap().to_string();
 
-        let patched = req(&store, &admin_key, "PATCH", &format!("/v1/sdd/changes/{id}"), Some(serde_json::json!({"phase": "design"}))).await;
+        let patched = req(
+            &store,
+            &admin_key,
+            "PATCH",
+            &format!("/v1/sdd/changes/{id}"),
+            Some(serde_json::json!({"phase": "design"})),
+        )
+        .await;
         assert_eq!(patched.status(), StatusCode::OK);
 
-        let deleted = req(&store, &admin_key, "DELETE", &format!("/v1/sdd/changes/{id}"), None).await;
+        let deleted = req(
+            &store,
+            &admin_key,
+            "DELETE",
+            &format!("/v1/sdd/changes/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
     }
 
@@ -837,9 +969,15 @@ mod tests {
     async fn create_sdd_change_denied_without_sdd_write() {
         let (store, _admin, org_id) = setup_with_key();
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
-        let resp = req(&store, &key, "POST", "/v1/sdd/changes", Some(serde_json::json!({
-            "project": "nexus-mind", "name": "c"
-        })))
+        let resp = req(
+            &store,
+            &key,
+            "POST",
+            "/v1/sdd/changes",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "name": "c"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(count(&store, "sdd_changes"), 0, "no row created on 403");
@@ -854,13 +992,24 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
 
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read", "sdd:write"]);
-        let resp = req(&store, &key, "DELETE", &format!("/v1/sdd/changes/{id}"), None).await;
+        let resp = req(
+            &store,
+            &key,
+            "DELETE",
+            &format!("/v1/sdd/changes/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         let db = store.conn();
         let conn = db.lock().unwrap();
         let archived: Option<String> = conn
-            .query_row("SELECT archived_at FROM sdd_changes WHERE id = ?1", [&id], |r| r.get(0))
+            .query_row(
+                "SELECT archived_at FROM sdd_changes WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(archived.is_none(), "archived_at must stay NULL on a 403");
     }
@@ -870,9 +1019,15 @@ mod tests {
     async fn put_sdd_artifact_denied_without_sdd_write() {
         let (store, _admin, org_id) = setup_with_key();
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
-        let resp = req(&store, &key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
-            "project": "nexus-mind", "change_name": "c", "kind": "design", "content": "D"
-        })))
+        let resp = req(
+            &store,
+            &key,
+            "PUT",
+            "/v1/sdd/artifacts",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "change_name": "c", "kind": "design", "content": "D"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(count(&store, "sdd_changes"), 0);
@@ -898,9 +1053,15 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
 
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
-        let resp = req(&store, &key, "POST", &format!("/v1/sdd/changes/{id}/memories"), Some(serde_json::json!({
-            "memory_id": "whatever"
-        })))
+        let resp = req(
+            &store,
+            &key,
+            "POST",
+            &format!("/v1/sdd/changes/{id}/memories"),
+            Some(serde_json::json!({
+                "memory_id": "whatever"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(count(&store, "sdd_change_memories"), 0);
@@ -913,7 +1074,10 @@ mod tests {
         for (method, uri) in [
             ("GET", "/v1/sdd/changes"),
             ("POST", "/v1/sdd/changes"),
-            ("GET", "/v1/sdd/artifacts?project=p&change_name=c&kind=design"),
+            (
+                "GET",
+                "/v1/sdd/artifacts?project=p&change_name=c&kind=design",
+            ),
             ("PUT", "/v1/sdd/artifacts"),
             ("GET", "/v1/sdd/search?q=x"),
         ] {
@@ -958,7 +1122,11 @@ mod tests {
         let (key_b, _org_b) = second_org(&store);
 
         let json = body_json(req(&store, &key_b, "GET", "/v1/sdd/changes", None).await).await;
-        assert_eq!(json.as_array().unwrap().len(), 0, "org B must not see org A's changes");
+        assert_eq!(
+            json.as_array().unwrap().len(),
+            0,
+            "org B must not see org A's changes"
+        );
     }
 
     #[tokio::test]
@@ -967,8 +1135,13 @@ mod tests {
         let (scoped_admin_key, visible_project, hidden_project) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org_id]).unwrap();
-            let (scoped_admin, key) = q::invite_user(&conn, &org_id, "scoped@acme.com", "Scoped", "admin").unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE org_id = ?1",
+                [&org_id],
+            )
+            .unwrap();
+            let (scoped_admin, key) =
+                q::invite_user(&conn, &org_id, "scoped@acme.com", "Scoped", "admin").unwrap();
             let visible = q::create_project(&conn, &org_id, "visible-sdd", None, None).unwrap();
             let hidden = q::create_project(&conn, &org_id, "hidden-sdd", None, None).unwrap();
             q::upsert_project_member(&conn, &visible.id, &scoped_admin.id, "admin").unwrap();
@@ -986,27 +1159,121 @@ mod tests {
             assert_eq!(spec.status(), StatusCode::OK);
         }
 
-        let hidden_change_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/changes?project={hidden_project}"), None).await).await[0]["id"].as_str().unwrap().to_string();
-        let hidden_artifact_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/artifacts?project={hidden_project}&change_name=isolation&kind=design"), None).await).await["id"].as_str().unwrap().to_string();
-        let hidden_spec_id = body_json(req(&store, &super_user_key, "GET", &format!("/v1/sdd/specs?project={hidden_project}&capability=isolation"), None).await).await["id"].as_str().unwrap().to_string();
+        let hidden_change_id = body_json(
+            req(
+                &store,
+                &super_user_key,
+                "GET",
+                &format!("/v1/sdd/changes?project={hidden_project}"),
+                None,
+            )
+            .await,
+        )
+        .await[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let hidden_artifact_id = body_json(
+            req(
+                &store,
+                &super_user_key,
+                "GET",
+                &format!(
+                    "/v1/sdd/artifacts?project={hidden_project}&change_name=isolation&kind=design"
+                ),
+                None,
+            )
+            .await,
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let hidden_spec_id = body_json(
+            req(
+                &store,
+                &super_user_key,
+                "GET",
+                &format!("/v1/sdd/specs?project={hidden_project}&capability=isolation"),
+                None,
+            )
+            .await,
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let scoped_changes = body_json(req(&store, &scoped_admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let scoped_changes =
+            body_json(req(&store, &scoped_admin_key, "GET", "/v1/sdd/changes", None).await).await;
         assert_eq!(scoped_changes.as_array().unwrap().len(), 1);
         assert_eq!(scoped_changes[0]["project"], visible_project);
         for (method, uri, body) in [
             ("GET", format!("/v1/sdd/changes/{hidden_change_id}"), None),
-            ("GET", format!("/v1/sdd/artifacts/{hidden_artifact_id}"), None),
+            (
+                "GET",
+                format!("/v1/sdd/artifacts/{hidden_artifact_id}"),
+                None,
+            ),
             ("GET", format!("/v1/sdd/specs/{hidden_spec_id}"), None),
-            ("PATCH", format!("/v1/sdd/changes/{hidden_change_id}"), Some(serde_json::json!({"phase": "design"}))),
-            ("PUT", "/v1/sdd/artifacts".to_string(), Some(serde_json::json!({"project": hidden_project, "change_name": "new-hidden", "kind": "design", "content": "blocked"}))),
+            (
+                "PATCH",
+                format!("/v1/sdd/changes/{hidden_change_id}"),
+                Some(serde_json::json!({"phase": "design"})),
+            ),
+            (
+                "PUT",
+                "/v1/sdd/artifacts".to_string(),
+                Some(
+                    serde_json::json!({"project": hidden_project, "change_name": "new-hidden", "kind": "design", "content": "blocked"}),
+                ),
+            ),
         ] {
-            assert_eq!(req(&store, &scoped_admin_key, method, &uri, body).await.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+            assert_eq!(
+                req(&store, &scoped_admin_key, method, &uri, body)
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{method} {uri}"
+            );
         }
-        let scoped_search = body_json(req(&store, &scoped_admin_key, "GET", "/v1/sdd/search?q=hidden", None).await).await;
+        let scoped_search = body_json(
+            req(
+                &store,
+                &scoped_admin_key,
+                "GET",
+                "/v1/sdd/search?q=hidden",
+                None,
+            )
+            .await,
+        )
+        .await;
         assert!(scoped_search.as_array().unwrap().is_empty());
 
-        assert_eq!(req(&store, &super_user_key, "GET", &format!("/v1/sdd/changes/{hidden_change_id}"), None).await.status(), StatusCode::OK);
-        assert_eq!(req(&store, &super_user_key, "PATCH", &format!("/v1/sdd/changes/{hidden_change_id}"), Some(serde_json::json!({"phase": "design"}))).await.status(), StatusCode::OK);
+        assert_eq!(
+            req(
+                &store,
+                &super_user_key,
+                "GET",
+                &format!("/v1/sdd/changes/{hidden_change_id}"),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            req(
+                &store,
+                &super_user_key,
+                "PATCH",
+                &format!("/v1/sdd/changes/{hidden_change_id}"),
+                Some(serde_json::json!({"phase": "design"}))
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
     }
 
     /// 3.13
@@ -1015,10 +1282,24 @@ mod tests {
         let (store, admin_key, _org) = setup_with_key();
         let body = serde_json::json!({ "project": "nexus-mind", "name": "team-tasks" });
 
-        let first = body_json(req(&store, &admin_key, "POST", "/v1/sdd/changes", Some(body.clone())).await).await;
-        let second = body_json(req(&store, &admin_key, "POST", "/v1/sdd/changes", Some(body)).await).await;
+        let first = body_json(
+            req(
+                &store,
+                &admin_key,
+                "POST",
+                "/v1/sdd/changes",
+                Some(body.clone()),
+            )
+            .await,
+        )
+        .await;
+        let second =
+            body_json(req(&store, &admin_key, "POST", "/v1/sdd/changes", Some(body)).await).await;
 
-        assert_eq!(first["id"], second["id"], "the same (project, name) upserts — no duplicate, no 409");
+        assert_eq!(
+            first["id"], second["id"],
+            "the same (project, name) upserts — no duplicate, no 409"
+        );
         assert_eq!(count(&store, "sdd_changes"), 1);
     }
 
@@ -1031,14 +1312,28 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
 
         let (key_b, _org_b) = second_org(&store);
-        let resp = req(&store, &key_b, "GET", &format!("/v1/sdd/changes/{id}"), None).await;
+        let resp = req(
+            &store,
+            &key_b,
+            "GET",
+            &format!("/v1/sdd/changes/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(
             resp.status(),
             StatusCode::NOT_FOUND,
             "an org-B admin (who HAS sdd:read) must get 404, not 403 — a 403 would confirm the id exists"
         );
 
-        let unknown = req(&store, &admin_key, "GET", "/v1/sdd/changes/does-not-exist", None).await;
+        let unknown = req(
+            &store,
+            &admin_key,
+            "GET",
+            "/v1/sdd/changes/does-not-exist",
+            None,
+        )
+        .await;
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1080,21 +1375,58 @@ mod tests {
             (task.id, memory_id)
         };
 
-        req(&store, &admin_key, "POST", &format!("/v1/sdd/changes/{id}/memories"), Some(serde_json::json!({
-            "memory_id": memory_id
-        })))
+        req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/sdd/changes/{id}/memories"),
+            Some(serde_json::json!({
+                "memory_id": memory_id
+            })),
+        )
         .await;
 
-        let json = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}"), None).await).await;
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(json["artifacts"].as_array().unwrap().len(), 2);
         assert_eq!(json["task_links"].as_array().unwrap().len(), 1);
         assert_eq!(json["task_links"][0]["id"], task_id);
         assert_eq!(json["memory_links"].as_array().unwrap().len(), 1);
 
         // An ARCHIVED change still returns its full inventory.
-        req(&store, &admin_key, "DELETE", &format!("/v1/sdd/changes/{id}"), None).await;
-        let after = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}"), None).await).await;
-        assert_eq!(after["artifacts"].as_array().unwrap().len(), 2, "archiving does not withdraw artifacts");
+        req(
+            &store,
+            &admin_key,
+            "DELETE",
+            &format!("/v1/sdd/changes/{id}"),
+            None,
+        )
+        .await;
+        let after = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            after["artifacts"].as_array().unwrap().len(),
+            2,
+            "archiving does not withdraw artifacts"
+        );
         assert!(!after["archived_at"].is_null());
     }
 
@@ -1107,10 +1439,27 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
 
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
-        let resp = req(&store, &key, "PATCH", &format!("/v1/sdd/changes/{id}"), Some(serde_json::json!({"phase": "design"}))).await;
+        let resp = req(
+            &store,
+            &key,
+            "PATCH",
+            &format!("/v1/sdd/changes/{id}"),
+            Some(serde_json::json!({"phase": "design"})),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-        let after = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}"), None).await).await;
+        let after = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(after["phase"], "propose", "unmodified on 403");
     }
 
@@ -1122,16 +1471,35 @@ mod tests {
         let list = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
         let id = list[0]["id"].as_str().unwrap().to_string();
 
-        let resp = req(&store, &admin_key, "PATCH", &format!("/v1/sdd/changes/{id}"), Some(serde_json::json!({
-            "phase": "shipped", "title": "New"
-        })))
+        let resp = req(
+            &store,
+            &admin_key,
+            "PATCH",
+            &format!("/v1/sdd/changes/{id}"),
+            Some(serde_json::json!({
+                "phase": "shipped", "title": "New"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body_json(resp).await["code"], "invalid_phase");
 
-        let after = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}"), None).await).await;
+        let after = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(after["phase"], "propose");
-        assert!(after["title"].is_null(), "the title in the same rejected patch must NOT have landed");
+        assert!(
+            after["title"].is_null(),
+            "the title in the same rejected patch must NOT have landed"
+        );
     }
 
     /// 3.23 — the identity tuple is not patchable, and saying so is a 4xx, not a shrug.
@@ -1143,9 +1511,15 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
 
         for field in ["project", "name"] {
-            let resp = req(&store, &admin_key, "PATCH", &format!("/v1/sdd/changes/{id}"), Some(serde_json::json!({
-                field: "hijacked"
-            })))
+            let resp = req(
+                &store,
+                &admin_key,
+                "PATCH",
+                &format!("/v1/sdd/changes/{id}"),
+                Some(serde_json::json!({
+                    field: "hijacked"
+                })),
+            )
             .await;
             assert!(
                 resp.status().is_client_error(),
@@ -1153,7 +1527,17 @@ mod tests {
             );
         }
 
-        let after = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}"), None).await).await;
+        let after = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(after["project"], "nexus-mind");
         assert_eq!(after["name"], "c");
     }
@@ -1170,7 +1554,14 @@ mod tests {
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 
         let (key_b, _org_b) = second_org(&store);
-        let cross = req(&store, &key_b, "DELETE", &format!("/v1/sdd/changes/{id}"), None).await;
+        let cross = req(
+            &store,
+            &key_b,
+            "DELETE",
+            &format!("/v1/sdd/changes/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(cross.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1196,8 +1587,22 @@ mod tests {
         assert_eq!(second["created_revision"], false);
         let artifact_id = second["artifact"]["id"].as_str().unwrap();
 
-        let revs = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{artifact_id}/revisions"), None).await).await;
-        assert_eq!(revs.as_array().unwrap().len(), 1, "still exactly one revision");
+        let revs = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{artifact_id}/revisions"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            revs.as_array().unwrap().len(),
+            1,
+            "still exactly one revision"
+        );
     }
 
     /// 3.35 — A2 at the HTTP boundary. Must be a 422, not a 413.
@@ -1217,7 +1622,11 @@ mod tests {
         );
         assert_eq!(body_json(resp).await["code"], "artifact_too_large");
 
-        assert_eq!(count(&store, "sdd_changes"), 0, "a rejected save leaves NO change");
+        assert_eq!(
+            count(&store, "sdd_changes"),
+            0,
+            "a rejected save leaves NO change"
+        );
         assert_eq!(count(&store, "sdd_artifacts"), 0);
         assert_eq!(count(&store, "sdd_artifact_revisions"), 0);
     }
@@ -1231,30 +1640,76 @@ mod tests {
     async fn put_sdd_artifact_honours_the_source_field_and_rejects_unknown_values() {
         let (store, admin_key, _org) = setup_with_key();
 
-        let saved = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
-            "project": "nexus-mind", "change_name": "c", "kind": "design",
-            "content": "D", "source": "import"
-        })))
+        let saved = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/artifacts",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "change_name": "c", "kind": "design",
+                "content": "D", "source": "import"
+            })),
+        )
         .await;
         assert_eq!(saved.status(), StatusCode::OK);
-        let id = body_json(saved).await["artifact"]["id"].as_str().unwrap().to_string();
+        let id = body_json(saved).await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let revs = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}/revisions"), None).await).await;
-        assert_eq!(revs[0]["source"], "import", "the revision must record where it actually came from");
+        let revs = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{id}/revisions"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            revs[0]["source"], "import",
+            "the revision must record where it actually came from"
+        );
 
         // Omitted → the default.
         save_artifact(&store, &admin_key, "c2", "design", "D2").await;
         let list = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
-        let c2 = list.as_array().unwrap().iter().find(|c| c["name"] == "c2").unwrap();
+        let c2 = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "c2")
+            .unwrap();
         let artifact_id = c2["artifacts"][0]["id"].as_str().unwrap();
-        let revs2 = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{artifact_id}/revisions"), None).await).await;
-        assert_eq!(revs2[0]["source"], "agent", "an omitted source defaults to agent");
+        let revs2 = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{artifact_id}/revisions"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            revs2[0]["source"], "agent",
+            "an omitted source defaults to agent"
+        );
 
         // A value outside the set is rejected, not stored — the column stays closed.
-        let bad = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
-            "project": "nexus-mind", "change_name": "c3", "kind": "design",
-            "content": "X", "source": "definitely-not-a-source"
-        })))
+        let bad = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/artifacts",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "change_name": "c3", "kind": "design",
+                "content": "X", "source": "definitely-not-a-source"
+            })),
+        )
         .await;
         assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body_json(bad).await["code"], "invalid_source");
@@ -1264,14 +1719,24 @@ mod tests {
     #[tokio::test]
     async fn put_sdd_artifact_rejects_unknown_kind_with_422_and_creates_nothing() {
         let (store, admin_key, _org) = setup_with_key();
-        let resp = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
-            "project": "nexus-mind", "change_name": "c", "kind": "not-a-kind", "content": "X"
-        })))
+        let resp = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/artifacts",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "change_name": "c", "kind": "not-a-kind", "content": "X"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body_json(resp).await["code"], "invalid_kind");
 
-        assert_eq!(count(&store, "sdd_changes"), 0, "a bad kind must not create a change on its way to failing");
+        assert_eq!(
+            count(&store, "sdd_changes"),
+            0,
+            "a bad kind must not create a change on its way to failing"
+        );
         assert_eq!(count(&store, "sdd_artifacts"), 0);
     }
 
@@ -1284,12 +1749,33 @@ mod tests {
         let saved = save_artifact(&store, &admin_key, "c", "design", &long).await;
         let id = saved["artifact"]["id"].as_str().unwrap().to_string();
 
-        let json = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}"), None).await).await;
-        assert_eq!(json["content"].as_str().unwrap(), long, "complete and untruncated");
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{id}"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            json["content"].as_str().unwrap(),
+            long,
+            "complete and untruncated"
+        );
         assert_eq!(json["latest_revision"], 2);
 
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
-        let denied = req(&store, &key, "GET", &format!("/v1/sdd/artifacts/{id}"), None).await;
+        let denied = req(
+            &store,
+            &key,
+            "GET",
+            &format!("/v1/sdd/artifacts/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
     }
 
@@ -1299,11 +1785,20 @@ mod tests {
         let (store, admin_key, _org) = setup_with_key();
         save_artifact(&store, &admin_key, "sdd-artifacts", "design", "DESIGN BODY").await;
 
-        for (capability, content) in [("sdd-artifact-store", "STORE SPEC"), ("sdd-artifact-links", "LINKS SPEC")] {
-            let resp = req(&store, &admin_key, "PUT", "/v1/sdd/artifacts", Some(serde_json::json!({
-                "project": "nexus-mind", "change_name": "sdd-artifacts", "kind": "spec",
-                "capability": capability, "content": content
-            })))
+        for (capability, content) in [
+            ("sdd-artifact-store", "STORE SPEC"),
+            ("sdd-artifact-links", "LINKS SPEC"),
+        ] {
+            let resp = req(
+                &store,
+                &admin_key,
+                "PUT",
+                "/v1/sdd/artifacts",
+                Some(serde_json::json!({
+                    "project": "nexus-mind", "change_name": "sdd-artifacts", "kind": "spec",
+                    "capability": capability, "content": content
+                })),
+            )
             .await;
             assert_eq!(resp.status(), StatusCode::OK);
         }
@@ -1313,13 +1808,28 @@ mod tests {
         assert_eq!(spec["content"], "STORE SPEC");
 
         // Omitting capability resolves the '' sentinel.
-        let design = body_json(req(&store, &admin_key, "GET",
-            "/v1/sdd/artifacts?project=nexus-mind&change_name=sdd-artifacts&kind=design", None).await).await;
+        let design = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                "/v1/sdd/artifacts?project=nexus-mind&change_name=sdd-artifacts&kind=design",
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(design["content"], "DESIGN BODY");
 
         // A kind with no artifact is a 404, NOT a 200 with empty content.
-        let missing = req(&store, &admin_key, "GET",
-            "/v1/sdd/artifacts?project=nexus-mind&change_name=sdd-artifacts&kind=tasks", None).await;
+        let missing = req(
+            &store,
+            &admin_key,
+            "GET",
+            "/v1/sdd/artifacts?project=nexus-mind&change_name=sdd-artifacts&kind=tasks",
+            None,
+        )
+        .await;
         assert_eq!(
             missing.status(),
             StatusCode::NOT_FOUND,
@@ -1336,12 +1846,29 @@ mod tests {
 
         let (key_b, _org_b) = second_org(&store);
 
-        let by_id = req(&store, &key_b, "GET", &format!("/v1/sdd/artifacts/{id}"), None).await;
+        let by_id = req(
+            &store,
+            &key_b,
+            "GET",
+            &format!("/v1/sdd/artifacts/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(by_id.status(), StatusCode::NOT_FOUND);
 
-        let by_key = req(&store, &key_b, "GET",
-            "/v1/sdd/artifacts?project=nexus-mind&change_name=c&kind=design", None).await;
-        assert_eq!(by_key.status(), StatusCode::NOT_FOUND, "artifacts have no org_id — this proves the join through sdd_changes is there");
+        let by_key = req(
+            &store,
+            &key_b,
+            "GET",
+            "/v1/sdd/artifacts?project=nexus-mind&change_name=c&kind=design",
+            None,
+        )
+        .await;
+        assert_eq!(
+            by_key.status(),
+            StatusCode::NOT_FOUND,
+            "artifacts have no org_id — this proves the join through sdd_changes is there"
+        );
     }
 
     /// 3.45
@@ -1353,7 +1880,17 @@ mod tests {
         let saved = save_artifact(&store, &admin_key, "c", "design", "v3").await;
         let id = saved["artifact"]["id"].as_str().unwrap().to_string();
 
-        let json = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}/revisions"), None).await).await;
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{id}/revisions"),
+                None,
+            )
+            .await,
+        )
+        .await;
         let revs = json.as_array().unwrap();
         assert_eq!(revs.len(), 3);
         assert_eq!(revs[0]["revision"], 3, "newest first");
@@ -1371,11 +1908,28 @@ mod tests {
         let saved = save_artifact(&store, &admin_key, "c", "design", "third").await;
         let id = saved["artifact"]["id"].as_str().unwrap().to_string();
 
-        let rev1 = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}/revisions/1"), None).await).await;
+        let rev1 = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/artifacts/{id}/revisions/1"),
+                None,
+            )
+            .await,
+        )
+        .await;
         assert_eq!(rev1["content"], "first");
         assert_eq!(rev1["revision"], 1);
 
-        let missing = req(&store, &admin_key, "GET", &format!("/v1/sdd/artifacts/{id}/revisions/99"), None).await;
+        let missing = req(
+            &store,
+            &admin_key,
+            "GET",
+            &format!("/v1/sdd/artifacts/{id}/revisions/99"),
+            None,
+        )
+        .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1388,7 +1942,14 @@ mod tests {
         let uri = format!("/v1/sdd/artifacts/{id}/revisions/1");
 
         for method in ["PUT", "PATCH", "DELETE"] {
-            let resp = req(&store, &admin_key, method, &uri, Some(serde_json::json!({"content": "tampered"}))).await;
+            let resp = req(
+                &store,
+                &admin_key,
+                method,
+                &uri,
+                Some(serde_json::json!({"content": "tampered"})),
+            )
+            .await;
             assert_eq!(
                 resp.status(),
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -1407,10 +1968,27 @@ mod tests {
     async fn search_sdd_artifacts_returns_snippets_and_honours_limit() {
         let (store, admin_key, _org) = setup_with_key();
         for i in 0..20 {
-            save_artifact(&store, &admin_key, &format!("change-{i}"), "design", "shared TOKENWORD body").await;
+            save_artifact(
+                &store,
+                &admin_key,
+                &format!("change-{i}"),
+                "design",
+                "shared TOKENWORD body",
+            )
+            .await;
         }
 
-        let json = body_json(req(&store, &admin_key, "GET", "/v1/sdd/search?q=TOKENWORD&limit=5", None).await).await;
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                "/v1/sdd/search?q=TOKENWORD&limit=5",
+                None,
+            )
+            .await,
+        )
+        .await;
         let hits = json.as_array().unwrap();
         assert_eq!(hits.len(), 5, "the limit is honoured");
         assert!(hits[0]["snippet"].is_string());
@@ -1424,7 +2002,11 @@ mod tests {
         let (store, admin_key, _org) = setup_with_key();
         save_artifact(&store, &admin_key, "c", "design", "content").await;
 
-        for uri in ["/v1/sdd/search?q=", "/v1/sdd/search?q=%20%20", "/v1/sdd/search"] {
+        for uri in [
+            "/v1/sdd/search?q=",
+            "/v1/sdd/search?q=%20%20",
+            "/v1/sdd/search",
+        ] {
             let resp = req(&store, &admin_key, "GET", uri, None).await;
             assert_eq!(resp.status(), StatusCode::OK, "{uri} must not 500");
             assert_eq!(body_json(resp).await.as_array().unwrap().len(), 0);
@@ -1440,7 +2022,17 @@ mod tests {
         let list = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
         let id = list[0]["id"].as_str().unwrap().to_string();
 
-        let json = body_json(req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{id}/artifacts"), None).await).await;
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{id}/artifacts"),
+                None,
+            )
+            .await,
+        )
+        .await;
         let artifacts = json.as_array().unwrap();
         assert_eq!(artifacts.len(), 2);
         assert!(artifacts[0]["latest_revision"].is_number());
@@ -1473,26 +2065,53 @@ mod tests {
         let memory_id = mk_memory(&store, &org_id).await;
 
         let uri = format!("/v1/sdd/changes/{id}/memories");
-        let first = req(&store, &admin_key, "POST", &uri, Some(serde_json::json!({
-            "memory_id": memory_id, "relation": "informed"
-        })))
+        let first = req(
+            &store,
+            &admin_key,
+            "POST",
+            &uri,
+            Some(serde_json::json!({
+                "memory_id": memory_id, "relation": "informed"
+            })),
+        )
         .await;
         assert_eq!(first.status(), StatusCode::OK);
 
-        let second = req(&store, &admin_key, "POST", &uri, Some(serde_json::json!({
-            "memory_id": memory_id, "relation": "produced"
-        })))
+        let second = req(
+            &store,
+            &admin_key,
+            "POST",
+            &uri,
+            Some(serde_json::json!({
+                "memory_id": memory_id, "relation": "produced"
+            })),
+        )
         .await;
-        assert_eq!(second.status(), StatusCode::OK, "re-linking is idempotent, not a 409");
+        assert_eq!(
+            second.status(),
+            StatusCode::OK,
+            "re-linking is idempotent, not a 409"
+        );
 
-        assert_eq!(count(&store, "sdd_change_memories"), 1, "still exactly one link row");
+        assert_eq!(
+            count(&store, "sdd_change_memories"),
+            1,
+            "still exactly one link row"
+        );
 
         let db = store.conn();
         let conn = db.lock().unwrap();
         let relation: String = conn
-            .query_row("SELECT relation FROM sdd_change_memories WHERE memory_id = ?1", [&memory_id], |r| r.get(0))
+            .query_row(
+                "SELECT relation FROM sdd_change_memories WHERE memory_id = ?1",
+                [&memory_id],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(relation, "produced", "a different relation UPDATES the row, it is not ignored");
+        assert_eq!(
+            relation, "produced",
+            "a different relation UPDATES the row, it is not ignored"
+        );
     }
 
     /// 3.61 — a cross-org memory id is a 404, not a 403 and not a 422.
@@ -1506,9 +2125,15 @@ mod tests {
         let (_key_b, org_b) = second_org(&store);
         let foreign_memory = mk_memory(&store, &org_b).await;
 
-        let resp = req(&store, &admin_key, "POST", &format!("/v1/sdd/changes/{id}/memories"), Some(serde_json::json!({
-            "memory_id": foreign_memory
-        })))
+        let resp = req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/sdd/changes/{id}/memories"),
+            Some(serde_json::json!({
+                "memory_id": foreign_memory
+            })),
+        )
         .await;
         assert_eq!(
             resp.status(),
@@ -1527,9 +2152,15 @@ mod tests {
         let id = list[0]["id"].as_str().unwrap().to_string();
         let memory_id = mk_memory(&store, &org_id).await;
 
-        req(&store, &admin_key, "POST", &format!("/v1/sdd/changes/{id}/memories"), Some(serde_json::json!({
-            "memory_id": memory_id
-        })))
+        req(
+            &store,
+            &admin_key,
+            "POST",
+            &format!("/v1/sdd/changes/{id}/memories"),
+            Some(serde_json::json!({
+                "memory_id": memory_id
+            })),
+        )
         .await;
 
         let uri = format!("/v1/sdd/changes/{id}/memories/{memory_id}");
@@ -1542,9 +2173,17 @@ mod tests {
         assert_eq!(ok.status(), StatusCode::NO_CONTENT);
 
         let again = req(&store, &admin_key, "DELETE", &uri, None).await;
-        assert_eq!(again.status(), StatusCode::NOT_FOUND, "the link is already gone");
+        assert_eq!(
+            again.status(),
+            StatusCode::NOT_FOUND,
+            "the link is already gone"
+        );
 
-        assert_eq!(count(&store, "memories"), 1, "unlinking must not delete the memory");
+        assert_eq!(
+            count(&store, "memories"),
+            1,
+            "unlinking must not delete the memory"
+        );
     }
 
     // ── Specs — the living specification ─────────────────────────────────
@@ -1567,7 +2206,11 @@ mod tests {
             })),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK, "PUT /v1/sdd/specs must answer 200, never 201");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "PUT /v1/sdd/specs must answer 200, never 201"
+        );
         body_json(resp).await
     }
 
@@ -1576,12 +2219,22 @@ mod tests {
         let (store, _admin, org_id) = setup_with_key();
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:read"]);
 
-        let resp = req(&store, &key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "cap", "content": "C"
-        })))
+        let resp = req(
+            &store,
+            &key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "cap", "content": "C"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        assert_eq!(count(&store, "sdd_specs"), 0, "a denied write creates nothing");
+        assert_eq!(
+            count(&store, "sdd_specs"),
+            0,
+            "a denied write creates nothing"
+        );
     }
 
     #[tokio::test]
@@ -1589,9 +2242,16 @@ mod tests {
         let (store, _admin, org_id) = setup_with_key();
         let (key, _) = member_with_perms(&store, &org_id, &["sdd:write"]);
 
-        for uri in ["/v1/sdd/specs", "/v1/sdd/specs?project=nexus-mind&capability=cap"] {
+        for uri in [
+            "/v1/sdd/specs",
+            "/v1/sdd/specs?project=nexus-mind&capability=cap",
+        ] {
             let resp = req(&store, &key, "GET", uri, None).await;
-            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri} must require sdd:read");
+            assert_eq!(
+                resp.status(),
+                StatusCode::FORBIDDEN,
+                "{uri} must require sdd:read"
+            );
         }
     }
 
@@ -1610,7 +2270,11 @@ mod tests {
             let conn = db.lock().unwrap();
             let project_id = q::get_project_id_by_name(&conn, &org_id, "nexus-mind")
                 .unwrap()
-                .unwrap_or_else(|| q::create_project(&conn, &org_id, "nexus-mind", None, None).unwrap().id);
+                .unwrap_or_else(|| {
+                    q::create_project(&conn, &org_id, "nexus-mind", None, None)
+                        .unwrap()
+                        .id
+                });
             q::upsert_project_member(&conn, &project_id, &reader_id, "member").unwrap();
         }
 
@@ -1632,9 +2296,15 @@ mod tests {
         }
 
         // …and a reader may not write.
-        let denied = req(&store, &reader, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "cap", "content": "new"
-        })))
+        let denied = req(
+            &store,
+            &reader,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "cap", "content": "new"
+            })),
+        )
         .await;
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
     }
@@ -1649,7 +2319,14 @@ mod tests {
             ("GET", "/v1/sdd/specs/abc/revisions"),
             ("GET", "/v1/sdd/specs/abc/revisions/1"),
         ] {
-            let resp = req(&store, "nm_not_a_real_key", method, uri, Some(serde_json::json!({}))).await;
+            let resp = req(
+                &store,
+                "nm_not_a_real_key",
+                method,
+                uri,
+                Some(serde_json::json!({})),
+            )
+            .await;
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{method} {uri}");
         }
     }
@@ -1675,10 +2352,21 @@ mod tests {
         let spec_id = second["spec"]["id"].as_str().unwrap();
 
         let revs = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{spec_id}/revisions"),
+                None,
+            )
+            .await,
         )
         .await;
-        assert_eq!(revs.as_array().unwrap().len(), 1, "still exactly one revision");
+        assert_eq!(
+            revs.as_array().unwrap().len(),
+            1,
+            "still exactly one revision"
+        );
     }
 
     /// A2 at the HTTP boundary. A 422 from our guard, not a 413 from Axum's body limit —
@@ -1688,14 +2376,24 @@ mod tests {
         let (store, admin_key, _org) = setup_with_key();
         let huge = "x".repeat(1_048_577);
 
-        let resp = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "oversized", "content": huge
-        })))
+        let resp = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "oversized", "content": huge
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body_json(resp).await["code"], "spec_too_large");
 
-        assert_eq!(count(&store, "sdd_specs"), 0, "a rejected save leaves NO spec");
+        assert_eq!(
+            count(&store, "sdd_specs"),
+            0,
+            "a rejected save leaves NO spec"
+        );
         assert_eq!(count(&store, "sdd_spec_revisions"), 0, "…and NO revision");
     }
 
@@ -1703,26 +2401,55 @@ mod tests {
     async fn put_sdd_spec_honours_the_source_field_and_rejects_unknown_values() {
         let (store, admin_key, _org) = setup_with_key();
 
-        let ok = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "cap", "content": "C", "source": "import"
-        })))
-        .await;
-        assert_eq!(ok.status(), StatusCode::OK);
-        let id = body_json(ok).await["spec"]["id"].as_str().unwrap().to_string();
-
-        let revs = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{id}/revisions"), None).await,
+        let ok = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "cap", "content": "C", "source": "import"
+            })),
         )
         .await;
-        assert_eq!(revs[0]["source"], "import", "the importer's provenance must not be overwritten");
+        assert_eq!(ok.status(), StatusCode::OK);
+        let id = body_json(ok).await["spec"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        let bad = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "cap2", "content": "C", "source": "wishful"
-        })))
+        let revs = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{id}/revisions"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            revs[0]["source"], "import",
+            "the importer's provenance must not be overwritten"
+        );
+
+        let bad = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "cap2", "content": "C", "source": "wishful"
+            })),
+        )
         .await;
         assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body_json(bad).await["code"], "invalid_source");
-        assert_eq!(count(&store, "sdd_specs"), 1, "the rejected save created no second spec");
+        assert_eq!(
+            count(&store, "sdd_specs"),
+            1,
+            "the rejected save created no second spec"
+        );
     }
 
     /// The payoff, over HTTP: a spec revision names the change that produced it, and the
@@ -1731,13 +2458,20 @@ mod tests {
     async fn put_sdd_spec_records_merged_from_change_and_the_change_reports_it_back() {
         let (store, admin_key, _org) = setup_with_key();
         save_artifact(&store, &admin_key, "sdd-specs", "design", "D").await;
-        let changes = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let changes =
+            body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
         let change_id = changes[0]["id"].as_str().unwrap().to_string();
 
-        let saved = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "sdd-spec-store",
-            "content": "the contract", "merged_from_change_name": "sdd-specs"
-        })))
+        let saved = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "sdd-spec-store",
+                "content": "the contract", "merged_from_change_name": "sdd-specs"
+            })),
+        )
         .await;
         assert_eq!(saved.status(), StatusCode::OK);
         let spec = body_json(saved).await;
@@ -1746,7 +2480,14 @@ mod tests {
 
         // Spec → change, on the revision.
         let revs = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{spec_id}/revisions"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(revs[0]["merged_from_change_id"], change_id);
@@ -1754,7 +2495,14 @@ mod tests {
 
         // Change → spec.
         let merged = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/specs"), None).await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{change_id}/specs"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(merged.as_array().unwrap().len(), 1);
@@ -1769,10 +2517,16 @@ mod tests {
     async fn put_sdd_spec_with_an_unknown_change_name_returns_404_and_creates_nothing() {
         let (store, admin_key, _org) = setup_with_key();
 
-        let resp = req(&store, &admin_key, "PUT", "/v1/sdd/specs", Some(serde_json::json!({
-            "project": "nexus-mind", "capability": "cap", "content": "C",
-            "merged_from_change_name": "no-such-change"
-        })))
+        let resp = req(
+            &store,
+            &admin_key,
+            "PUT",
+            "/v1/sdd/specs",
+            Some(serde_json::json!({
+                "project": "nexus-mind", "capability": "cap", "content": "C",
+                "merged_from_change_name": "no-such-change"
+            })),
+        )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert_eq!(body_json(resp).await["code"], "change_not_found");
@@ -1783,7 +2537,13 @@ mod tests {
     #[tokio::test]
     async fn get_sdd_spec_by_natural_key_returns_full_content() {
         let (store, admin_key, _org) = setup_with_key();
-        save_spec(&store, &admin_key, "harness-library", "## Purpose\nThe whole document.").await;
+        save_spec(
+            &store,
+            &admin_key,
+            "harness-library",
+            "## Purpose\nThe whole document.",
+        )
+        .await;
 
         let json = body_json(
             req(
@@ -1827,10 +2587,20 @@ mod tests {
         save_spec(&store, &admin_key, "alpha", "a very long contract").await;
         save_spec(&store, &admin_key, "beta", "another one").await;
 
-        let json =
-            body_json(req(&store, &admin_key, "GET", "/v1/sdd/specs?project=nexus-mind", None).await)
-                .await;
-        let specs = json.as_array().expect("the collection read must return a list");
+        let json = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                "/v1/sdd/specs?project=nexus-mind",
+                None,
+            )
+            .await,
+        )
+        .await;
+        let specs = json
+            .as_array()
+            .expect("the collection read must return a list");
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0]["capability"], "alpha", "ordered by capability");
         assert_no_content_key(&json, "specs");
@@ -1883,7 +2653,14 @@ mod tests {
     #[tokio::test]
     async fn get_unknown_sdd_spec_id_returns_404() {
         let (store, admin_key, _org) = setup_with_key();
-        let resp = req(&store, &admin_key, "GET", "/v1/sdd/specs/does-not-exist", None).await;
+        let resp = req(
+            &store,
+            &admin_key,
+            "GET",
+            "/v1/sdd/specs/does-not-exist",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1896,7 +2673,14 @@ mod tests {
         let spec_id = second["spec"]["id"].as_str().unwrap().to_string();
 
         let revs = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions"), None).await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{spec_id}/revisions"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(revs.as_array().unwrap().len(), 2);
@@ -1904,16 +2688,30 @@ mod tests {
         assert_no_content_key(&revs, "spec-revisions");
 
         let rev1 = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/1"), None)
-                .await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{spec_id}/revisions/1"),
+                None,
+            )
+            .await,
         )
         .await;
-        assert_eq!(rev1["content"], "revision one text", "an older revision reads in full");
+        assert_eq!(
+            rev1["content"], "revision one text",
+            "an older revision reads in full"
+        );
         assert_eq!(rev1["revision"], 1);
 
-        let missing =
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/99"), None)
-                .await;
+        let missing = req(
+            &store,
+            &admin_key,
+            "GET",
+            &format!("/v1/sdd/specs/{spec_id}/revisions/99"),
+            None,
+        )
+        .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1942,8 +2740,14 @@ mod tests {
         }
 
         let rev = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/specs/{spec_id}/revisions/1"), None)
-                .await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/specs/{spec_id}/revisions/1"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(rev["content"], "C", "the revision is untouched");
@@ -1959,28 +2763,62 @@ mod tests {
 
         let resp = req(&store, &admin_key, "GET", "/v1/sdd/specs", None).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(body_json(resp).await.is_array(), "the collection route must return a list");
+        assert!(
+            body_json(resp).await.is_array(),
+            "the collection route must return a list"
+        );
     }
 
     /// The search endpoint spans BOTH trees and says which one each hit came from.
     #[tokio::test]
     async fn search_covers_specs_as_well_as_change_artifacts() {
         let (store, admin_key, _org) = setup_with_key();
-        save_artifact(&store, &admin_key, "throttle-work", "design", "add rate limiting to the gateway")
-            .await;
-        save_spec(&store, &admin_key, "gateway", "the gateway MUST apply rate limiting per key").await;
+        save_artifact(
+            &store,
+            &admin_key,
+            "throttle-work",
+            "design",
+            "add rate limiting to the gateway",
+        )
+        .await;
+        save_spec(
+            &store,
+            &admin_key,
+            "gateway",
+            "the gateway MUST apply rate limiting per key",
+        )
+        .await;
 
-        let hits = body_json(req(&store, &admin_key, "GET", "/v1/sdd/search?q=rate+limiting", None).await)
-            .await;
+        let hits = body_json(
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                "/v1/sdd/search?q=rate+limiting",
+                None,
+            )
+            .await,
+        )
+        .await;
         let hits = hits.as_array().unwrap();
-        assert_eq!(hits.len(), 2, "the search must reach the contract as well as the drafts");
+        assert_eq!(
+            hits.len(),
+            2,
+            "the search must reach the contract as well as the drafts"
+        );
 
-        let spec_hit = hits.iter().find(|h| h["hit_type"] == "spec").expect("the CONTRACT must be found");
+        let spec_hit = hits
+            .iter()
+            .find(|h| h["hit_type"] == "spec")
+            .expect("the CONTRACT must be found");
         assert_eq!(spec_hit["capability"], "gateway");
         assert!(spec_hit["spec_id"].is_string());
         assert!(spec_hit["change_id"].is_null(), "a spec hit has no change");
 
-        let art_hit = hits.iter().find(|h| h["hit_type"] == "artifact").expect("drafts too");
+        let art_hit = hits
+            .iter()
+            .find(|h| h["hit_type"] == "artifact")
+            .expect("drafts too");
         assert_eq!(art_hit["change_name"], "throttle-work");
         assert_eq!(art_hit["kind"], "design");
         assert!(art_hit["spec_id"].is_null());
@@ -1998,7 +2836,14 @@ mod tests {
     #[tokio::test]
     async fn list_change_specs_returns_404_for_an_unknown_change() {
         let (store, admin_key, _org) = setup_with_key();
-        let resp = req(&store, &admin_key, "GET", "/v1/sdd/changes/nope/specs", None).await;
+        let resp = req(
+            &store,
+            &admin_key,
+            "GET",
+            "/v1/sdd/changes/nope/specs",
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -2007,11 +2852,18 @@ mod tests {
     async fn list_change_specs_is_empty_for_a_change_that_merged_nothing() {
         let (store, admin_key, _org) = setup_with_key();
         save_artifact(&store, &admin_key, "drafting", "design", "D").await;
-        let changes = body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
+        let changes =
+            body_json(req(&store, &admin_key, "GET", "/v1/sdd/changes", None).await).await;
         let change_id = changes[0]["id"].as_str().unwrap().to_string();
 
-        let resp =
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/specs"), None).await;
+        let resp = req(
+            &store,
+            &admin_key,
+            "GET",
+            &format!("/v1/sdd/changes/{change_id}/specs"),
+            None,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_json(resp).await.as_array().unwrap().len(), 0);
     }
@@ -2039,7 +2891,10 @@ mod integration_tests {
     /// cross-domain behavior can be driven end to end.
     fn cross_app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/tasks/:id/spec-links", post(tasks::link_task_spec_handler))
+            .route(
+                "/v1/tasks/:id/spec-links",
+                post(tasks::link_task_spec_handler),
+            )
             .route("/v1/search", axum::routing::get(search::get_global_search))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -2062,7 +2917,10 @@ mod integration_tests {
             Some(v) => Body::from(v.to_string()),
             None => Body::empty(),
         };
-        cross_app(store.clone()).oneshot(builder.body(body).unwrap()).await.unwrap()
+        cross_app(store.clone())
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap()
     }
 
     fn mk_task(store: &SqliteStore, org_id: &str) -> String {
@@ -2109,7 +2967,9 @@ mod integration_tests {
         save_artifact(&store, &admin_key, "sdd-artifacts", "design", "D").await;
 
         // An empty root: no openspec/ tree anywhere, exactly like the Fly.io container.
-        let guard = openspec_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let guard = openspec_env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("sdd-no-openspec-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let prev = std::env::var("OPENSPEC_ROOT").ok();
@@ -2142,7 +3002,11 @@ mod integration_tests {
         let _ = std::fs::remove_dir_all(&tmp);
         drop(guard);
 
-        assert_eq!(known, StatusCode::CREATED, "a change that exists in the DB must link");
+        assert_eq!(
+            known,
+            StatusCode::CREATED,
+            "a change that exists in the DB must link"
+        );
         assert_eq!(
             unknown,
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -2158,7 +3022,9 @@ mod integration_tests {
         let (store, admin_key, org_id) = setup_with_key();
         let task_id = mk_task(&store, &org_id);
 
-        let _guard = openspec_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = openspec_env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = std::env::temp_dir().join(format!("sdd-fs-only-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(tmp.join("openspec/changes/on-disk-only")).unwrap();
@@ -2204,7 +3070,14 @@ mod integration_tests {
         }
 
         let json = body_json(
-            req(&store, &admin_key, "GET", &format!("/v1/sdd/changes/{change_id}/tasks"), None).await,
+            req(
+                &store,
+                &admin_key,
+                "GET",
+                &format!("/v1/sdd/changes/{change_id}/tasks"),
+                None,
+            )
+            .await,
         )
         .await;
         assert_eq!(json.as_array().unwrap().len(), 1);
@@ -2217,8 +3090,11 @@ mod integration_tests {
         let (store, admin_key, _org) = setup_with_key();
         save_artifact(&store, &admin_key, "rate-limiting", "design", "D").await;
 
-        let json = body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
-        let hits = json["sdd_changes"].as_array().expect("the sdd_changes facet must exist");
+        let json =
+            body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
+        let hits = json["sdd_changes"]
+            .as_array()
+            .expect("the sdd_changes facet must exist");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["name"], "rate-limiting");
         assert_eq!(hits[0]["phase"], "propose");
@@ -2255,8 +3131,11 @@ mod integration_tests {
         let (store, admin_key, _org) = setup_with_key();
         save_spec(&store, &admin_key, "rate-limiting", "the contract").await;
 
-        let json = body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
-        let hits = json["sdd_specs"].as_array().expect("the sdd_specs facet must exist");
+        let json =
+            body_json(cross_req(&store, &admin_key, "GET", "/v1/search?q=rate", None).await).await;
+        let hits = json["sdd_specs"]
+            .as_array()
+            .expect("the sdd_specs facet must exist");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["capability"], "rate-limiting");
         assert_eq!(hits[0]["latest_revision"], 1);
@@ -2273,7 +3152,11 @@ mod integration_tests {
         let (key, _) = member_with_perms(&store, &org_id, &["memory:search", "memory:read"]);
 
         let resp = cross_req(&store, &key, "GET", "/v1/search?q=rate", None).await;
-        assert_eq!(resp.status(), StatusCode::OK, "global search must not start 403ing");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "global search must not start 403ing"
+        );
         let json = body_json(resp).await;
         assert_eq!(
             json["sdd_specs"].as_array().unwrap().len(),

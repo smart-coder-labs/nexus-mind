@@ -149,10 +149,7 @@ pub async fn export(
         HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).unwrap(),
     );
     if truncated {
-        headers.insert(
-            "x-export-truncated",
-            HeaderValue::from_static("true"),
-        );
+        headers.insert("x-export-truncated", HeaderValue::from_static("true"));
     }
 
     Ok((StatusCode::OK, headers, body).into_response())
@@ -249,13 +246,19 @@ pub async fn post_audit(
     // Validation: action is required and must be 1-64 chars.
     let action = match req.action.as_deref() {
         None | Some("") => return Err(validation_err("action is required")),
-        Some(a) if a.len() > 64 => return Err(validation_err("action must be at most 64 characters")),
+        Some(a) if a.len() > 64 => {
+            return Err(validation_err("action must be at most 64 characters"))
+        }
         Some(a) => a,
     };
     // Validation: resource_type is required and must be 1-64 chars.
     let resource_type = match req.resource_type.as_deref() {
         None | Some("") => return Err(validation_err("resource_type is required")),
-        Some(rt) if rt.len() > 64 => return Err(validation_err("resource_type must be at most 64 characters")),
+        Some(rt) if rt.len() > 64 => {
+            return Err(validation_err(
+                "resource_type must be at most 64 characters",
+            ))
+        }
         Some(rt) => rt,
     };
     // Validation: metadata must not exceed 16 KB serialized.
@@ -295,6 +298,10 @@ pub async fn post_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::middleware as auth_mw;
+    use crate::db::queries::{bootstrap, log_audit};
+    use crate::db::{connection::connect, migrations};
+    use crate::store::sqlite::SqliteStore;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -303,10 +310,6 @@ mod tests {
         Router,
     };
     use tower::util::ServiceExt;
-    use crate::api::middleware as auth_mw;
-    use crate::db::{connection::connect, migrations};
-    use crate::db::queries::{bootstrap, log_audit};
-    use crate::store::sqlite::SqliteStore;
 
     fn make_store() -> SqliteStore {
         let conn = connect(":memory:").unwrap();
@@ -341,14 +344,16 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
             rusqlite::params![user_id, org_id, format!("{role}@test.com"), role],
-        ).unwrap();
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         raw_key
     }
 
@@ -384,10 +389,19 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let entry: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(entry["current_hash"].is_string(), "current_hash must be a string");
-        assert_eq!(entry["previous_hash"], serde_json::Value::Null, "genesis previous_hash must be null");
+        assert!(
+            entry["current_hash"].is_string(),
+            "current_hash must be a string"
+        );
+        assert_eq!(
+            entry["previous_hash"],
+            serde_json::Value::Null,
+            "genesis previous_hash must be null"
+        );
     }
 
     #[tokio::test]
@@ -436,12 +450,20 @@ mod tests {
             .unwrap();
         assert_eq!(get_resp.status(), StatusCode::OK);
 
-        let bytes = axum::body::to_bytes(get_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let entries: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let arr = entries.as_array().unwrap();
-        assert!(!arr.is_empty(), "GET /v1/audit must return the newly created entry");
+        assert!(
+            !arr.is_empty(),
+            "GET /v1/audit must return the newly created entry"
+        );
         let found = arr.iter().any(|e| e["action"] == "external_store");
-        assert!(found, "the external_store entry must be visible in GET /v1/audit");
+        assert!(
+            found,
+            "the external_store entry must be visible in GET /v1/audit"
+        );
     }
 
     #[tokio::test]
@@ -474,7 +496,9 @@ mod tests {
 
         // Verify no row was written.
         let conn = db_conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_logs", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_logs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0, "no audit row must be written on 400");
     }
 
@@ -507,7 +531,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let conn = db_conn.lock().unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_logs", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_logs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0, "no audit row must be written on 400");
     }
 
@@ -636,22 +662,27 @@ mod tests {
             "INSERT INTO users (id, org_id, email, name, role, status, created_at)
              VALUES (?1, ?2, ?3, 'Test', ?4, 'active', datetime('now'))",
             rusqlite::params![user_id, org_id, format!("{role}@test.com"), role],
-        ).unwrap();
+        )
+        .unwrap();
         let key_id = Uuid::new_v4().to_string();
         let (raw_key, key_hash) = api_keys::generate();
         conn.execute(
             "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
              VALUES (?1, ?2, ?3, ?4, 'default', datetime('now'))",
             rusqlite::params![key_id, user_id, org_id, key_hash],
-        ).unwrap();
+        )
+        .unwrap();
         raw_key
     }
 
     fn promote_admin_to_super_user(store: &SqliteStore) {
         let db = store.conn();
         let conn = db.lock().unwrap();
-        conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE users SET role = 'super_user' WHERE role = 'admin'",
+            [],
+        )
+        .unwrap();
     }
 
     fn setup() -> rusqlite::Connection {
@@ -701,10 +732,29 @@ mod tests {
         let conn = setup();
         let (org, user, _) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
 
-        log_audit(&conn, &org.id, &user.id, "store", "memory", None, serde_json::json!({})).unwrap();
-        log_audit(&conn, &org.id, &user.id, "search", "memory", None, serde_json::json!({})).unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "store",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        log_audit(
+            &conn,
+            &org.id,
+            &user.id,
+            "search",
+            "memory",
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
-        let entries = queries::list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
+        let entries =
+            queries::list_audit(&conn, &org.id, None, None, None, None, None, None, 50, 0).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().all(|e| e.org_id == org.id));
     }
@@ -845,7 +895,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/csv"), "expected text/csv, got: {ct}");
     }
 
@@ -871,9 +926,20 @@ mod tests {
             .await
             .unwrap();
 
-        let cd = resp.headers().get("content-disposition").unwrap().to_str().unwrap();
-        assert!(cd.starts_with("attachment; filename=\"audit-"), "content-disposition must start with attachment; filename=\"audit-, got: {cd}");
-        assert!(cd.ends_with(".csv\""), "content-disposition must end with .csv\", got: {cd}");
+        let cd = resp
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            cd.starts_with("attachment; filename=\"audit-"),
+            "content-disposition must start with attachment; filename=\"audit-, got: {cd}"
+        );
+        assert!(
+            cd.ends_with(".csv\""),
+            "content-disposition must end with .csv\", got: {cd}"
+        );
     }
 
     #[tokio::test]
@@ -898,7 +964,9 @@ mod tests {
             .await
             .unwrap();
 
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body = std::str::from_utf8(&bytes).unwrap();
         let first_line = body.lines().next().unwrap_or("");
         assert_eq!(
@@ -931,8 +999,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-        assert!(ct.contains("application/json"), "expected application/json, got: {ct}");
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected application/json, got: {ct}"
+        );
     }
 
     #[tokio::test]
@@ -1024,7 +1100,8 @@ mod tests {
         let admin_key = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, _, key) = bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            let (org, _, key) =
+                bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
             drop(conn);
             let member_key = create_test_user(&store, &org.id, "member");
             (key, member_key)

@@ -35,11 +35,13 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 rand = "0.8"
 regex = "1"
 globset = "0.4"
@@ -51,6 +53,7 @@ dashmap = "5"
 csv = "1"
 ignore = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+jsonwebtoken = "9"
 async-trait = "0.1"
 tree-sitter = "0.26.10"
 tree-sitter-rust = "0.24.2"
@@ -60,8 +63,8 @@ tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
 rayon = "1.12.0"
 aes-gcm = "0.10"
+tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "macros"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-tempfile = "3"
