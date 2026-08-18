@@ -1,0 +1,68 @@
+# Self-host stack for the oracle box (Oracle Cloud Ampere A1, ARM64 / aarch64).
+#
+# Differences vs deploy/u2s (READ THESE):
+#   - ARM64: pulls ghcr.io/<owner>/nexusmind-backend:main-arm64 (a DISTINCT tag
+#     from u2s's amd64 `:main` — do not merge them, the arches are incompatible).
+#   - TLS: a Caddy reverse proxy terminates HTTPS for api.nexusmind... using the
+#     Cloudflare DNS-01 challenge, so the cert is issued even BEFORE the public
+#     DNS points here (enables validating oracle in parallel, then cutting over).
+#   - No admin container: admin/landing/backoffice stay on Cloudflare Pages and
+#     talk to https://api.nexusmind.smartcoderlabs.com. Only the backend runs here.
+#   - COOKIE_SECURE is NOT forced off: real TLS is present, so secure cookies work.
+#
+# Pulls PRE-BUILT images from GHCR — it does NOT build the Rust backend on the box.
+# Images are produced and pushed by the `backend-oracle-*` jobs in
+# .github/workflows/deploy.yml (native arm64 runner).
+#
+# Requires a .env next to this compose (written by the deploy workflow). See
+# .env.example for the full list. Critical: NEXUSMIND_TOKEN_ENCRYPTION_KEY MUST
+# be the exact same value as on Fly, or GitHub-connection tokens already stored
+# in the migrated DB become undecryptable.
+services:
+  caddy:
+    # Caddy build that includes the Cloudflare DNS module (multi-arch: arm64 ok).
+    image: ghcr.io/caddybuilds/caddy-cloudflare:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Scoped Cloudflare token with Zone:DNS:Edit on smartcoderlabs.com.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    image: ghcr.io/${GHCR_OWNER}/nexusmind-backend:main-arm64
+    restart: unless-stopped
+    # Not published to the host: Caddy is the only public entrypoint (443/80).
+    expose:
+      - "8080"
+    # All runtime config + secrets come from ./.env (never baked into the image).
+    env_file:
+      - .env
+    # Explicit memory ceiling: code indexing (tree-sitter ASTs + ONNX embeddings,
+    # nomic-embed-text-v1.5) can spike. Fails the container loudly instead of
+    # taking the host down on a runaway repo. oracle has 23 GiB, so this is head-
+    # room, not a tight bound.
+    mem_limit: 2g
+    mem_reservation: 512m
+    volumes:
+      - nexusmind_data:/data
+    healthcheck:
+      # start_period covers the ~35s embedding-model init before the port listens.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /v1/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  nexusmind_data:
+  caddy_data:
+  caddy_config:

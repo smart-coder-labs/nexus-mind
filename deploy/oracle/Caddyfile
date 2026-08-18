@@ -1,0 +1,25 @@
+# Caddy config for the oracle box. Terminates TLS for the backend API.
+#
+# Uses the Cloudflare DNS-01 ACME challenge (not HTTP-01) so a valid Let's
+# Encrypt certificate is issued for api.nexusmind.smartcoderlabs.com even while
+# that record still points at Fly. This is what makes a zero-downtime cutover
+# possible: bring oracle fully up (valid cert included), validate it, THEN move
+# the DNS A record to the oracle IP.
+#
+# Requires CLOUDFLARE_API_TOKEN in the environment (see docker-compose.yml),
+# scoped to Zone:DNS:Edit on smartcoderlabs.com.
+
+{
+	# Uncomment to test against Let's Encrypt staging first (avoids rate limits
+	# while iterating). Comment it back out for a real, browser-trusted cert.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	email founder@smartcoderlabs.com
+}
+
+api.nexusmind.smartcoderlabs.com {
+	encode zstd gzip
+	reverse_proxy backend:8080
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+}

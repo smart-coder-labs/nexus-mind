@@ -19,6 +19,149 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+  # ---------------------------------------------------------------------------
+  # oracle (Oracle Cloud Ampere A1, ARM64) — runs IN PARALLEL with the Fly job
+  # during migration. Once the DNS cutover to oracle is validated, delete the
+  # `backend` (Fly) job above and this comment. See deploy/oracle/README.md.
+  #
+  # The Rust backend is built on a NATIVE arm64 runner (fast, no QEMU) and pushed
+  # to GHCR under `:main-arm64` — a distinct tag from u2s's amd64 `:main`.
+  # ---------------------------------------------------------------------------
+  backend-oracle-build:
+    name: Build backend image (arm64, QEMU cross-build) and push to GHCR
+    # Free-tier: no ARM-hosted runners on a private repo, so we cross-build
+    # linux/arm64 from an amd64 runner via QEMU. This EMULATES the Rust compile,
+    # which is slow (tens of minutes on a cold cache); the gha cache below keeps
+    # subsequent builds much faster. If you later get native ARM runners, switch
+    # runs-on back to `ubuntu-24.04-arm` and drop the setup-qemu step.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase owner (GHCR requires lowercase paths)
+        id: vars
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (enables linux/arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (push, via GITHUB_TOKEN)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-backend:main-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  backend-oracle-deploy:
+    name: Deploy backend to oracle over SSH
+    needs: backend-oracle-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to oracle box over SSH
+        env:
+          # Oracle-box specific (how to reach THIS box) — keep the ORACLE_ prefix.
+          SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          # Shared registry / TLS credentials (not oracle-specific).
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_OWNER: ${{ needs.backend-oracle-build.outputs.owner_lc }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Shared app runtime config/secrets (same values for any backend host).
+          # NOTE: GitHub forbids secret names starting with GITHUB_, so the OAuth
+          # secrets are named GH_* and mapped to the app's GITHUB_* vars here.
+          ADMIN_ORIGIN: ${{ secrets.ADMIN_ORIGIN }}
+          SUPERUSER_KEY: ${{ secrets.SUPERUSER_KEY }}
+          NEXUSMIND_TOKEN_ENCRYPTION_KEY: ${{ secrets.NEXUSMIND_TOKEN_ENCRYPTION_KEY }}
+          GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
+          GITHUB_REDIRECT_URI: ${{ secrets.GH_REDIRECT_URI }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          NEXUSMIND_EMBED_ENABLED: ${{ secrets.NEXUSMIND_EMBED_ENABLED }}
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_INTERVAL_HOURS: ${{ secrets.BACKUP_INTERVAL_HOURS }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing ORACLE_SSH_HOST secret}"
+          : "${SSH_USER:?missing ORACLE_SSH_USER secret}"
+          : "${SSH_KEY:?missing ORACLE_SSH_KEY secret}"
+
+          install -m 600 /dev/null /tmp/oracle_key
+          printf '%s\n' "$SSH_KEY" > /tmp/oracle_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          SSHOPTS="-i /tmp/oracle_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+          REMOTE="${SSH_USER}@${SSH_HOST}"
+
+          # 1. Ship compose + Caddyfile.
+          ssh $SSHOPTS "$REMOTE" "mkdir -p ~/oracle-deploy"
+          scp $SSHOPTS deploy/oracle/docker-compose.yml deploy/oracle/Caddyfile "$REMOTE:~/oracle-deploy/"
+
+          # 2. Write .env on the box (secrets live only here, never in the image).
+          #    Values are QUOTED so spaces / special chars survive `set -a; . .env`.
+          ssh $SSHOPTS "$REMOTE" "umask 077; cat > ~/oracle-deploy/.env" <<ENVEOF
+          GHCR_OWNER="${GHCR_OWNER}"
+          CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN}"
+          DB_PATH="/data/nexusmind.db"
+          RUST_LOG="info"
+          ADMIN_ORIGIN="${ADMIN_ORIGIN}"
+          SUPERUSER_KEY="${SUPERUSER_KEY}"
+          NEXUSMIND_TOKEN_ENCRYPTION_KEY="${NEXUSMIND_TOKEN_ENCRYPTION_KEY}"
+          GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}"
+          GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET}"
+          GITHUB_REDIRECT_URI="${GITHUB_REDIRECT_URI}"
+          SMTP_HOST="${SMTP_HOST}"
+          SMTP_PORT="${SMTP_PORT}"
+          SMTP_USERNAME="${SMTP_USERNAME}"
+          SMTP_PASSWORD="${SMTP_PASSWORD}"
+          SMTP_FROM="${SMTP_FROM}"
+          APP_BASE_URL="${APP_BASE_URL}"
+          CORS_ORIGINS="${CORS_ORIGINS}"
+          NEXUSMIND_EMBED_ENABLED="${NEXUSMIND_EMBED_ENABLED}"
+          BACKUP_DATABASE_URL="${BACKUP_DATABASE_URL}"
+          BACKUP_INTERVAL_HOURS="${BACKUP_INTERVAL_HOURS}"
+          ENVEOF
+
+          # 3. Private GHCR login. Token flows runner-stdin -> ssh -> docker
+          #    --password-stdin, so it never appears in the box's process argv.
+          printf '%s' "$GHCR_TOKEN" | ssh $SSHOPTS "$REMOTE" "docker login ghcr.io -u '${GHCR_USERNAME}' --password-stdin"
+
+          # 4. Pull the fresh image and roll the stack. `--pull always` guarantees
+          #    the new :main-arm64 digest is fetched even though the tag is stable.
+          ssh $SSHOPTS "$REMOTE" "cd ~/oracle-deploy && docker compose pull && docker compose up -d"
+
+          rm -f /tmp/oracle_key
+          echo "oracle deploy complete."
+
   admin:
     name: Deploy admin to Cloudflare Pages
     runs-on: ubuntu-latest
