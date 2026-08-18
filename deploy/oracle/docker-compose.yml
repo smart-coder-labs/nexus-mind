@@ -21,7 +21,7 @@
 services:
   caddy:
     # Caddy build that includes the Cloudflare DNS module (multi-arch: arm64 ok).
-    image: ghcr.io/caddybuilds/caddy-cloudflare:2.8
+    image: ghcr.io/caddybuilds/caddy-cloudflare:2.10.0
     restart: unless-stopped
     ports:
       - "80:80"
