@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {
+      "fixture": "valid/multi-project.yaml",
+      "valid": true,
+      "resolutions": [
+        { "path": "services/payments/docs/adr.md", "status": "resolved", "alias": "payments", "project_id": "prj-payments", "client_id": "client-acme", "selection": "pattern" },
+        { "path": "apps/storefront/README.md", "status": "resolved", "alias": "storefront", "project_id": "prj-storefront", "client_id": "client-retail", "selection": "pattern" },
+        { "path": "docs/platform.md", "status": "resolved", "alias": "platform", "project_id": "prj-platform", "client_id": "client-acme", "selection": "pattern" }
+      ]
+    },
+    { "fixture": "invalid/unknown-version.yaml", "valid": false, "error_code": "CONFIG_UNSUPPORTED_VERSION" }
+  ]
+}

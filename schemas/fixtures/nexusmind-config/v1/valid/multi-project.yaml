@@ -1,0 +1,28 @@
+version: 1
+repository:
+  id: ecommerce-platform
+defaults:
+  project: platform
+  agent_profile: essential
+projects:
+  platform:
+    project_id: prj-platform
+    client_id: client-acme
+    paths: ["**"]
+    exclude: ["services/payments/**", "apps/storefront/**"]
+  payments:
+    project_id: prj-payments
+    client_id: client-acme
+    paths: ["services/payments/**"]
+  storefront:
+    project_id: prj-storefront
+    client_id: client-retail
+    paths: ["apps/storefront/**"]
+agents:
+  profiles:
+    essential:
+      capabilities: [context.read, memory.read, memory.write, task.read, task.write]
+    readonly:
+      extends: essential
+      capabilities: []
+      disable_capabilities: [memory.write, task.write]

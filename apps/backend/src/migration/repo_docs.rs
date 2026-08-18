@@ -188,6 +188,7 @@ impl RepoDocsConnector {
                                 task,
                             ),
                             display_origin: format!("{origin} › task {}", idx + 1),
+                            routing_path: Some(rel.clone()),
                             raw: task.clone(),
                             meta: serde_json::json!({
                                 "path": rel,
@@ -204,6 +205,7 @@ impl RepoDocsConnector {
                 items.push(SourceItem {
                     source_identity: self.identity(&rel, &anchor, &chunk.content),
                     display_origin: origin,
+                    routing_path: Some(rel.clone()),
                     raw: chunk.content.clone(),
                     meta: serde_json::json!({
                         "path": rel,

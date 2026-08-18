@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusmind.dev/schemas/nexusmind-config-v1.schema.json",
+  "title": "NexusMind repository configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "repository", "projects"],
+  "properties": {
+    "version": { "const": 1 },
+    "repository": { "$ref": "#/$defs/repository" },
+    "defaults": { "$ref": "#/$defs/defaults" },
+    "projects": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/project" }
+    },
+    "agents": { "$ref": "#/$defs/agents" }
+  },
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "nonEmpty": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": { "id": { "$ref": "#/$defs/slug" } }
+    },
+    "defaults": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "project": { "$ref": "#/$defs/slug" },
+        "agent_profile": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "project": {
+      "type": "object", "additionalProperties": false,
+      "required": ["project_id", "paths"],
+      "properties": {
+        "project_id": { "$ref": "#/$defs/nonEmpty" },
+        "client_id": { "$ref": "#/$defs/nonEmpty" },
+        "paths": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmpty" } },
+        "exclude": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmpty" } },
+        "agent_profile": { "$ref": "#/$defs/slug" }
+      }
+    },
+    "agents": {
+      "type": "object", "additionalProperties": false, "required": ["profiles"],
+      "properties": {
+        "profiles": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/slug" },
+          "additionalProperties": { "$ref": "#/$defs/profile" }
+        }
+      }
+    },
+    "profile": {
+      "type": "object", "additionalProperties": false, "required": ["capabilities"],
+      "properties": {
+        "extends": { "$ref": "#/$defs/slug" },
+        "capabilities": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/capability" } },
+        "disable_capabilities": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/capability" } }
+      }
+    },
+    "capability": {
+      "type": "string",
+      "enum": ["context.read", "memory.read", "memory.write", "convention.read", "convention.write", "project.read", "client.read", "task.read", "task.write", "sdd.read", "sdd.write", "code.read", "usage.read", "usage.write", "migration.run", "migration.review", "harness.read", "harness.write"]
+    }
+  }
+}
