@@ -28,6 +28,10 @@ jobs:
   # to GHCR under `:main-arm64` — a distinct tag from u2s's amd64 `:main`.
   # ---------------------------------------------------------------------------
   backend-oracle-build:
+    # PAUSED: the docker-compose deploy grabs host 80/443 and conflicts with the
+    # k3s Traefik ingress (hostPort) running vend on this box. Migrating to a k8s
+    # deployment behind Traefik (Option A). Do not re-enable until that lands.
+    if: false
     name: Build backend image (arm64) and push to GHCR
     # Native arm64 hosted runner — compiles the Rust backend directly on ARM
     # (no QEMU emulation). Same pattern as the vend-accounting-service deploy.
@@ -64,6 +68,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   backend-oracle-deploy:
+    if: false  # PAUSED — see backend-oracle-build. Being replaced by a k8s deploy.
     name: Deploy backend to oracle over SSH
     needs: backend-oracle-build
     runs-on: ubuntu-latest
