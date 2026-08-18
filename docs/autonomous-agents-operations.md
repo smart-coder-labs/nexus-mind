@@ -2,7 +2,7 @@
 
 ## Single-server setup
 
-The production backend image installs a reviewed, pinned Claude Code release at `/usr/local/bin/claude`, disables its auto-updater, and persists `HOME/.claude` on the NexusMind PVC. For a non-container deployment, install the same pinned release on the backend host and set `CLAUDE_CODE_BIN` to its absolute executable path. Authenticate interactively as the dedicated backend service account before enabling the worker. Verify as that OS account:
+The production backend image installs a reviewed, pinned Claude Code release and points `CLAUDE_CODE_BIN` at npm's real executable (`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`), not its `/usr/local/bin/claude` symlink. It disables the auto-updater and persists Claude's complete `HOME` on the NexusMind PVC because the CLI uses both `~/.claude` and `~/.claude.json`. For a non-container deployment, install the same pinned release and set `CLAUDE_CODE_BIN` to the absolute, fully resolved executable path. Authenticate interactively as the dedicated backend service account before enabling the worker. Verify as that OS account:
 
 ```sh
 /absolute/path/to/claude --version

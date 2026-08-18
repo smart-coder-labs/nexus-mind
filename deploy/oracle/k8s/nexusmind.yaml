@@ -52,7 +52,7 @@ spec:
         - name: prepare-autonomous-agent-storage
           image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
           imagePullPolicy: Always
-          command: ["sh", "-c", "mkdir -p /data/claude-code"]
+          command: ["sh", "-c", "mkdir -p /data/claude-home"]
           volumeMounts:
             - name: data
               mountPath: /data
@@ -69,6 +69,10 @@ spec:
           env:
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
+            - name: CLAUDE_CODE_BIN
+              value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+            - name: HOME
+              value: /claude-home
           volumeMounts:
             - name: data
               mountPath: /data
@@ -80,12 +84,11 @@ spec:
             - name: data
               mountPath: /app/.fastembed_cache
               subPath: fastembed-cache
-            # Claude Code stores its login under HOME/.claude. Keeping this on
-            # the PVC preserves authentication across Recreate rollouts while
-            # still allowing the runtime probe to detect expired sessions.
+            # Persist Claude Code's complete HOME: it uses both ~/.claude and
+            # ~/.claude.json for authentication/configuration state.
             - name: data
-              mountPath: /app/.claude
-              subPath: claude-code
+              mountPath: /claude-home
+              subPath: claude-home
           readinessProbe:
             httpGet:
               path: /v1/health
@@ -119,12 +122,16 @@ spec:
           env:
             - name: AUTONOMOUS_AGENTS_ENABLED
               value: "true"
+            - name: CLAUDE_CODE_BIN
+              value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+            - name: HOME
+              value: /claude-home
           volumeMounts:
             - name: data
               mountPath: /data
             - name: data
-              mountPath: /app/.claude
-              subPath: claude-code
+              mountPath: /claude-home
+              subPath: claude-home
           resources:
             requests:
               cpu: 250m

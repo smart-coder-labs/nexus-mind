@@ -24,8 +24,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-ENV HOME=/app \
-    CLAUDE_CODE_BIN=/usr/local/bin/claude \
+ENV HOME=/claude-home \
+    CLAUDE_CODE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
     DISABLE_AUTOUPDATER=1
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
@@ -39,7 +39,7 @@ COPY --from=builder /app/target/release/import-sdd /app/import-sdd
 #   nexusmind-seed /data/nexusmind.db
 COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
 
-RUN mkdir -p /data /app/.claude
+RUN mkdir -p /data /claude-home
 
 EXPOSE 8080
 CMD ["/app/nexusmind"]
