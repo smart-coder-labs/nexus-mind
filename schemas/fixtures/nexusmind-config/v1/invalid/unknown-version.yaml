@@ -1,0 +1,7 @@
+version: 2
+repository:
+  id: sample
+projects:
+  sample:
+    project_id: prj-sample
+    paths: ["**"]

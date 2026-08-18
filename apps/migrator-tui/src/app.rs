@@ -124,8 +124,10 @@ impl FieldId {
             Client => "Scopes everything this run stages to one client.",
             Project => "Optional. Narrows the scope further, inside the client.",
             Path => "The repository or directory to scan.",
-            Includes => "Restrict the scan to these subpaths. The cheapest way to \
-                         make a first run small.",
+            Includes => {
+                "Restrict the scan to these subpaths. The cheapest way to \
+                         make a first run small."
+            }
             Excludes => "Skip these subpaths, on top of the connector's own rules.",
             IncludeSdd => "Proposals, designs and task lists under openspec/.",
             HostScope => "Your personal Claude configuration, not just the repo's.",
@@ -439,7 +441,45 @@ impl Progress {
                 self.bytes = bytes;
                 self.estimated_tokens = estimated_tokens;
                 self.total = units;
-                self.note(format!("· scanned {documents} document(s) → {units} unit(s)"));
+                self.note(format!(
+                    "· scanned {documents} document(s) → {units} unit(s)"
+                ));
+            }
+            RunEvent::ConfigLoaded {
+                repository_id,
+                path,
+                project_count,
+                ..
+            } => {
+                self.note(format!(
+                    "· config {path} for {repository_id} ({project_count} project(s))"
+                ));
+            }
+            RunEvent::RoutingGroup {
+                alias, item_count, ..
+            } => {
+                self.note(format!("· routed {item_count} item(s) to {alias}"));
+            }
+            RunEvent::RoutingIssue {
+                kind,
+                count,
+                sample,
+            } => {
+                self.note(format!(
+                    "! routing {kind}: {count} item(s){}",
+                    sample.map(|s| format!("; e.g. {s}")).unwrap_or_default()
+                ));
+            }
+            RunEvent::RoutingReady {
+                groups,
+                mapped_items,
+                unmapped_items,
+            } => {
+                self.note(format!("· routing ready: {groups} group(s), {mapped_items} mapped, {unmapped_items} unmapped"));
+            }
+            RunEvent::RunCreated { alias, run_id, .. } => {
+                self.note(format!("· created run {run_id} for {alias}"));
+                self.run_id = Some(run_id);
             }
             RunEvent::Agent {
                 index,
@@ -1083,7 +1123,9 @@ impl App {
     }
 
     pub fn load_runs(&mut self) {
-        self.spawn_api("listing runs", |c| ApiMsg::Runs(c.runs().map_err(|e| e.to_string())));
+        self.spawn_api("listing runs", |c| {
+            ApiMsg::Runs(c.runs().map_err(|e| e.to_string()))
+        });
     }
 
     pub fn pick_run(&mut self) {
@@ -1323,7 +1365,11 @@ mod tests {
     fn exclusions_are_ordered_largest_first_and_total_correctly() {
         let mut p = Progress::default();
         for (reason, count, sample) in [
-            ("third-party asset", 21_526usize, "node_modules/x/LICENSE.md"),
+            (
+                "third-party asset",
+                21_526usize,
+                "node_modules/x/LICENSE.md",
+            ),
             ("not engineering knowledge", 3, "docs/marketing/a.md"),
         ] {
             p.apply(RunnerMsg::Line(ParsedLine::Event(RunEvent::Excluded {
@@ -1501,7 +1547,11 @@ mod tests {
 
         app.progress.total = 69;
         app.progress.staged = Some((69, 0, 0));
-        assert_eq!(app.mood(), Mood::Working, "still one mood: something is running");
+        assert_eq!(
+            app.mood(),
+            Mood::Working,
+            "still one mood: something is running"
+        );
 
         app.progress.finished = Some(FinishedRun {
             ok: true,
@@ -1608,7 +1658,11 @@ mod tests {
         app.review_cursor = 0;
         app.toggle_selected();
         assert!(app.selected.is_empty());
-        assert!(app.status.contains("cannot be batch-approved"), "{}", app.status);
+        assert!(
+            app.status.contains("cannot be batch-approved"),
+            "{}",
+            app.status
+        );
     }
 
     /// A backend call must leave the draw loop free. The observable contract is
@@ -1621,7 +1675,11 @@ mod tests {
         app.config.api_key = "k".into();
         app.probe();
         assert!(app.is_waiting(), "the call is out, the UI is not");
-        assert!(app.status.contains("testing the connection"), "{}", app.status);
+        assert!(
+            app.status.contains("testing the connection"),
+            "{}",
+            app.status
+        );
 
         // A second call while one is outstanding is refused, not queued: two
         // concurrent writes would race on candidate versions.
@@ -1650,10 +1708,7 @@ mod tests {
         app.config.source = Source::RepoDocs;
         app.config.path = "/definitely/not/here".into();
         let why: Vec<String> = app.blockers(true).iter().map(|b| b.why.clone()).collect();
-        assert!(
-            why.iter().any(|w| w.contains("not a directory")),
-            "{why:?}"
-        );
+        assert!(why.iter().any(|w| w.contains("not a directory")), "{why:?}");
 
         app.config.source = Source::GitHistory;
         app.config.path = "/tmp".into();

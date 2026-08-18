@@ -26,8 +26,19 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::sync::Arc;
+use nexusmind::repository_config::{self, ConfigSelection, DestinationOverride, ProjectResolver};
+
+#[derive(Clone)]
+struct ExecutionGroup {
+    alias: String,
+    project_id: String,
+    client_id: Option<String>,
+    item_indices: Vec<usize>,
+    attestation: serde_json::Value,
+}
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 
 // ── The connector contract ───────────────────────────────────────────────────
 //
@@ -35,12 +46,11 @@ use std::process::Command;
 // the library suite. Re-exported here so this binary reads as it did before.
 
 pub use nexusmind::migration::{
-    events::{clip, EventSink, RunEvent},
-    ScanProgress,
     db_schema::{DbSchemaConnector, SamplingPolicy},
+    events::{clip, EventSink, RunEvent},
     pg_reader::PgSchemaReader,
     CandidatePayload, ClaudeMemoriesConnector, Connector, GitHistoryConnector, RepoDocsConnector,
-    ScanOptions, SourceItem,
+    ScanOptions, ScanProgress, SourceItem,
 };
 
 // ── The noop connector ───────────────────────────────────────────────────────
@@ -56,6 +66,7 @@ impl NoopConnector {
             items: vec![SourceItem {
                 source_identity: "noop:sample:1".to_string(),
                 display_origin: "noop sample".to_string(),
+                routing_path: None,
                 raw: "The team always writes the failing test first.".to_string(),
                 meta: serde_json::json!({}),
             }],
@@ -238,7 +249,10 @@ pub fn parse_candidate(envelope: &serde_json::Value) -> Result<CandidatePayload>
 pub fn parse_usage(envelope: &serde_json::Value) -> Option<TokenUsage> {
     let usage = envelope.get("usage")?;
     Some(TokenUsage {
-        input: usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+        input: usage
+            .get("input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
         output: usage
             .get("output_tokens")
             .and_then(|v| v.as_i64())
@@ -342,8 +356,7 @@ impl ClaudeCli {
             );
         }
 
-        serde_json::from_slice(&output.stdout)
-            .context("classifier output was not valid JSON")
+        serde_json::from_slice(&output.stdout).context("classifier output was not valid JSON")
     }
 
     /// Classifies a whole batch in one call.
@@ -353,11 +366,7 @@ impl ClaudeCli {
     /// and nothing is reordered — the caller pairs the results back up by
     /// position, so a short or scrambled reply degrades per item instead of
     /// costing the batch.
-    pub fn classify_bulk(
-        &self,
-        prompt: &str,
-        items: &[SourceItem],
-    ) -> Result<BulkOutput> {
+    pub fn classify_bulk(&self, prompt: &str, items: &[SourceItem]) -> Result<BulkOutput> {
         let envelope = self.invoke(prompt)?;
         let usage = parse_usage(&envelope);
         let raw_response = match envelope.get("result") {
@@ -590,8 +599,14 @@ pub fn build_candidates_bulk(
             origin: format!(
                 "batch of {} · {} … {}",
                 slice.len(),
-                slice.first().map(|i| i.display_origin.as_str()).unwrap_or(""),
-                slice.last().map(|i| i.display_origin.as_str()).unwrap_or("")
+                slice
+                    .first()
+                    .map(|i| i.display_origin.as_str())
+                    .unwrap_or(""),
+                slice
+                    .last()
+                    .map(|i| i.display_origin.as_str())
+                    .unwrap_or("")
             ),
         });
 
@@ -802,6 +817,15 @@ struct Args {
     #[arg(long, default_value = ".")]
     path: String,
 
+    /// Explicit NexusMind repository config. Otherwise `.nexusmind.yaml` is
+    /// discovered upward from --path, stopping at the Git root.
+    #[arg(long)]
+    config: Option<String>,
+
+    /// Fail when no repository config is discoverable.
+    #[arg(long)]
+    require_config: bool,
+
     #[arg(long, env = "NEXUSMIND_BASE_URL")]
     api_url: Option<String>,
 
@@ -938,7 +962,7 @@ fn with_scan_progress(mut opts: ScanOptions, sink: &Arc<EventSink>) -> ScanOptio
     }
     let sink = Arc::clone(sink);
     opts.progress = Some(Arc::new(move |p: ScanProgress| {
-        if p.seen <= SCAN_HEARTBEAT_FIRST || p.seen % SCAN_HEARTBEAT_EVERY == 0 {
+        if p.seen <= SCAN_HEARTBEAT_FIRST || p.seen.is_multiple_of(SCAN_HEARTBEAT_EVERY) {
             sink.emit(&RunEvent::Scanning {
                 seen: p.seen,
                 current: p.current,
@@ -956,7 +980,9 @@ fn connector_for(source: &str, args: &Args) -> Result<Box<dyn Connector>> {
                 .with_sdd(args.include_sdd),
         )),
         "claude-memories" => Ok(Box::new(ClaudeMemoriesConnector::new(
-            args.host_scope.clone().unwrap_or_else(|| "global".to_string()),
+            args.host_scope
+                .clone()
+                .unwrap_or_else(|| "global".to_string()),
         ))),
         "git-history" => Ok(Box::new(
             GitHistoryConnector::new(GitHistoryConnector::repo_name_for(&args.path))
@@ -1019,7 +1045,9 @@ pub fn chunk_candidates(candidates: Vec<CandidatePayload>) -> Vec<Vec<CandidateP
     let mut bytes = 0usize;
 
     for candidate in candidates {
-        let size = serde_json::to_string(&candidate).map(|s| s.len()).unwrap_or(0);
+        let size = serde_json::to_string(&candidate)
+            .map(|s| s.len())
+            .unwrap_or(0);
         let would_overflow = !current.is_empty()
             && (bytes + size > MAX_BATCH_BYTES || current.len() >= MAX_BATCH_ITEMS);
         if would_overflow {
@@ -1089,7 +1117,7 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
     }
 
     let connector = connector_for(&args.source, args)?;
-    let opts = with_scan_progress(scan_options_for(args), &sink);
+    let opts = with_scan_progress(scan_options_for(args), sink);
 
     sink.emit(&RunEvent::Started {
         source: connector.source_kind().to_string(),
@@ -1100,6 +1128,92 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
     });
 
     let report = connector.scan_report(&opts)?;
+
+    let selection = match args.config.as_deref() {
+        Some(config) => ConfigSelection::ExplicitFrom {
+            config: PathBuf::from(config),
+            source: PathBuf::from(&args.path),
+        },
+        None => ConfigSelection::DiscoverFrom(PathBuf::from(&args.path)),
+    };
+    let snapshot = repository_config::load(selection, args.require_config)?;
+    let mut groups = Vec::new();
+    let mut routing_unmapped = 0usize;
+    if let Some(snapshot_value) = snapshot.clone() {
+        sink.emit(&RunEvent::ConfigLoaded {
+            repository_id: snapshot_value.config.repository.id.clone(),
+            path: snapshot_value.relative_path.clone(),
+            sha256: snapshot_value.sha256.clone(),
+            project_count: snapshot_value.config.projects.len(),
+        });
+        let resolver = ProjectResolver::compile(snapshot_value.clone())?;
+        let override_ = DestinationOverride {
+            project_id: args.project.clone(),
+            client_id: args.client.clone(),
+        };
+        let plan = resolver.plan_paths(
+            report.items.iter().map(|item| item.routing_path.as_deref()),
+            &override_,
+        )?;
+        routing_unmapped = plan.unmapped_indices.len();
+        for group in plan.groups {
+            let sample_paths = group
+                .item_indices
+                .iter()
+                .filter_map(|i| report.items[*i].routing_path.clone())
+                .take(3)
+                .collect::<Vec<_>>();
+            sink.emit(&RunEvent::RoutingGroup {
+                alias: group.destination.alias.clone(),
+                project_id: group.destination.project_id.clone(),
+                client_id: group.destination.client_id.clone(),
+                item_count: group.item_indices.len(),
+                sample_paths,
+            });
+            groups.push(ExecutionGroup {
+                alias: group.destination.alias.clone(),
+                project_id: group.destination.project_id.clone(),
+                client_id: group.destination.client_id.clone(),
+                item_indices: group.item_indices,
+                attestation: serde_json::json!({ "repository_config": {
+                    "schema_version": 1,
+                    "repository_id": snapshot_value.config.repository.id,
+                    "path": snapshot_value.relative_path,
+                    "sha256": snapshot_value.sha256,
+                    "project_alias": group.destination.alias,
+                    "project_id": group.destination.project_id,
+                    "client_id": group.destination.client_id,
+                    "selection": group.destination.basis,
+                }}),
+            });
+        }
+    } else if let Some(project) = args.project.clone() {
+        groups.push(ExecutionGroup {
+            alias: "explicit".into(),
+            project_id: project,
+            client_id: args.client.clone(),
+            item_indices: (0..report.items.len()).collect(),
+            attestation: serde_json::json!({}),
+        });
+    } else {
+        routing_unmapped = report.items.len();
+    }
+    if routing_unmapped > 0 {
+        sink.emit(&RunEvent::RoutingIssue {
+            kind: "unmapped".into(),
+            count: routing_unmapped,
+            sample: report
+                .items
+                .iter()
+                .find(|item| item.routing_path.is_none())
+                .map(|item| item.display_origin.clone()),
+        });
+    }
+    sink.emit(&RunEvent::RoutingReady {
+        groups: groups.len(),
+        mapped_items: groups.iter().map(|g| g.item_indices.len()).sum(),
+        unmapped_items: routing_unmapped,
+    });
 
     sink.emit(&RunEvent::Scanned {
         documents: report.documents,
@@ -1112,7 +1226,9 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
         // Grouped, not enumerated. See `RunEvent::Excluded`.
         let mut by_reason: std::collections::BTreeMap<&str, (usize, &str)> = Default::default();
         for (path, reason) in &report.excluded {
-            let entry = by_reason.entry(reason.as_str()).or_insert((0, path.as_str()));
+            let entry = by_reason
+                .entry(reason.as_str())
+                .or_insert((0, path.as_str()));
             entry.0 += 1;
         }
         for (reason, (count, sample)) in by_reason {
@@ -1141,7 +1257,14 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
             }
         }
         say!("no classification was run and nothing was posted.");
+        say!(
+            "routing — groups={} unmapped={routing_unmapped}",
+            groups.len()
+        );
         return Ok(());
+    }
+    if routing_unmapped > 0 {
+        anyhow::bail!("ROUTING_UNMAPPED: {routing_unmapped} item(s) have no project destination");
     }
     let items = report.items;
 
@@ -1152,28 +1275,55 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
         max_tokens: args.max_tokens,
         spent: 0,
     };
-    let (candidates, built) = match (&cli, args.bulk) {
-        (Some(cli), true) => build_candidates_bulk(
-            connector.as_ref(),
-            &items,
-            cli,
-            &mut budget,
-            sink,
-            args.batch_size.max(1),
-        ),
-        _ => build_candidates(connector.as_ref(), &items, cli.as_ref(), &mut budget, sink),
-    };
-    *summary = built;
+    let mut candidate_groups = Vec::new();
+    summary.scanned = items.len();
+    for group in &groups {
+        let group_items = group
+            .item_indices
+            .iter()
+            .map(|i| items[*i].clone())
+            .collect::<Vec<_>>();
+        let (candidates, built) = match (&cli, args.bulk) {
+            (Some(cli), true) => build_candidates_bulk(
+                connector.as_ref(),
+                &group_items,
+                cli,
+                &mut budget,
+                sink,
+                args.batch_size.max(1),
+            ),
+            _ => build_candidates(
+                connector.as_ref(),
+                &group_items,
+                cli.as_ref(),
+                &mut budget,
+                sink,
+            ),
+        };
+        summary.classified += built.classified;
+        summary.fallbacks += built.fallbacks;
+        summary.failed += built.failed;
+        summary.tokens_spent = budget.spent;
+        summary.aborted_on_budget |= built.aborted_on_budget;
+        candidate_groups.push((group.clone(), candidates));
+        if summary.aborted_on_budget {
+            break;
+        }
+    }
 
     // A blank value counts as absent. `NEXUSMIND_BASE_URL=` in a shell — the
     // usual way to neutralise the production default for one command — arrives
     // as `Some("")`, and posting to it fails with `builder error: relative URL
     // without a base`, which tells the operator nothing about what they did.
-    let api_url = args.api_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
+    let api_url = args
+        .api_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty());
     let Some(api_url) = api_url else {
         say!(
             "{} candidate(s) built; no --api-url given, so nothing was posted.",
-            candidates.len()
+            candidate_groups.iter().map(|(_, c)| c.len()).sum::<usize>()
         );
         say!("{summary:?}");
         return Ok(());
@@ -1183,71 +1333,75 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
         .as_deref()
         .context("--api-key (or NEXUSMIND_API_KEY) is required to post candidates")?;
 
-    let http = reqwest::blocking::Client::new();
-    let run_body = serde_json::json!({
-        "source_kind": connector.source_kind(),
-        "client_id": args.client,
-        "project_id": args.project,
-        "source_ref": args.path,
-        "runner_version": cli.as_ref().and_then(|c| c.version()),
-    });
-    let created = read_body(
-        http.post(format!("{api_url}/v1/migrations"))
-            .bearer_auth(api_key)
-            .json(&run_body)
-            .send()?,
-        "creating the run",
-    )?;
-    let run_id = created
-        .get("id")
-        .and_then(|v| v.as_str())
-        .context("backend did not return a run id")?;
-
-    let total_candidates = candidates.len();
-    let batches = chunk_candidates(candidates);
-    let batch_count = batches.len();
-    let mut totals = (0usize, 0usize, 0usize);
-
-    for (i, batch) in batches.into_iter().enumerate() {
-        let size = batch.len();
-        let reply = read_body(
-            http.post(format!("{api_url}/v1/migrations/{run_id}/candidates"))
-                .bearer_auth(api_key)
-                .json(&serde_json::json!({ "candidates": batch }))
-                .send()?,
-            &format!(
-                "staging batch {}/{batch_count} ({size} candidate(s))",
-                i + 1
-            ),
-        )?;
-        let count = |key: &str| {
-            reply
-                .get(key)
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default() as usize
-        };
-        totals.0 += count("staged");
-        totals.1 += count("skipped");
-        totals.2 += count("rejected");
-
-        // Emitted per batch with running totals, so a long staging phase shows
-        // movement instead of a pause at 100% of classification.
-        sink.emit(&RunEvent::Staged {
-            run_id: run_id.to_string(),
-            staged: totals.0,
-            skipped: totals.1,
-            rejected: totals.2,
-        });
+    if let Some(snapshot) = snapshot.as_ref() {
+        snapshot.verify_current()?;
     }
-    let staged = serde_json::json!({
-        "staged": totals.0,
-        "skipped": totals.1,
-        "rejected": totals.2,
-        "batches": batch_count,
-        "candidates": total_candidates,
-    });
+    let http = reqwest::blocking::Client::new();
+    for (group, candidates) in candidate_groups {
+        let run_body = serde_json::json!({
+            "source_kind": connector.source_kind(), "client_id": group.client_id,
+            "project_id": group.project_id, "source_ref": args.path,
+            "runner_version": cli.as_ref().and_then(|c| c.version()), "attestation": group.attestation,
+        });
+        let created = read_body(
+            http.post(format!("{api_url}/v1/migrations"))
+                .bearer_auth(api_key)
+                .json(&run_body)
+                .send()?,
+            "creating the run",
+        )?;
+        let run_id = created
+            .get("id")
+            .and_then(|v| v.as_str())
+            .context("backend did not return a run id")?;
+        sink.emit(&RunEvent::RunCreated {
+            alias: group.alias.clone(),
+            project_id: group.project_id.clone(),
+            run_id: run_id.to_string(),
+        });
 
-    say!("run {run_id}: {staged}");
+        let total_candidates = candidates.len();
+        let batches = chunk_candidates(candidates);
+        let batch_count = batches.len();
+        let mut totals = (0usize, 0usize, 0usize);
+
+        for (i, batch) in batches.into_iter().enumerate() {
+            let size = batch.len();
+            let reply = read_body(
+                http.post(format!("{api_url}/v1/migrations/{run_id}/candidates"))
+                    .bearer_auth(api_key)
+                    .json(&serde_json::json!({ "candidates": batch }))
+                    .send()?,
+                &format!(
+                    "staging batch {}/{batch_count} ({size} candidate(s))",
+                    i + 1
+                ),
+            )?;
+            let count =
+                |key: &str| reply.get(key).and_then(|v| v.as_u64()).unwrap_or_default() as usize;
+            totals.0 += count("staged");
+            totals.1 += count("skipped");
+            totals.2 += count("rejected");
+
+            // Emitted per batch with running totals, so a long staging phase shows
+            // movement instead of a pause at 100% of classification.
+            sink.emit(&RunEvent::Staged {
+                run_id: run_id.to_string(),
+                staged: totals.0,
+                skipped: totals.1,
+                rejected: totals.2,
+            });
+        }
+        let staged = serde_json::json!({
+            "staged": totals.0,
+            "skipped": totals.1,
+            "rejected": totals.2,
+            "batches": batch_count,
+            "candidates": total_candidates,
+        });
+
+        say!("run {run_id}: {staged}");
+    }
     say!("{summary:?}");
     if summary.aborted_on_budget {
         say!(
@@ -1280,8 +1434,8 @@ fn emit_finished(sink: &EventSink, summary: &RunSummary, error: Option<String>) 
 
 fn main() {
     let args = Args::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info".into());
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
     // In `--json` mode stdout belongs to the event stream alone. A log line in
     // the middle of it is not a cosmetic problem: it is a parse error for the
     // consumer reading a line at a time.
@@ -1309,6 +1463,7 @@ mod tests {
         SourceItem {
             source_identity: id.to_string(),
             display_origin: format!("origin of {id}"),
+            routing_path: None,
             raw: "some prose".to_string(),
             meta: serde_json::json!({}),
         }
@@ -1336,7 +1491,8 @@ mod tests {
         let c = NoopConnector::with_sample();
         let items = c.scan(&ScanOptions::default()).unwrap();
         let mut budget = Budget::default();
-        let (candidates, summary) = build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
+        let (candidates, summary) =
+            build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].destination_kind, "memory");
@@ -1350,8 +1506,13 @@ mod tests {
         let c = NoopConnector::with_sample();
         let items = c.scan(&ScanOptions::default()).unwrap();
         let mut budget = Budget::default();
-        let (candidates, summary) = build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
-        assert_eq!(candidates.len(), 1, "--no-llm must still produce candidates");
+        let (candidates, summary) =
+            build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
+        assert_eq!(
+            candidates.len(),
+            1,
+            "--no-llm must still produce candidates"
+        );
         assert_eq!(summary.classified, 0);
     }
 
@@ -1360,9 +1521,13 @@ mod tests {
         let c = NoFallback;
         let items = c.scan(&ScanOptions::default()).unwrap();
         let mut budget = Budget::default();
-        let (candidates, summary) = build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
+        let (candidates, summary) =
+            build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
         assert!(candidates.is_empty());
-        assert_eq!(summary.failed, 2, "both items are reported, neither aborts the run");
+        assert_eq!(
+            summary.failed, 2,
+            "both items are reported, neither aborts the run"
+        );
         assert_eq!(summary.scanned, 2);
     }
 
@@ -1396,7 +1561,10 @@ mod tests {
         assert_eq!(c.destination_kind, "convention");
         assert_eq!(
             parse_usage(&e),
-            Some(TokenUsage { input: 1200, output: 300 })
+            Some(TokenUsage {
+                input: 1200,
+                output: 300
+            })
         );
     }
 
@@ -1412,7 +1580,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// The reported failure: 248 candidates carrying their content made a 2.6 MB
     /// request, which the framework refused to buffer at all — `400 Failed to
     /// buffer the request body`, whole batch lost. The count was never the
@@ -1442,7 +1609,10 @@ mod tests {
         let candidates: Vec<CandidatePayload> = (0..500)
             .map(|i| big_candidate(&format!("c{i}"), 8))
             .collect();
-        let expected: Vec<String> = candidates.iter().map(|c| c.source_identity.clone()).collect();
+        let expected: Vec<String> = candidates
+            .iter()
+            .map(|c| c.source_identity.clone())
+            .collect();
         let seen: Vec<String> = chunk_candidates(candidates)
             .into_iter()
             .flatten()
@@ -1524,6 +1694,7 @@ mod tests {
             .map(|i| SourceItem {
                 source_identity: format!("id-{i}"),
                 display_origin: format!("doc-{i}.md"),
+                routing_path: Some(format!("doc-{i}.md")),
                 raw: "x".repeat(size),
                 meta: serde_json::json!({}),
             })
@@ -1545,7 +1716,10 @@ mod tests {
     fn batches_are_capped_by_bytes_before_count() {
         let items = bulk_items(10, 20_000);
         let batches = chunk_for_bulk(&items, 20);
-        assert!(batches.len() > 1, "60 KB of content cannot ride in one prompt");
+        assert!(
+            batches.len() > 1,
+            "60 KB of content cannot ride in one prompt"
+        );
         for range in &batches {
             let bytes: usize = items[range.clone()].iter().map(|i| i.raw.len()).sum();
             assert!(
@@ -1578,8 +1752,7 @@ mod tests {
     fn the_bulk_prompt_pins_the_ordering_contract_and_carries_the_drafts() {
         let c = NoopConnector { items: vec![] };
         let items = bulk_items(3, 20);
-        let drafts: Vec<Option<CandidatePayload>> =
-            items.iter().map(|i| c.fallback(i)).collect();
+        let drafts: Vec<Option<CandidatePayload>> = items.iter().map(|i| c.fallback(i)).collect();
         let prompt = bulk_prompt(&c, &items, &drafts);
 
         assert!(prompt.contains("exactly 3 objects"), "{prompt}");
@@ -1674,7 +1847,10 @@ mod tests {
     #[test]
     fn classifier_rejects_output_missing_required_fields() {
         let e = envelope(serde_json::json!({ "destination_kind": "memory" }), None);
-        assert!(parse_candidate(&e).is_err(), "a candidate with no content is not a candidate");
+        assert!(
+            parse_candidate(&e).is_err(),
+            "a candidate with no content is not a candidate"
+        );
 
         let empty_content = envelope(
             serde_json::json!({
@@ -1700,7 +1876,10 @@ mod tests {
         );
         assert_eq!(
             parse_usage(&renamed),
-            Some(TokenUsage { input: 0, output: 0 }),
+            Some(TokenUsage {
+                input: 0,
+                output: 0
+            }),
             "an unrecognized usage shape degrades to zero rather than erroring"
         );
         assert!(parse_candidate(&renamed).is_ok());
@@ -1715,7 +1894,10 @@ mod tests {
             spent: 0,
         };
         assert!(!b.would_exceed());
-        b.record(Some(TokenUsage { input: 600, output: 500 }));
+        b.record(Some(TokenUsage {
+            input: 600,
+            output: 500,
+        }));
         assert_eq!(b.spent, 1100);
         assert!(b.would_exceed(), "the ceiling is hard, not advisory");
     }
@@ -1732,9 +1914,13 @@ mod tests {
             max_tokens: Some(10),
             spent: 10,
         };
-        let (candidates, summary) = build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
+        let (candidates, summary) =
+            build_candidates(&c, &items, None, &mut budget, &EventSink::new(false));
         assert!(candidates.is_empty());
-        assert!(summary.aborted_on_budget, "the abort must be reported, not inferred");
+        assert!(
+            summary.aborted_on_budget,
+            "the abort must be reported, not inferred"
+        );
         assert_eq!(summary.scanned, 3);
     }
 
@@ -1757,6 +1943,8 @@ mod tests {
             batch_size: BULK_MAX_ITEMS,
             source: source.to_string(),
             path: ".".to_string(),
+            config: None,
+            require_config: false,
             api_url: None,
             api_key: None,
             client: None,
@@ -1838,7 +2026,10 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(msg.contains("missing_dsn"), "{msg}");
-        assert!(msg.contains("READ-ONLY"), "the refusal must say which role to use: {msg}");
+        assert!(
+            msg.contains("READ-ONLY"),
+            "the refusal must say which role to use: {msg}"
+        );
     }
 
     #[test]

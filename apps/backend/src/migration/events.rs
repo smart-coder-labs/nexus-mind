@@ -49,6 +49,39 @@ pub enum RunEvent {
         excluded: usize,
     },
 
+    ConfigLoaded {
+        repository_id: String,
+        path: String,
+        sha256: String,
+        project_count: usize,
+    },
+
+    RoutingGroup {
+        alias: String,
+        project_id: String,
+        client_id: Option<String>,
+        item_count: usize,
+        sample_paths: Vec<String>,
+    },
+
+    RoutingIssue {
+        kind: String,
+        count: usize,
+        sample: Option<String>,
+    },
+
+    RoutingReady {
+        groups: usize,
+        mapped_items: usize,
+        unmapped_items: usize,
+    },
+
+    RunCreated {
+        alias: String,
+        project_id: String,
+        run_id: String,
+    },
+
     /// Deliberately skipped sources, grouped by reason.
     ///
     /// One event per distinct reason rather than per file. A scan of this
@@ -136,7 +169,9 @@ impl RunEvent {
     pub fn to_line(&self) -> String {
         match serde_json::to_string(self) {
             Ok(json) => format!("{json}\n"),
-            Err(e) => format!("{{\"event\":\"finished\",\"ok\":false,\"error\":\"unserializable event: {e}\"}}\n"),
+            Err(e) => format!(
+                "{{\"event\":\"finished\",\"ok\":false,\"error\":\"unserializable event: {e}\"}}\n"
+            ),
         }
     }
 }

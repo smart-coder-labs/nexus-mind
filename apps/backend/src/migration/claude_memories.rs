@@ -514,6 +514,7 @@ impl Connector for ClaudeMemoriesConnector {
                     _ => self.identity_memory(&rel, &raw),
                 },
                 display_origin: rel.clone(),
+                routing_path: Some(rel.clone()),
                 raw,
                 meta: serde_json::json!({ "path": rel, "category": category }),
             });

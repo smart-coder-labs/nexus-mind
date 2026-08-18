@@ -88,6 +88,8 @@ pub struct RunConfig {
 
     pub source: Source,
     pub path: String,
+    pub config_path: String,
+    pub require_config: bool,
     pub includes: String,
     pub excludes: String,
 
@@ -125,6 +127,8 @@ impl Default for RunConfig {
             project: String::new(),
             source: Source::RepoDocs,
             path: ".".to_string(),
+            config_path: String::new(),
+            require_config: false,
             includes: String::new(),
             excludes: String::new(),
             include_sdd: false,
@@ -194,7 +198,10 @@ pub fn is_local(api_url: &str) -> bool {
         .next()
         .unwrap_or_default();
     let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
-    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "::1")
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "::1"
+    )
 }
 
 impl RunConfig {
@@ -216,6 +223,10 @@ impl RunConfig {
 
         if self.source.takes_path() {
             push_flag(&mut a, "--path", &self.path);
+        }
+        push_flag(&mut a, "--config", &self.config_path);
+        if self.require_config {
+            a.push("--require-config".into());
         }
         push_flag(&mut a, "--api-url", &self.api_url);
         push_flag(&mut a, "--api-key", &self.api_key);
@@ -622,8 +633,15 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.blockers(false).is_empty(), "warnings never block");
-        let heads: Vec<String> = cfg.warnings(false).iter().map(|w| w.headline.clone()).collect();
-        assert!(heads.iter().any(|h| h.contains("not a local backend")), "{heads:?}");
+        let heads: Vec<String> = cfg
+            .warnings(false)
+            .iter()
+            .map(|w| w.headline.clone())
+            .collect();
+        assert!(
+            heads.iter().any(|h| h.contains("not a local backend")),
+            "{heads:?}"
+        );
         assert!(heads.iter().any(|h| h.contains("No client")), "{heads:?}");
     }
 }

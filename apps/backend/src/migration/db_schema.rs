@@ -437,6 +437,7 @@ impl<R: SchemaReader> Connector for DbSchemaConnector<R> {
                     self.reader.database_name(),
                     area.label()
                 ),
+                routing_path: None,
                 raw: prose,
                 meta: serde_json::json!({
                     "area": area.label(),

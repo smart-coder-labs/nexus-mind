@@ -362,6 +362,7 @@ impl Connector for GitHistoryConnector {
             items.push(SourceItem {
                 source_identity: self.identity(commit),
                 display_origin: format!("{} — {}", &commit.sha[..7.min(commit.sha.len())], commit.subject),
+                routing_path: None,
                 raw,
                 meta: serde_json::json!({
                     "sha": commit.sha,

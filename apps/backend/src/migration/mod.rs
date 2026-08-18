@@ -40,6 +40,10 @@ pub struct SourceItem {
     pub source_identity: String,
     /// Human-readable origin, shown to the reviewer. Never an absolute path.
     pub display_origin: String,
+    /// Repository-relative path used for project routing. `None` means the
+    /// source has no meaningful repository path and therefore needs a config
+    /// default or explicit destination.
+    pub routing_path: Option<String>,
     pub raw: String,
     pub meta: serde_json::Value,
 }
@@ -177,4 +181,3 @@ impl ScanOptions {
         }
     }
 }
-

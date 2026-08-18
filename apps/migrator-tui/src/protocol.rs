@@ -39,6 +39,34 @@ pub enum RunEvent {
         estimated_tokens: usize,
         excluded: usize,
     },
+    ConfigLoaded {
+        repository_id: String,
+        path: String,
+        sha256: String,
+        project_count: usize,
+    },
+    RoutingGroup {
+        alias: String,
+        project_id: String,
+        client_id: Option<String>,
+        item_count: usize,
+        sample_paths: Vec<String>,
+    },
+    RoutingIssue {
+        kind: String,
+        count: usize,
+        sample: Option<String>,
+    },
+    RoutingReady {
+        groups: usize,
+        mapped_items: usize,
+        unmapped_items: usize,
+    },
+    RunCreated {
+        alias: String,
+        project_id: String,
+        run_id: String,
+    },
     Excluded {
         reason: String,
         count: usize,
