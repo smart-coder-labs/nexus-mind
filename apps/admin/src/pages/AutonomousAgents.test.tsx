@@ -55,7 +55,7 @@ describe('AutonomousAgents permission and runtime states', () => {
     renderPage(['autonomous_agent:read'])
     expect(await screen.findByText('Autonomous agents')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /create agent/i })).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'runtime' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Runtime' }))
     expect(await screen.findByText(/authenticate claude code again/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /check again/i })).not.toBeInTheDocument()
   }, 20_000)

@@ -1,12 +1,29 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
-import { Archive, Bot, Copy, Play, PlugZap, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
+import { Archive, Bot, Copy, Pencil, Play, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import type { AutonomousAgentRun, AutonomousAgentTemplateKey } from '../types'
+import { Button } from '../components/ui/Button'
+import { Badge } from '../components/ui/Badge'
+import { Switch } from '../components/ui/Switch'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Modal, ModalHeader, ModalTitle, ModalContent } from '../components/ui/Modal'
+import AutonomousAgentWizard from './AutonomousAgentWizard'
+import type { AutonomousAgentDefinition, AutonomousAgentDetail, AutonomousAgentRun, AutonomousAgentTemplate } from '../types'
 
-type Tab = 'agents' | 'templates' | 'runs' | 'findings' | 'runtime' | 'connections'
+type Tab = 'agents' | 'templates' | 'runs' | 'findings' | 'runtime'
+
+const TABS: { value: Tab; label: string }[] = [
+  { value: 'agents', label: 'Agents' },
+  { value: 'templates', label: 'Templates' },
+  { value: 'runs', label: 'Runs' },
+  { value: 'findings', label: 'Findings' },
+  { value: 'runtime', label: 'Runtime' },
+]
+
+const statusVariant: Record<string, 'success' | 'default' | 'warning'> = { enabled: 'success', disabled: 'default', archived: 'warning' }
 
 export default function AutonomousAgents() {
   const { session } = useAuth()
@@ -15,23 +32,11 @@ export default function AutonomousAgents() {
   const client = useMemo(() => createClient(), [session])
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<Tab>('agents')
+  const [showArchived, setShowArchived] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [editing, setEditing] = useState<AutonomousAgentDetail | null>(null)
+  const [templateDetail, setTemplateDetail] = useState<AutonomousAgentTemplate | null>(null)
   const [selectedRun, setSelectedRun] = useState<AutonomousAgentRun | null>(null)
-  const [name, setName] = useState('')
-  const [template, setTemplate] = useState<AutonomousAgentTemplateKey>('qa')
-  const [config, setConfig] = useState('{"outputs":["nexusmind"],"test_commands":[["npx","playwright","test"]]}')
-  const [scheduleKind, setScheduleKind] = useState('manual')
-  const [scheduleExpression, setScheduleExpression] = useState('06:00')
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-  const [targetName, setTargetName] = useState('')
-  const [targetKind, setTargetKind] = useState('repository')
-  const [targetConfig, setTargetConfig] = useState('{}')
-  const [targetCredential, setTargetCredential] = useState('')
-  const [connectorKind, setConnectorKind] = useState('slack')
-  const [connectorName, setConnectorName] = useState('')
-  const [connectorSecret, setConnectorSecret] = useState('')
-  const [connectorMetadata, setConnectorMetadata] = useState('{}')
-  const [error, setError] = useState('')
 
   const templates = useQuery({ queryKey: ['autonomous-templates'], queryFn: () => client.listAutonomousAgentTemplates(), enabled: can('autonomous_agent:read') })
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: can('autonomous_agent:read') })
@@ -40,22 +45,10 @@ export default function AutonomousAgents() {
   const runtime = useQuery({ queryKey: ['autonomous-runtime'], queryFn: () => client.getAutonomousRuntimeHealth(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const settings = useQuery({ queryKey: ['autonomous-settings'], queryFn: () => client.getAutonomousAgentSettings(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const metrics = useQuery({ queryKey: ['autonomous-metrics'], queryFn: () => client.getAutonomousAgentMetrics(), enabled: can('autonomous_agent:read') && tab === 'runtime', refetchInterval: 30_000 })
-  const connectors = useQuery({ queryKey: ['autonomous-connectors'], queryFn: () => client.listAutonomousAgentConnectors(), enabled: can('autonomous_agent:read') && (tab === 'connections' || showCreate) })
   const findings = useQuery({ queryKey: ['autonomous-findings'], queryFn: () => client.listAutonomousAgentFindings(), enabled: can('autonomous_agent:read') && tab === 'findings' })
   const deliveries = useQuery({ queryKey: ['autonomous-deliveries'], queryFn: () => client.listAutonomousAgentDeliveries(), enabled: can('autonomous_agent:read') && tab === 'findings' })
 
   const invalidate = (...keys: string[]) => Promise.all(keys.map(key => queryClient.invalidateQueries({ queryKey: [key] })))
-  const create = useMutation({
-    mutationFn: async () => {
-      const selected = templates.data?.find(value => value.key === template)
-      const created = await client.createAutonomousAgent({ name, template_key: template, config: JSON.parse(config), budgets: selected?.default_budgets ?? {} })
-      if (targetName.trim()) await client.putAutonomousAgentTarget(created.id, { kind: targetKind, name: targetName.trim(), config: JSON.parse(targetConfig), credential_connector_id: targetCredential || undefined, enabled: true })
-      if (scheduleKind !== 'manual') await client.putAutonomousAgentSchedule(created.id, { kind: scheduleKind, expression: scheduleExpression, timezone, misfire_policy: 'run_once', enabled: true })
-      return created
-    },
-    onSuccess: () => { setShowCreate(false); setName(''); setTargetName(''); setError(''); void invalidate('autonomous-agents') },
-    onError: value => setError(value instanceof Error ? value.message : 'Could not create agent'),
-  })
   const useLifecycle = (fn: (id: string) => Promise<unknown>) => useMutation({ mutationFn: fn, onSuccess: () => invalidate('autonomous-agents') })
   const validate = useLifecycle(id => client.validateAutonomousAgent(id))
   const enable = useLifecycle(id => client.enableAutonomousAgent(id))
@@ -67,44 +60,230 @@ export default function AutonomousAgents() {
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
-  const saveConnector = useMutation({ mutationFn: () => client.putAutonomousAgentConnector({ kind: connectorKind, name: connectorName, secret: connectorSecret, metadata: JSON.parse(connectorMetadata), scopes: connectorKind === 'github_app' ? ['metadata:read', 'contents:write', 'issues:write', 'pull_requests:write', 'checks:read'] : connectorKind === 'slack' ? ['chat:write'] : ['target:use'] }), onSuccess: () => { setConnectorSecret(''); setConnectorName(''); setError(''); void invalidate('autonomous-connectors') }, onError: () => { setConnectorSecret(''); setError('Could not save connection. Verify its public metadata and write-only secret.') } })
-  const revokeConnector = useMutation({ mutationFn: (id: string) => client.revokeAutonomousAgentConnector(id), onSuccess: () => invalidate('autonomous-connectors') })
   const retryDelivery = useMutation({ mutationFn: (id: string) => client.retryAutonomousAgentDelivery(id), onSuccess: () => invalidate('autonomous-deliveries') })
   const resolveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'resolved'), onSuccess: () => invalidate('autonomous-findings') })
 
+  const openEdit = async (agent: AutonomousAgentDefinition) => {
+    const detail = await client.getAutonomousAgent(agent.id)
+    setEditing(detail)
+  }
+
   if (!can('autonomous_agent:read')) return <Navigate to="/401" replace />
+
   const loading = [agents, templates].some(query => query.isLoading)
-  const loadError = [agents, templates, runs, findings, runtime, connectors].find(query => query.isError)
+  const loadError = [agents, templates, runs, findings, runtime].find(query => query.isError)
+  const allAgents = agents.data ?? []
+  const archivedCount = allAgents.filter(agent => agent.status === 'archived').length
+  const visibleAgents = showArchived ? allAgents : allAgents.filter(agent => agent.status !== 'archived')
 
-  return <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
-    <header className="flex items-start justify-between gap-4">
-      <div><h1 className="text-2xl font-semibold text-text-primary flex items-center gap-2"><Bot className="w-6 h-6" />Autonomous agents</h1><p className="text-sm text-text-tertiary mt-1">Scheduled Claude Code agents running on this NexusMind server.</p></div>
-      {can('autonomous_agent:create') && <button type="button" onClick={() => setShowCreate(true)} className="rounded-full bg-accent-blue px-4 py-2 text-sm font-semibold text-white flex items-center gap-2"><Plus className="w-4 h-4" />Create agent</button>}
-    </header>
-    <nav aria-label="Autonomous agent sections" className="flex gap-2 border-b border-border-primary overflow-x-auto">{(['agents', 'templates', 'runs', 'findings', 'runtime', 'connections'] as Tab[]).map(value => <button type="button" key={value} onClick={() => setTab(value)} className={`px-3 py-2 text-sm capitalize whitespace-nowrap ${tab === value ? 'text-text-primary border-b-2 border-accent-blue' : 'text-text-tertiary'}`}>{value}</button>)}</nav>
-    {loading && <p role="status" className="text-sm text-text-tertiary">Loading automation control plane…</p>}
-    {loadError && <p role="alert" className="text-sm text-status-error">Could not load autonomous agent data.</p>}
+  return (
+    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-text-primary flex items-center gap-2"><Bot className="w-6 h-6" />Autonomous agents</h1>
+          <p className="text-sm text-text-tertiary mt-1">Scheduled Claude Code agents running on this NexusMind server.</p>
+        </div>
+        {can('autonomous_agent:create') && (
+          <Button variant="primary" leftIcon={<Plus className="w-4 h-4" />} onClick={() => setShowCreate(true)}>Create agent</Button>
+        )}
+      </header>
 
-    {tab === 'agents' && <div className="grid gap-3">{agents.data?.map(agent => <article key={agent.id} className="rounded-[14px] border border-border-primary bg-white/[0.025] p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"><div><h2 className="font-semibold text-text-primary">{agent.name}</h2><p className="text-xs text-text-tertiary mt-1">{agent.template_key.replace(/_/g, ' ')} · revision {agent.current_revision} · <span className="capitalize">{agent.status}</span></p></div><div className="flex flex-wrap gap-2">{can('autonomous_agent:enable') && agent.status === 'disabled' && <><Action onClick={() => validate.mutate(agent.id)}>Validate</Action><Action onClick={() => enable.mutate(agent.id)}>Enable</Action></>}{can('autonomous_agent:enable') && agent.status === 'enabled' && <Action onClick={() => disable.mutate(agent.id)}>Disable</Action>}{can('autonomous_agent:run') && agent.status === 'enabled' && <Action primary onClick={() => runNow.mutate(agent.id)}><Play className="w-3 h-3" />Run</Action>}{can('autonomous_agent:create') && <Action onClick={() => clone.mutate(agent.id)}><Copy className="w-3 h-3" />Clone</Action>}{can('autonomous_agent:update') && agent.status === 'disabled' && <Action onClick={() => archive.mutate(agent.id)}><Archive className="w-3 h-3" />Archive</Action>}</div></article>)}{agents.data?.length === 0 && <Empty text="No autonomous agents configured." />}</div>}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-primary pb-3">
+        <SegmentedControl options={TABS} value={tab} onChange={setTab} />
+        {tab === 'agents' && archivedCount > 0 && (
+          <Switch size="sm" checked={showArchived} onCheckedChange={setShowArchived} label={`Show archived (${archivedCount})`} />
+        )}
+      </div>
 
-    {tab === 'templates' && <div className="grid md:grid-cols-3 gap-4">{templates.data?.map(item => <article key={item.key} className="rounded-[14px] border border-border-primary p-4"><h2 className="font-semibold text-text-primary">{item.name} v{item.version}</h2><p className="text-sm text-text-tertiary mt-2">{item.description}</p><ol className="text-xs text-text-secondary mt-3 space-y-1">{item.workflow.map((step, index) => <li key={step}>{index + 1}. {step.replace(/_/g, ' ')}</li>)}</ol><p className="text-xs text-text-tertiary mt-3">Authority: {item.capabilities.join(', ')}</p></article>)}</div>}
+      {loading && <p role="status" className="text-sm text-text-tertiary">Loading automation control plane…</p>}
+      {loadError && <p role="alert" className="text-sm text-status-error">Could not load autonomous agent data.</p>}
 
-    {tab === 'runs' && <div className="grid lg:grid-cols-[1fr_1fr] gap-4"><div className="rounded-[14px] border border-border-primary divide-y divide-border-primary">{runs.data?.map(run => <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className="w-full p-4 flex justify-between text-left"><div><div className="text-sm text-text-primary">{run.trigger_kind} run</div><div className="text-xs text-text-tertiary">{new Date(`${run.created_at}Z`).toLocaleString()}</div></div><div className="flex items-center gap-3"><span className="text-xs capitalize text-text-secondary">{run.status.replace(/_/g, ' ')}</span>{can('autonomous_agent:cancel') && ['queued', 'leased', 'running'].includes(run.status) && <span onClick={event => { event.stopPropagation(); cancelRun.mutate(run.id) }} className="text-xs text-status-error">Cancel</span>}</div></button>)}{runs.data?.length === 0 && <Empty text="No runs yet." />}</div><aside className="rounded-[14px] border border-border-primary p-4"><h2 className="font-semibold">Run timeline</h2>{selectedRun ? <><dl className="mt-3 text-xs grid grid-cols-2 gap-2"><dt>Status</dt><dd>{selectedRun.status}</dd><dt>Budget</dt><dd className="font-mono break-all">{JSON.stringify(selectedRun.budget)}</dd><dt>Snapshot</dt><dd className="font-mono break-all">{selectedRun.snapshot_sha ?? 'n/a'}</dd></dl><ol className="mt-4 space-y-2">{events.data?.map(event => <li key={event.sequence} className="text-xs"><span className="font-mono text-text-tertiary">#{event.sequence}</span> {event.kind}<pre className="mt-1 whitespace-pre-wrap break-all text-text-tertiary">{JSON.stringify(event.payload, null, 2)}</pre></li>)}</ol></> : <Empty text="Select a run to inspect its receipts and events." />}</aside></div>}
+      {tab === 'agents' && !loading && (
+        <div className="grid gap-3">
+          {visibleAgents.map(agent => (
+            <article key={agent.id} className="rounded-[14px] border border-border-primary bg-white/[0.02] p-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-semibold text-text-primary truncate">{agent.name}</h2>
+                  <Badge size="sm" variant={statusVariant[agent.status] ?? 'default'}>{agent.status}</Badge>
+                </div>
+                <p className="text-xs text-text-tertiary mt-1">{agent.template_key.replace(/_/g, ' ')} · revision {agent.current_revision}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {can('autonomous_agent:enable') && agent.status === 'disabled' && <><Button size="sm" variant="outline" onClick={() => validate.mutate(agent.id)}>Validate</Button><Button size="sm" variant="secondary" onClick={() => enable.mutate(agent.id)}>Enable</Button></>}
+                {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
+                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => runNow.mutate(agent.id)}>Run</Button>}
+                {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}
+                {can('autonomous_agent:create') && <Button size="sm" variant="ghost" leftIcon={<Copy className="w-3.5 h-3.5" />} onClick={() => clone.mutate(agent.id)}>Clone</Button>}
+                {can('autonomous_agent:update') && agent.status === 'disabled' && <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} onClick={() => archive.mutate(agent.id)}>Archive</Button>}
+              </div>
+            </article>
+          ))}
+          {visibleAgents.length === 0 && (
+            <EmptyState
+              icon={<Bot className="w-6 h-6" />}
+              title={allAgents.length === 0 ? 'No autonomous agents yet' : 'No active agents'}
+              description={allAgents.length === 0 ? 'Create your first agent from a managed template.' : 'All agents are archived. Toggle “Show archived” to see them.'}
+              action={can('autonomous_agent:create') && allAgents.length === 0 ? <Button variant="primary" leftIcon={<Plus className="w-4 h-4" />} onClick={() => setShowCreate(true)}>Create agent</Button> : undefined}
+            />
+          )}
+        </div>
+      )}
 
-    {tab === 'findings' && <div className="space-y-3">{findings.data?.map(finding => <article key={finding.id} className="rounded-[14px] border border-border-primary p-4"><div className="flex justify-between gap-3"><h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2><div className="flex gap-2 text-xs"><span className="uppercase">{finding.severity}</span><span className="capitalize">{finding.status}</span>{can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-accent-blue">Resolve</button>}</div></div><p className="text-sm text-text-tertiary mt-2">{finding.summary}</p><details className="mt-2 text-xs"><summary>Evidence and deliveries</summary><pre className="whitespace-pre-wrap break-all mt-2">{JSON.stringify(finding.evidence, null, 2)}</pre>{deliveries.data?.filter(item => item.finding_id === finding.id).map(item => <div key={item.id} className="mt-2 flex gap-2"><span>{item.channel}: {item.status}</span>{item.external_url && <a href={item.external_url} target="_blank" rel="noreferrer" className="text-accent-blue">Open</a>}{can('autonomous_agent:run') && ['slack', 'github_issue'].includes(item.channel) && ['failed', 'dead_letter'].includes(item.status) && <button type="button" onClick={() => retryDelivery.mutate(item.id)}>Retry delivery</button>}</div>)}</details><p className="text-xs text-text-tertiary mt-2">Seen {finding.occurrence_count} time(s)</p></article>)}{findings.data?.length === 0 && <Empty text="No findings yet." />}</div>}
+      {tab === 'templates' && (
+        <div className="grid gap-4 md:grid-cols-3">
+          {templates.data?.map(item => (
+            <button key={item.key} type="button" onClick={() => setTemplateDetail(item)} className="text-left rounded-[14px] border border-border-primary p-4 transition-colors hover:border-white/20">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-text-primary">{item.name}</h2>
+                <Badge size="sm" variant="default">v{item.version}</Badge>
+              </div>
+              <p className="text-sm text-text-tertiary mt-2">{item.description}</p>
+              <div className="mt-3 flex flex-wrap gap-1">{item.capabilities.slice(0, 3).map(cap => <Badge key={cap} size="sm" variant="info">{cap}</Badge>)}</div>
+              <p className="mt-3 text-xs text-accent-blue">View details →</p>
+            </button>
+          ))}
+        </div>
+      )}
 
-    {tab === 'runtime' && <div className="grid md:grid-cols-2 gap-4"><section className="rounded-[14px] border border-border-primary p-5 space-y-4"><div className="flex items-center gap-3"><ShieldCheck className="w-5 h-5" /><div><h2 className="font-semibold text-text-primary capitalize">{runtime.data?.status?.replace(/_/g, ' ') ?? 'Loading'}</h2><p className="text-xs text-text-tertiary">{runtime.data?.claude_version ?? runtime.data?.reason_code ?? 'Checking local Claude Code runtime'}</p></div></div>{runtime.data?.status === 'reauth_required' && <p className="text-sm text-status-warning">Authenticate Claude Code again as the backend OS account, then check again. Schedules remain durable and leasing is paused.</p>}{can('autonomous_agent:enable') && <Action onClick={() => checkRuntime.mutate()}><RefreshCw className="w-4 h-4" />Check again</Action>}</section><section className="rounded-[14px] border border-border-primary p-5 space-y-3"><h2 className="font-semibold">Organization kill switch</h2><p className="text-sm text-text-tertiary">{settings.data?.enabled ? 'Enabled' : 'Disabled'} · retention {settings.data?.retention_days ?? '—'} days</p>{can('autonomous_agent:enable') && <><Action onClick={() => toggleOrg.mutate(!settings.data?.enabled)}>{settings.data?.enabled ? 'Disable all agents' : 'Enable agents'}</Action><label className="block text-xs">Retention days<input type="number" min={7} max={3650} defaultValue={settings.data?.retention_days} onBlur={event => saveRetention.mutate(Number(event.target.value))} className="mt-1 block bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label></>}</section></div>}
+      {tab === 'runs' && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-[14px] border border-border-primary divide-y divide-border-primary">
+            {runs.data?.map(run => (
+              <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className={`w-full p-4 flex justify-between text-left ${selectedRun?.id === run.id ? 'bg-white/[0.03]' : ''}`}>
+                <div>
+                  <div className="text-sm text-text-primary">{run.trigger_kind} run</div>
+                  <div className="text-xs text-text-tertiary">{new Date(`${run.created_at}Z`).toLocaleString()}</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Badge size="sm" variant="default">{run.status.replace(/_/g, ' ')}</Badge>
+                  {can('autonomous_agent:cancel') && ['queued', 'leased', 'running'].includes(run.status) && <span onClick={event => { event.stopPropagation(); cancelRun.mutate(run.id) }} className="text-xs text-status-error">Cancel</span>}
+                </div>
+              </button>
+            ))}
+            {runs.data?.length === 0 && <EmptyState title="No runs yet" description="Runs appear here once an enabled agent is triggered." />}
+          </div>
+          <aside className="rounded-[14px] border border-border-primary p-4">
+            <h2 className="font-semibold text-text-primary">Run timeline</h2>
+            {selectedRun ? (
+              <>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <dt className="text-text-tertiary">Status</dt><dd className="text-text-primary">{selectedRun.status}</dd>
+                  <dt className="text-text-tertiary">Budget</dt><dd className="font-mono break-all text-text-primary">{JSON.stringify(selectedRun.budget)}</dd>
+                  <dt className="text-text-tertiary">Snapshot</dt><dd className="font-mono break-all text-text-primary">{selectedRun.snapshot_sha ?? 'n/a'}</dd>
+                </dl>
+                <ol className="mt-4 space-y-2">{events.data?.map(event => <li key={event.sequence} className="text-xs"><span className="font-mono text-text-tertiary">#{event.sequence}</span> {event.kind}<pre className="mt-1 whitespace-pre-wrap break-all text-text-tertiary">{JSON.stringify(event.payload, null, 2)}</pre></li>)}</ol>
+              </>
+            ) : <EmptyState title="Select a run" description="Inspect receipts, budget consumption, and events." />}
+          </aside>
+        </div>
+      )}
 
-    {tab === 'runtime' && metrics.data && <section aria-label="Automation metrics" className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">{Object.entries(metrics.data).map(([label, value]) => <div key={label} className="rounded-[12px] border border-border-primary p-3"><div className="text-xs capitalize text-text-tertiary">{label.replace(/_/g, ' ')}</div><div className="mt-1 text-lg font-semibold">{typeof value === 'number' ? value.toLocaleString() : value}</div></div>)}</section>}
+      {tab === 'findings' && (
+        <div className="space-y-3">
+          {findings.data?.map(finding => (
+            <article key={finding.id} className="rounded-[14px] border border-border-primary p-4">
+              <div className="flex justify-between gap-3">
+                <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
+                <div className="flex items-center gap-2 text-xs">
+                  <Badge size="sm" variant="warning">{finding.severity}</Badge>
+                  <Badge size="sm" variant="default">{finding.status}</Badge>
+                  {can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-accent-blue">Resolve</button>}
+                </div>
+              </div>
+              <p className="text-sm text-text-tertiary mt-2">{finding.summary}</p>
+              <details className="mt-2 text-xs">
+                <summary className="cursor-pointer text-text-secondary">Evidence and deliveries</summary>
+                <pre className="whitespace-pre-wrap break-all mt-2 text-text-tertiary">{JSON.stringify(finding.evidence, null, 2)}</pre>
+                {deliveries.data?.filter(item => item.finding_id === finding.id).map(item => (
+                  <div key={item.id} className="mt-2 flex gap-2">
+                    <span className="text-text-secondary">{item.channel}: {item.status}</span>
+                    {item.external_url && <a href={item.external_url} target="_blank" rel="noreferrer" className="text-accent-blue">Open</a>}
+                    {can('autonomous_agent:run') && ['slack', 'github_issue'].includes(item.channel) && ['failed', 'dead_letter'].includes(item.status) && <button type="button" onClick={() => retryDelivery.mutate(item.id)} className="text-accent-blue">Retry delivery</button>}
+                  </div>
+                ))}
+              </details>
+              <p className="text-xs text-text-tertiary mt-2">Seen {finding.occurrence_count} time(s)</p>
+            </article>
+          ))}
+          {findings.data?.length === 0 && <EmptyState title="No findings yet" description="Confirmed findings from QA and review agents will land here." />}
+        </div>
+      )}
 
-    {tab === 'connections' && <div className="space-y-4"><div className="grid gap-3">{connectors.data?.map(connector => <article key={connector.id} className="rounded-[14px] border border-border-primary p-4 flex justify-between"><div><h2 className="text-sm font-semibold text-text-primary">{connector.name}</h2><p className="text-xs text-text-tertiary">{connector.kind} · {connector.health} · secret {connector.secret_configured ? 'configured' : 'missing'}</p></div>{can('autonomous_agent:manage_connectors') && connector.health !== 'revoked' && <button type="button" onClick={() => revokeConnector.mutate(connector.id)} className="text-xs text-status-error">Revoke</button>}</article>)}</div>{can('autonomous_agent:manage_connectors') && <section className="rounded-[14px] border border-border-primary p-4 grid md:grid-cols-5 gap-3"><label className="text-xs">Kind<select value={connectorKind} onChange={event => setConnectorKind(event.target.value)} className="block w-full bg-transparent border border-border-primary rounded-lg px-3 py-2"><option value="slack">Slack</option><option value="github_app">GitHub App</option><option value="target_secret">Target secret</option></select></label><label className="text-xs">Name<input value={connectorName} onChange={event => setConnectorName(event.target.value)} className="block w-full bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label><label className="text-xs">Public metadata<input value={connectorMetadata} onChange={event => setConnectorMetadata(event.target.value)} title="GitHub: app_id and installation_id" className="block w-full font-mono bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label><label className="text-xs">Write-only secret<input autoComplete="new-password" type="password" value={connectorSecret} onChange={event => setConnectorSecret(event.target.value)} placeholder={connectorKind === 'github_app' ? 'JSON private_key + webhook_secret' : 'Secret'} className="block w-full bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label><button type="button" onClick={() => saveConnector.mutate()} className="self-end rounded-full bg-accent-blue text-white text-sm py-2 flex items-center justify-center gap-2"><PlugZap className="w-4 h-4" />Save</button></section>}{error && <p role="alert" className="text-sm text-status-error">{error}</p>}</div>}
+      {tab === 'runtime' && (
+        <div className="grid gap-4 md:grid-cols-2">
+          <section className="rounded-[14px] border border-border-primary p-5 space-y-4">
+            <div className="flex items-center gap-3">
+              <ShieldCheck className="w-5 h-5 text-text-secondary" />
+              <div>
+                <h2 className="font-semibold text-text-primary capitalize">{runtime.data?.status?.replace(/_/g, ' ') ?? 'Loading'}</h2>
+                <p className="text-xs text-text-tertiary">{runtime.data?.claude_version ?? runtime.data?.reason_code ?? 'Checking local Claude Code runtime'}</p>
+              </div>
+            </div>
+            {runtime.data?.status === 'reauth_required' && <p className="text-sm text-status-warning">Authenticate Claude Code again as the backend OS account, then check again. Schedules remain durable and leasing is paused.</p>}
+            {can('autonomous_agent:enable') && <Button size="sm" variant="outline" leftIcon={<RefreshCw className="w-4 h-4" />} onClick={() => checkRuntime.mutate()}>Check again</Button>}
+          </section>
+          <section className="rounded-[14px] border border-border-primary p-5 space-y-3">
+            <h2 className="font-semibold text-text-primary">Organization kill switch</h2>
+            <p className="text-sm text-text-tertiary">{settings.data?.enabled ? 'Enabled' : 'Disabled'} · retention {settings.data?.retention_days ?? '—'} days</p>
+            {can('autonomous_agent:enable') && (
+              <>
+                <Button size="sm" variant={settings.data?.enabled ? 'destructive' : 'secondary'} onClick={() => toggleOrg.mutate(!settings.data?.enabled)}>{settings.data?.enabled ? 'Disable all agents' : 'Enable agents'}</Button>
+                <label className="block text-xs text-text-secondary">Retention days<input type="number" min={7} max={3650} defaultValue={settings.data?.retention_days} onBlur={event => saveRetention.mutate(Number(event.target.value))} className="mt-1 block rounded-lg border border-border-primary bg-transparent px-3 py-2 text-text-primary" /></label>
+              </>
+            )}
+          </section>
+          {metrics.data && (
+            <section aria-label="Automation metrics" className="md:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-3">
+              {Object.entries(metrics.data).map(([label, value]) => (
+                <div key={label} className="rounded-[12px] border border-border-primary p-3">
+                  <div className="text-xs capitalize text-text-tertiary">{label.replace(/_/g, ' ')}</div>
+                  <div className="mt-1 text-lg font-semibold text-text-primary">{typeof value === 'number' ? value.toLocaleString() : value}</div>
+                </div>
+              ))}
+            </section>
+          )}
+        </div>
+      )}
 
-    {showCreate && <div className="fixed inset-0 bg-black/60 z-50 grid place-items-center p-4" onMouseDown={event => { if (event.target === event.currentTarget) setShowCreate(false) }}><form aria-modal="true" role="dialog" aria-labelledby="create-agent-title" onSubmit={event => { event.preventDefault(); create.mutate() }} className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[18px] border border-border-primary bg-[#11141b] p-6 space-y-4"><div className="flex justify-between"><h2 id="create-agent-title" className="text-lg font-semibold">Create autonomous agent</h2><button type="button" aria-label="Close" onClick={() => setShowCreate(false)}><X /></button></div><label className="block text-xs">Name<input autoFocus required value={name} onChange={event => setName(event.target.value)} className="block w-full mt-1 bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label><label className="block text-xs">Managed template<select value={template} onChange={event => setTemplate(event.target.value as AutonomousAgentTemplateKey)} className="block w-full mt-1 bg-transparent border border-border-primary rounded-lg px-3 py-2">{templates.data?.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label><label className="block text-xs">Configuration<textarea value={config} onChange={event => setConfig(event.target.value)} rows={6} className="block w-full mt-1 font-mono bg-transparent border border-border-primary rounded-lg px-3 py-2" /></label><fieldset className="grid md:grid-cols-2 gap-3 border border-border-primary rounded-lg p-3"><legend className="text-xs px-1">Optional target</legend><input value={targetName} onChange={event => setTargetName(event.target.value)} placeholder="Target name" className="bg-transparent border border-border-primary rounded-lg px-3 py-2" /><select value={targetKind} onChange={event => setTargetKind(event.target.value)} className="bg-transparent border border-border-primary rounded-lg px-3 py-2"><option value="repository">Repository</option><option value="web_application">Web application</option><option value="project">Project</option></select><input value={targetConfig} onChange={event => setTargetConfig(event.target.value)} aria-label="Target public configuration" className="font-mono bg-transparent border border-border-primary rounded-lg px-3 py-2" /><select value={targetCredential} onChange={event => setTargetCredential(event.target.value)} aria-label="Target credential reference" className="bg-transparent border border-border-primary rounded-lg px-3 py-2"><option value="">No credential</option>{connectors.data?.filter(item => item.kind === 'target_secret' && item.health !== 'revoked').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></fieldset><fieldset className="grid grid-cols-1 md:grid-cols-3 gap-2"><legend className="sr-only">Schedule</legend><select value={scheduleKind} onChange={event => setScheduleKind(event.target.value)} className="bg-transparent border border-border-primary rounded-lg px-3 py-2"><option value="manual">Manual</option><option value="daily">Daily</option><option value="interval">Interval</option></select><input disabled={scheduleKind === 'manual'} value={scheduleExpression} onChange={event => setScheduleExpression(event.target.value)} placeholder={scheduleKind === 'interval' ? 'Minutes' : '06:00'} className="bg-transparent border border-border-primary rounded-lg px-3 py-2" /><input disabled={scheduleKind === 'manual'} value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Timezone" className="bg-transparent border border-border-primary rounded-lg px-3 py-2" /></fieldset><section className="text-xs rounded-lg bg-white/[0.03] p-3"><strong>Authority summary:</strong> {templates.data?.find(item => item.key === template)?.capabilities.join(', ')}. Creation never enables the agent; validate and enable it explicitly after reviewing this configuration.</section>{error && <p role="alert" className="text-sm text-status-error">{error}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2">Cancel</button><button disabled={create.isPending} className="rounded-full bg-accent-blue px-4 py-2 text-white disabled:opacity-50">{create.isPending ? 'Creating…' : 'Create disabled'}</button></div></form></div>}
-  </div>
+      {(showCreate || editing) && (
+        <AutonomousAgentWizard
+          open={showCreate || Boolean(editing)}
+          editing={editing}
+          templates={templates.data ?? []}
+          onClose={() => { setShowCreate(false); setEditing(null) }}
+        />
+      )}
+
+      <Modal open={Boolean(templateDetail)} onOpenChange={value => { if (!value) setTemplateDetail(null) }} size="lg">
+        {templateDetail && (
+          <>
+            <ModalHeader>
+              <ModalTitle>{templateDetail.name} · v{templateDetail.version}</ModalTitle>
+            </ModalHeader>
+            <ModalContent className="max-h-[65vh] overflow-y-auto space-y-4">
+              <p className="text-sm text-text-secondary">{templateDetail.description}</p>
+              <div>
+                <p className="text-xs font-medium text-text-secondary">Workflow</p>
+                <ol className="mt-2 space-y-1">{templateDetail.workflow.map((stepName, index) => <li key={stepName} className="flex items-center gap-2 text-sm text-text-primary"><span className="grid h-5 w-5 place-items-center rounded-full bg-white/[0.06] text-[10px] text-text-tertiary">{index + 1}</span>{stepName.replace(/_/g, ' ')}</li>)}</ol>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-text-secondary">Capabilities</p>
+                <div className="mt-2 flex flex-wrap gap-1">{templateDetail.capabilities.map(cap => <Badge key={cap} size="sm" variant="info">{cap}</Badge>)}</div>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-text-secondary">Default budgets</p>
+                <pre className="mt-2 overflow-auto rounded-lg bg-black/30 p-3 font-mono text-[11px] text-text-tertiary">{JSON.stringify(templateDetail.default_budgets, null, 2)}</pre>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-text-secondary">Configuration schema</p>
+                <pre className="mt-2 overflow-auto rounded-lg bg-black/30 p-3 font-mono text-[11px] text-text-tertiary">{JSON.stringify(templateDetail.config_schema, null, 2)}</pre>
+              </div>
+              <p className="text-[11px] text-text-tertiary flex items-center gap-1"><X className="w-3 h-3" />Managed templates are versioned in the server and cannot be edited here — upgrades create a new revision and require revalidation.</p>
+            </ModalContent>
+          </>
+        )}
+      </Modal>
+    </div>
+  )
 }
-
-function Action({ children, onClick, primary = false }: { children: React.ReactNode; onClick: () => void; primary?: boolean }) {
-  return <button type="button" onClick={onClick} className={`px-3 py-1.5 rounded-full text-xs flex items-center gap-1 ${primary ? 'bg-accent-blue text-white' : 'border border-border-primary'}`}>{children}</button>
-}
-
-function Empty({ text }: { text: string }) { return <div className="p-8 text-center text-sm text-text-tertiary">{text}</div> }

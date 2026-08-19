@@ -17,6 +17,22 @@ kubectl -n nexusmind exec -it deploy/nexusmind-backend -c backend -- claude
 kubectl -n nexusmind exec deploy/nexusmind-backend -c backend -- claude auth status --json
 ```
 
+GitHub credentials are also host-managed. Authenticate the `gh` CLI inside the
+same container; its configuration persists in Claude's PVC-backed HOME and is
+used by the worker for repository access, issues, reviews, branches and draft
+pull requests:
+
+```bash
+kubectl -n nexusmind exec -it deploy/nexusmind-backend -c backend -- gh auth login
+kubectl -n nexusmind exec deploy/nexusmind-backend -c backend -- gh auth status
+```
+
+Slack is provided by a Claude Code MCP server named `slack`. Configure it from
+the same container (`claude mcp ...`) and verify it with `claude mcp list`.
+NexusMind does not accept or store GitHub or Slack credentials. The legacy
+connector API remains readable for existing installations but is not used by
+new autonomous-agent definitions.
+
 Apply the normal backend migration first, then set `AUTONOMOUS_AGENTS_ENABLED=true` for both services. Run the API server and `autonomous_worker` as two separately supervised processes under the same dedicated OS account and against the same absolute `DB_PATH`. The worker refuses an in-memory database or schema older than v62 and never runs migrations itself. It uses disposable system-temporary workspaces. Start exactly one worker in the MVP; keep it absent on API-only replicas.
 
 For example, the supervisor commands built from this crate are:

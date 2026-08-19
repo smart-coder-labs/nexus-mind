@@ -17,16 +17,31 @@ FROM debian:bookworm-slim
 ARG CLAUDE_CODE_VERSION=2.1.235
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates gh git nodejs npm \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# Browsers live outside HOME because the k8s deployment mounts a volume over
+# /claude-home at runtime, which would otherwise shadow anything baked there.
 ENV HOME=/claude-home \
     CLAUDE_CODE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Playwright CLI + browsers (so the QA template's `npx playwright test` runs) and
+# the Playwright MCP (so QA agents can drive a browser via mcp__playwright__*).
+RUN npm install -g playwright@latest @playwright/mcp@latest \
+    && playwright install --with-deps chromium \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+
+# MCP config wired into QA runs via `claude --mcp-config`. --no-sandbox is
+# required because chromium runs as root inside the container.
+RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright","args":["--headless","--isolated","--no-sandbox","--browser","chromium"]}}}' > /app/qa-mcp.json
+
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
 # The SDD importer has to ship with the image, or it cannot be run where it is

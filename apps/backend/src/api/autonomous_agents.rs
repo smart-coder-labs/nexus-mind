@@ -111,7 +111,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "delivery:write".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 2, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"test_adapter":{"enum":["playwright","allowlisted_command"]},"test_command":{"type":"argv","shell":false}}),
             workflow: vec![
                 "checkout".into(),
                 "health_check".into(),
@@ -133,7 +133,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:draft_pr".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 3600, "max_attempts": 2, "max_cost_usd": 20, "max_changed_files": 20, "max_changed_lines": 800, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_connector_id":{"type":"secret_reference","required":true},"base_branch":{"type":"string","default":"main"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"}}),
             workflow: vec![
                 "eligible_issue".into(),
                 "pinned_checkout".into(),
@@ -154,7 +154,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:review".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 10, "max_changed_lines": 1200, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_connector_id":{"type":"secret_reference","required":true},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["comment_or_request_changes"]},"include_drafts":{"type":"boolean","default":false}}),
             workflow: vec![
                 "pin_head".into(),
                 "bounded_diff".into(),

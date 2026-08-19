@@ -79,6 +79,9 @@ fn restrict_claude_environment(command: &mut Command) {
         "HTTP_PROXY",
         "SSL_CERT_FILE",
         "NODE_EXTRA_CA_CERTS",
+        // Propagated to the Playwright MCP (spawned by Claude Code) so it finds
+        // the image's pre-installed browsers.
+        "PLAYWRIGHT_BROWSERS_PATH",
     ];
     let values = allowed
         .iter()
@@ -114,6 +117,9 @@ fn restrict_test_environment(
         "LC_ALL",
         "SSL_CERT_FILE",
         "NODE_EXTRA_CA_CERTS",
+        // Lets an allowlisted `npx playwright test` locate the browsers baked
+        // into the image at PLAYWRIGHT_BROWSERS_PATH (outside the mounted HOME).
+        "PLAYWRIGHT_BROWSERS_PATH",
     ]
     .iter()
     .filter_map(|key| std::env::var_os(key).map(|value| (*key, value)))
@@ -280,50 +286,35 @@ fn target_environment(
 }
 
 async fn github_access(
-    store: &SqliteStore,
-    claim: &queries::ClaimedAutonomousRun,
+    _store: &SqliteStore,
+    _claim: &queries::ClaimedAutonomousRun,
 ) -> anyhow::Result<Option<String>> {
-    let Some(id) = claim
-        .config
-        .get("github_connector_id")
-        .and_then(|v| v.as_str())
-    else {
-        return Ok(None);
-    };
-    github_access_for_connector(store, &claim.org_id, id)
-        .await
-        .map(Some)
+    server_gh_token().await.map(Some)
 }
 
 async fn github_access_for_connector(
-    store: &SqliteStore,
-    org_id: &str,
-    id: &str,
+    _store: &SqliteStore,
+    _org_id: &str,
+    _id: &str,
 ) -> anyhow::Result<String> {
-    let value = {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        queries::get_autonomous_agent_connector_secret(&conn, org_id, id)?
-    };
-    let Some((connector, raw)) = value else {
-        anyhow::bail!("connector_unavailable")
-    };
-    let secrets: serde_json::Value = serde_json::from_str(&raw)?;
-    let private_key = secrets
-        .get("private_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("github_private_key_missing"))?;
-    let app_id = connector
-        .metadata
-        .get("app_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("github_app_id_missing"))?;
-    let installation = connector
-        .metadata
-        .get("installation_id")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| anyhow::anyhow!("github_installation_missing"))?;
-    super::connectors::github_installation_token(app_id, installation, private_key).await
+    server_gh_token().await
+}
+
+async fn server_gh_token() -> anyhow::Result<String> {
+    let mut command = Command::new("gh");
+    restrict_claude_environment(&mut command);
+    let output = timeout(
+        Duration::from_secs(15),
+        command.args(["auth", "token"]).kill_on_drop(true).output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("github_cli_timeout"))??;
+    if !output.status.success() {
+        anyhow::bail!("github_cli_auth_required")
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(Into::into)
 }
 
 fn require_publish_authority(
@@ -924,7 +915,13 @@ async fn publish_template_output(
 }
 
 fn fixed_prompt(template: &str, config: &serde_json::Value) -> anyhow::Result<String> {
+    let slack_delivery = template == "qa"
+        && config
+            .get("outputs")
+            .and_then(|value| value.as_array())
+            .is_some_and(|outputs| outputs.iter().any(|value| value.as_str() == Some("slack")));
     let objective = match template {
+        "qa" if slack_delivery => "Execute the configured QA plan. Return strict JSON with summary and findings. You may send the final QA summary only through tools exposed by the server-configured `slack` MCP. Do not use Slack for intermediate output and do not publish anywhere else.",
         "qa" => "Execute the configured QA plan. Return strict JSON with summary and findings. Do not publish externally.",
         "github_issue_resolver" => "Analyze the eligible issue configuration and propose a bounded implementation. Return strict JSON. Do not merge, deploy, or publish.",
         "github_pr_reviewer" => "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.",
@@ -1272,10 +1269,19 @@ async fn execute_claim(
             json!({"code":if preflight.status=="reauth_required"{"claude_auth_required"}else{"claude_runtime_unavailable"}}),
         );
     }
-    let (permission_mode, allowed_tools) = if claim.template_key == "github_issue_resolver" {
-        ("acceptEdits", "Read,Edit,Write,Grep,Glob")
-    } else {
-        ("plan", "Read,Grep,Glob")
+    let slack_enabled = claim.template_key == "qa"
+        && runtime_config
+            .get("outputs")
+            .and_then(|value| value.as_array())
+            .is_some_and(|outputs| outputs.iter().any(|value| value.as_str() == Some("slack")));
+    // QA runs use `default` (not `plan`) so the agent can actually drive the
+    // Playwright MCP; repo mutation is still impossible because the allowlist
+    // omits Edit/Write/Bash and non-listed tools are denied in headless mode.
+    let (permission_mode, allowed_tools) = match (claim.template_key.as_str(), slack_enabled) {
+        ("github_issue_resolver", _) => ("acceptEdits", "Read,Edit,Write,Grep,Glob"),
+        ("qa", true) => ("default", "Read,Grep,Glob,mcp__playwright__*,mcp__slack__*"),
+        ("qa", false) => ("default", "Read,Grep,Glob,mcp__playwright__*"),
+        _ => ("plan", "Read,Grep,Glob"),
     };
     let max_turns = claim
         .run
@@ -1294,23 +1300,30 @@ async fn execute_claim(
         .clamp(30, 3600);
     let mut claude = Command::new(&config.claude_code_bin);
     restrict_claude_environment(&mut claude);
-    let invocation = claude
-        .args([
-            "-p",
-            &prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--max-turns",
-            &max_turns,
-            "--permission-mode",
-            permission_mode,
-            "--allowedTools",
-            allowed_tools,
-        ])
-        .current_dir(&workdir)
-        .kill_on_drop(true)
-        .output();
+    claude.args([
+        "-p",
+        &prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        &max_turns,
+        "--permission-mode",
+        permission_mode,
+        "--allowedTools",
+        allowed_tools,
+    ]);
+    // Register the Playwright MCP for QA runs when its config ships with the
+    // image. Absent in local/dev checkouts, so this is a no-op there and does
+    // not change behaviour for the non-QA templates.
+    if claim.template_key == "qa" {
+        let mcp_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
+            .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
+        if std::path::Path::new(&mcp_config).exists() {
+            claude.args(["--mcp-config", mcp_config.as_str()]);
+        }
+    }
+    let invocation = claude.current_dir(&workdir).kill_on_drop(true).output();
     let cancelled = async {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1594,40 +1607,8 @@ async fn deliver_findings(
                     };
                 }
                 Some("github_issue") => {
-                    let (Some(connector_id), Some(repository)) = (
-                        claim
-                            .config
-                            .get("github_connector_id")
-                            .and_then(|v| v.as_str()),
-                        claim.config.get("repository").and_then(|v| v.as_str()),
-                    ) else {
-                        continue;
-                    };
-                    let connector_secret = {
-                        let db = store.conn();
-                        let Ok(conn) = db.lock() else { continue };
-                        queries::get_autonomous_agent_connector_secret(
-                            &conn,
-                            &claim.org_id,
-                            connector_id,
-                        )
-                        .ok()
-                        .flatten()
-                    };
-                    let Some((connector, raw)) = connector_secret else {
-                        continue;
-                    };
-                    let Ok(secrets) = serde_json::from_str::<serde_json::Value>(&raw) else {
-                        continue;
-                    };
-                    let (Some(key_pem), Some(app_id), Some(installation_id)) = (
-                        secrets.get("private_key").and_then(|v| v.as_str()),
-                        connector.metadata.get("app_id").and_then(|v| v.as_str()),
-                        connector
-                            .metadata
-                            .get("installation_id")
-                            .and_then(|v| v.as_i64()),
-                    ) else {
+                    let Some(repository) = claim.config.get("repository").and_then(|v| v.as_str())
+                    else {
                         continue;
                     };
                     let key = format!("{}:github_issue", finding.fingerprint);
@@ -1645,13 +1626,7 @@ async fn deliver_findings(
                         .ok()
                     };
                     let Some(delivery) = delivery else { continue };
-                    let response = match super::connectors::github_installation_token(
-                        app_id,
-                        installation_id,
-                        key_pem,
-                    )
-                    .await
-                    {
+                    let response = match server_gh_token().await {
                         Ok(token) => match require_publish_authority(store, claim) {
                             Err(error) => Err(error),
                             Ok(()) => {

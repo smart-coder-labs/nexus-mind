@@ -1364,6 +1364,7 @@ export class NexusMindClient {
   listAutonomousAgents(): Promise<AutonomousAgentDefinition[]> { return this.request('/v1/autonomous-agents') }
   getAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`) }
   createAutonomousAgent(data:{name:string;description?:string;template_key:string;config:Record<string,unknown>;budgets:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request('/v1/autonomous-agents',{method:'POST',body:JSON.stringify(data)}) }
+  updateAutonomousAgent(id:string,data:{name?:string;description?:string;config?:Record<string,unknown>;budgets?:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify(data)}) }
   validateAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/validate`,{method:'POST'}) }
   enableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/enable`,{method:'POST'}) }
   disableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/disable`,{method:'POST'}) }

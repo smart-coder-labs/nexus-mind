@@ -16356,29 +16356,13 @@ pub fn validate_autonomous_agent_definition(
             {
                 errors.push("invalid_outputs")
             }
-            if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("slack")))
+            if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("github_issue")))
                 && current
                     .revision
                     .config
-                    .get("slack_connector_id")
+                    .get("repository")
                     .and_then(|v| v.as_str())
                     .is_none()
-            {
-                errors.push("slack_connector_required")
-            }
-            if outputs.is_some_and(|v| v.iter().any(|i| i.as_str() == Some("github_issue")))
-                && (current
-                    .revision
-                    .config
-                    .get("github_connector_id")
-                    .and_then(|v| v.as_str())
-                    .is_none()
-                    || current
-                        .revision
-                        .config
-                        .get("repository")
-                        .and_then(|v| v.as_str())
-                        .is_none())
             {
                 errors.push("github_configuration_required")
             }
@@ -16394,28 +16378,11 @@ pub fn validate_autonomous_agent_definition(
                     if crate::automation::connectors::validate_repository(value).is_ok() => {}
                 _ => errors.push("valid_repository_required"),
             }
-            if current
-                .revision
-                .config
-                .get("github_connector_id")
-                .and_then(|v| v.as_str())
-                .is_none()
-            {
-                errors.push("github_connector_required")
-            }
         }
         _ => errors.push("unsupported_template"),
     }
-    for field in ["github_connector_id", "slack_connector_id"] {
-        if let Some(connector) = current.revision.config.get(field).and_then(|v| v.as_str()) {
-            let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM autonomous_agent_connectors WHERE id=?1 AND org_id=?2 AND health='ready')",rusqlite::params![connector,org_id],|r|r.get(0))?;
-            if !exists {
-                errors.push("connector_unavailable")
-            }
-        }
-    }
     let valid = errors.is_empty();
-    let result = serde_json::json!({"valid":valid,"checks":["schema","template","budgets","connectors"],"errors":errors});
+    let result = serde_json::json!({"valid":valid,"checks":["schema","template","budgets","server_integrations"],"errors":errors});
     conn.execute(
         "INSERT INTO autonomous_agent_validations (id,org_id,definition_id,revision_id,config_hash,status,result_json,validated_by)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -17378,7 +17345,7 @@ pub fn enqueue_github_webhook_agents(
                       AND work.kind='github_issue' AND work.external_number=?3
                       AND work.eligibility IN('pending','eligible','completed')
                 )",
-                rusqlite::params![definition_id,repository,external_number],
+                rusqlite::params![definition_id, repository, external_number],
                 |row| row.get(0),
             )?;
             if already_owned {
