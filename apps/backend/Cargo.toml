@@ -37,6 +37,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"

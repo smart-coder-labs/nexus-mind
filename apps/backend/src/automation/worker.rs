@@ -330,14 +330,17 @@ fn require_publish_authority(
 }
 
 fn authenticated_git(token: &str) -> Command {
+    use base64::Engine as _;
     let mut command = Command::new("git");
+    // GitHub git-over-HTTPS requires Basic auth (username `x-access-token`, token
+    // as password), NOT `Authorization: Bearer`, which it rejects with "invalid
+    // credentials". This is the same scheme gh's credential helper uses, so it
+    // works for clone, fetch and push against private repositories.
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
     command
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-        .env(
-            "GIT_CONFIG_VALUE_0",
-            format!("Authorization: Bearer {token}"),
-        );
+        .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"));
     command
 }
 
