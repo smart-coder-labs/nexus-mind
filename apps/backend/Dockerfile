@@ -50,6 +50,11 @@ RUN npm install -g playwright@latest @playwright/mcp@latest \
     && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
     && ln -sf "${PKG}/${BIN}" /usr/local/bin/mcp-server-playwright \
     && chmod +x "${PKG}/${BIN}" \
+    # @playwright/mcp bundles its own playwright-core pinned to a specific
+    # chromium revision that differs from the global playwright CLI's. Install
+    # the browser with THAT playwright-core so the MCP finds it at
+    # PLAYWRIGHT_BROWSERS_PATH (the --with-deps step above already added OS libs).
+    && node -e "const cp=require('child_process');const root=cp.execSync('npm root -g').toString().trim();const cli=require.resolve('playwright-core/cli.js',{paths:[root+'/@playwright/mcp']});cp.execSync(process.execPath+' '+cli+' install chromium',{stdio:'inherit'});" \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
