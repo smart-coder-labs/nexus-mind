@@ -16,8 +16,15 @@ FROM debian:bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.235
 
+# Node 20 (from NodeSource, not Debian's Node 18) because Playwright requires
+# Node >= 20. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
+# global bins (claude, mcp-server-playwright) resolve where the rest of the
+# image expects them.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gh git nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg gh git \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm config set prefix /usr/local \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version \
     && npm cache clean --force \
