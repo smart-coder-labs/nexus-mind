@@ -85,7 +85,7 @@ pub async fn github_installation_token(
 }
 
 async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
-    Ok(reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(format!("https://api.github.com{path}"))
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
@@ -93,10 +93,18 @@ async fn github_post(token: &str, path: &str, body: Value) -> Result<Value> {
         .header("User-Agent", "nexusmind-autonomous-agents")
         .json(&body)
         .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?)
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        // Surface GitHub's actual error message instead of a bare status.
+        anyhow::bail!(
+            "github_api_{}: {}",
+            status.as_u16(),
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
 async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
@@ -256,6 +264,17 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
     .await
 }
 
+/// Best-effort: create the label so issue creation doesn't fail with 422 on an
+/// unknown label. Ignores "already exists" and any other error.
+async fn ensure_github_label(token: &str, owner: &str, repo: &str, label: &str) {
+    let _ = github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/labels"),
+        json!({"name": label, "color": "5319e7", "description": "NexusMind autonomous QA"}),
+    )
+    .await;
+}
+
 pub async fn create_github_issue(
     token: &str,
     repository: &str,
@@ -263,6 +282,7 @@ pub async fn create_github_issue(
     body: &str,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    ensure_github_label(token, owner, repo, "nexusmind-qa").await;
     github_post(
         token,
         &format!("/repos/{owner}/{repo}/issues"),

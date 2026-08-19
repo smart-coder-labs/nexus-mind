@@ -1928,12 +1928,18 @@ async fn deliver_findings(
                                     url,
                                 );
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                // Store the real GitHub error (e.g. 422 body) so
+                                // failed deliveries are diagnosable, not opaque.
+                                let code: String = format!("github: {error:#}")
+                                    .chars()
+                                    .take(180)
+                                    .collect();
                                 let _ = queries::fail_autonomous_agent_delivery(
                                     &conn,
                                     &claim.org_id,
                                     &delivery.id,
-                                    "github_delivery_failed",
+                                    &code,
                                 );
                             }
                         }
