@@ -37,6 +37,7 @@ export default function AutonomousAgents() {
   const [editing, setEditing] = useState<AutonomousAgentDetail | null>(null)
   const [templateDetail, setTemplateDetail] = useState<AutonomousAgentTemplate | null>(null)
   const [selectedRun, setSelectedRun] = useState<AutonomousAgentRun | null>(null)
+  const [actionError, setActionError] = useState('')
 
   const templates = useQuery({ queryKey: ['autonomous-templates'], queryFn: () => client.listAutonomousAgentTemplates(), enabled: can('autonomous_agent:read') })
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: can('autonomous_agent:read') })
@@ -49,11 +50,25 @@ export default function AutonomousAgents() {
   const deliveries = useQuery({ queryKey: ['autonomous-deliveries'], queryFn: () => client.listAutonomousAgentDeliveries(), enabled: can('autonomous_agent:read') && tab === 'findings' })
 
   const invalidate = (...keys: string[]) => Promise.all(keys.map(key => queryClient.invalidateQueries({ queryKey: [key] })))
-  const useLifecycle = (fn: (id: string) => Promise<unknown>) => useMutation({ mutationFn: fn, onSuccess: () => invalidate('autonomous-agents') })
-  const validate = useLifecycle(id => client.validateAutonomousAgent(id))
+  const friendly = (message: string) => message === 'validation_required' ? 'Validate the agent before enabling it.' : message
+  const useLifecycle = (fn: (id: string) => Promise<unknown>) => useMutation({
+    mutationFn: fn,
+    onSuccess: () => { setActionError(''); return invalidate('autonomous-agents') },
+    onError: (value: unknown) => setActionError(friendly(value instanceof Error ? value.message : 'Action failed')),
+  })
   const enable = useLifecycle(id => client.enableAutonomousAgent(id))
   const disable = useLifecycle(id => client.disableAutonomousAgent(id))
   const archive = useLifecycle(id => client.archiveAutonomousAgent(id))
+  const validate = useMutation({
+    mutationFn: (id: string) => client.validateAutonomousAgent(id),
+    onSuccess: detail => {
+      void invalidate('autonomous-agents')
+      if (detail.revision.validation_status === 'valid') { setActionError(''); return }
+      const errors = Array.isArray((detail.revision.validation as { errors?: unknown } | null)?.errors) ? ((detail.revision.validation as { errors: string[] }).errors) : []
+      setActionError(errors.length ? `Validation failed: ${errors.join(', ')}` : 'Validation failed — review the configuration.')
+    },
+    onError: (value: unknown) => setActionError(value instanceof Error ? value.message : 'Validation failed'),
+  })
   const clone = useMutation({ mutationFn: async (id: string) => { const source = await client.getAutonomousAgent(id); return client.createAutonomousAgent({ name: `${source.name} copy`, description: source.description ?? undefined, template_key: source.template_key, config: source.revision.config, budgets: source.revision.budgets }) }, onSuccess: () => invalidate('autonomous-agents') })
   const runNow = useMutation({ mutationFn: (id: string) => client.runAutonomousAgent(id), onSuccess: () => invalidate('autonomous-runs') })
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
@@ -100,17 +115,30 @@ export default function AutonomousAgents() {
 
       {tab === 'agents' && !loading && (
         <div className="grid gap-3">
+          {actionError && (
+            <div role="alert" className="flex items-start justify-between gap-3 rounded-[12px] border border-status-error/40 bg-status-error/[0.06] px-4 py-3 text-sm text-status-error">
+              <span>{actionError}</span>
+              <button type="button" onClick={() => setActionError('')} aria-label="Dismiss"><X className="w-4 h-4" /></button>
+            </div>
+          )}
           {visibleAgents.map(agent => (
             <article key={agent.id} className="rounded-[14px] border border-border-primary bg-white/[0.02] p-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="font-semibold text-text-primary truncate">{agent.name}</h2>
                   <Badge size="sm" variant={statusVariant[agent.status] ?? 'default'}>{agent.status}</Badge>
+                  {agent.status === 'disabled' && agent.validation_status === 'invalid' && <Badge size="sm" variant="error">invalid</Badge>}
+                  {agent.status === 'disabled' && agent.validation_status === 'valid' && <Badge size="sm" variant="success">validated</Badge>}
                 </div>
                 <p className="text-xs text-text-tertiary mt-1">{agent.template_key.replace(/_/g, ' ')} · revision {agent.current_revision}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {can('autonomous_agent:enable') && agent.status === 'disabled' && <><Button size="sm" variant="outline" onClick={() => validate.mutate(agent.id)}>Validate</Button><Button size="sm" variant="secondary" onClick={() => enable.mutate(agent.id)}>Enable</Button></>}
+              <div className="flex flex-wrap items-center gap-2">
+                {can('autonomous_agent:enable') && agent.status === 'disabled' && <>
+                  <Button size="sm" variant={agent.validation_status === 'valid' ? 'outline' : 'secondary'} loading={validate.isPending && validate.variables === agent.id} onClick={() => validate.mutate(agent.id)}>Validate</Button>
+                  {agent.validation_status === 'valid'
+                    ? <Button size="sm" variant="primary" onClick={() => enable.mutate(agent.id)}>Enable</Button>
+                    : <span className="text-xs text-text-tertiary px-1">Validate to enable</span>}
+                </>}
                 {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
                 {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => runNow.mutate(agent.id)}>Run</Button>}
                 {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}

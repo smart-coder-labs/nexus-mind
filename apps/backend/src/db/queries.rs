@@ -16080,6 +16080,7 @@ fn autonomous_agent_definition_from_row(
         created_by: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        validation_status: row.get(11)?,
     })
 }
 
@@ -16147,8 +16148,9 @@ pub fn list_autonomous_agent_definitions(
     org_id: &str,
 ) -> Result<Vec<AutonomousAgentDefinition>> {
     let mut stmt = conn.prepare(
-        "SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
-         FROM autonomous_agent_definitions WHERE org_id=?1 ORDER BY created_at DESC",
+        "SELECT d.id,d.org_id,d.name,d.description,d.template_key,d.template_version,d.status,d.current_revision,d.created_by,d.created_at,d.updated_at,
+                COALESCE((SELECT v.status FROM autonomous_agent_validations v JOIN autonomous_agent_revisions r ON r.id=v.revision_id WHERE r.definition_id=d.id AND r.revision=d.current_revision ORDER BY v.created_at DESC,v.id DESC LIMIT 1),'pending')
+         FROM autonomous_agent_definitions d WHERE d.org_id=?1 ORDER BY d.created_at DESC",
     )?;
     let rows = stmt.query_map([org_id], autonomous_agent_definition_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -16161,8 +16163,9 @@ pub fn get_autonomous_agent_definition(
     id: &str,
 ) -> Result<Option<AutonomousAgentDefinition>> {
     conn.query_row(
-        "SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
-         FROM autonomous_agent_definitions WHERE org_id=?1 AND id=?2",
+        "SELECT d.id,d.org_id,d.name,d.description,d.template_key,d.template_version,d.status,d.current_revision,d.created_by,d.created_at,d.updated_at,
+                COALESCE((SELECT v.status FROM autonomous_agent_validations v JOIN autonomous_agent_revisions r ON r.id=v.revision_id WHERE r.definition_id=d.id AND r.revision=d.current_revision ORDER BY v.created_at DESC,v.id DESC LIMIT 1),'pending')
+         FROM autonomous_agent_definitions d WHERE d.org_id=?1 AND d.id=?2",
         rusqlite::params![org_id, id],
         autonomous_agent_definition_from_row,
     ).optional().map_err(Into::into)

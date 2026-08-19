@@ -1775,6 +1775,10 @@ pub struct AutonomousAgentDefinition {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Validation status of the current revision ('pending' | 'valid' | 'invalid').
+    /// Lets the admin gate the Enable action without fetching each agent's detail.
+    #[serde(default)]
+    pub validation_status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
