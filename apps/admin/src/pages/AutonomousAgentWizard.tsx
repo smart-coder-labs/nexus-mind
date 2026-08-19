@@ -54,6 +54,7 @@ interface FormState {
   outputGithubIssue: boolean
   testAdapter: 'playwright' | 'allowlisted_command'
   testCommand: string
+  qaInstructions: string
   // shared / repo templates
   repository: string
   baseBranch: string
@@ -80,7 +81,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     outputSlack: false,
     outputGithubIssue: false,
     testAdapter: 'playwright',
-    testCommand: DEFAULT_TEST_COMMAND,
+    testCommand: '',
+    qaInstructions: '',
     repository: '',
     baseBranch: 'main',
     labels: '',
@@ -105,10 +107,14 @@ function buildConfig(state: FormState): Record<string, unknown> {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     if (state.outputGithubIssue) outputs.push('github_issue')
-    config = {
-      outputs,
-      test_adapter: state.testAdapter,
-      test_commands: [csvArgv(state.testCommand)],
+    config = { outputs, test_adapter: state.testAdapter }
+    if (state.testAdapter === 'allowlisted_command') {
+      // Deterministic mode: the worker runs this argv as a subprocess.
+      config.test_commands = [csvArgv(state.testCommand)]
+    } else if (state.qaInstructions.trim()) {
+      // Agent-driven mode: Claude drives the browser via the Playwright MCP;
+      // these instructions tell it what to verify (no shell command needed).
+      config.qa_instructions = state.qaInstructions.trim()
     }
     if (state.repository.trim()) config.repository = state.repository.trim()
   } else if (state.template === 'github_issue_resolver') {
@@ -153,7 +159,8 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
-    testCommand: firstCommand || DEFAULT_TEST_COMMAND,
+    testCommand: firstCommand,
+    qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
@@ -310,7 +317,7 @@ function validateStep(id: StepId, state: FormState): boolean {
   switch (id) {
     case 'template': return Boolean(state.template)
     case 'target': return true // target is optional
-    case 'config': return state.template !== 'qa' || csvArgv(state.testCommand).length > 0
+    case 'config': return state.template !== 'qa' || state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
     case 'schedule': return state.scheduleKind === 'manual' || state.scheduleExpression.trim().length > 0
     case 'review': return state.name.trim().length > 0
     default: return true
@@ -401,18 +408,22 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
     <div className="space-y-5">
       {template === 'qa' && (
         <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Test adapter" hint="Playwright runs an E2E suite; allowlisted command runs a pinned argv.">
-              <NativeSelect value={state.testAdapter} onChange={value => set('testAdapter', value as FormState['testAdapter'])}>
-                <option value="playwright">Playwright</option>
-                <option value="allowlisted_command">Allowlisted command</option>
-              </NativeSelect>
+          <Field label="Test adapter" hint="Playwright: the agent drives the browser via the Playwright MCP — no command needed. Allowlisted command: the worker runs a pinned argv.">
+            <NativeSelect value={state.testAdapter} onChange={value => set('testAdapter', value as FormState['testAdapter'])}>
+              <option value="playwright">Playwright (agent-driven)</option>
+              <option value="allowlisted_command">Allowlisted command</option>
+            </NativeSelect>
+          </Field>
+          {state.testAdapter === 'playwright' ? (
+            <Field label="What should the agent test? (optional)" hint="Claude drives the browser against the target and reports findings. Leave notes on flows or checks to prioritise; blank means general exploratory QA.">
+              <Textarea className="text-sm" rows={3} value={state.qaInstructions} onChange={event => set('qaInstructions', event.target.value)} placeholder="e.g. Sign in, add an item to the cart, and verify checkout totals." />
             </Field>
-            <Field label="Test command" hint="Executed as argv (no shell). Default targets Playwright.">
+          ) : (
+            <Field label="Test command" hint="Executed as argv (no shell), e.g. npx playwright test.">
               <Input inputSize="sm" value={state.testCommand} onChange={event => set('testCommand', event.target.value)} placeholder={DEFAULT_TEST_COMMAND} />
             </Field>
-          </div>
-          <Field label="Repository to check out (owner/repo)" hint="Where the test suite lives. Optional if the target already defines it.">
+          )}
+          <Field label="Repository to check out (owner/repo)" hint="Optional. Needed if the agent should inspect or run the codebase; the target URL is enough for pure browser QA.">
             <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
           </Field>
           <div className="rounded-[12px] border border-border-primary p-3">

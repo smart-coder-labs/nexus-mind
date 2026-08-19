@@ -920,11 +920,26 @@ fn fixed_prompt(template: &str, config: &serde_json::Value) -> anyhow::Result<St
             .get("outputs")
             .and_then(|value| value.as_array())
             .is_some_and(|outputs| outputs.iter().any(|value| value.as_str() == Some("slack")));
+    // QA runs are agent-driven (Claude drives the Playwright MCP against the
+    // target) unless the definition pins the deterministic command adapter, in
+    // which case the worker has already run the suite and Claude evaluates it.
+    let qa_agent_driven = template == "qa"
+        && config.get("test_adapter").and_then(|value| value.as_str())
+            != Some("allowlisted_command");
+    let slack_clause = if slack_delivery {
+        " You may send the final QA summary only through tools exposed by the server-configured `slack` MCP. Do not use Slack for intermediate output and do not publish anywhere else."
+    } else {
+        " Do not publish externally."
+    };
     let objective = match template {
-        "qa" if slack_delivery => "Execute the configured QA plan. Return strict JSON with summary and findings. You may send the final QA summary only through tools exposed by the server-configured `slack` MCP. Do not use Slack for intermediate output and do not publish anywhere else.",
-        "qa" => "Execute the configured QA plan. Return strict JSON with summary and findings. Do not publish externally.",
-        "github_issue_resolver" => "Analyze the eligible issue configuration and propose a bounded implementation. Return strict JSON. Do not merge, deploy, or publish.",
-        "github_pr_reviewer" => "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.",
+        "qa" if qa_agent_driven => format!(
+            "Drive the target application through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. Return strict JSON with summary and findings.{slack_clause}"
+        ),
+        "qa" => format!(
+            "Execute the configured QA plan and evaluate the recorded test results. Return strict JSON with summary and findings.{slack_clause}"
+        ),
+        "github_issue_resolver" => "Analyze the eligible issue configuration and propose a bounded implementation. Return strict JSON. Do not merge, deploy, or publish.".to_string(),
+        "github_pr_reviewer" => "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.".to_string(),
         _ => anyhow::bail!("unsupported_template"),
     };
     Ok(format!(
