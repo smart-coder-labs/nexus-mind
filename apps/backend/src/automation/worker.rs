@@ -2012,42 +2012,12 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
             }
         }
         "github_issue" => {
-            let connector_id = item
-                .config
-                .get("github_connector_id")
-                .and_then(|v| v.as_str());
-            let repository = item.config.get("repository").and_then(|v| v.as_str());
-            let connector = connector_id.and_then(|id| {
-                let db = store.conn();
-                let conn = db.lock().ok()?;
-                queries::get_autonomous_agent_connector_secret(&conn, &item.org_id, id)
-                    .ok()
-                    .flatten()
-            });
-            match (connector, repository) {
-                (Some((connector, raw)), Some(repository)) => {
+            match item.config.get("repository").and_then(|v| v.as_str()) {
+                Some(repository) => {
                     async {
-                        let secrets: serde_json::Value = serde_json::from_str(&raw)?;
-                        let private_key = secrets
-                            .get("private_key")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow::anyhow!("private_key_missing"))?;
-                        let app_id = connector
-                            .metadata
-                            .get("app_id")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow::anyhow!("app_id_missing"))?;
-                        let installation = connector
-                            .metadata
-                            .get("installation_id")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| anyhow::anyhow!("installation_missing"))?;
-                        let token = super::connectors::github_installation_token(
-                            app_id,
-                            installation,
-                            private_key,
-                        )
-                        .await?;
+                        // Connector-less: GitHub writes use the server's gh CLI,
+                        // matching the first-attempt delivery path.
+                        let token = server_gh_token().await?;
                         let title = format!("[NexusMind QA] {}", item.finding.title);
                         let body = format!(
                             "{}\n<!-- nexusmind-fingerprint:{} -->",
@@ -2082,7 +2052,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                                 }
                             }
                         };
-                        Ok((
+                        Ok::<_, anyhow::Error>((
                             response.get("number").map(|v| v.to_string()),
                             response
                                 .get("html_url")
@@ -2092,7 +2062,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                     }
                     .await
                 }
-                _ => Err(anyhow::anyhow!("connector_unavailable")),
+                None => Err(anyhow::anyhow!("repository_missing")),
             }
         }
         _ => return,
@@ -2109,12 +2079,13 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                     url.as_deref(),
                 );
             }
-            Err(_) => {
+            Err(error) => {
+                let code: String = format!("retry: {error:#}").chars().take(180).collect();
                 let _ = queries::fail_autonomous_agent_delivery(
                     &conn,
                     &item.org_id,
                     &item.delivery.id,
-                    "delivery_retry_failed",
+                    &code,
                 );
             }
         }
