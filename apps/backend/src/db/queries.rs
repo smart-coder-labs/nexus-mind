@@ -17049,6 +17049,65 @@ pub fn heartbeat_autonomous_agent_run(
     Ok(conn.execute("UPDATE autonomous_agent_leases SET heartbeat_at=datetime('now'),expires_at=datetime('now',?5) WHERE run_id=?1 AND attempt_id=?2 AND claim_token_hash=?3 AND released_at IS NULL AND EXISTS(SELECT 1 FROM autonomous_agent_runs WHERE id=?1 AND org_id=?4 AND status='running')",rusqlite::params![id,attempt_id,token_hash,org_id,format!("+{} seconds",lease_seconds.max(30))])?==1)
 }
 
+/// Append one transcript turn (a sanitized Claude stream-json line) at an
+/// explicit sequence. The worker owns the counter, so we avoid a MAX() subquery
+/// per line; a duplicate (run_id,sequence) is ignored rather than erroring.
+pub fn append_autonomous_agent_transcript_turn(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    sequence: i64,
+    kind: &str,
+    payload_json: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO autonomous_agent_run_transcript
+            (id,org_id,run_id,sequence,kind,payload_json)
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            org_id,
+            run_id,
+            sequence,
+            kind,
+            payload_json
+        ],
+    )?;
+    Ok(())
+}
+
+/// List transcript turns for a run after `after_sequence` (0 = from the start),
+/// oldest first. Paginated (LIMIT) so a long run polls incrementally instead of
+/// returning tens of thousands of rows in one response.
+pub fn list_autonomous_agent_transcript(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    after_sequence: i64,
+    limit: i64,
+) -> Result<Vec<crate::models::types::AutonomousAgentEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence,kind,payload_json,created_at
+           FROM autonomous_agent_run_transcript
+          WHERE org_id=?1 AND run_id=?2 AND sequence>?3
+          ORDER BY sequence LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![org_id, run_id, after_sequence, limit],
+        |row| {
+            let raw: String = row.get(2)?;
+            Ok(crate::models::types::AutonomousAgentEvent {
+                sequence: row.get(0)?,
+                kind: row.get(1)?,
+                payload: serde_json::from_str(&raw).unwrap_or_default(),
+                created_at: row.get(3)?,
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 pub fn append_autonomous_agent_event(
     conn: &Connection,
     org_id: &str,

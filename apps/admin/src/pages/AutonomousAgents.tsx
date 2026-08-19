@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
-import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, ExternalLink, GitPullRequest, Loader2, Pencil, Play, Plus, RefreshCw, ShieldCheck, X, XCircle } from 'lucide-react'
+import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, ExternalLink, GitPullRequest, Loader2, MessagesSquare, Pencil, Play, Plus, RefreshCw, ShieldCheck, X, XCircle } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/Button'
@@ -137,8 +137,101 @@ function TimelineRow({ tone, icon, title, time, body, last }: { tone: Tone; icon
   )
 }
 
+// ── Conversation transcript (the agent's full turn-by-turn Claude stream) ──
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  const arr = asArr(content)
+  if (arr) return arr.map(x => { const d = asDict(x); return asStr(d?.text) ?? (d?.type === 'image' ? '[image]' : JSON.stringify(x)) }).join('\n')
+  return content == null ? '' : JSON.stringify(content, null, 2)
+}
+
+function RawToggle({ raw }: { raw: unknown }) {
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer text-[11px] text-text-tertiary">raw</summary>
+      <pre className="mt-1 max-h-72 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(raw, null, 2)}</pre>
+    </details>
+  )
+}
+
+function ContentBlock({ block }: { block: unknown }) {
+  const b = asDict(block) ?? {}
+  const t = asStr(b.type)
+  if (t === 'text') {
+    const text = asStr(b.text) ?? ''
+    if (!text.trim()) return null
+    return <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-[13px] text-text-primary whitespace-pre-wrap">{text}</div>
+  }
+  if (t === 'tool_use') {
+    const name = asStr(b.name) ?? 'tool'
+    return (
+      <details className="rounded-[10px] border border-accent-blue/20 bg-accent-blue/[0.04] px-3 py-2">
+        <summary className="cursor-pointer text-[12px] font-medium text-accent-blue">→ {name}</summary>
+        <pre className="mt-2 max-h-72 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(b.input ?? {}, null, 2)}</pre>
+      </details>
+    )
+  }
+  if (t === 'tool_result') {
+    const isErr = b.is_error === true
+    const text = toolResultText(b.content)
+    return (
+      <details className={`rounded-[10px] border px-3 py-2 ${isErr ? 'border-status-error/30 bg-status-error/[0.05]' : 'border-white/[0.06] bg-white/[0.01]'}`}>
+        <summary className={`cursor-pointer text-[12px] ${isErr ? 'text-status-error' : 'text-text-tertiary'}`}>{isErr ? '⚠ tool result' : '← tool result'}</summary>
+        <pre className="mt-2 max-h-80 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary whitespace-pre-wrap">{text}</pre>
+      </details>
+    )
+  }
+  return null
+}
+
+function TranscriptTurn({ turn }: { turn: AutonomousAgentEvent }) {
+  const p = asDict(turn.payload) ?? {}
+  const type = asStr(p.type) ?? turn.kind
+  const content = asArr(asDict(p.message)?.content)
+  if ((type === 'assistant' || type === 'user') && content) {
+    return <div className="space-y-1.5">{content.map((block, i) => <ContentBlock key={i} block={block} />)}</div>
+  }
+  if (type === 'system') {
+    const detail = [asStr(p.model), asArr(p.tools) ? `${asArr(p.tools)!.length} tools` : undefined].filter(Boolean).join(' · ')
+    return (
+      <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+        <div className="text-[12px]"><span className="font-semibold text-text-secondary">Session started</span>{detail && <span className="text-text-tertiary"> · {detail}</span>}</div>
+        <RawToggle raw={turn.payload} />
+      </div>
+    )
+  }
+  if (type === 'result') {
+    const isErr = p.is_error === true
+    const detail = [asNum(p.total_cost_usd) != null ? `$${(asNum(p.total_cost_usd) as number).toFixed(2)}` : undefined, asNum(p.num_turns) != null ? `${asNum(p.num_turns)} turns` : undefined].filter(Boolean).join(' · ')
+    const text = asStr(p.result)
+    return (
+      <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+        <div className="text-[12px]"><span className={`font-semibold ${isErr ? 'text-status-error' : 'text-status-success'}`}>Result</span>{detail && <span className="text-text-tertiary"> · {detail}</span>}</div>
+        {text && <div className="mt-1.5 text-[13px] text-text-primary whitespace-pre-wrap">{text}</div>}
+        <RawToggle raw={turn.payload} />
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+      <div className="text-[12px] font-semibold text-text-secondary">{type}</div>
+      <RawToggle raw={turn.payload} />
+    </div>
+  )
+}
+
+function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: boolean }) {
+  if (!turns.length) return <p className="text-xs text-text-tertiary">{live ? 'Waiting for the agent to start…' : 'No transcript recorded for this run.'}</p>
+  return (
+    <div className="space-y-2">
+      {turns.map(t => <TranscriptTurn key={t.sequence} turn={t} />)}
+      {live && <div className="flex items-center gap-2 text-[11px] text-text-tertiary"><Loader2 className="w-3 h-3 animate-spin" /> streaming…</div>}
+    </div>
+  )
+}
+
 // The star of the redesign: turns run.finished's raw JSON into a readable story.
-function RunDetail({ run, events, agentName, templateKey, onOpenFindings }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; agentName?: string; templateKey?: string; onOpenFindings?: () => void }) {
+function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void }) {
   const meta = runStatusMeta(run.status)
   const finished = events.find(e => e.kind === 'run.finished')
   const payload = asDict(finished?.payload) ?? {}
@@ -263,6 +356,12 @@ function RunDetail({ run, events, agentName, templateKey, onOpenFindings }: { ru
         {rows.length ? <ol className="m-0 p-0 list-none">{rows}</ol> : <p className="text-xs text-text-tertiary">No events recorded yet.</p>}
       </div>
 
+      {/* full agent conversation (streamed) */}
+      <div>
+        <p className="mb-3 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary"><MessagesSquare className="w-3.5 h-3.5" />Conversation{transcript.length ? <span className="text-text-tertiary/70">· {transcript.length} turns</span> : null}</p>
+        <TranscriptView turns={transcript} live={Boolean(runActive)} />
+      </div>
+
       {/* QA result */}
       {(findings?.length || screenshots) && (
         <div>
@@ -350,8 +449,17 @@ export default function AutonomousAgents() {
 
   const templates = useQuery({ queryKey: ['autonomous-templates'], queryFn: () => client.listAutonomousAgentTemplates(), enabled: can('autonomous_agent:read') })
   const agents = useQuery({ queryKey: ['autonomous-agents'], queryFn: () => client.listAutonomousAgents(), enabled: can('autonomous_agent:read') })
-  const runs = useQuery({ queryKey: ['autonomous-runs'], queryFn: () => client.listAutonomousAgentRuns(), enabled: can('autonomous_agent:read') && tab === 'runs' })
-  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun) })
+  // Poll while the selected run is still active so the run list, timeline, and
+  // conversation update live. Reads the freshest run status from the cache to
+  // avoid ordering issues with the runs query below.
+  const selectedRunActive = () => {
+    const list = queryClient.getQueryData<AutonomousAgentRun[]>(['autonomous-runs'])
+    const r = list?.find(x => x.id === selectedRun?.id) ?? selectedRun
+    return Boolean(r && ['queued', 'leased', 'running'].includes(r.status))
+  }
+  const runs = useQuery({ queryKey: ['autonomous-runs'], queryFn: () => client.listAutonomousAgentRuns(), enabled: can('autonomous_agent:read') && tab === 'runs', refetchInterval: () => (selectedRunActive() ? 2500 : false) })
+  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun), refetchInterval: () => (selectedRunActive() ? 2500 : false) })
+  const transcript = useQuery({ queryKey: ['autonomous-run-transcript', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunTranscript(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun), refetchInterval: () => (selectedRunActive() ? 2000 : false) })
   const runtime = useQuery({ queryKey: ['autonomous-runtime'], queryFn: () => client.getAutonomousRuntimeHealth(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const settings = useQuery({ queryKey: ['autonomous-settings'], queryFn: () => client.getAutonomousAgentSettings(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const metrics = useQuery({ queryKey: ['autonomous-metrics'], queryFn: () => client.getAutonomousAgentMetrics(), enabled: can('autonomous_agent:read') && tab === 'runtime', refetchInterval: 30_000 })
@@ -537,7 +645,7 @@ export default function AutonomousAgents() {
           </div>
           <aside className="rounded-[14px] border border-border-primary p-5">
             {selectedRun ? (
-              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} />
+              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>

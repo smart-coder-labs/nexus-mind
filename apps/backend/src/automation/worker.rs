@@ -70,6 +70,111 @@ fn parse_claude_event_stream(
     ))
 }
 
+/// Spawn Claude and stream its stdout line by line, persisting each line as a
+/// (sanitized) transcript turn so operators can watch the conversation live and
+/// audit it afterwards. Reconstructs a `std::process::Output` identical in shape
+/// to `Command::output()` so all downstream parsing/branching is unchanged.
+///
+/// stderr is drained concurrently so the pipe never blocks the child. The raw
+/// stdout buffer is bounded to the same ceiling as the post-exit parser so a
+/// runaway run can't OOM the worker.
+async fn run_claude_capturing_transcript(
+    command: &mut Command,
+    store: &SqliteStore,
+    org_id: &str,
+    run_id: &str,
+    secret_values: &[String],
+) -> std::io::Result<std::process::Output> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
+    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("stdout not piped"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("stderr not piped"))?;
+    // Drain stderr in the background; a full stderr pipe would otherwise deadlock
+    // the child once its buffer fills.
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf).await;
+        buf
+    });
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let mut line: Vec<u8> = Vec::new();
+    let mut sequence: i64 = 0;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).await?;
+        if read == 0 {
+            break;
+        }
+        // Keep the raw bytes for the existing post-exit parser (bounded).
+        if stdout_buf.len() < MAX_STREAM_BYTES {
+            let room = MAX_STREAM_BYTES - stdout_buf.len();
+            stdout_buf.extend_from_slice(&line[..line.len().min(room)]);
+        }
+        // Trim trailing CR/LF for a tidy stored turn.
+        let end = line
+            .iter()
+            .rposition(|b| *b != b'\n' && *b != b'\r')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let trimmed = &line[..end];
+        if trimmed.is_empty() {
+            continue;
+        }
+        sequence += 1;
+        let sanitized = sanitize_output_with_secrets(trimmed, MAX_LINE_BYTES, secret_values);
+        // Store valid JSON verbatim (sanitized); wrap anything else so the column
+        // stays parseable for the reader. `kind` mirrors the event `type`.
+        let (kind, payload_json) =
+            match serde_json::from_str::<serde_json::Value>(&sanitized) {
+                Ok(value) => {
+                    let kind = value
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("event")
+                        .to_string();
+                    (kind, sanitized)
+                }
+                Err(_) => (
+                    "raw".to_string(),
+                    serde_json::to_string(&json!({"type":"raw","text":sanitized}))
+                        .unwrap_or_else(|_| "{\"type\":\"raw\"}".to_string()),
+                ),
+            };
+        // Best-effort persistence: a transcript write must never fail the run.
+        let db = store.conn();
+        let locked = db.lock();
+        if let Ok(conn) = locked {
+            let _ = queries::append_autonomous_agent_transcript_turn(
+                &conn,
+                org_id,
+                run_id,
+                sequence,
+                &kind,
+                &payload_json,
+            );
+        }
+    }
+    let status = child.wait().await?;
+    let stderr_buf = stderr_task.await.unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+    })
+}
+
 fn restrict_claude_environment(command: &mut Command) {
     let allowed = [
         "HOME",
@@ -1487,7 +1592,17 @@ async fn execute_claim(
             claude.args(["--mcp-config", effective.as_str()]);
         }
     }
-    let invocation = claude.current_dir(&workdir).kill_on_drop(true).output();
+    // Values to redact from the streamed transcript on top of the pattern-based
+    // sanitizer (e.g. the ephemeral repo access token).
+    let secret_values: Vec<String> = repo_token.iter().cloned().collect();
+    claude.current_dir(&workdir).kill_on_drop(true);
+    let invocation = run_claude_capturing_transcript(
+        &mut claude,
+        store,
+        &claim.org_id,
+        &claim.run.id,
+        &secret_values,
+    );
     let cancelled = async {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;

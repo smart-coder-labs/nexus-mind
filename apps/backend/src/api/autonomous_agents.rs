@@ -504,6 +504,45 @@ pub async fn list_run_events(
     ))
 }
 
+#[derive(serde::Deserialize)]
+pub struct TranscriptQuery {
+    /// Return turns with sequence strictly greater than this (0 = from start).
+    #[serde(default)]
+    pub after: i64,
+    /// Max turns to return in this page (clamped server-side).
+    pub limit: Option<i64>,
+}
+
+/// Full turn-by-turn transcript of a run's Claude conversation, paginated by
+/// sequence so the UI can poll incrementally while the run streams.
+pub async fn list_run_transcript(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(query): Query<TranscriptQuery>,
+) -> ApiResult<Json<Vec<AutonomousAgentEvent>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    if queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
+        .map_err(store_error)?
+        .is_none()
+    {
+        return Err(not_found());
+    }
+    let limit = query.limit.unwrap_or(2000).clamp(1, 5000);
+    Ok(Json(
+        queries::list_autonomous_agent_transcript(
+            &conn,
+            &auth.org_id,
+            &id,
+            query.after.max(0),
+            limit,
+        )
+        .map_err(store_error)?,
+    ))
+}
+
 pub async fn list_findings(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

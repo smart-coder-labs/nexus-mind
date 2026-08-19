@@ -65,6 +65,35 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v60(conn)?;
     run_v61(conn)?;
     run_v62(conn)?;
+    run_v63(conn)?;
+    Ok(())
+}
+
+/// Migration v63: full turn-by-turn transcript of each autonomous-agent run.
+/// The worker streams Claude's stream-json output here line by line (sanitized)
+/// so operators can watch/audit the agent's conversation live and after the
+/// fact. Rows cascade-delete with their run; no append-only trigger so a future
+/// retention job can prune old transcripts.
+pub fn run_v63(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 63 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS autonomous_agent_run_transcript (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL REFERENCES autonomous_agent_runs(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK(sequence > 0),
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(run_id, sequence)
+         );
+         CREATE INDEX IF NOT EXISTS idx_aa_transcript_run
+            ON autonomous_agent_run_transcript(org_id, run_id, sequence);
+         PRAGMA user_version = 63;",
+    )?;
     Ok(())
 }
 

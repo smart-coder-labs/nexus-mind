@@ -1380,6 +1380,19 @@ export class NexusMindClient {
   revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }
   cancelAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`,{method:'POST'}) }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
+  // Full turn-by-turn transcript, paged by sequence (server caps each page); we
+  // walk the pages so callers get the whole conversation in one array.
+  async listAutonomousAgentRunTranscript(id:string): Promise<AutonomousAgentEvent[]> {
+    const all: AutonomousAgentEvent[] = []
+    let after = 0
+    for (let page = 0; page < 100; page++) {
+      const batch: AutonomousAgentEvent[] = await this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${after}&limit=5000`)
+      all.push(...batch)
+      if (batch.length < 5000) break
+      after = batch[batch.length - 1].sequence
+    }
+    return all
+  }
   listAutonomousAgentFindings(): Promise<AutonomousAgentFinding[]> { return this.request('/v1/autonomous-agent-findings') }
   patchAutonomousAgentFinding(id:string,status:'open'|'resolved'|'ignored'): Promise<AutonomousAgentFinding> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status})}) }
   listAutonomousAgentDeliveries(): Promise<AutonomousAgentDelivery[]> { return this.request('/v1/autonomous-agent-deliveries') }

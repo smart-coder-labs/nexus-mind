@@ -632,6 +632,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(autonomous_agents::list_run_events),
         )
         .route(
+            "/v1/autonomous-agent-runs/:id/transcript",
+            get(autonomous_agents::list_run_transcript),
+        )
+        .route(
             "/v1/autonomous-agent-findings",
             get(autonomous_agents::list_findings),
         )
