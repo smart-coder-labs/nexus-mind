@@ -10,6 +10,7 @@ import { Switch } from '../components/ui/Switch'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Modal, ModalHeader, ModalTitle, ModalContent } from '../components/ui/Modal'
+import { Markdown } from '../components/ui/Markdown'
 import AutonomousAgentWizard from './AutonomousAgentWizard'
 import type { AutonomousAgentDefinition, AutonomousAgentDetail, AutonomousAgentEvent, AutonomousAgentRun, AutonomousAgentTemplate } from '../types'
 
@@ -148,41 +149,65 @@ function toolResultText(content: unknown): string {
   return content == null ? '' : JSON.stringify(content, null, 2)
 }
 
-type ChatMsg = { key: string; kind: 'assistant' | 'tool' | 'tool-error' | 'result'; text?: string; tool?: string }
+type ChatMsg = { key: string; kind: 'assistant' | 'tool' | 'tool-error'; tool?: string; markdown?: string; pretty?: string; plain?: string; badge?: string }
+
+// The agent's messages are often the JSON output contract (e.g.
+// {"no_op":true,"comment":"…"} or {"summary":…,"findings":[…]}). Rendered raw
+// they're unreadable, so we lift the human field (comment/summary/result) and
+// render it as markdown; JSON without one is pretty-printed, plain prose is kept.
+function decodeAssistantText(text: string): Pick<ChatMsg, 'markdown' | 'pretty' | 'plain' | 'badge'> {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('```')) {
+    const unfenced = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+    try {
+      const obj = asDict(JSON.parse(unfenced))
+      if (obj) {
+        const md = asStr(obj.comment) ?? asStr(obj.summary) ?? asStr(obj.result)
+        const findings = asArr(obj.findings)
+        const badge = obj.no_op === true ? 'No changes'
+          : findings ? `${findings.length} finding${findings.length === 1 ? '' : 's'}`
+          : asStr(obj.title) ? 'Proposed change'
+          : undefined
+        if (md && md.trim()) return { markdown: md, badge }
+        return { pretty: JSON.stringify(obj, null, 2), badge }
+      }
+    } catch { /* not JSON after all — fall through to plain */ }
+  }
+  return { plain: text }
+}
 
 function toChatMessages(turns: AutonomousAgentEvent[]): ChatMsg[] {
   const out: ChatMsg[] = []
   for (const turn of turns) {
     const p = asDict(turn.payload) ?? {}
     const type = asStr(p.type) ?? turn.kind
-    if (type === 'assistant' || type === 'user') {
-      const content = asArr(asDict(p.message)?.content) ?? []
-      content.forEach((block, i) => {
-        const b = asDict(block) ?? {}
-        const bt = asStr(b.type)
-        if (bt === 'text' && asStr(b.text)?.trim()) out.push({ key: `${turn.sequence}-${i}`, kind: 'assistant', text: asStr(b.text) })
-        else if (bt === 'tool_use') out.push({ key: `${turn.sequence}-${i}`, kind: 'tool', tool: asStr(b.name) ?? 'tool' })
-        else if (bt === 'tool_result' && b.is_error === true) out.push({ key: `${turn.sequence}-${i}`, kind: 'tool-error', text: toolResultText(b.content).slice(0, 800) })
-      })
-    } else if (type === 'result') {
-      const text = asStr(p.result)
-      if (text?.trim()) out.push({ key: `${turn.sequence}-r`, kind: 'result', text })
-    }
-    // 'system'/init and successful tool_result payloads are intentionally omitted.
+    if (type !== 'assistant' && type !== 'user') continue // drop system/init and result (dup of the final assistant message)
+    const content = asArr(asDict(p.message)?.content) ?? []
+    content.forEach((block, i) => {
+      const b = asDict(block) ?? {}
+      const bt = asStr(b.type)
+      const key = `${turn.sequence}-${i}`
+      if (bt === 'text' && asStr(b.text)?.trim()) out.push({ key, kind: 'assistant', ...decodeAssistantText(asStr(b.text)!) })
+      else if (bt === 'tool_use') out.push({ key, kind: 'tool', tool: asStr(b.name) ?? 'tool' })
+      else if (bt === 'tool_result' && b.is_error === true) out.push({ key, kind: 'tool-error', plain: toolResultText(b.content).slice(0, 800) })
+    })
   }
   return out
 }
 
 function ChatRow({ m }: { m: ChatMsg }) {
-  if (m.kind === 'assistant') return <div className="rounded-[10px] border border-white/[0.07] bg-white/[0.04] px-3 py-2 text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">{m.text}</div>
-  if (m.kind === 'result') return (
-    <div className="rounded-[10px] border border-accent-blue/25 bg-accent-blue/[0.07] px-3 py-2">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-accent-blue">Result</span>
-      <span className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">{m.text}</span>
+  if (m.kind === 'assistant') return (
+    <div className="rounded-[10px] border border-white/[0.07] bg-white/[0.04] px-3 py-2">
+      {m.badge && <span className="mb-1.5 inline-block rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">{m.badge}</span>}
+      {m.markdown != null
+        ? <div className="text-[13px] leading-relaxed text-text-primary [&_*]:!my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_table]:text-[12px]"><Markdown content={m.markdown} /></div>
+        : m.pretty != null
+          ? <pre className="overflow-x-auto rounded bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-text-secondary">{m.pretty}</pre>
+          : <div className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">{m.plain}</div>}
     </div>
   )
   if (m.kind === 'tool') return <div className="flex items-center gap-1.5 pl-1 text-[11.5px] text-text-tertiary"><Wrench className="h-3 w-3" /> used <span className="font-mono text-text-secondary">{m.tool}</span></div>
-  if (m.kind === 'tool-error') return <div className="rounded-[10px] border border-status-error/25 bg-status-error/[0.07] px-3 py-2 font-mono text-[12px] text-status-error whitespace-pre-wrap">{m.text}</div>
+  if (m.kind === 'tool-error') return <div className="rounded-[10px] border border-status-error/25 bg-status-error/[0.07] px-3 py-2 font-mono text-[12px] text-status-error whitespace-pre-wrap">{m.plain}</div>
   return null
 }
 
