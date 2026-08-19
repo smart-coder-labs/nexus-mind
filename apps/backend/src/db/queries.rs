@@ -16621,7 +16621,13 @@ pub fn autonomous_agent_run_publish_authorized(
               AND run.status IN('running','succeeded','partial')
               AND definition.status='enabled'
               AND definition.current_revision=revision.revision
-              AND revision.validation_status='valid'
+              -- Derive validation from the append-only validations table: the
+              -- autonomous_agent_revisions.validation_status column is frozen at
+              -- 'pending' by the no-update trigger, so reading it directly would
+              -- revoke publish authority on every run.
+              AND (SELECT val.status FROM autonomous_agent_validations val
+                   WHERE val.revision_id=revision.id
+                   ORDER BY val.created_at DESC, val.id DESC LIMIT 1)='valid'
               AND org.autonomous_agents_enabled=1
               AND (run.status IN('succeeded','partial') OR EXISTS(
                     SELECT 1 FROM autonomous_agent_leases lease
