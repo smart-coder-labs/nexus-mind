@@ -55,9 +55,11 @@ interface FormState {
   testAdapter: 'playwright' | 'allowlisted_command'
   testCommand: string
   qaInstructions: string
+  customInstructions: string
   // shared / repo templates
   repository: string
   baseBranch: string
+  contextRepos: string
   labels: string
   excludedPaths: string
   includeDrafts: boolean
@@ -83,8 +85,10 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     testAdapter: 'playwright',
     testCommand: '',
     qaInstructions: '',
+    customInstructions: '',
     repository: '',
     baseBranch: 'main',
+    contextRepos: '',
     labels: '',
     excludedPaths: '',
     includeDrafts: false,
@@ -120,11 +124,14 @@ function buildConfig(state: FormState): Record<string, unknown> {
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (csv(state.contextRepos).length) config.context_repos = csv(state.contextRepos)
     if (csv(state.labels).length) config.labels = csv(state.labels)
     if (csv(state.excludedPaths).length) config.excluded_paths = csv(state.excludedPaths)
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   }
   const extra = parseJsonObject(state.extraConfig)
   return extra ? { ...config, ...extra } : config
@@ -161,8 +168,10 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
+    customInstructions: typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
+    contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
     labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
     excludedPaths: Array.isArray(config.excluded_paths) ? (config.excluded_paths as string[]).join(', ') : '',
     includeDrafts: config.include_drafts === true,
@@ -439,11 +448,17 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       )}
 
       {template === 'github_issue_resolver' && (
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Repository (owner/repo)"><Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" /></Field>
-          <Field label="Base branch"><Input inputSize="sm" value={state.baseBranch} onChange={event => set('baseBranch', event.target.value)} placeholder="main" /></Field>
-          <Field label="Eligible labels" hint="Comma-separated."><Input inputSize="sm" value={state.labels} onChange={event => set('labels', event.target.value)} placeholder="autofix, good-first-issue" /></Field>
-          <Field label="Excluded paths" hint="Comma-separated globs."><Input inputSize="sm" value={state.excludedPaths} onChange={event => set('excludedPaths', event.target.value)} placeholder="infra/**, .github/**" /></Field>
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Repository (owner/repo)"><Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" /></Field>
+            <Field label="Base branch"><Input inputSize="sm" value={state.baseBranch} onChange={event => set('baseBranch', event.target.value)} placeholder="main" /></Field>
+            <Field label="Context repositories" hint="Comma-separated owner/repo. Cloned read-only so the agent has cross-repo context; changes still land only in the primary repo."><Input inputSize="sm" value={state.contextRepos} onChange={event => set('contextRepos', event.target.value)} placeholder="acme/api, acme/shared-lib" /></Field>
+            <Field label="Eligible labels" hint="Comma-separated."><Input inputSize="sm" value={state.labels} onChange={event => set('labels', event.target.value)} placeholder="autofix, good-first-issue" /></Field>
+            <Field label="Excluded paths" hint="Comma-separated globs."><Input inputSize="sm" value={state.excludedPaths} onChange={event => set('excludedPaths', event.target.value)} placeholder="infra/**, .github/**" /></Field>
+          </div>
+          <Field label="Custom instructions (optional)" hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits.">
+            <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test." />
+          </Field>
         </div>
       )}
 
@@ -451,6 +466,9 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
         <div className="space-y-4">
           <Field label="Repository (owner/repo)"><Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" /></Field>
           <Switch checked={state.includeDrafts} onCheckedChange={value => set('includeDrafts', value)} size="sm" label="Review draft pull requests" />
+          <Field label="Custom instructions (optional)" hint="Guidance for what the review should focus on — areas, standards, risks. Cannot approve, merge, push, or publish.">
+            <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
+          </Field>
           <p className="text-[11px] text-text-tertiary">Publishes COMMENT or REQUEST_CHANGES only — never approves, merges, or pushes.</p>
         </div>
       )}
