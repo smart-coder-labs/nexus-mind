@@ -1306,13 +1306,16 @@ async fn execute_claim(
         ("qa", false) => ("default", "Read,Grep,Glob,mcp__playwright__*"),
         _ => ("plan", "Read,Grep,Glob"),
     };
+    // Browser-driven QA spends one turn per navigate/click/snapshot, so 20 is far
+    // too few to exercise a real app (login + multiple sections). Default QA much
+    // higher and allow a larger ceiling; other templates keep the tight default.
     let max_turns = claim
         .run
         .budget
         .get("max_turns")
         .and_then(|v| v.as_u64())
-        .unwrap_or(20)
-        .clamp(1, 50)
+        .unwrap_or(if claim.template_key == "qa" { 120 } else { 20 })
+        .clamp(1, 400)
         .to_string();
     let wall_time = claim
         .run
@@ -1428,7 +1431,17 @@ async fn execute_claim(
             if stderr.contains("auth") || stderr.contains("login") {
                 ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
             } else {
-                ("failed".into(), json!({"code":"claude_failed","exit_code":output.status.code()}))
+                // Capture sanitized tails so a non-zero Claude exit (e.g. hitting
+                // max turns) is diagnosable from the run timeline.
+                let stderr_tail = sanitize_output(&output.stderr, 800);
+                let stdout_tail = {
+                    let start = output.stdout.len().saturating_sub(1500);
+                    sanitize_output(&output.stdout[start..], 1500)
+                };
+                (
+                    "failed".into(),
+                    json!({"code":"claude_failed","exit_code":output.status.code(),"stderr":stderr_tail,"stdout_tail":stdout_tail}),
+                )
             }
         }
         }
