@@ -1491,8 +1491,24 @@ async fn execute_claim(
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
     if claim.template_key == "qa" {
-        let shots = upload_qa_screenshots(&qa_screenshots_dir, &claim.org_id, &claim.run.id).await;
-        outcome.1["screenshots_uploaded"] = json!(shots.len());
+        let sandbox_root = workdir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| workdir.clone());
+        let roots = vec![
+            qa_screenshots_dir.clone(),
+            std::path::PathBuf::from("/tmp/playwright-mcp-output"),
+            sandbox_root,
+            workdir.clone(),
+        ];
+        let r2_configured = super::r2::R2Config::from_env().is_some();
+        let images = collect_qa_images(&roots).await;
+        let shots = upload_qa_screenshots(&images, &claim.org_id, &claim.run.id).await;
+        outcome.1["screenshots_debug"] = json!({
+            "r2_configured": r2_configured,
+            "images_found": images.len(),
+            "uploaded": shots.len(),
+        });
         if !shots.is_empty() {
             outcome.1["screenshots"] = serde_json::Value::Object(shots);
         }
@@ -1544,11 +1560,11 @@ async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathB
     found
 }
 
-/// Upload QA screenshots to R2, returning a {filename: viewable_url} map keyed by
-/// file name (which the agent references in each finding's "screenshot" field).
-/// Best-effort: missing R2 config or read errors yield an empty map, never fail.
+/// Upload the given image files to R2, returning a {filename: viewable_url} map
+/// keyed by file name (which the agent references in each finding's "screenshot"
+/// field). Best-effort: missing R2 config or read errors yield an empty map.
 async fn upload_qa_screenshots(
-    per_run_dir: &std::path::Path,
+    images: &[std::path::PathBuf],
     org_id: &str,
     run_id: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -1556,11 +1572,7 @@ async fn upload_qa_screenshots(
     let Some(cfg) = super::r2::R2Config::from_env() else {
         return map;
     };
-    let roots = vec![
-        per_run_dir.to_path_buf(),
-        std::path::PathBuf::from("/tmp/playwright-mcp-output"),
-    ];
-    for path in collect_qa_images(&roots).await {
+    for path in images {
         let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
             continue;
         };
