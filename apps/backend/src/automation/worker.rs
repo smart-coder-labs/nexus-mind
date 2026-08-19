@@ -934,12 +934,17 @@ fn fixed_prompt(template: &str, config: &serde_json::Value) -> anyhow::Result<St
     } else {
         " Do not publish externally."
     };
+    // Exact output contract the deterministic evaluator enforces. Claude Code's
+    // `-p` returns the model's final message verbatim, so it must be ONLY this
+    // JSON object (no prose, no markdown fences) or evaluation fails
+    // (result_summary_missing / invalid_finding).
+    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\"}]}. Return an empty findings array when the target behaves correctly.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
-            "Drive the target application through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. Return strict JSON with summary and findings.{slack_clause}"
+            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository.{slack_clause}{qa_contract}"
         ),
         "qa" => format!(
-            "Execute the configured QA plan and evaluate the recorded test results. Return strict JSON with summary and findings.{slack_clause}"
+            "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
         ),
         "github_issue_resolver" => "Analyze the eligible issue configuration and propose a bounded implementation. Return strict JSON. Do not merge, deploy, or publish.".to_string(),
         "github_pr_reviewer" => "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.".to_string(),
@@ -1417,7 +1422,21 @@ async fn execute_claim(
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result(&claim.template_key, &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
-            Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            Err(error) => {
+                // Surface a sanitized, truncated preview of what the model
+                // actually returned so evaluator rejections are diagnosable from
+                // the run timeline instead of a bare code.
+                let raw = outcome
+                    .1
+                    .get("result")
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                let preview = sanitize_output(raw.as_bytes(), 1000);
+                outcome = (
+                    "blocked_policy".into(),
+                    json!({"code":error.to_string(),"result_preview":preview}),
+                );
+            }
         }
     }
     let _ = tokio::fs::remove_dir_all(&workdir).await;
@@ -1434,10 +1453,31 @@ fn structured_result(result: &serde_json::Value) -> serde_json::Value {
         .and_then(|v| v.as_str())
         .or_else(|| inner.as_str())
     {
-        serde_json::from_str(text).unwrap_or(inner)
+        parse_lenient_json(text).unwrap_or(inner)
     } else {
         inner
     }
+}
+
+/// Parse a JSON object from a model's final message even when it is wrapped in
+/// markdown code fences or surrounded by prose — a common shape that would
+/// otherwise fail strict parsing and be rejected as result_summary_missing.
+fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
+    let trimmed = text.trim();
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```JSON"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|rest| rest.trim_start().trim_end_matches("```").trim())
+        .unwrap_or(trimmed);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(unfenced) {
+        return Some(value);
+    }
+    let start = unfenced.find('{')?;
+    let end = unfenced.rfind('}')?;
+    (end > start)
+        .then(|| serde_json::from_str::<serde_json::Value>(&unfenced[start..=end]).ok())
+        .flatten()
 }
 
 async fn deliver_findings(
