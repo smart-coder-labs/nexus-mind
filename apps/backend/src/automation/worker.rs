@@ -2019,9 +2019,16 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                         // matching the first-attempt delivery path.
                         let token = server_gh_token().await?;
                         let title = format!("[NexusMind QA] {}", item.finding.title);
+                        let evidence_md = item
+                            .finding
+                            .evidence
+                            .get("screenshot_url")
+                            .and_then(|v| v.as_str())
+                            .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
+                            .unwrap_or_default();
                         let body = format!(
-                            "{}\n<!-- nexusmind-fingerprint:{} -->",
-                            item.finding.summary, item.finding.fingerprint
+                            "{}{}\n<!-- nexusmind-fingerprint:{} -->",
+                            item.finding.summary, evidence_md, item.finding.fingerprint
                         );
                         let response = if let Some(number) = item
                             .delivery
