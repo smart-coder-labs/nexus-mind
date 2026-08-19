@@ -222,6 +222,11 @@ export default function AutonomousAgents() {
               <p className="text-sm text-text-tertiary mt-2">{finding.summary}</p>
               <details className="mt-2 text-xs">
                 <summary className="cursor-pointer text-text-secondary">Evidence and deliveries</summary>
+                {typeof finding.evidence?.screenshot_url === 'string' && (
+                  <a href={finding.evidence.screenshot_url as string} target="_blank" rel="noreferrer" className="mt-2 block">
+                    <img src={finding.evidence.screenshot_url as string} alt="QA evidence screenshot" className="max-h-64 rounded-lg border border-border-primary" />
+                  </a>
+                )}
                 <pre className="whitespace-pre-wrap break-all mt-2 text-text-tertiary">{JSON.stringify(finding.evidence, null, 2)}</pre>
                 {deliveries.data?.filter(item => item.finding_id === finding.id).map(item => (
                   <div key={item.id} className="mt-2 flex gap-2">

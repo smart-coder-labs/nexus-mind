@@ -946,14 +946,14 @@ fn fixed_prompt(
     // `-p` returns the model's final message verbatim, so it must be ONLY this
     // JSON object (no prose, no markdown fences) or evaluation fails
     // (result_summary_missing / invalid_finding).
-    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\"}]}. Return an empty findings array when the target behaves correctly.";
+    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\",\"screenshot\":\"<optional evidence filename>.png\"}]}. Return an empty findings array when the target behaves correctly.";
     // Give the agent its exact turn budget so it can stop exploring in time to
     // emit the JSON; running out mid-action (error_max_turns) discards everything.
     let stop_by = max_turns.saturating_sub(20).max(1);
     let turn_budget = format!(" You have a HARD limit of {max_turns} turns and each browser action consumes one. Stop opening new areas by turn {stop_by} and spend your remaining turns writing the final JSON. It is far better to cover fewer flows and return a valid summary than to run out of turns mid-action — if you sense you are running low, stop immediately and emit the JSON now.");
     let objective = match template {
         "qa" if qa_agent_driven => format!(
-            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively.{turn_budget}{slack_clause}{qa_contract}"
+            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{turn_budget}{slack_clause}{qa_contract}"
         ),
         "qa" => format!(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
@@ -1351,14 +1351,28 @@ async fn execute_claim(
         "--allowedTools",
         allowed_tools,
     ]);
-    // Register the Playwright MCP for QA runs when its config ships with the
-    // image. Absent in local/dev checkouts, so this is a no-op there and does
-    // not change behaviour for the non-QA templates.
+    // Register the Playwright MCP for QA runs, pointing its screenshot output at
+    // a per-run directory the worker reads back afterwards for evidence upload.
+    let qa_screenshots_dir = workdir
+        .parent()
+        .unwrap_or(workdir.as_path())
+        .join("screenshots");
     if claim.template_key == "qa" {
-        let mcp_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
+        let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
-        if std::path::Path::new(&mcp_config).exists() {
-            claude.args(["--mcp-config", mcp_config.as_str()]);
+        if std::path::Path::new(&base_config).exists() {
+            let _ = tokio::fs::create_dir_all(&qa_screenshots_dir).await;
+            let per_run = workdir
+                .parent()
+                .unwrap_or(workdir.as_path())
+                .join("qa-mcp.json");
+            let effective = qa_mcp_config_with_output_dir(&base_config, &qa_screenshots_dir)
+                .and_then(|body| {
+                    std::fs::write(&per_run, body).ok()?;
+                    per_run.to_str().map(str::to_string)
+                })
+                .unwrap_or(base_config);
+            claude.args(["--mcp-config", effective.as_str()]);
         }
     }
     let invocation = claude.current_dir(&workdir).kill_on_drop(true).output();
@@ -1474,8 +1488,103 @@ async fn execute_claim(
             }
         }
     }
+    // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
+    // attach the {filename: url} map so delivery can reference each finding's shot.
+    if claim.template_key == "qa" {
+        let shots = upload_qa_screenshots(&qa_screenshots_dir, &claim.org_id, &claim.run.id).await;
+        outcome.1["screenshots_uploaded"] = json!(shots.len());
+        if !shots.is_empty() {
+            outcome.1["screenshots"] = serde_json::Value::Object(shots);
+        }
+    }
     let _ = tokio::fs::remove_dir_all(&workdir).await;
     outcome
+}
+
+/// Read the baked QA MCP config and add `--output-dir <dir>` to the playwright
+/// server args so screenshots land where the worker can collect them.
+fn qa_mcp_config_with_output_dir(base_path: &str, out_dir: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(base_path).ok()?;
+    let mut config: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let args = config
+        .pointer_mut("/mcpServers/playwright/args")?
+        .as_array_mut()?;
+    args.push(json!("--output-dir"));
+    args.push(json!(out_dir.to_str()?));
+    serde_json::to_string(&config).ok()
+}
+
+/// Recursively collect image files under the given roots (bounded), so we catch
+/// screenshots whether the MCP honours --output-dir or falls back to its default
+/// output directory (a known @playwright/mcp bug ignores --output-dir).
+async fn collect_qa_images(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = roots.to_vec();
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        if found.len() >= 50 || visited > 500 {
+            break;
+        }
+        visited += 1;
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(path);
+                continue;
+            }
+            let lower = path.to_string_lossy().to_lowercase();
+            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Upload QA screenshots to R2, returning a {filename: viewable_url} map keyed by
+/// file name (which the agent references in each finding's "screenshot" field).
+/// Best-effort: missing R2 config or read errors yield an empty map, never fail.
+async fn upload_qa_screenshots(
+    per_run_dir: &std::path::Path,
+    org_id: &str,
+    run_id: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    let Some(cfg) = super::r2::R2Config::from_env() else {
+        return map;
+    };
+    let roots = vec![
+        per_run_dir.to_path_buf(),
+        std::path::PathBuf::from("/tmp/playwright-mcp-output"),
+    ];
+    for path in collect_qa_images(&roots).await {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if map.contains_key(&name) {
+            continue;
+        }
+        let content_type = if name.to_lowercase().ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) if bytes.len() <= 10_485_760 => bytes,
+            _ => continue,
+        };
+        let key = format!("qa-evidence/{org_id}/{run_id}/{name}");
+        match super::r2::put_object(&cfg, &key, &bytes, content_type).await {
+            Ok(stored) => {
+                map.insert(name, json!(super::r2::object_url(&cfg, &stored, 604_800)));
+            }
+            Err(error) => tracing::warn!("r2 screenshot upload failed for {name}: {error:#}"),
+        }
+    }
+    map
 }
 
 fn structured_result(result: &serde_json::Value) -> serde_json::Value {
@@ -1528,6 +1637,8 @@ async fn deliver_findings(
     let Some(findings) = structured.get("findings").and_then(|v| v.as_array()) else {
         return;
     };
+    // {filename: url} map of screenshots the worker uploaded to R2 for this run.
+    let screenshots = result.get("screenshots").and_then(|v| v.as_object());
     let outputs = if claim.template_key == "qa" {
         claim
             .config
@@ -1576,6 +1687,18 @@ async fn deliver_findings(
                     .as_bytes(),
                 ))
             });
+        // Resolve this finding's uploaded screenshot (if any) and enrich the
+        // stored evidence so NexusMind shows the image URL.
+        let shot_url = value
+            .get("screenshot")
+            .and_then(|v| v.as_str())
+            .and_then(|name| screenshots.and_then(|map| map.get(name)))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let mut evidence = value.clone();
+        if let (Some(url), Some(object)) = (&shot_url, evidence.as_object_mut()) {
+            object.insert("screenshot_url".into(), json!(url));
+        }
         let finding = {
             let db = store.conn();
             let Ok(conn) = db.lock() else { continue };
@@ -1588,7 +1711,7 @@ async fn deliver_findings(
                 &title,
                 severity,
                 &summary,
-                value,
+                &evidence,
             ) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -1724,9 +1847,13 @@ async fn deliver_findings(
                             Err(error) => Err(error),
                             Ok(()) => {
                                 let issue_title = format!("[NexusMind QA] {title}");
+                                let evidence_md = shot_url
+                                    .as_deref()
+                                    .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
+                                    .unwrap_or_default();
                                 let issue_body = format!(
-                                    "{}\n\nNexusMind run: `{}`\n<!-- nexusmind-fingerprint:{} -->",
-                                    summary, claim.run.id, finding.fingerprint
+                                    "{}{}\n\nNexusMind run: `{}`\n<!-- nexusmind-fingerprint:{} -->",
+                                    summary, evidence_md, claim.run.id, finding.fingerprint
                                 );
                                 if delivery.status == "delivered" {
                                     match delivery
