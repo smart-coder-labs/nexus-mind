@@ -144,14 +144,17 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn executable(contents: &str) -> tempfile::NamedTempFile {
+    fn executable(contents: &str) -> tempfile::TempPath {
         use std::os::unix::fs::PermissionsExt;
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), contents).unwrap();
         let mut permissions = std::fs::metadata(file.path()).unwrap().permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(file.path(), permissions).unwrap();
-        file
+        // Close the writable handle before the file gets executed: on Linux,
+        // exec of a file still open for writing fails with ETXTBSY (surfaced as
+        // claude_spawn_failed), which made these tests flaky on CI runners.
+        file.into_temp_path()
     }
 
     #[tokio::test]
@@ -165,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn unsupported_binary_and_malformed_auth_status_fail_closed() {
         let unsupported = executable("#!/bin/sh\necho 'not claude'\n");
-        let health = probe_claude(unsupported.path().to_str().unwrap()).await;
+        let health = probe_claude(unsupported.to_str().unwrap()).await;
         assert_eq!(
             health.reason_code.as_deref(),
             Some("claude_version_unsupported")
@@ -174,7 +177,7 @@ mod tests {
         let malformed = executable(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; else echo 'not-json'; fi\n",
         );
-        let health = probe_claude(malformed.path().to_str().unwrap()).await;
+        let health = probe_claude(malformed.to_str().unwrap()).await;
         assert_eq!(
             health.reason_code.as_deref(),
             Some("claude_auth_status_malformed")
@@ -187,7 +190,7 @@ mod tests {
         let binary = executable(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; else echo '{\"loggedIn\":true}'; fi\n",
         );
-        let health = probe_claude(binary.path().to_str().unwrap()).await;
+        let health = probe_claude(binary.to_str().unwrap()).await;
         assert_eq!(health.status, "ready");
     }
 }
