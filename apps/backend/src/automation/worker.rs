@@ -1372,7 +1372,7 @@ async fn execute_claim(
                         "permission_mode": permission_mode,
                     }),
                 );
-            }
+            };
         }
         if config_exists {
             claude.args(["--mcp-config", mcp_config.as_str()]);
