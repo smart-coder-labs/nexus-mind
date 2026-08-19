@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
-import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, ExternalLink, GitPullRequest, Loader2, MessagesSquare, Pencil, Play, Plus, RefreshCw, ShieldCheck, X, XCircle } from 'lucide-react'
+import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, ExternalLink, GitPullRequest, Loader2, MessagesSquare, Pencil, Play, Plus, RefreshCw, ShieldCheck, Wrench, X, XCircle } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/Button'
@@ -137,7 +137,10 @@ function TimelineRow({ tone, icon, title, time, body, last }: { tone: Tone; icon
   )
 }
 
-// ── Conversation transcript (the agent's full turn-by-turn Claude stream) ──
+// ── Conversation transcript → readable chat ──
+// Distils the raw Claude stream-json turns into human-readable chat messages:
+// assistant prose, a one-line note per tool call, tool errors, and the final
+// result. System/init turns and non-error tool outputs are dropped as noise.
 function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
   const arr = asArr(content)
@@ -145,87 +148,56 @@ function toolResultText(content: unknown): string {
   return content == null ? '' : JSON.stringify(content, null, 2)
 }
 
-function RawToggle({ raw }: { raw: unknown }) {
-  return (
-    <details className="mt-1">
-      <summary className="cursor-pointer text-[11px] text-text-tertiary">raw</summary>
-      <pre className="mt-1 max-h-72 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(raw, null, 2)}</pre>
-    </details>
-  )
+type ChatMsg = { key: string; kind: 'assistant' | 'tool' | 'tool-error' | 'result'; text?: string; tool?: string }
+
+function toChatMessages(turns: AutonomousAgentEvent[]): ChatMsg[] {
+  const out: ChatMsg[] = []
+  for (const turn of turns) {
+    const p = asDict(turn.payload) ?? {}
+    const type = asStr(p.type) ?? turn.kind
+    if (type === 'assistant' || type === 'user') {
+      const content = asArr(asDict(p.message)?.content) ?? []
+      content.forEach((block, i) => {
+        const b = asDict(block) ?? {}
+        const bt = asStr(b.type)
+        if (bt === 'text' && asStr(b.text)?.trim()) out.push({ key: `${turn.sequence}-${i}`, kind: 'assistant', text: asStr(b.text) })
+        else if (bt === 'tool_use') out.push({ key: `${turn.sequence}-${i}`, kind: 'tool', tool: asStr(b.name) ?? 'tool' })
+        else if (bt === 'tool_result' && b.is_error === true) out.push({ key: `${turn.sequence}-${i}`, kind: 'tool-error', text: toolResultText(b.content).slice(0, 800) })
+      })
+    } else if (type === 'result') {
+      const text = asStr(p.result)
+      if (text?.trim()) out.push({ key: `${turn.sequence}-r`, kind: 'result', text })
+    }
+    // 'system'/init and successful tool_result payloads are intentionally omitted.
+  }
+  return out
 }
 
-function ContentBlock({ block }: { block: unknown }) {
-  const b = asDict(block) ?? {}
-  const t = asStr(b.type)
-  if (t === 'text') {
-    const text = asStr(b.text) ?? ''
-    if (!text.trim()) return null
-    return <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-[13px] text-text-primary whitespace-pre-wrap">{text}</div>
-  }
-  if (t === 'tool_use') {
-    const name = asStr(b.name) ?? 'tool'
-    return (
-      <details className="rounded-[10px] border border-accent-blue/20 bg-accent-blue/[0.04] px-3 py-2">
-        <summary className="cursor-pointer text-[12px] font-medium text-accent-blue">→ {name}</summary>
-        <pre className="mt-2 max-h-72 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary">{JSON.stringify(b.input ?? {}, null, 2)}</pre>
-      </details>
-    )
-  }
-  if (t === 'tool_result') {
-    const isErr = b.is_error === true
-    const text = toolResultText(b.content)
-    return (
-      <details className={`rounded-[10px] border px-3 py-2 ${isErr ? 'border-status-error/30 bg-status-error/[0.05]' : 'border-white/[0.06] bg-white/[0.01]'}`}>
-        <summary className={`cursor-pointer text-[12px] ${isErr ? 'text-status-error' : 'text-text-tertiary'}`}>{isErr ? '⚠ tool result' : '← tool result'}</summary>
-        <pre className="mt-2 max-h-80 overflow-auto rounded bg-black/30 p-2 font-mono text-[11px] text-text-tertiary whitespace-pre-wrap">{text}</pre>
-      </details>
-    )
-  }
+function ChatRow({ m }: { m: ChatMsg }) {
+  if (m.kind === 'assistant') return <div className="rounded-[10px] border border-white/[0.07] bg-white/[0.04] px-3 py-2 text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">{m.text}</div>
+  if (m.kind === 'result') return (
+    <div className="rounded-[10px] border border-accent-blue/25 bg-accent-blue/[0.07] px-3 py-2">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-accent-blue">Result</span>
+      <span className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">{m.text}</span>
+    </div>
+  )
+  if (m.kind === 'tool') return <div className="flex items-center gap-1.5 pl-1 text-[11.5px] text-text-tertiary"><Wrench className="h-3 w-3" /> used <span className="font-mono text-text-secondary">{m.tool}</span></div>
+  if (m.kind === 'tool-error') return <div className="rounded-[10px] border border-status-error/25 bg-status-error/[0.07] px-3 py-2 font-mono text-[12px] text-status-error whitespace-pre-wrap">{m.text}</div>
   return null
 }
 
-function TranscriptTurn({ turn }: { turn: AutonomousAgentEvent }) {
-  const p = asDict(turn.payload) ?? {}
-  const type = asStr(p.type) ?? turn.kind
-  const content = asArr(asDict(p.message)?.content)
-  if ((type === 'assistant' || type === 'user') && content) {
-    return <div className="space-y-1.5">{content.map((block, i) => <ContentBlock key={i} block={block} />)}</div>
-  }
-  if (type === 'system') {
-    const detail = [asStr(p.model), asArr(p.tools) ? `${asArr(p.tools)!.length} tools` : undefined].filter(Boolean).join(' · ')
-    return (
-      <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
-        <div className="text-[12px]"><span className="font-semibold text-text-secondary">Session started</span>{detail && <span className="text-text-tertiary"> · {detail}</span>}</div>
-        <RawToggle raw={turn.payload} />
-      </div>
-    )
-  }
-  if (type === 'result') {
-    const isErr = p.is_error === true
-    const detail = [asNum(p.total_cost_usd) != null ? `$${(asNum(p.total_cost_usd) as number).toFixed(2)}` : undefined, asNum(p.num_turns) != null ? `${asNum(p.num_turns)} turns` : undefined].filter(Boolean).join(' · ')
-    const text = asStr(p.result)
-    return (
-      <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
-        <div className="text-[12px]"><span className={`font-semibold ${isErr ? 'text-status-error' : 'text-status-success'}`}>Result</span>{detail && <span className="text-text-tertiary"> · {detail}</span>}</div>
-        {text && <div className="mt-1.5 text-[13px] text-text-primary whitespace-pre-wrap">{text}</div>}
-        <RawToggle raw={turn.payload} />
-      </div>
-    )
-  }
-  return (
-    <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
-      <div className="text-[12px] font-semibold text-text-secondary">{type}</div>
-      <RawToggle raw={turn.payload} />
-    </div>
-  )
-}
-
 function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: boolean }) {
+  const messages = useMemo(() => toChatMessages(turns), [turns])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  // Keep the newest message in view while the run streams.
+  useEffect(() => {
+    if (live && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [messages.length, live])
   if (!turns.length) return <p className="text-xs text-text-tertiary">{live ? 'Waiting for the agent to start…' : 'No transcript recorded for this run.'}</p>
   return (
-    <div className="space-y-2">
-      {turns.map(t => <TranscriptTurn key={t.sequence} turn={t} />)}
-      {live && <div className="flex items-center gap-2 text-[11px] text-text-tertiary"><Loader2 className="w-3 h-3 animate-spin" /> streaming…</div>}
+    <div ref={scrollRef} className="max-h-[520px] space-y-2 overflow-y-auto rounded-[12px] border border-border-primary bg-black/40 p-3">
+      {messages.length ? messages.map(m => <ChatRow key={m.key} m={m} />) : <p className="text-xs text-text-tertiary">No readable messages yet.</p>}
+      {live && <div className="flex items-center gap-2 pl-1 text-[11px] text-text-tertiary"><Loader2 className="h-3 w-3 animate-spin" /> streaming…</div>}
     </div>
   )
 }
@@ -458,8 +430,32 @@ export default function AutonomousAgents() {
     return Boolean(r && ['queued', 'leased', 'running'].includes(r.status))
   }
   const runs = useQuery({ queryKey: ['autonomous-runs'], queryFn: () => client.listAutonomousAgentRuns(), enabled: can('autonomous_agent:read') && tab === 'runs', refetchInterval: () => (selectedRunActive() ? 2500 : false) })
-  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun), refetchInterval: () => (selectedRunActive() ? 2500 : false) })
-  const transcript = useQuery({ queryKey: ['autonomous-run-transcript', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunTranscript(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun), refetchInterval: () => (selectedRunActive() ? 2000 : false) })
+  // Lifecycle events barely change mid-run; the terminal-status effect below
+  // refetches them once the run finishes, so no need to poll them live.
+  const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun) })
+  const transcript = useQuery({
+    queryKey: ['autonomous-run-transcript', selectedRun?.id],
+    // Incremental: only fetch turns after the last one we already hold, then
+    // append. Avoids re-downloading the whole conversation on every poll.
+    queryFn: async () => {
+      const prev = queryClient.getQueryData<AutonomousAgentEvent[]>(['autonomous-run-transcript', selectedRun?.id]) ?? []
+      const after = prev.length ? prev[prev.length - 1].sequence : 0
+      const fresh = await client.listAutonomousAgentRunTranscript(selectedRun!.id, after)
+      return after === 0 ? fresh : fresh.length ? [...prev, ...fresh] : prev
+    },
+    enabled: can('autonomous_agent:read') && Boolean(selectedRun),
+    refetchInterval: () => (selectedRunActive() ? 2000 : false),
+  })
+  // When a run stops streaming, pull the final turns once (the last poll may have
+  // fired just before the run's closing turns were written).
+  const selectedLiveStatus = (runs.data?.find(r => r.id === selectedRun?.id) ?? selectedRun)?.status
+  useEffect(() => {
+    if (selectedRun && selectedLiveStatus && !['queued', 'leased', 'running'].includes(selectedLiveStatus)) {
+      void transcript.refetch()
+      void events.refetch()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLiveStatus, selectedRun?.id])
   const runtime = useQuery({ queryKey: ['autonomous-runtime'], queryFn: () => client.getAutonomousRuntimeHealth(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const settings = useQuery({ queryKey: ['autonomous-settings'], queryFn: () => client.getAutonomousAgentSettings(), enabled: can('autonomous_agent:read') && tab === 'runtime' })
   const metrics = useQuery({ queryKey: ['autonomous-metrics'], queryFn: () => client.getAutonomousAgentMetrics(), enabled: can('autonomous_agent:read') && tab === 'runtime', refetchInterval: 30_000 })

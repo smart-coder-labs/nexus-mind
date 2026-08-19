@@ -16791,7 +16791,7 @@ pub fn enqueue_due_autonomous_agent_runs(conn: &Connection) -> Result<usize> {
     Ok(created)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClaimedAutonomousRun {
     pub org_id: String,
     pub run: AutonomousAgentRun,

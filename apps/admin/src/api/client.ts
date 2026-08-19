@@ -1380,16 +1380,17 @@ export class NexusMindClient {
   revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }
   cancelAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`,{method:'POST'}) }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
-  // Full turn-by-turn transcript, paged by sequence (server caps each page); we
-  // walk the pages so callers get the whole conversation in one array.
-  async listAutonomousAgentRunTranscript(id:string): Promise<AutonomousAgentEvent[]> {
+  // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
+  // poll incrementally with the last sequence they hold so each poll only pulls
+  // new turns instead of re-downloading the whole conversation.
+  async listAutonomousAgentRunTranscript(id:string, after=0): Promise<AutonomousAgentEvent[]> {
     const all: AutonomousAgentEvent[] = []
-    let after = 0
+    let cursor = after
     for (let page = 0; page < 100; page++) {
-      const batch: AutonomousAgentEvent[] = await this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${after}&limit=5000`)
+      const batch: AutonomousAgentEvent[] = await this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${cursor}&limit=5000`)
       all.push(...batch)
       if (batch.length < 5000) break
-      after = batch[batch.length - 1].sequence
+      cursor = batch[batch.length - 1].sequence
     }
     return all
   }

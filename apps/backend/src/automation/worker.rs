@@ -1388,11 +1388,119 @@ fn evaluate_structured_result(
     }))
 }
 
+/// For a manual issue-resolver run (no `trigger.number`), pick the most recently
+/// updated OPEN issue that satisfies the agent's label policy. The agent has no
+/// tools to list issues itself, so the worker selects one server-side using the
+/// bot token. Returns `(repository, issue_number)` or `None` when nothing is
+/// eligible. PRs (issues carrying `pull_request`) are skipped.
+async fn select_manual_resolver_issue(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+) -> anyhow::Result<Option<(String, i64)>> {
+    let repository = claim
+        .config
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            claim
+                .config
+                .pointer("/trigger/repository")
+                .and_then(|v| v.as_str())
+        })
+        .ok_or_else(|| anyhow::anyhow!("repository_missing"))?
+        .to_string();
+    let token = github_access(store, claim)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("github_auth_required"))?;
+    let string_list = |field: &str| -> Vec<String> {
+        claim
+            .config
+            .get(field)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let required = string_list("labels");
+    let excluded = string_list("excluded_labels");
+    let issues = super::connectors::list_recent_github_issues(&token, &repository).await?;
+    for issue in issues.as_array().into_iter().flatten() {
+        if issue.get("pull_request").is_some()
+            || issue.get("state").and_then(|v| v.as_str()) != Some("open")
+        {
+            continue;
+        }
+        let labels: Vec<&str> = issue
+            .get("labels")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if required.iter().any(|r| !labels.contains(&r.as_str()))
+            || excluded.iter().any(|e| labels.contains(&e.as_str()))
+        {
+            continue;
+        }
+        if let Some(number) = issue.get("number").and_then(|v| v.as_i64()) {
+            return Ok(Some((repository, number)));
+        }
+    }
+    Ok(None)
+}
+
 async fn execute_claim(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
+    // Manual issue-resolver runs carry no target issue. Select an eligible one
+    // server-side and inject it as `trigger.{repository,number}` into a local
+    // claim so every downstream step (draft PR, delivery) that reads
+    // `claim.config./trigger/number` sees it — the same shape an event-driven
+    // (webhook) run would already have.
+    let mut owned_claim;
+    let claim: &queries::ClaimedAutonomousRun = if claim.template_key == "github_issue_resolver"
+        && claim
+            .config
+            .pointer("/trigger/number")
+            .and_then(|v| v.as_i64())
+            .is_none()
+    {
+        match select_manual_resolver_issue(store, claim).await {
+            Ok(Some((repository, number))) => {
+                owned_claim = claim.clone();
+                if let Some(object) = owned_claim.config.as_object_mut() {
+                    let trigger = object
+                        .entry("trigger")
+                        .or_insert_with(|| json!({}));
+                    if let Some(trigger) = trigger.as_object_mut() {
+                        trigger.insert("repository".into(), json!(repository));
+                        trigger.insert("number".into(), json!(number));
+                    }
+                }
+                &owned_claim
+            }
+            Ok(None) => {
+                return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}))
+            }
+            Err(error) => {
+                return (
+                    "blocked_runtime".into(),
+                    json!({"code":"issue_listing_failed","detail":error.to_string()}),
+                )
+            }
+        }
+    } else {
+        claim
+    };
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
         let repository = runtime_config
