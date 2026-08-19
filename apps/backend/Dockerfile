@@ -42,6 +42,14 @@ ENV HOME=/claude-home \
 # the Playwright MCP (so QA agents can drive a browser via mcp__playwright__*).
 RUN npm install -g playwright@latest @playwright/mcp@latest \
     && playwright install --with-deps chromium \
+    # @playwright/mcp's real bin name isn't `mcp-server-playwright`; resolve the
+    # actual entry from its package.json and expose it under a stable name so the
+    # MCP config below works without npx (no network) or bin-name guessing.
+    && PKG="$(npm root -g)/@playwright/mcp" \
+    && BIN="$(node -e "const b=require('${PKG}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
+    && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
+    && ln -sf "${PKG}/${BIN}" /usr/local/bin/mcp-server-playwright \
+    && chmod +x "${PKG}/${BIN}" \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
