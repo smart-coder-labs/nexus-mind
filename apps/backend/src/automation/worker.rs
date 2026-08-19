@@ -941,7 +941,7 @@ fn fixed_prompt(template: &str, config: &serde_json::Value) -> anyhow::Result<St
     let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\"}]}. Return an empty findings array when the target behaves correctly.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
-            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository.{slack_clause}{qa_contract}"
+            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively, and you MUST emit the final JSON result before finishing — never run out of turns mid-action.{slack_clause}{qa_contract}"
         ),
         "qa" => format!(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
@@ -1427,21 +1427,31 @@ async fn execute_claim(
             if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest}))}
         }
         Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-            if stderr.contains("auth") || stderr.contains("login") {
-                ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
-            } else {
-                // Capture sanitized tails so a non-zero Claude exit (e.g. hitting
-                // max turns) is diagnosable from the run timeline.
-                let stderr_tail = sanitize_output(&output.stderr, 800);
-                let stdout_tail = {
-                    let start = output.stdout.len().saturating_sub(1500);
-                    sanitize_output(&output.stdout[start..], 1500)
-                };
-                (
-                    "failed".into(),
-                    json!({"code":"claude_failed","exit_code":output.status.code(),"stderr":stderr_tail,"stdout_tail":stdout_tail}),
-                )
+            // A non-zero exit (typically hitting max-turns) can still carry a
+            // final machine-readable result. Evaluate it rather than discarding
+            // the work; only treat as failed when no result was produced.
+            match parse_claude_event_stream(&output.stdout) {
+                Ok((value, stream)) => (
+                    "succeeded".into(),
+                    json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest}),
+                ),
+                Err(_) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+                    if stderr.contains("auth") || stderr.contains("login") {
+                        ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
+                    } else {
+                        // Sanitized tails make the failure diagnosable from the timeline.
+                        let stderr_tail = sanitize_output(&output.stderr, 800);
+                        let stdout_tail = {
+                            let start = output.stdout.len().saturating_sub(1500);
+                            sanitize_output(&output.stdout[start..], 1500)
+                        };
+                        (
+                            "failed".into(),
+                            json!({"code":"claude_failed","exit_code":output.status.code(),"stderr":stderr_tail,"stdout_tail":stdout_tail}),
+                        )
+                    }
+                }
             }
         }
         }
