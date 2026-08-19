@@ -1727,7 +1727,13 @@ async fn execute_claim(
         .budget
         .get("max_turns")
         .and_then(|v| v.as_u64())
-        .unwrap_or(if claim.template_key == "qa" { 250 } else { 20 })
+        .unwrap_or(match claim.template_key.as_str() {
+            // Resolving an issue means cloning context, reading code, editing and
+            // verifying — 20 turns barely starts, so the run kept exhausting them.
+            "qa" => 250,
+            "github_issue_resolver" => 150,
+            _ => 60,
+        })
         .clamp(1, 400);
     let prompt = match fixed_prompt(&claim.template_key, &runtime_config, max_turns_num) {
         Ok(value) => value,
