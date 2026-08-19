@@ -264,17 +264,6 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
     .await
 }
 
-/// Best-effort: create the label so issue creation doesn't fail with 422 on an
-/// unknown label. Ignores "already exists" and any other error.
-async fn ensure_github_label(token: &str, owner: &str, repo: &str, label: &str) {
-    let _ = github_post(
-        token,
-        &format!("/repos/{owner}/{repo}/labels"),
-        json!({"name": label, "color": "5319e7", "description": "NexusMind autonomous QA"}),
-    )
-    .await;
-}
-
 pub async fn create_github_issue(
     token: &str,
     repository: &str,
@@ -282,11 +271,13 @@ pub async fn create_github_issue(
     body: &str,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
-    ensure_github_label(token, owner, repo, "nexusmind-qa").await;
+    // No labels: applying a label needs triage/push access, but the server token
+    // often has only read (enough to open an issue). Sending a label makes GitHub
+    // 403 the whole create ("permission to create labels"), so we omit it.
     github_post(
         token,
         &format!("/repos/{owner}/{repo}/issues"),
-        json!({"title":title,"body":body,"labels":["nexusmind-qa"]}),
+        json!({"title":title,"body":body}),
     )
     .await
 }
