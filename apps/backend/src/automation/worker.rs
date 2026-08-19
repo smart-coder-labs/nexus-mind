@@ -35,16 +35,20 @@ fn sanitize_output_with_secrets(value: &[u8], limit: usize, secrets: &[String]) 
 fn parse_claude_event_stream(
     value: &[u8],
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
-    if value.len() > 1_048_576 {
+    // Browser-driven QA produces large streams (accessibility snapshots per
+    // turn), so these caps are generous; they still bound memory per run.
+    const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
+    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
+    if value.len() > MAX_STREAM_BYTES {
         anyhow::bail!("claude_event_stream_too_large")
     }
-    let sanitized = sanitize_output(value, 1_048_576);
+    let sanitized = sanitize_output(value, MAX_STREAM_BYTES);
     let mut result = None;
     let mut event_counts = std::collections::BTreeMap::<String, usize>::new();
     let mut lines = 0usize;
     for line in sanitized.lines().filter(|line| !line.trim().is_empty()) {
         lines += 1;
-        if lines > 10_000 || line.len() > 262_144 {
+        if lines > 100_000 || line.len() > MAX_LINE_BYTES {
             anyhow::bail!("claude_event_stream_limit_exceeded")
         }
         let event: serde_json::Value =
