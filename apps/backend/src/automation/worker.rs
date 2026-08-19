@@ -1859,7 +1859,29 @@ async fn deliver_findings(
                             Err(error) => Err(error),
                             Ok(()) => {
                                 let issue_title = format!("[NexusMind QA] {title}");
-                                let evidence_md = shot_url
+                                // Host the screenshot on the repo's evidence
+                                // branch so it renders permanently inside the
+                                // private issue; fall back to the R2 URL.
+                                let evidence_url = match shot_url.as_deref() {
+                                    Some(r2) => {
+                                        let ext = r2
+                                            .rsplit('/')
+                                            .next()
+                                            .and_then(|f| f.split('?').next())
+                                            .and_then(|f| f.rsplit('.').next())
+                                            .filter(|e| e.len() <= 5)
+                                            .unwrap_or("png");
+                                        let key = format!("{}.{ext}", finding.fingerprint);
+                                        super::connectors::mirror_evidence_to_repo(
+                                            &token, repository, &key, r2,
+                                        )
+                                        .await
+                                        .ok()
+                                        .or_else(|| shot_url.clone())
+                                    }
+                                    None => None,
+                                };
+                                let evidence_md = evidence_url
                                     .as_deref()
                                     .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                                     .unwrap_or_default();
@@ -2019,11 +2041,32 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                         // matching the first-attempt delivery path.
                         let token = server_gh_token().await?;
                         let title = format!("[NexusMind QA] {}", item.finding.title);
-                        let evidence_md = item
+                        // Host the evidence on the repo branch (permanent) with a
+                        // fallback to the stored R2 URL.
+                        let r2 = item
                             .finding
                             .evidence
                             .get("screenshot_url")
-                            .and_then(|v| v.as_str())
+                            .and_then(|v| v.as_str());
+                        let evidence_url = match r2 {
+                            Some(r2) => {
+                                let ext = r2
+                                    .rsplit('/')
+                                    .next()
+                                    .and_then(|f| f.split('?').next())
+                                    .and_then(|f| f.rsplit('.').next())
+                                    .filter(|e| e.len() <= 5)
+                                    .unwrap_or("png");
+                                let key = format!("{}.{ext}", item.finding.fingerprint);
+                                super::connectors::mirror_evidence_to_repo(&token, repository, &key, r2)
+                                    .await
+                                    .ok()
+                                    .or_else(|| Some(r2.to_string()))
+                            }
+                            None => None,
+                        };
+                        let evidence_md = evidence_url
+                            .as_deref()
                             .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                             .unwrap_or_default();
                         let body = format!(

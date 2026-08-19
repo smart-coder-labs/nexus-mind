@@ -136,6 +136,103 @@ async fn github_get(token: &str, path: &str) -> Result<Value> {
         .await?)
 }
 
+async fn github_put(token: &str, path: &str, body: Value) -> Result<Value> {
+    let response = reqwest::Client::new()
+        .put(format!("https://api.github.com{path}"))
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "nexusmind-autonomous-agents")
+        .json(&body)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!(
+            "github_api_{}: {}",
+            status.as_u16(),
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+/// Dedicated, never-merged branch that holds QA screenshot evidence. Referencing
+/// images via github.com/.../raw/<branch>/... renders them inline in issues of a
+/// private repo (served with the viewer's session), unlike raw.githubusercontent.
+const EVIDENCE_BRANCH: &str = "nexusmind-qa-assets";
+
+async fn ensure_evidence_branch(token: &str, owner: &str, repo: &str) -> Result<()> {
+    if github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/git/ref/heads/{EVIDENCE_BRANCH}"),
+    )
+    .await
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let info = github_get(token, &format!("/repos/{owner}/{repo}")).await?;
+    let default = info
+        .get("default_branch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let head = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/git/ref/heads/{default}"),
+    )
+    .await?;
+    let sha = head
+        .pointer("/object/sha")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("default_head_sha_missing"))?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/git/refs"),
+        json!({"ref": format!("refs/heads/{EVIDENCE_BRANCH}"), "sha": sha}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Mirror an image fetched from `source_url` (e.g. its R2 URL) into the repo's
+/// evidence branch so it renders permanently inside the issue; returns the
+/// github raw URL to embed.
+pub async fn mirror_evidence_to_repo(
+    token: &str,
+    repository: &str,
+    key: &str,
+    source_url: &str,
+) -> Result<String> {
+    use base64::Engine as _;
+    let (owner, repo) = repository_parts(repository)?;
+    let bytes = reqwest::get(source_url)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    if bytes.len() > 25_000_000 {
+        anyhow::bail!("evidence_too_large")
+    }
+    ensure_evidence_branch(token, owner, repo).await?;
+    let path = format!("qa-evidence/{key}");
+    let content = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    github_put(
+        token,
+        &format!("/repos/{owner}/{repo}/contents/{path}"),
+        json!({
+            "message": format!("chore(qa): evidence {key}"),
+            "content": content,
+            "branch": EVIDENCE_BRANCH,
+        }),
+    )
+    .await?;
+    Ok(format!(
+        "https://github.com/{owner}/{repo}/raw/{EVIDENCE_BRANCH}/{path}"
+    ))
+}
+
 pub async fn get_github_issue(token: &str, repository: &str, number: i64) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(token, &format!("/repos/{owner}/{repo}/issues/{number}")).await
@@ -264,6 +361,16 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
     .await
 }
 
+/// Best-effort: ensure a label exists (needs push/triage). Ignored on failure.
+async fn ensure_github_label(token: &str, owner: &str, repo: &str, label: &str) {
+    let _ = github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/labels"),
+        json!({"name": label, "color": "5319e7", "description": "NexusMind autonomous QA"}),
+    )
+    .await;
+}
+
 pub async fn create_github_issue(
     token: &str,
     repository: &str,
@@ -271,15 +378,27 @@ pub async fn create_github_issue(
     body: &str,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
-    // No labels: applying a label needs triage/push access, but the server token
-    // often has only read (enough to open an issue). Sending a label makes GitHub
-    // 403 the whole create ("permission to create labels"), so we omit it.
-    github_post(
+    // Applying labels needs push/triage access. Try to label (ensuring it exists
+    // first); if the token lacks the permission the labelled create 403s, so fall
+    // back to an unlabelled create rather than failing the whole delivery.
+    ensure_github_label(token, owner, repo, "nexusmind-qa").await;
+    let labeled = github_post(
         token,
         &format!("/repos/{owner}/{repo}/issues"),
-        json!({"title":title,"body":body}),
+        json!({"title":title,"body":body,"labels":["nexusmind-qa"]}),
     )
-    .await
+    .await;
+    match labeled {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            github_post(
+                token,
+                &format!("/repos/{owner}/{repo}/issues"),
+                json!({"title":title,"body":body}),
+            )
+            .await
+        }
+    }
 }
 
 pub async fn update_github_issue(
