@@ -231,6 +231,7 @@ export default function AutonomousAgents() {
                 {deliveries.data?.filter(item => item.finding_id === finding.id).map(item => (
                   <div key={item.id} className="mt-2 flex gap-2">
                     <span className="text-text-secondary">{item.channel}: {item.status}</span>
+                    {item.last_error_code && <span className="text-status-error break-all">({item.last_error_code})</span>}
                     {item.external_url && <a href={item.external_url} target="_blank" rel="noreferrer" className="text-accent-blue">Open</a>}
                     {can('autonomous_agent:run') && ['slack', 'github_issue'].includes(item.channel) && ['failed', 'dead_letter'].includes(item.status) && <button type="button" onClick={() => retryDelivery.mutate(item.id)} className="text-accent-blue">Retry delivery</button>}
                   </div>
