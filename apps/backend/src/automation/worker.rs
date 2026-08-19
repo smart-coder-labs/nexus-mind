@@ -1357,39 +1357,7 @@ async fn execute_claim(
     if claim.template_key == "qa" {
         let mcp_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
-        let config_exists = std::path::Path::new(&mcp_config).exists();
-        let config_body = std::fs::read_to_string(&mcp_config).unwrap_or_default();
-        let bin_candidates = [
-            "/usr/local/bin/mcp-server-playwright",
-            "/usr/bin/mcp-server-playwright",
-            "/usr/local/lib/node_modules/@playwright/mcp/cli.js",
-            "/usr/local/lib/node_modules/@playwright/mcp/index.js",
-        ];
-        let bin_found: Vec<&str> = bin_candidates
-            .iter()
-            .filter(|path| std::path::Path::new(path).exists())
-            .copied()
-            .collect();
-        {
-            let db = store.conn();
-            if let Ok(conn) = db.lock() {
-                let _ = queries::append_autonomous_agent_event(
-                    &conn,
-                    &claim.org_id,
-                    &claim.run.id,
-                    "qa.mcp_debug",
-                    &json!({
-                        "mcp_config": mcp_config,
-                        "config_exists": config_exists,
-                        "config_body": config_body,
-                        "bin_found": bin_found,
-                        "allowed_tools": allowed_tools,
-                        "permission_mode": permission_mode,
-                    }),
-                );
-            };
-        }
-        if config_exists {
+        if std::path::Path::new(&mcp_config).exists() {
             claude.args(["--mcp-config", mcp_config.as_str()]);
         }
     }
