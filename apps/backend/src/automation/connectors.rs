@@ -417,6 +417,21 @@ pub async fn update_github_issue(
     .await
 }
 
+pub async fn create_issue_comment(
+    token: &str,
+    repository: &str,
+    number: i64,
+    body: &str,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}/comments"),
+        json!({ "body": body }),
+    )
+    .await
+}
+
 pub async fn create_draft_pr(
     token: &str,
     repository: &str,
