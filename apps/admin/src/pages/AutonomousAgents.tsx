@@ -36,6 +36,20 @@ const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : u
 const asArr = (v: unknown): unknown[] | undefined => (Array.isArray(v) ? v : undefined)
 const titleCase = (s: string) => s.replace(/_/g, ' ')
 
+// Mirror the backend's `structured_result`: a QA run's findings live inside the
+// model's final message (`result.result`, a JSON string that may be wrapped in
+// ```json fences or prose), not as a direct property of the result object.
+const parseLenient = (text: string): Dict | undefined => {
+  const unfenced = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  try { return asDict(JSON.parse(unfenced)) } catch { /* fall through */ }
+  const start = unfenced.indexOf('{')
+  const end = unfenced.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try { return asDict(JSON.parse(unfenced.slice(start, end + 1))) } catch { /* give up */ }
+  }
+  return undefined
+}
+
 // Run status → readable label, Badge variant, and a color tone for accents.
 const RUN_STATUS: Record<string, { label: string; variant: BV; tone: Tone }> = {
   queued: { label: 'Queued', variant: 'default', tone: 'neutral' },
@@ -135,7 +149,10 @@ function RunDetail({ run, events, agentName, templateKey, onOpenFindings }: { ru
   const code = asStr(payload.code)
   const cost = asNum(result.total_cost_usd)
   const turns = asNum(result.num_turns)
-  const findings = asArr(result.findings)
+  // Findings come from the parsed model message (see parseLenient), falling back
+  // to a direct `findings` array on the result for any structured-output runs.
+  const structured = (asStr(result.result) ? parseLenient(asStr(result.result) as string) : undefined) ?? result
+  const findings = asArr(structured.findings) ?? asArr(result.findings)
   const screenshots = asDict(payload.screenshots) ?? asDict(result.screenshots)
   const budget = (run.budget ?? {}) as Dict
   const maxCost = asNum(budget.max_cost_usd)
