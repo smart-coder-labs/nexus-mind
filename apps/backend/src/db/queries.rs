@@ -17580,6 +17580,27 @@ pub fn patch_autonomous_agent_finding(
     conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
 }
 
+/// Mark every OPEN finding that was delivered as the given GitHub issue (matched
+/// by the issue's html_url on its `github_issue` delivery) as resolved, so a
+/// finding the resolver has just addressed with a PR no longer lingers. Returns
+/// how many findings were resolved.
+pub fn resolve_open_findings_for_issue(
+    conn: &Connection,
+    org_id: &str,
+    issue_url: &str,
+) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE autonomous_agent_findings SET status='resolved', updated_at=datetime('now')
+         WHERE org_id=?1 AND status='open' AND id IN (
+             SELECT finding_id FROM autonomous_agent_deliveries
+             WHERE org_id=?1 AND channel='github_issue' AND external_url=?2
+               AND finding_id IS NOT NULL
+         )",
+        rusqlite::params![org_id, issue_url],
+    )?;
+    Ok(changed)
+}
+
 pub fn list_autonomous_agent_deliveries(
     conn: &Connection,
     org_id: &str,

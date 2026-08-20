@@ -260,6 +260,32 @@ pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<
     .await
 }
 
+/// Login of the account the bearer token authenticates as (the gh CLI account the
+/// server is logged in with). Used to scope the resolver to its own assigned work.
+pub async fn github_authenticated_login(token: &str) -> Result<String> {
+    let me = github_get(token, "/user").await?;
+    me.get("login")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("github_login_unavailable"))
+}
+
+/// Open issues in a repo assigned to `assignee`, most-recently-updated first.
+pub async fn list_assigned_open_issues(
+    token: &str,
+    repository: &str,
+    assignee: &str,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_get(
+        token,
+        &format!(
+            "/repos/{owner}/{repo}/issues?state=open&assignee={assignee}&sort=updated&direction=desc&per_page=50"
+        ),
+    )
+    .await
+}
+
 pub async fn list_recent_github_pulls(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(

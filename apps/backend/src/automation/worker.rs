@@ -1074,6 +1074,35 @@ async fn publish_template_output(
                         url,
                     )?;
                 }
+                // House-keeping: a NexusMind finding delivered as this GitHub issue
+                // is now addressed by the draft PR, so resolve it instead of leaving
+                // a stale open finding behind.
+                let issue_number = claim
+                    .config
+                    .pointer("/trigger/number")
+                    .and_then(|value| value.as_i64());
+                let issue_repo = claim
+                    .config
+                    .get("repository")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        claim
+                            .config
+                            .pointer("/trigger/repository")
+                            .and_then(|value| value.as_str())
+                    });
+                if let (Some(number), Some(repo)) = (issue_number, issue_repo) {
+                    let issue_url = format!("https://github.com/{repo}/issues/{number}");
+                    if let Ok(resolved) = queries::resolve_open_findings_for_issue(
+                        &conn,
+                        &claim.org_id,
+                        &issue_url,
+                    ) {
+                        if resolved > 0 {
+                            tracing::info!(run_id = %claim.run.id, resolved, %issue_url, "resolved linked findings");
+                        }
+                    }
+                }
             }
             Ok(
                 json!({"draft_pull_request":pr,"files_changed":files,"lines_changed":lines,"verification":verification}),
@@ -1494,7 +1523,13 @@ async fn list_eligible_resolver_issues(
     let required = string_list("labels");
     let excluded = string_list("excluded_labels");
     let covered = resolver_open_pr_issue_numbers(&token, &repository).await;
-    let issues = super::connectors::list_recent_github_issues(&token, &repository).await?;
+    // Scope strictly to issues ASSIGNED to the gh account the server is logged in
+    // with (the bot). The resolver must never touch work that isn't assigned to it,
+    // regardless of any custom instruction. Failing to resolve the login blocks the
+    // run rather than falling back to every open issue.
+    let assignee = super::connectors::github_authenticated_login(&token).await?;
+    let issues =
+        super::connectors::list_assigned_open_issues(&token, &repository, &assignee).await?;
     let mut eligible = Vec::new();
     for issue in issues.as_array().into_iter().flatten() {
         if issue.get("pull_request").is_some()
@@ -1585,29 +1620,11 @@ async fn execute_claim(
                     return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}))
                 }
                 Ok(eligible) => {
+                    // Fan-out (one sibling run per remaining issue) is disabled: it
+                    // produced a huge queue. A manual run resolves the first assigned
+                    // eligible issue; multi-issue handling will move to a single run
+                    // that splits work across subagents in separate worktrees.
                     let (repository, number) = eligible[0].clone();
-                    if eligible.len() > 1 {
-                        let db = store.conn();
-                        if let Ok(conn) = db.lock() {
-                            for (_, sibling_number) in eligible.iter().skip(1) {
-                                let occurrence =
-                                    format!("fanout:{}:{}", claim.run.id, sibling_number);
-                                let _ = queries::enqueue_autonomous_agent_run(
-                                    &conn,
-                                    &claim.org_id,
-                                    &claim.run.definition_id,
-                                    "manual",
-                                    &occurrence,
-                                    None,
-                                );
-                            }
-                        }
-                        tracing::info!(
-                            run_id = %claim.run.id,
-                            siblings = eligible.len() - 1,
-                            "fanned out resolver runs"
-                        );
-                    }
                     owned_claim = inject(claim, repository, number);
                     &owned_claim
                 }
@@ -1647,6 +1664,35 @@ async fn execute_claim(
                             "blocked_policy".into(),
                             json!({"code":"issue_not_open_or_is_pull_request"}),
                         );
+                    }
+                    // Never resolve an issue that isn't ASSIGNED to the logged-in gh
+                    // account (the bot). Guards the webhook path and reassignments;
+                    // a failed identity lookup blocks rather than proceeds.
+                    match super::connectors::github_authenticated_login(&token).await {
+                        Ok(login) => {
+                            let assigned = issue
+                                .get("assignees")
+                                .and_then(|value| value.as_array())
+                                .map(|list| {
+                                    list.iter().any(|a| {
+                                        a.get("login").and_then(|l| l.as_str())
+                                            == Some(login.as_str())
+                                    })
+                                })
+                                .unwrap_or(false);
+                            if !assigned {
+                                return (
+                                    "blocked_policy".into(),
+                                    json!({"code":"issue_not_assigned"}),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            return (
+                                "blocked_runtime".into(),
+                                json!({"code":"assignee_check_failed","detail":error.to_string()}),
+                            );
+                        }
                     }
                     let labels = issue
                         .get("labels")
