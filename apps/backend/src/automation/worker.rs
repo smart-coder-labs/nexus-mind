@@ -205,6 +205,10 @@ fn restrict_claude_environment(command: &mut Command) {
         command.env(key, value);
     }
     command.env("DISABLE_AUTOUPDATER", "1");
+    // Force the `nexusmind` MCP to register only its ESSENTIAL tool set (a smaller,
+    // capability-filtered catalog) instead of the full legacy catalog. The MCP is
+    // spawned by Claude Code as a child, so it inherits this from the command env.
+    command.env("NEXUSMIND_MCP_TOOL_PROFILE", "essential");
 }
 
 async fn command_ok(mut command: Command) -> anyhow::Result<()> {
