@@ -69,6 +69,7 @@ interface FormState {
   // schedule
   scheduleKind: string
   scheduleExpression: string
+  scheduleUnit: 'minutes' | 'hours' | 'days'
   timezone: string
 }
 
@@ -96,6 +97,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     budgets: '',
     scheduleKind: 'manual',
     scheduleExpression: '06:00',
+    scheduleUnit: 'hours',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   }
 }
@@ -203,7 +205,8 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       setState(stateFromAgent(editing))
       // Prefill schedule + target from server (best-effort).
       void client.getAutonomousAgentSchedule(editing.id).then(schedule => {
-        setState(prev => ({ ...prev, scheduleKind: schedule.kind, scheduleExpression: schedule.expression ?? prev.scheduleExpression, timezone: schedule.timezone || prev.timezone }))
+        const iv = schedule.kind === 'interval' ? minutesToInterval(Number(schedule.expression) || 0) : null
+        setState(prev => ({ ...prev, scheduleKind: schedule.kind, scheduleExpression: iv ? iv.value : (schedule.expression ?? prev.scheduleExpression), scheduleUnit: iv ? iv.unit : prev.scheduleUnit, timezone: schedule.timezone || prev.timezone }))
       }).catch(() => undefined)
       void client.listAutonomousAgentTargets(editing.id).then(targets => {
         const first = targets.find(item => item.enabled) ?? targets[0]
@@ -235,7 +238,10 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
         await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim(), config: targetConfig, enabled: true })
       }
       if (state.scheduleKind !== 'manual') {
-        await client.putAutonomousAgentSchedule(agentId, { kind: state.scheduleKind, expression: state.scheduleExpression, timezone: state.timezone, misfire_policy: 'run_once', enabled: true })
+        const expression = state.scheduleKind === 'interval'
+          ? String(intervalToMinutes(state.scheduleExpression, state.scheduleUnit))
+          : state.scheduleExpression
+        await client.putAutonomousAgentSchedule(agentId, { kind: state.scheduleKind, expression, timezone: state.timezone, misfire_policy: 'run_once', enabled: true })
       } else if (editing) {
         await client.putAutonomousAgentSchedule(agentId, { kind: 'manual', timezone: state.timezone, misfire_policy: 'run_once', enabled: false }).catch(() => undefined)
       }
@@ -327,7 +333,10 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'template': return Boolean(state.template)
     case 'target': return true // target is optional
     case 'config': return state.template !== 'qa' || state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
-    case 'schedule': return state.scheduleKind === 'manual' || state.scheduleExpression.trim().length > 0
+    case 'schedule':
+      if (state.scheduleKind === 'manual') return true
+      if (state.scheduleKind === 'interval') return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
+      return state.scheduleExpression.trim().length > 0
     case 'review': return state.name.trim().length > 0
     default: return true
   }
@@ -490,22 +499,55 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   )
 }
 
+const UNIT_MINUTES: Record<string, number> = { minutes: 1, hours: 60, days: 1440 }
+/** Convert an interval (value + unit) to the minutes the backend stores. */
+function intervalToMinutes(value: string, unit: string): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.round(n * (UNIT_MINUTES[unit] ?? 1)) : 0
+}
+/** Convert stored minutes back to the largest whole unit for display. */
+function minutesToInterval(minutes: number): { value: string; unit: 'minutes' | 'hours' | 'days' } {
+  if (minutes > 0 && minutes % 1440 === 0) return { value: String(minutes / 1440), unit: 'days' }
+  if (minutes > 0 && minutes % 60 === 0) return { value: String(minutes / 60), unit: 'hours' }
+  return { value: String(minutes), unit: 'minutes' }
+}
+
 function StepSchedule({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
   const manual = state.scheduleKind === 'manual'
+  const interval = state.scheduleKind === 'interval'
+  const intervalMinutes = interval ? intervalToMinutes(state.scheduleExpression, state.scheduleUnit) : 0
+  const tooShort = interval && state.scheduleExpression.trim().length > 0 && intervalMinutes < 15
   return (
     <div className="space-y-4">
       <p className="text-[13px] text-text-secondary">When should this agent run? You can always trigger runs manually regardless of the schedule.</p>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Cadence">
-          <NativeSelect value={state.scheduleKind} onChange={value => set('scheduleKind', value)}>
+          <NativeSelect value={state.scheduleKind} onChange={value => {
+            set('scheduleKind', value)
+            if (value === 'interval' && !/^\d+$/.test(state.scheduleExpression.trim())) set('scheduleExpression', '2')
+            if (value === 'daily' && !/^\d{1,2}:\d{2}$/.test(state.scheduleExpression.trim())) set('scheduleExpression', '06:00')
+          }}>
             <option value="manual">Manual only</option>
             <option value="daily">Daily</option>
             <option value="interval">Interval</option>
           </NativeSelect>
         </Field>
-        <Field label={state.scheduleKind === 'interval' ? 'Every (minutes)' : 'Time (HH:MM)'}>
-          <Input inputSize="sm" disabled={manual} value={state.scheduleExpression} onChange={event => set('scheduleExpression', event.target.value)} placeholder={state.scheduleKind === 'interval' ? '60' : '06:00'} />
-        </Field>
+        {interval ? (
+          <Field label="Every" hint={tooShort ? 'Minimum is 15 minutes.' : intervalMinutes >= 15 ? `Runs every ${intervalMinutes} min.` : undefined}>
+            <div className="flex gap-2">
+              <Input inputSize="sm" type="number" min={1} value={state.scheduleExpression} onChange={event => set('scheduleExpression', event.target.value)} placeholder="2" />
+              <NativeSelect value={state.scheduleUnit} onChange={value => set('scheduleUnit', value as FormState['scheduleUnit'])}>
+                <option value="minutes">minutes</option>
+                <option value="hours">hours</option>
+                <option value="days">days</option>
+              </NativeSelect>
+            </div>
+          </Field>
+        ) : (
+          <Field label="Time (HH:MM)">
+            <Input inputSize="sm" disabled={manual} value={state.scheduleExpression} onChange={event => set('scheduleExpression', event.target.value)} placeholder="06:00" />
+          </Field>
+        )}
         <Field label="Timezone">
           <Input inputSize="sm" disabled={manual} value={state.timezone} onChange={event => set('timezone', event.target.value)} />
         </Field>
