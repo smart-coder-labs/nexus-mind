@@ -1288,7 +1288,7 @@ fn fixed_prompt(
     // `-p` returns the model's final message verbatim, so it must be ONLY this
     // JSON object (no prose, no markdown fences) or evaluation fails
     // (result_summary_missing / invalid_finding).
-    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\",\"screenshot\":\"<optional evidence filename>.png\"}]}. Return an empty findings array when the target behaves correctly.";
+    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\",\"fingerprint\":\"<stable-kebab-case-id>\",\"screenshot\":\"<optional evidence filename>.png\"}]}. The \"fingerprint\" MUST be a STABLE identifier of the specific defect built from the screen/route and the concrete problem (e.g. \"pos-success-toast-shows-uuid\" or \"users-birthdate-allows-future\") — it is used to avoid filing duplicate issues, so re-running QA on the same bug MUST produce the SAME fingerprint. Never include run-specific, timestamped or random content in it. Return an empty findings array when the target behaves correctly.";
     // Give the agent its exact turn budget so it can stop exploring in time to
     // emit the JSON; running out mid-action (error_max_turns) discards everything.
     let stop_by = max_turns.saturating_sub(20).max(1);
@@ -2807,7 +2807,10 @@ async fn deliver_findings(
                                         finding.fingerprint
                                     );
                                     match super::connectors::find_github_issue_by_marker(
-                                        &token, repository, &marker,
+                                        &token,
+                                        repository,
+                                        &marker,
+                                        &issue_title,
                                     )
                                     .await
                                     {
@@ -2981,7 +2984,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                                 item.finding.fingerprint
                             );
                             match super::connectors::find_github_issue_by_marker(
-                                &token, repository, &marker,
+                                &token, repository, &marker, &title,
                             )
                             .await?
                             {

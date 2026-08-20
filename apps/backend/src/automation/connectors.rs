@@ -299,14 +299,19 @@ pub async fn find_github_issue_by_marker(
     token: &str,
     repository: &str,
     marker: &str,
+    title: &str,
 ) -> Result<Option<Value>> {
     let (owner, repo) = repository_parts(repository)?;
+    // Do NOT require the `nexusmind-qa` label: issues created while the bot lacked
+    // label permission are unlabelled and would be invisible, causing duplicates.
+    // Scan recent OPEN issues and match on the fingerprint marker OR an identical
+    // title so a same-bug finding whose fingerprint drifted still dedupes.
     let value = github_get(
         token,
-        &format!("/repos/{owner}/{repo}/issues?state=all&labels=nexusmind-qa&per_page=100"),
+        &format!("/repos/{owner}/{repo}/issues?state=open&sort=created&direction=desc&per_page=100"),
     )
     .await?;
-    Ok(find_issue_marker(&value, marker))
+    Ok(find_issue_marker(&value, marker, title))
 }
 
 pub async fn find_github_pull_by_head(
@@ -347,16 +352,25 @@ pub async fn find_github_review_by_marker(
     Ok(find_body_marker(&value, marker))
 }
 
-fn find_issue_marker(value: &Value, marker: &str) -> Option<Value> {
+fn find_issue_marker(value: &Value, marker: &str, title: &str) -> Option<Value> {
+    let want_title = title.trim().to_lowercase();
     value.as_array().and_then(|items| {
         items
             .iter()
             .find(|item| {
-                item.get("pull_request").is_none()
+                if item.get("pull_request").is_some() {
+                    return false;
+                }
+                let body_match = item
+                    .get("body")
+                    .and_then(|body| body.as_str())
+                    .is_some_and(|body| body.contains(marker));
+                let title_match = !want_title.is_empty()
                     && item
-                        .get("body")
-                        .and_then(|body| body.as_str())
-                        .is_some_and(|body| body.contains(marker))
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|value| value.trim().to_lowercase() == want_title);
+                body_match || title_match
             })
             .cloned()
     })
@@ -531,10 +545,20 @@ mod tests {
             {"number":3,"body":marker,"pull_request":{}}
         ]);
         assert_eq!(
-            find_issue_marker(&issues, marker).and_then(|value| value.get("number").cloned()),
+            find_issue_marker(&issues, marker, "").and_then(|value| value.get("number").cloned()),
             Some(json!(2))
         );
-        assert!(find_issue_marker(&issues, "missing").is_none());
+        assert!(find_issue_marker(&issues, "missing", "").is_none());
+        // Title match dedupes even when the fingerprint marker drifted.
+        assert_eq!(
+            find_issue_marker(
+                &json!([{"number":7,"title":"[NexusMind QA] POS toast"}]),
+                "missing",
+                "[NexusMind QA] POS toast",
+            )
+            .and_then(|value| value.get("number").cloned()),
+            Some(json!(7))
+        );
         assert_eq!(
             find_body_marker(&json!([{"id":9,"body":"NexusMind run: `run-1`"}]), "run-1")
                 .and_then(|value| value.get("id").cloned()),
