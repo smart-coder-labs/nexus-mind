@@ -56,6 +56,10 @@ interface FormState {
   testCommand: string
   qaInstructions: string
   customInstructions: string
+  // lead generation
+  product: string
+  icp: string
+  leadCount: string
   // shared / repo templates
   repository: string
   baseBranch: string
@@ -78,7 +82,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     name: '',
     description: '',
     template,
-    targetKind: template === 'qa' ? 'web_application' : 'repository',
+    targetKind: template === 'qa' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
     outputSlack: false,
@@ -87,6 +91,9 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     testCommand: '',
     qaInstructions: '',
     customInstructions: '',
+    product: '',
+    icp: '',
+    leadCount: '10',
     repository: '',
     baseBranch: 'main',
     contextRepos: '',
@@ -130,6 +137,11 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (csv(state.labels).length) config.labels = csv(state.labels)
     if (csv(state.excludedPaths).length) config.excluded_paths = csv(state.excludedPaths)
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+  } else if (state.template === 'lead_generation') {
+    const outputs = ['nexusmind']
+    if (state.outputSlack) outputs.push('slack')
+    config = { outputs, product: state.product.trim(), icp: state.icp.trim(), count: Math.max(1, Math.min(25, Number(state.leadCount) || 10)) }
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -171,6 +183,9 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     testCommand: firstCommand,
     qaInstructions: typeof config.qa_instructions === 'string' ? config.qa_instructions : '',
     customInstructions: typeof config.custom_instructions === 'string' ? config.custom_instructions : '',
+    product: typeof config.product === 'string' ? config.product : '',
+    icp: typeof config.icp === 'string' ? config.icp : '',
+    leadCount: typeof config.count === 'number' ? String(config.count) : '10',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
@@ -332,7 +347,10 @@ function validateStep(id: StepId, state: FormState): boolean {
   switch (id) {
     case 'template': return Boolean(state.template)
     case 'target': return true // target is optional
-    case 'config': return state.template !== 'qa' || state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
+    case 'config':
+      if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
+      if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
+      return true
     case 'schedule':
       if (state.scheduleKind === 'manual') return true
       if (state.scheduleKind === 'interval') return intervalToMinutes(state.scheduleExpression, state.scheduleUnit) >= 15
@@ -399,6 +417,9 @@ function NativeSelect({ value, onChange, children }: { value: string; onChange: 
 
 function StepTarget({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
   const isWeb = state.targetKind === 'web_application'
+  if (state.template === 'lead_generation') {
+    return <p className="text-[13px] text-text-secondary">This agent has no fixed target — it discovers companies from the web based on the product and ICP you set in the next step. Nothing to configure here.</p>
+  }
   return (
     <div className="space-y-4">
       <p className="text-[13px] text-text-secondary">What should this agent act on? The target is optional now and can be added later. No credentials are stored here — Slack and GitHub are configured in Claude Code.</p>
@@ -479,6 +500,33 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
           </Field>
           <p className="text-[11px] text-text-tertiary">Publishes COMMENT or REQUEST_CHANGES only — never approves, merges, or pushes.</p>
+        </div>
+      )}
+
+      {template === 'lead_generation' && (
+        <div className="space-y-4">
+          <Field label="Product" hint="What you're selling — name plus a one-line value prop or a URL.">
+            <Textarea className="text-sm" rows={2} value={state.product} onChange={event => set('product', event.target.value)} placeholder="NexusMind — persistent team memory for AI coding agents (nexusmind.smartcoderlabs.com)" />
+          </Field>
+          <Field label="Ideal customer profile (ICP)" hint="Who to target: industry, company size, role, geography.">
+            <Textarea className="text-sm" rows={3} value={state.icp} onChange={event => set('icp', event.target.value)} placeholder="Software consultancies and dev-tool startups (10–200 people) using Claude Code / AI agents, in LATAM and the US." />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Leads per run" hint="1–25.">
+              <Input inputSize="sm" type="number" min={1} max={25} value={state.leadCount} onChange={event => set('leadCount', event.target.value)} placeholder="10" />
+            </Field>
+          </div>
+          <Field label="Custom instructions (optional)" hint="Tone, angle, what to emphasize or avoid in the drafts.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Keep emails under 90 words, lead with a specific pain point, no buzzwords." />
+          </Field>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Outputs</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Leads and drafted emails are stored in NexusMind for your review. This agent never sends email.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+            </div>
+          </div>
         </div>
       )}
 

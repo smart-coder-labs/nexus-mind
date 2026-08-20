@@ -67,6 +67,54 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v62(conn)?;
     run_v63(conn)?;
     run_v64(conn)?;
+    run_v65(conn)?;
+    Ok(())
+}
+
+/// Migration v65: allow the `lead_generation` agent template. The template_key
+/// CHECK on autonomous_agent_definitions only permitted the three code templates,
+/// so a new outbound/lead-gen agent could not be created. SQLite can't ALTER a
+/// CHECK, so the table is rebuilt (same proven pattern as run_v21 for `users`);
+/// ids are preserved so the seven inbound foreign keys stay valid.
+pub fn run_v65(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 65 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE autonomous_agent_definitions_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            template_key TEXT NOT NULL CHECK(template_key IN ('qa','github_issue_resolver','github_pr_reviewer','lead_generation')),
+            template_version INTEGER NOT NULL CHECK(template_version > 0),
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK(status IN ('disabled','enabled','archived')),
+            current_revision INTEGER NOT NULL DEFAULT 1 CHECK(current_revision > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        INSERT INTO autonomous_agent_definitions_new
+            (id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at)
+        SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+        FROM autonomous_agent_definitions;
+
+        DROP TABLE autonomous_agent_definitions;
+        ALTER TABLE autonomous_agent_definitions_new RENAME TO autonomous_agent_definitions;
+
+        CREATE INDEX IF NOT EXISTS idx_autonomous_agent_definitions_org_status
+            ON autonomous_agent_definitions(org_id, status);
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 65;
+        ",
+    )?;
     Ok(())
 }
 
@@ -3468,8 +3516,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4004,8 +4052,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4021,8 +4069,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must remain 64 after re-running v20 on already-migrated db"
+            65,
+            "user_version must remain 65 after re-running v20 on already-migrated db"
         );
     }
 
@@ -4190,8 +4238,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4233,8 +4281,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4244,8 +4292,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4389,8 +4437,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4418,8 +4466,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4429,8 +4477,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4523,8 +4571,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4534,8 +4582,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4632,8 +4680,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4899,8 +4947,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4910,8 +4958,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4961,8 +5009,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -4972,8 +5020,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -5022,8 +5070,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -5033,8 +5081,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after run_all"
+            65,
+            "user_version must be 65 after run_all"
         );
     }
 
@@ -5204,8 +5252,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must remain 64 (run_all already applied v41-v64)"
+            65,
+            "user_version must remain 65 (run_all already applied v41-v65)"
         );
     }
 
@@ -5217,8 +5265,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must be 64 after v41-v64 are included in run_all"
+            65,
+            "user_version must be 65 after v41-v65 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -5359,8 +5407,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "version must remain 64 on second run_all"
+            65,
+            "version must remain 65 on second run_all"
         );
     }
 
@@ -5503,8 +5551,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must reach 64 after the backfill migration"
+            65,
+            "user_version must reach 65 after the backfill migration"
         );
     }
 
@@ -5520,8 +5568,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must remain 64 on second run_all"
+            65,
+            "user_version must remain 65 on second run_all"
         );
     }
 
@@ -5547,8 +5595,8 @@ mod tests {
         }
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "user_version must reach 64 on a fresh db"
+            65,
+            "user_version must reach 65 on a fresh db"
         );
     }
 
@@ -6588,13 +6636,13 @@ mod tests {
 
     /// 1.23 — run_all lands on the latest schema version.
     #[test]
-    fn run_all_sets_user_version_to_64() {
+    fn run_all_sets_user_version_to_65() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            64,
-            "run_all must leave user_version at 64"
+            65,
+            "run_all must leave user_version at 65"
         );
     }
 
@@ -6870,7 +6918,7 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 64, "user_version must remain 64");
+        assert_eq!(get_user_version(&conn), 65, "user_version must remain 65");
     }
 
     // ── v56 migration tests (knowledge migration durable review foundation) ─────
@@ -7140,7 +7188,7 @@ mod tests {
         std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
         let conn = in_memory_db();
         run_all(&conn).expect("a fresh database has no credentials to protect");
-        assert_eq!(get_user_version(&conn), 64);
+        assert_eq!(get_user_version(&conn), 65);
     }
 
     /// The new primary key is what lets a consultancy hold one GitHub account
@@ -7226,7 +7274,7 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert!(table_exists(&conn, "usage_events"), "missing: usage_events");
-        assert_eq!(get_user_version(&conn), 64);
+        assert_eq!(get_user_version(&conn), 65);
         assert!(index_exists(
             &conn,
             "usage_events",
@@ -7739,7 +7787,7 @@ mod tests {
             "organizations",
             "autonomous_agent_retention_days"
         ));
-        assert_eq!(get_user_version(&conn), 64);
+        assert_eq!(get_user_version(&conn), 65);
     }
 
     #[test]

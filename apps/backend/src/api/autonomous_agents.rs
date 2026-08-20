@@ -100,6 +100,25 @@ fn not_found() -> (StatusCode, Json<ApiError>) {
 pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
     vec![
         AutonomousAgentTemplate {
+            key: "lead_generation".into(),
+            version: 1,
+            name: "Lead Generation".into(),
+            description: "Finds companies matching your ICP via web search and drafts personalized outreach emails for your review — it never sends anything.".into(),
+            capabilities: vec![
+                "web:search".into(),
+                "lead:write".into(),
+                "delivery:write".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 10, "max_definition_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack"]},"product":{"type":"string","required":true,"description":"What you sell — name plus a one-line value prop or URL"},"icp":{"type":"string","required":true,"description":"Ideal customer profile: industry, size, role, geography to target"},"count":{"type":"integer","default":10,"description":"How many leads to find per run"},"custom_instructions":{"type":"string"}}),
+            workflow: vec![
+                "search".into(),
+                "qualify".into(),
+                "draft_outreach".into(),
+                "record_leads".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "qa".into(),
             version: 1,
             name: "QA".into(),

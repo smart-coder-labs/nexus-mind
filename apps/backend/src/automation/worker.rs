@@ -1338,6 +1338,16 @@ fn fixed_prompt(
         "github_pr_reviewer" => format!(
             "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
         ),
+        "lead_generation" => {
+            let count = config
+                .get("count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(10)
+                .clamp(1, 25);
+            format!(
+                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each, research briefly and draft a short, personalized cold outreach email. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Never invent a contact email: include one only if you actually find a public business address (e.g. sales@/contact@ on their site), otherwise leave it empty.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"contact_email\":\"<public email or empty>\",\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
+            )
+        }
         _ => anyhow::bail!("unsupported_template"),
     };
     Ok(format!(
@@ -2161,6 +2171,7 @@ async fn execute_claim(
             // verifying — 20 turns barely starts, so the run kept exhausting them.
             "qa" => 250,
             "github_issue_resolver" => 150,
+            "lead_generation" => 80,
             _ => 60,
         })
         .clamp(1, 400);
@@ -2202,6 +2213,10 @@ async fn execute_claim(
             "Read,Grep,Glob,Skill,Task,mcp__playwright__*,mcp__slack__*",
         ),
         ("qa", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
+        ("lead_generation", _) => (
+            "default",
+            "WebSearch,WebFetch,Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
+        ),
         _ => ("plan", "Read,Grep,Glob"),
     };
     let max_turns = max_turns_num.to_string();
@@ -2543,7 +2558,7 @@ async fn deliver_findings(
     };
     // {filename: url} map of screenshots the worker uploaded to R2 for this run.
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
-    let outputs = if claim.template_key == "qa" {
+    let outputs = if matches!(claim.template_key.as_str(), "qa" | "lead_generation") {
         claim
             .config
             .get("outputs")
