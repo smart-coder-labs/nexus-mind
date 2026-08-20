@@ -660,9 +660,34 @@ async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
     if !output.status.success() {
         anyhow::bail!("secret_scan_failed")
     }
-    let raw = String::from_utf8_lossy(&output.stdout);
-    if sanitize_output(&output.stdout, output.stdout.len()) != raw {
-        anyhow::bail!("secret_scan_blocked")
+    let diff = String::from_utf8_lossy(&output.stdout);
+    // Scan only for CONCRETE secret material on ADDED lines. The previous check
+    // reused `sanitize_output`, whose broad `(token|secret|password|api_key)[=:]…`
+    // rule matched ordinary identifiers (`password:`, `apiKey =`) and blocked
+    // legitimate code. These patterns match real credentials: known token
+    // prefixes, key material, or a secret-looking key assigned a long QUOTED
+    // high-entropy literal (a bare variable reference no longer trips it).
+    let patterns = [
+        r"gh[pousr]_[A-Za-z0-9_]{20,}",
+        r"github_pat_[A-Za-z0-9_]{20,}",
+        r"https://hooks\.slack\.com/services/\S+",
+        r"AKIA[0-9A-Z]{16}",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        r#"(?i)(?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*["'][A-Za-z0-9+/=_\-]{20,}["']"#,
+    ];
+    let regexes: Vec<regex::Regex> = patterns
+        .iter()
+        .filter_map(|pattern| regex::Regex::new(pattern).ok())
+        .collect();
+    for line in diff.lines() {
+        // Only newly added content; skip the "+++ b/<file>" hunk header.
+        if !line.starts_with('+') || line.starts_with("+++") {
+            continue;
+        }
+        let added = &line[1..];
+        if regexes.iter().any(|re| re.is_match(added)) {
+            anyhow::bail!("secret_scan_blocked")
+        }
     }
     Ok(())
 }
@@ -1861,11 +1886,14 @@ async fn execute_claim(
         ("github_issue_resolver", _) => {
             (
                 "acceptEdits",
-                "Read,Edit,Write,Grep,Glob,mcp__plugin_nexusmind_nexusmind__*",
+                "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
             )
         }
-        ("qa", true) => ("default", "Read,Grep,Glob,mcp__playwright__*,mcp__slack__*"),
-        ("qa", false) => ("default", "Read,Grep,Glob,mcp__playwright__*"),
+        ("qa", true) => (
+            "default",
+            "Read,Grep,Glob,Skill,Task,mcp__playwright__*,mcp__slack__*",
+        ),
+        ("qa", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
         _ => ("plan", "Read,Grep,Glob"),
     };
     let max_turns = max_turns_num.to_string();
