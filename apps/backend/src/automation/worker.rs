@@ -84,6 +84,10 @@ async fn run_claude_capturing_transcript(
     org_id: &str,
     run_id: &str,
     secret_values: &[String],
+    // Starting transcript sequence for this invocation. Parallel per-issue runs
+    // of the same run each get a disjoint range so their turns never collide on
+    // UNIQUE(run_id, sequence).
+    seq_base: i64,
 ) -> std::io::Result<std::process::Output> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
@@ -110,7 +114,7 @@ async fn run_claude_capturing_transcript(
     let mut reader = tokio::io::BufReader::new(stdout);
     let mut stdout_buf: Vec<u8> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
-    let mut sequence: i64 = 0;
+    let mut sequence: i64 = seq_base;
     loop {
         line.clear();
         let read = reader.read_until(b'\n', &mut line).await?;
@@ -900,8 +904,10 @@ async fn publish_template_output(
             {
                 anyhow::bail!("stale_base_branch")
             }
+            // Per-ISSUE branch: one resolver run may open a PR per assigned issue
+            // (each in its own worktree), so the run id alone would collide.
             let branch = format!(
-                "nexusmind/run-{}",
+                "nexusmind/run-{}-{number}",
                 &claim.run.id[..claim.run.id.len().min(12)]
             );
             let mut checkout = Command::new("git");
@@ -1561,84 +1567,340 @@ async fn list_eligible_resolver_issues(
     Ok(eligible)
 }
 
+/// Resolve ONE assigned issue inside its own git worktree: inject the target,
+/// run the bounded resolver agent, then publish through the same gates
+/// (secret-scan, diff limits, publish-authority) and open a draft PR. Returns
+/// `(issue_number, status, payload)`. Owns all inputs so it can run as a spawned
+/// task under a JoinSet. `seq_base` keeps parallel transcripts from colliding.
+async fn resolve_issue_worktree(
+    store: SqliteStore,
+    claude_bin: String,
+    mut claim: queries::ClaimedAutonomousRun,
+    repository: String,
+    number: i64,
+    workdir: PathBuf,
+    token: Option<String>,
+    seq_base: i64,
+    max_turns: u64,
+    wall_time: u64,
+) -> (i64, String, serde_json::Value) {
+    if let Some(object) = claim.config.as_object_mut() {
+        let trigger = object.entry("trigger").or_insert_with(|| json!({}));
+        if let Some(trigger) = trigger.as_object_mut() {
+            trigger.insert("repository".into(), json!(repository));
+            trigger.insert("number".into(), json!(number));
+        }
+    }
+    let mut runtime_config = claim.config.clone();
+    if let Some(ref token) = token {
+        if let Ok(issue) = super::connectors::get_github_issue(token, &repository, number).await {
+            let labels: Vec<&str> = issue
+                .get("labels")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(object) = runtime_config.as_object_mut() {
+                object.insert(
+                    "issue".into(),
+                    json!({
+                        "number": number,
+                        "title": issue.get("title"),
+                        "body": issue.get("body").and_then(|v| v.as_str()).unwrap_or("").chars().take(30_000).collect::<String>(),
+                        "labels": labels,
+                    }),
+                );
+            }
+        }
+    }
+    let prompt = match fixed_prompt("github_issue_resolver", &runtime_config, max_turns) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            return (number, "blocked_runtime".into(), json!({"code":error.to_string()}))
+        }
+    };
+    let mut claude = Command::new(&claude_bin);
+    restrict_claude_environment(&mut claude);
+    let max_turns_str = max_turns.to_string();
+    claude.args([
+        "-p",
+        &prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        &max_turns_str,
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
+    ]);
+    let secret_values: Vec<String> = token.iter().cloned().collect();
+    claude.current_dir(&workdir).kill_on_drop(true);
+    let cancelled = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let db = store.conn();
+            let should_stop = db
+                .lock()
+                .ok()
+                .map(|conn| {
+                    let alive = queries::heartbeat_autonomous_agent_run(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                        &claim.attempt_id,
+                        &claim.claim_token,
+                        120,
+                    )
+                    .unwrap_or(false);
+                    !alive
+                        || queries::autonomous_agent_run_is_cancelled(
+                            &conn,
+                            &claim.org_id,
+                            &claim.run.id,
+                        )
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+            if should_stop {
+                break;
+            }
+        }
+    };
+    let invocation = run_claude_capturing_transcript(
+        &mut claude,
+        &store,
+        &claim.org_id,
+        &claim.run.id,
+        &secret_values,
+        seq_base,
+    );
+    let mut outcome: (String, serde_json::Value) = tokio::select! {
+        _ = cancelled => ("cancelled".into(), json!({"code":"cancelled_by_operator"})),
+        value = timeout(Duration::from_secs(wall_time), invocation) => match value {
+            Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
+            Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":"claude_spawn_failed"})),
+            Ok(Ok(output)) if output.status.success() => {
+                match parse_claude_event_stream(&output.stdout) {
+                    Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed","result":value,"stream":stream})),
+                    Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string()})),
+                }
+            }
+            Ok(Ok(output)) => match parse_claude_event_stream(&output.stdout) {
+                Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
+                Err(_) => ("failed".into(), json!({"code":"claude_failed","exit_code":output.status.code()})),
+            },
+        }
+    };
+    if outcome.0 == "succeeded" {
+        match evaluate_structured_result("github_issue_resolver", &outcome.1) {
+            Ok(value) => outcome.1["evaluation"] = value,
+            Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+        if outcome.0 == "succeeded" {
+            match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
+                Ok(published) => outcome.1["published"] = published,
+                Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            }
+        }
+    }
+    (number, outcome.0, outcome.1)
+}
+
+/// Manual issue-resolver orchestration: resolve every assigned eligible issue
+/// (capped) in ONE run, each in its own detached worktree from the pinned base,
+/// up to CONCURRENCY at a time. One draft PR per issue; failures are isolated.
+async fn execute_resolver_fanout(
+    store: &SqliteStore,
+    config: &Config,
+    claim: &queries::ClaimedAutonomousRun,
+) -> (String, serde_json::Value) {
+    const MAX_ISSUES: usize = 10;
+    const CONCURRENCY: usize = 3;
+    let mut issues = match list_eligible_resolver_issues(store, claim).await {
+        Ok(list) => list,
+        Err(error) => {
+            return (
+                "blocked_runtime".into(),
+                json!({"code":"issue_listing_failed","detail":error.to_string()}),
+            )
+        }
+    };
+    if issues.is_empty() {
+        return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
+    }
+    issues.truncate(MAX_ISSUES);
+    let sandbox = match tempfile::Builder::new()
+        .prefix(&format!("nexusmind-agent-{}-", claim.run.id))
+        .tempdir()
+    {
+        Ok(sandbox) => sandbox,
+        Err(_) => return ("failed".into(), json!({"code":"sandbox_create_failed"})),
+    };
+    let base = sandbox.path().join("repository");
+    let repo_token = match prepare_repository(store, claim, &base).await {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&base).await;
+            return ("blocked_runtime".into(), json!({"code":error.to_string()}));
+        }
+    };
+    if tokio::fs::create_dir_all(&base).await.is_err() {
+        return ("failed".into(), json!({"code":"sandbox_environment_failed"}));
+    }
+    let pinned_sha = {
+        let db = store.conn();
+        db.lock()
+            .ok()
+            .and_then(|conn| {
+                queries::get_autonomous_agent_run(&conn, &claim.org_id, &claim.run.id)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|run| run.snapshot_sha)
+    };
+    let Some(pinned_sha) = pinned_sha else {
+        return ("blocked_runtime".into(), json!({"code":"base_snapshot_missing"}));
+    };
+    let manifest = context_manifest(claim, &claim.config);
+    let max_turns = claim
+        .run
+        .budget
+        .get("max_turns")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(150)
+        .clamp(1, 400);
+    let wall_time = claim
+        .run
+        .budget
+        .get("wall_time_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600)
+        .clamp(30, 3600);
+    // One detached worktree per issue (sequential — git worktree add mutates shared
+    // .git state, so we don't race it).
+    let mut targets: Vec<(usize, String, i64, PathBuf)> = Vec::new();
+    for (index, (repository, number)) in issues.iter().enumerate() {
+        let worktree = sandbox.path().join(format!("issue-{number}"));
+        let mut add = match repo_token {
+            Some(ref token) => authenticated_git(token),
+            None => Command::new("git"),
+        };
+        add.current_dir(&base).args([
+            "worktree",
+            "add",
+            "--detach",
+            worktree.to_string_lossy().as_ref(),
+            &pinned_sha,
+        ]);
+        if command_ok(add).await.is_ok() {
+            targets.push((index, repository.clone(), *number, worktree));
+        }
+    }
+    if targets.is_empty() {
+        return ("blocked_runtime".into(), json!({"code":"worktree_setup_failed"}));
+    }
+    let mut set: tokio::task::JoinSet<(i64, String, serde_json::Value)> =
+        tokio::task::JoinSet::new();
+    let mut pending = targets.into_iter();
+    let mut spawn_next =
+        |set: &mut tokio::task::JoinSet<(i64, String, serde_json::Value)>,
+         item: (usize, String, i64, PathBuf)| {
+            let (index, repository, number, worktree) = item;
+            set.spawn(resolve_issue_worktree(
+                store.clone(),
+                config.claude_code_bin.clone(),
+                claim.clone(),
+                repository,
+                number,
+                worktree,
+                repo_token.clone(),
+                (index as i64) * 1_000_000,
+                max_turns,
+                wall_time,
+            ));
+        };
+    for _ in 0..CONCURRENCY {
+        if let Some(item) = pending.next() {
+            spawn_next(&mut set, item);
+        }
+    }
+    let mut results: Vec<(i64, String, serde_json::Value)> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(result) = joined {
+            results.push(result);
+        }
+        if let Some(item) = pending.next() {
+            spawn_next(&mut set, item);
+        }
+    }
+    let resolved = results
+        .iter()
+        .filter(|(_, status, _)| status.as_str() == "succeeded")
+        .count();
+    let failed = results.len() - resolved;
+    let pull_requests: Vec<serde_json::Value> = results
+        .iter()
+        .filter_map(|(number, status, payload)| {
+            if status.as_str() == "succeeded" {
+                payload
+                    .pointer("/published/draft_pull_request")
+                    .cloned()
+                    .map(|pr| json!({"issue":number,"pull_request":pr}))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let issue_outcomes: Vec<serde_json::Value> = results
+        .iter()
+        .map(|(number, status, payload)| {
+            json!({"issue":number,"status":status,"code":payload.get("code")})
+        })
+        .collect();
+    let status = if resolved > 0 && failed == 0 {
+        "succeeded"
+    } else if resolved > 0 {
+        "partial"
+    } else {
+        "blocked_policy"
+    };
+    (
+        status.into(),
+        json!({
+            "code":"fanout_completed",
+            "resolved":resolved,
+            "failed":failed,
+            "pull_requests":pull_requests,
+            "issues":issue_outcomes,
+            "context_manifest":manifest,
+        }),
+    )
+}
+
 async fn execute_claim(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
-    // Manual issue-resolver runs carry no target issue. Select an eligible one
-    // server-side and inject it as `trigger.{repository,number}` into a local
-    // claim so every downstream step (draft PR, delivery) that reads
-    // `claim.config./trigger/number` sees it — the same shape an event-driven
-    // (webhook) run would already have.
-    let mut owned_claim;
-    let claim: &queries::ClaimedAutonomousRun = if claim.template_key == "github_issue_resolver"
+    // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
+    // assigned eligible issue in ONE run — each in its own git worktree, opening a
+    // draft PR per issue — orchestrated by the worker so the safety gates still
+    // apply. Event-driven (webhook) resolver runs keep the single-issue path below.
+    if claim.template_key == "github_issue_resolver"
         && claim
             .config
             .pointer("/trigger/number")
             .and_then(|v| v.as_i64())
             .is_none()
     {
-        // Inject trigger.{repository,number} into a local claim so every downstream
-        // step that reads claim.config./trigger/number sees it.
-        let inject = |base: &queries::ClaimedAutonomousRun, repository: String, number: i64| {
-            let mut owned = base.clone();
-            if let Some(object) = owned.config.as_object_mut() {
-                let trigger = object.entry("trigger").or_insert_with(|| json!({}));
-                if let Some(trigger) = trigger.as_object_mut() {
-                    trigger.insert("repository".into(), json!(repository));
-                    trigger.insert("number".into(), json!(number));
-                }
-            }
-            owned
-        };
-        // A fan-out CHILD carries its target issue in the occurrence key
-        // ("fanout:<parent_run_id>:<issue_number>"): resolve exactly that issue and
-        // skip listing/selection. The eligibility block below still re-validates it.
-        if let Some(number) = claim
-            .run
-            .occurrence_key
-            .strip_prefix("fanout:")
-            .and_then(|rest| rest.rsplit(':').next())
-            .and_then(|n| n.parse::<i64>().ok())
-        {
-            let repository = claim
-                .config
-                .get("repository")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            owned_claim = inject(claim, repository, number);
-            &owned_claim
-        } else {
-            // ORIGINAL manual trigger: list every eligible issue, resolve the first
-            // here, and fan out one sibling run per remaining issue so the whole
-            // backlog drains (one PR each). max_definition_concurrency=1 serializes
-            // them; idempotent selection stops re-resolving already-PR'd issues.
-            match list_eligible_resolver_issues(store, claim).await {
-                Ok(eligible) if eligible.is_empty() => {
-                    return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}))
-                }
-                Ok(eligible) => {
-                    // Fan-out (one sibling run per remaining issue) is disabled: it
-                    // produced a huge queue. A manual run resolves the first assigned
-                    // eligible issue; multi-issue handling will move to a single run
-                    // that splits work across subagents in separate worktrees.
-                    let (repository, number) = eligible[0].clone();
-                    owned_claim = inject(claim, repository, number);
-                    &owned_claim
-                }
-                Err(error) => {
-                    return (
-                        "blocked_runtime".into(),
-                        json!({"code":"issue_listing_failed","detail":error.to_string()}),
-                    )
-                }
-            }
-        }
-    } else {
-        claim
-    };
+        return execute_resolver_fanout(store, config, claim).await;
+    }
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
         let repository = runtime_config
@@ -2004,6 +2266,7 @@ async fn execute_claim(
         &claim.org_id,
         &claim.run.id,
         &secret_values,
+        0,
     );
     let cancelled = async {
         loop {
