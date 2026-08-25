@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
+import { formatDistanceToNow } from 'date-fns'
 import {
   Layers,
   Brain,
   BookMarked,
   ListTodo,
   FileText,
+  GitBranch,
+  Database,
+  MessageSquare,
   Sparkles,
   SlidersHorizontal,
   ShieldCheck,
   ShieldX,
   Eye,
   Check,
+  Copy,
+  Clock,
   X,
   GitMerge,
   AlertCircle,
@@ -24,6 +30,7 @@ import type {
   MigrationCandidate,
   MigrationVerdict,
   MigrationCommitResponse,
+  MigrationRunReport,
 } from '../types'
 
 /**
@@ -57,6 +64,116 @@ const DESTINATION_ICONS: Record<string, LucideIcon> = {
   harness_config_review: SlidersHorizontal,
 }
 
+/** A run is one connector execution against a source. The raw `source_kind`
+ *  (`repo-docs`, `git-history`, …) is machine jargon — pair it with a human
+ *  label and an icon so the card reads without a decoder ring. */
+const SOURCE_LABELS: Record<string, string> = {
+  'repo-docs': 'Repository docs',
+  'git-history': 'Git history',
+  'claude-memories': 'Claude memories',
+  'db-schema': 'Database schema',
+  noop: 'No-op',
+}
+
+const SOURCE_ICONS: Record<string, LucideIcon> = {
+  'repo-docs': FileText,
+  'git-history': GitBranch,
+  'claude-memories': MessageSquare,
+  'db-schema': Database,
+  noop: Layers,
+}
+
+/** Semantic colour for a run's lifecycle status. Kept substring-based because
+ *  the backend status string is free-form (`staging`, `committed`, …). */
+function statusTone(s: string): string {
+  const v = s.toLowerCase()
+  if (v.includes('commit')) return 'bg-status-success/15 text-status-success'
+  if (v.includes('stag')) return 'bg-accent-blue/15 text-accent-blue'
+  if (v.includes('fail') || v.includes('error')) return 'bg-status-error/15 text-status-error'
+  if (v.includes('cancel')) return 'bg-white/[0.06] text-text-tertiary'
+  return 'bg-white/[0.06] text-text-tertiary'
+}
+
+function relTime(iso: string): string {
+  try {
+    return formatDistanceToNow(new Date(iso), { addSuffix: true })
+  } catch {
+    return iso
+  }
+}
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** Minimal JSON syntax highlighter — no dependency, no eval. HTML is escaped
+ *  first so a string value like `"<script>"` can never inject markup; the only
+ *  tags added afterwards are our own class-bearing spans. Colours literal so
+ *  Tailwind's JIT keeps them. */
+function highlightJson(value: unknown): string {
+  const json = escapeHtml(JSON.stringify(value, null, 2) ?? 'null')
+  return json.replace(
+    /("(?:\\.|[^"\\])*"(\s*:)?)|(\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|\b(true|false|null)\b/g,
+    (m: string, str: string, colon: string, num: string, lit: string) => {
+      if (str !== undefined) {
+        const cls = colon ? 'text-[#79c0ff]' : 'text-[#a5d6ff]'
+        return `<span class="${cls}">${str}</span>`
+      }
+      if (num !== undefined) return `<span class="text-[#f0883e]">${num}</span>`
+      if (lit !== undefined) return `<span class="text-[#ff7b72]">${lit}</span>`
+      return m
+    },
+  )
+}
+
+/** Terminal-style JSON viewer: an inset dark panel with a mono label bar and a
+ *  copy button. This is the "formatted / terminal" treatment the raw
+ *  `JSON.stringify(<pre>)` never gave — legible without pretending to be an
+ *  interactive shell the data has no use for. */
+function JsonBlock({ label, value }: { label: string; value: unknown }) {
+  const [copied, setCopied] = useState(false)
+  const isEmpty =
+    value == null ||
+    (typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value as Record<string, unknown>).length === 0)
+
+  function copy() {
+    void navigator.clipboard?.writeText(JSON.stringify(value, null, 2) ?? 'null')
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1200)
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#0a0c10]">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1.5">
+        <span className="flex items-center gap-1.5 font-mono text-[10px] text-text-tertiary">
+          <span className="h-2 w-2 rounded-full bg-white/[0.12]" />
+          {label}
+        </span>
+        {!isEmpty && (
+          <button
+            type="button"
+            onClick={copy}
+            aria-label={`Copy ${label}`}
+            className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] text-text-tertiary transition-colors hover:bg-white/[0.06] hover:text-text-secondary"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      {isEmpty ? (
+        <p className="px-3 py-3 font-mono text-[11px] text-text-quaternary">{'{ }'} · empty</p>
+      ) : (
+        <pre
+          className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-relaxed text-text-secondary"
+          dangerouslySetInnerHTML={{ __html: highlightJson(value) }}
+        />
+      )}
+    </div>
+  )
+}
+
 function confidenceLabel(c?: number | null): string {
   if (c === null || c === undefined) return '—'
   return `${Math.round(c * 100)}%`
@@ -84,6 +201,7 @@ export default function Migrations() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [commitResult, setCommitResult] = useState<MigrationCommitResponse | null>(null)
+  const [report, setReport] = useState<MigrationRunReport | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
@@ -102,6 +220,7 @@ export default function Migrations() {
       setError(null)
       setNotice(null)
       setCommitResult(null)
+      setReport(null)
     }
     try {
       const list = await api.listMigrationCandidates(runId, { limit: 200 })
@@ -114,6 +233,11 @@ export default function Migrations() {
     } finally {
       setLoading(false)
     }
+    // The aggregate counts (staged/approved/committed/…) are what make a run
+    // legible. Fetched separately and failure-tolerant: a missing report must
+    // never blank the review queue the reviewer came here to act on.
+    const pending = api.getMigrationReport?.(runId)
+    if (pending) pending.then(setReport).catch(() => setReport(null))
   }
 
   /** Highest confidence first — the classifier's score orders the queue and
@@ -249,37 +373,80 @@ export default function Migrations() {
         </div>
 
         {runs.length === 0 ? (
-          <p className="text-xs text-text-quaternary">No runs yet.</p>
+          <div
+            className={`flex flex-col items-center gap-2 rounded-[18px] py-12 text-center ${GLASS_PANEL}`}
+          >
+            <Inbox className="h-6 w-6 text-text-quaternary" />
+            <p className="text-xs text-text-quaternary">
+              No migration runs yet. A connector run will appear here once it scans a source.
+            </p>
+          </div>
         ) : (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2.5 sm:grid-cols-2">
             {runs.map((r) => {
               const active = selectedRun === r.id
+              const SrcIcon = SOURCE_ICONS[r.source_kind] ?? Layers
+              const label = SOURCE_LABELS[r.source_kind] ?? r.source_kind
               return (
                 <button
                   key={r.id}
                   type="button"
                   onClick={() => loadCandidates(r.id)}
                   aria-pressed={active}
-                  className={`group flex items-center gap-2.5 rounded-[14px] border px-3.5 py-2.5 text-left transition-colors ${
+                  aria-label={`Migration run ${r.source_kind}${r.source_ref ? ` (${r.source_ref})` : ''}, ${r.status}`}
+                  className={`group flex flex-col gap-2.5 rounded-[16px] border p-4 text-left transition-colors ${
                     active
-                      ? 'border-accent-blue/50 bg-accent-blue/[0.10]'
+                      ? 'border-accent-blue/50 bg-accent-blue/[0.08]'
                       : `${GLASS_PANEL} hover:bg-white/[0.05]`
                   }`}
                 >
-                  <FileText
-                    className={`h-4 w-4 shrink-0 ${active ? 'text-accent-blue' : 'text-text-quaternary'}`}
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-xs font-semibold text-text-primary truncate">
-                      {r.source_kind}
+                  <div className="flex items-start gap-3">
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] ${
+                        active ? 'bg-accent-blue/20 text-accent-blue' : 'bg-white/[0.06] text-text-secondary'
+                      }`}
+                    >
+                      <SrcIcon className="h-4 w-4" />
                     </span>
-                    <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-quaternary">
-                      <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-text-tertiary">
-                        {r.status}
-                      </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-text-primary">{label}</span>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusTone(r.status)}`}
+                        >
+                          {r.status}
+                        </span>
+                      </div>
+                      {r.source_ref && (
+                        <p className="mt-1 truncate font-mono text-[11px] text-text-tertiary">
+                          {r.source_ref}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] text-text-quaternary">
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {relTime(r.created_at)}
+                    </span>
+                    <span className="text-text-tertiary/40">·</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.5 ${
+                        r.client_id
+                          ? 'bg-accent-purple/15 text-accent-purple'
+                          : 'bg-white/[0.06] text-text-tertiary'
+                      }`}
+                    >
                       {r.client_id ? `client ${r.client_id}` : 'internal'}
                     </span>
-                  </span>
+                    {r.runner_version && (
+                      <>
+                        <span className="text-text-tertiary/40">·</span>
+                        <span className="font-mono">runner {r.runner_version}</span>
+                      </>
+                    )}
+                  </div>
                 </button>
               )
             })}
@@ -295,6 +462,37 @@ export default function Migrations() {
             </h2>
             <span className="text-[10px] text-text-quaternary">{staged.length} staged</span>
           </div>
+
+          {/* Run summary — the aggregate counts that tell the reviewer where this
+              run stands at a glance. Only rendered once the report loads. */}
+          {report && (
+            <div className={`flex flex-wrap gap-2 rounded-[14px] p-3 ${GLASS_PANEL}`}>
+              {[
+                { label: 'staged', value: report.staged, tone: 'text-accent-blue' },
+                { label: 'approved', value: report.approved, tone: 'text-status-success' },
+                { label: 'rejected', value: report.rejected, tone: 'text-status-error' },
+                { label: 'committed', value: report.committed, tone: 'text-status-success' },
+                { label: 'skipped', value: report.skipped, tone: 'text-text-tertiary' },
+                { label: 'failed', value: report.failed, tone: 'text-status-error' },
+              ].map((s) => (
+                <div
+                  key={s.label}
+                  className="flex min-w-[64px] flex-col items-center rounded-[10px] bg-white/[0.03] px-3 py-1.5"
+                >
+                  <span className={`text-base font-semibold tabular-nums ${s.tone}`}>{s.value}</span>
+                  <span className="text-[10px] uppercase tracking-wide text-text-quaternary">
+                    {s.label}
+                  </span>
+                </div>
+              ))}
+              {report.pending_index > 0 && (
+                <div className="flex items-center gap-1.5 rounded-[10px] bg-status-warning/10 px-3 py-1.5 text-[11px] text-status-warning">
+                  <Clock className="h-3.5 w-3.5" />
+                  {report.pending_index} indexing
+                </div>
+              )}
+            </div>
+          )}
 
           {loading && staged.length === 0 ? (
             <div className="space-y-2">
@@ -501,13 +699,18 @@ export default function Migrations() {
               </div>
             )}
             <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
-                Destination hint
+              <dt className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                Structured metadata
               </dt>
-              <dd className="mt-1">
-                <pre className="overflow-x-auto rounded-[12px] bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-text-tertiary">
-                  {JSON.stringify(open.destination_hint, null, 2)}
-                </pre>
+              <dd className="space-y-2">
+                <JsonBlock label="destination_hint" value={open.destination_hint} />
+                {open.normalized_metadata &&
+                  Object.keys(open.normalized_metadata).length > 0 && (
+                    <JsonBlock label="normalized_metadata" value={open.normalized_metadata} />
+                  )}
+                {open.attestation && Object.keys(open.attestation).length > 0 && (
+                  <JsonBlock label="attestation" value={open.attestation} />
+                )}
               </dd>
             </div>
           </dl>
