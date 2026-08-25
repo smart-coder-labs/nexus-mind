@@ -110,6 +110,19 @@ import type {
   ListSddSpecsParams,
   PatchSddChangeRequest,
   LinkSddChangeMemoryRequest,
+  AutonomousAgentTemplate,
+  AutonomousAgentDefinition,
+  AutonomousAgentDetail,
+  AutonomousAgentSchedule,
+  AutonomousAgentRun,
+  AutonomousRuntimeHealth,
+  AutonomousAgentConnector,
+  AutonomousAgentFinding,
+  AutonomousAgentDelivery,
+  AutonomousAgentEvent,
+  AutonomousAgentTarget,
+  AutonomousAgentOrgSettings,
+  AutonomousAgentMetrics,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
 
@@ -1346,6 +1359,50 @@ export class NexusMindClient {
       { method: 'DELETE' },
     )
   }
+
+  listAutonomousAgentTemplates(): Promise<AutonomousAgentTemplate[]> { return this.request('/v1/autonomous-agents/templates') }
+  listAutonomousAgents(): Promise<AutonomousAgentDefinition[]> { return this.request('/v1/autonomous-agents') }
+  getAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`) }
+  createAutonomousAgent(data:{name:string;description?:string;template_key:string;config:Record<string,unknown>;budgets:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request('/v1/autonomous-agents',{method:'POST',body:JSON.stringify(data)}) }
+  updateAutonomousAgent(id:string,data:{name?:string;description?:string;config?:Record<string,unknown>;budgets?:Record<string,unknown>}): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify(data)}) }
+  validateAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/validate`,{method:'POST'}) }
+  enableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/enable`,{method:'POST'}) }
+  disableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/disable`,{method:'POST'}) }
+  archiveAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/archive`,{method:'POST'}) }
+  runAutonomousAgent(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/run`,{method:'POST'}) }
+  getAutonomousAgentSchedule(id:string): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`) }
+  putAutonomousAgentSchedule(id:string,data:{kind:string;expression?:string;timezone:string;misfire_policy:string;enabled:boolean}): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`,{method:'PUT',body:JSON.stringify(data)}) }
+  listAutonomousAgentRuns(definitionId?:string): Promise<AutonomousAgentRun[]> { return this.request(`/v1/autonomous-agent-runs${definitionId?`?definition_id=${encodeURIComponent(definitionId)}`:''}`) }
+  getAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime') }
+  checkAutonomousRuntimeHealth(): Promise<AutonomousRuntimeHealth> { return this.request('/v1/autonomous-agents/runtime',{method:'POST'}) }
+  listAutonomousAgentConnectors(): Promise<AutonomousAgentConnector[]> { return this.request('/v1/autonomous-agent-connectors') }
+  putAutonomousAgentConnector(data:{kind:string;name:string;secret?:string;metadata:Record<string,unknown>;scopes:string[]}): Promise<AutonomousAgentConnector> { return this.request('/v1/autonomous-agent-connectors',{method:'PUT',body:JSON.stringify(data)}) }
+  revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }
+  cancelAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`,{method:'POST'}) }
+  listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
+  // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
+  // poll incrementally with the last sequence they hold so each poll only pulls
+  // new turns instead of re-downloading the whole conversation.
+  async listAutonomousAgentRunTranscript(id:string, after=0): Promise<AutonomousAgentEvent[]> {
+    const all: AutonomousAgentEvent[] = []
+    let cursor = after
+    for (let page = 0; page < 100; page++) {
+      const batch: AutonomousAgentEvent[] = await this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/transcript?after=${cursor}&limit=5000`)
+      all.push(...batch)
+      if (batch.length < 5000) break
+      cursor = batch[batch.length - 1].sequence
+    }
+    return all
+  }
+  listAutonomousAgentFindings(): Promise<AutonomousAgentFinding[]> { return this.request('/v1/autonomous-agent-findings') }
+  patchAutonomousAgentFinding(id:string,status:'open'|'resolved'|'ignored'): Promise<AutonomousAgentFinding> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status})}) }
+  listAutonomousAgentDeliveries(): Promise<AutonomousAgentDelivery[]> { return this.request('/v1/autonomous-agent-deliveries') }
+  retryAutonomousAgentDelivery(id:string): Promise<AutonomousAgentDelivery> { return this.request(`/v1/autonomous-agent-deliveries/${encodeURIComponent(id)}/retry`,{method:'POST'}) }
+  listAutonomousAgentTargets(id:string): Promise<AutonomousAgentTarget[]> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`) }
+  putAutonomousAgentTarget(id:string,data:{kind:string;name:string;config:Record<string,unknown>;credential_connector_id?:string;enabled:boolean}): Promise<AutonomousAgentTarget> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`,{method:'POST',body:JSON.stringify(data)}) }
+  getAutonomousAgentSettings(): Promise<AutonomousAgentOrgSettings> { return this.request('/v1/autonomous-agents/settings') }
+  patchAutonomousAgentSettings(data:{enabled?:boolean;retention_days?:number}): Promise<AutonomousAgentOrgSettings> { return this.request('/v1/autonomous-agents/settings',{method:'PATCH',body:JSON.stringify(data)}) }
+  getAutonomousAgentMetrics(): Promise<AutonomousAgentMetrics> { return this.request('/v1/autonomous-agents/metrics') }
 }
 
 export function createClient(): NexusMindClient {

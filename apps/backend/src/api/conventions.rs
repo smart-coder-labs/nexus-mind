@@ -8,7 +8,9 @@ use serde::Deserialize;
 use crate::{
     api::helpers::{resolve_list_pagination, AppJson},
     db::queries,
-    models::types::{ApiError, AuthContext, Convention, CreateConventionRequest, UpdateConventionRequest},
+    models::types::{
+        ApiError, AuthContext, Convention, CreateConventionRequest, UpdateConventionRequest,
+    },
     store::sqlite::SqliteStore,
 };
 
@@ -64,9 +66,15 @@ pub async fn list_conventions(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Vec<Convention>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let (limit, offset) = resolve_list_pagination(params.limit, params.offset);
-    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
+    let viewer = if auth.role.is_super_user() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     let conventions = queries::list_conventions_visible(
         &conn,
         &auth.org_id,
@@ -76,12 +84,17 @@ pub async fn list_conventions(
         params
             .project
             .as_deref()
-            .and_then(|p| queries::get_project_client_id(&conn, &auth.org_id, p).ok().flatten())
+            .and_then(|p| {
+                queries::get_project_client_id(&conn, &auth.org_id, p)
+                    .ok()
+                    .flatten()
+            })
             .as_deref(),
         limit,
         offset,
         viewer,
-    ).map_err(db_err)?;
+    )
+    .map_err(db_err)?;
     Ok(Json(conventions))
 }
 
@@ -91,8 +104,14 @@ pub async fn get_convention(
     Path(id): Path<i64>,
 ) -> Result<Json<Convention>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
-    let viewer = if auth.role.is_super_user() { None } else { Some(auth.user_id.as_str()) };
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let viewer = if auth.role.is_super_user() {
+        None
+    } else {
+        Some(auth.user_id.as_str())
+    };
     let convention = queries::get_convention_visible(&conn, &auth.org_id, id, viewer)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
@@ -108,7 +127,9 @@ pub async fn create_convention(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let convention = queries::create_convention(&conn, &auth.org_id, &req).map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(convention)))
 }
@@ -123,7 +144,9 @@ pub async fn update_convention(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let convention = queries::update_convention(&conn, &auth.org_id, id, &req)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
@@ -139,7 +162,9 @@ pub async fn delete_convention(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let deleted = queries::delete_convention(&conn, &auth.org_id, id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -157,7 +182,9 @@ pub async fn archive_convention(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let ok = queries::archive_convention(&conn, &auth.org_id, id).map_err(db_err)?;
     if ok {
         Ok(StatusCode::NO_CONTENT)
@@ -175,7 +202,9 @@ pub async fn restore_convention(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let ok = queries::restore_convention(&conn, &auth.org_id, id).map_err(db_err)?;
     if ok {
         Ok(StatusCode::NO_CONTENT)
@@ -198,8 +227,8 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::api::middleware as auth_mw;
-    use crate::db::{connection::connect, migrations, queries};
     use crate::db::queries::bootstrap;
+    use crate::db::{connection::connect, migrations, queries};
     use crate::store::sqlite::SqliteStore;
 
     fn make_store() -> SqliteStore {
@@ -210,7 +239,10 @@ mod tests {
 
     fn app(store: SqliteStore) -> Router {
         Router::new()
-            .route("/v1/conventions", get(super::list_conventions).post(super::create_convention))
+            .route(
+                "/v1/conventions",
+                get(super::list_conventions).post(super::create_convention),
+            )
             .route("/v1/conventions/:id", get(super::get_convention))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
@@ -228,20 +260,28 @@ mod tests {
         let (org_id, key) = admin_key(store);
         let db = store.conn();
         let conn = db.lock().unwrap();
-        conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org_id]).unwrap();
+        conn.execute(
+            "UPDATE users SET role = 'super_user' WHERE org_id = ?1",
+            [&org_id],
+        )
+        .unwrap();
         (org_id, key)
     }
 
     fn member_key(conn: &rusqlite::Connection, org_id: &str, email: &str) -> (String, String) {
         let (_, key) = queries::invite_user(conn, org_id, email, "Member", "member").unwrap();
         let user_id: String = conn
-            .query_row("SELECT id FROM users WHERE email = ?1", [email], |r| r.get(0))
+            .query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+                r.get(0)
+            })
             .unwrap();
         (user_id, key)
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -259,15 +299,45 @@ mod tests {
                 "INSERT INTO project_members (id, project_id, user_id, role, created_at) VALUES ('pm_shared', ?1, ?2, 'member', datetime('now'))",
                 rusqlite::params![shared.id, user_id],
             ).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Global convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: None,
-            }).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Shared convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(shared.id),
-            }).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Secret convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(secret.id),
-            }).unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Global convention".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: None,
+                },
+            )
+            .unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Shared convention".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(shared.id),
+                },
+            )
+            .unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Secret convention".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(secret.id),
+                },
+            )
+            .unwrap();
             key
         };
 
@@ -284,7 +354,12 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        let titles: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+        let titles: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["title"].as_str().unwrap())
+            .collect();
         assert!(titles.contains(&"Global convention"));
         assert!(titles.contains(&"Shared convention"));
         assert!(!titles.contains(&"Secret convention"));
@@ -299,9 +374,19 @@ mod tests {
             let conn = db.lock().unwrap();
             let (_, key) = member_key(&conn, &org_id, "member@acme.com");
             let secret = queries::create_project(&conn, &org_id, "secret", None, None).unwrap();
-            let convention = queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Secret convention".to_string(), content: "content".to_string(), category: None, weight: None, tags: None, project_id: Some(secret.id),
-            }).unwrap();
+            let convention = queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Secret convention".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(secret.id),
+                },
+            )
+            .unwrap();
             (key, convention.id)
         };
 
@@ -330,30 +415,45 @@ mod tests {
             let project_a = queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap();
             let project_q = queries::create_project(&conn, &org_id, "proj-q", None, None).unwrap();
 
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Org-wide".to_string(),
-                content: "content".to_string(),
-                category: None,
-                weight: None,
-                tags: None,
-                project_id: None,
-            }).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Proj A".to_string(),
-                content: "content".to_string(),
-                category: None,
-                weight: None,
-                tags: None,
-                project_id: Some(project_a.id.clone()),
-            }).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Proj Q".to_string(),
-                content: "content".to_string(),
-                category: None,
-                weight: None,
-                tags: None,
-                project_id: Some(project_q.id.clone()),
-            }).unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Org-wide".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: None,
+                },
+            )
+            .unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Proj A".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(project_a.id.clone()),
+                },
+            )
+            .unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Proj Q".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(project_q.id.clone()),
+                },
+            )
+            .unwrap();
             project_a.id
         };
 
@@ -370,10 +470,17 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        let titles: Vec<&str> = body.as_array().unwrap().iter()
+        let titles: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|c| c["title"].as_str().unwrap())
             .collect();
-        assert_eq!(titles.len(), 2, "must return org-wide UNION project A, not project Q");
+        assert_eq!(
+            titles.len(),
+            2,
+            "must return org-wide UNION project A, not project Q"
+        );
         assert!(titles.contains(&"Org-wide"));
         assert!(titles.contains(&"Proj A"));
         assert!(!titles.contains(&"Proj Q"));
@@ -388,22 +495,32 @@ mod tests {
             let db = store.conn();
             let conn = db.lock().unwrap();
             let project_a = queries::create_project(&conn, &org_id, "proj-a", None, None).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Org-wide".to_string(),
-                content: "content".to_string(),
-                category: None,
-                weight: None,
-                tags: None,
-                project_id: None,
-            }).unwrap();
-            queries::create_convention(&conn, &org_id, &crate::models::types::CreateConventionRequest {
-                title: "Proj A".to_string(),
-                content: "content".to_string(),
-                category: None,
-                weight: None,
-                tags: None,
-                project_id: Some(project_a.id.clone()),
-            }).unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Org-wide".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: None,
+                },
+            )
+            .unwrap();
+            queries::create_convention(
+                &conn,
+                &org_id,
+                &crate::models::types::CreateConventionRequest {
+                    title: "Proj A".to_string(),
+                    content: "content".to_string(),
+                    category: None,
+                    weight: None,
+                    tags: None,
+                    project_id: Some(project_a.id.clone()),
+                },
+            )
+            .unwrap();
         }
 
         let resp = app(store)
@@ -419,20 +536,34 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        assert_eq!(body.as_array().unwrap().len(), 2, "no project param must return everything for the org (admin listing)");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            2,
+            "no project param must return everything for the org (admin listing)"
+        );
     }
 
     // ── pagination tests ──────────────────────────────────────────────────────
 
-    fn create_convention_with_weight(conn: &rusqlite::Connection, org_id: &str, title: &str, weight: i64) {
-        queries::create_convention(conn, org_id, &crate::models::types::CreateConventionRequest {
-            title: title.to_string(),
-            content: "content".to_string(),
-            category: None,
-            weight: Some(weight),
-            tags: None,
-            project_id: None,
-        }).unwrap();
+    fn create_convention_with_weight(
+        conn: &rusqlite::Connection,
+        org_id: &str,
+        title: &str,
+        weight: i64,
+    ) {
+        queries::create_convention(
+            conn,
+            org_id,
+            &crate::models::types::CreateConventionRequest {
+                title: title.to_string(),
+                content: "content".to_string(),
+                category: None,
+                weight: Some(weight),
+                tags: None,
+                project_id: None,
+            },
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -460,7 +591,11 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        assert_eq!(body.as_array().unwrap().len(), 3, "no limit/offset must still return everything under the default cap");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            3,
+            "no limit/offset must still return everything under the default cap"
+        );
     }
 
     #[tokio::test]
@@ -493,7 +628,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
         assert_eq!(
-            body.as_array().unwrap().len(), 150,
+            body.as_array().unwrap().len(),
+            150,
             "no limit/offset must return the full unbounded list, not truncate at 100"
         );
     }
@@ -526,8 +662,17 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp).await;
-        let titles: Vec<&str> = body.as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
-        assert_eq!(titles, vec!["W40", "W30"], "limit=2&offset=1 must return the 2nd and 3rd highest-weight conventions");
+        let titles: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            titles,
+            vec!["W40", "W30"],
+            "limit=2&offset=1 must return the 2nd and 3rd highest-weight conventions"
+        );
     }
 
     #[tokio::test]
@@ -553,9 +698,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "an over-max limit must be clamped, never rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "an over-max limit must be clamped, never rejected"
+        );
         let body = body_json(resp).await;
-        assert_eq!(body.as_array().unwrap().len(), 500, "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            500,
+            "limit must be clamped to the 500 max, not the requested 10000 or the full 505 rows"
+        );
     }
 
     #[tokio::test]
@@ -581,7 +734,11 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK, "limit=0 must not error");
         let body = body_json(resp).await;
-        assert_eq!(body.as_array().unwrap().len(), 0, "limit=0 must return an empty list");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            0,
+            "limit=0 must return an empty list"
+        );
     }
 
     #[tokio::test]
@@ -605,8 +762,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "negative limit must not error");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "negative limit must not error"
+        );
         let body = body_json(resp).await;
-        assert_eq!(body.as_array().unwrap().len(), 0, "negative limit must be clamped to 0 rows, not treated as unbounded");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            0,
+            "negative limit must be clamped to 0 rows, not treated as unbounded"
+        );
     }
 }

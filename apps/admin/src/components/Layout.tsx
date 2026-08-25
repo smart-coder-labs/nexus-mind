@@ -170,6 +170,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Projects',    href: '/projects',    icon: FolderGit,     adminOnly: true, requiredPermission: 'project:read' },
       { label: 'Code',        href: '/code',        icon: Code2,         adminOnly: true, requiredPermission: 'code:read' },
       { label: 'Harnesses',   href: '/harnesses',   icon: Boxes,         adminOnly: true, requiredPermission: 'harness:read' },
+      { label: 'Automation',  href: '/autonomous-agents', icon: Bot,      adminOnly: true, requiredPermission: 'autonomous_agent:read' },
     ],
   },
   {
@@ -178,7 +179,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Users',       href: '/users',       icon: Users,         adminOnly: true },
       { label: 'Roles',       href: '/roles',       icon: Shield,        adminOnly: true },
       { label: 'API Keys',    href: '/api-keys',    icon: Key,           adminOnly: true },
-      { label: 'Agents',      href: '/agents',      icon: Bot,           adminOnly: true },
+      { label: 'Agent identities', href: '/agents', icon: Bot,           adminOnly: true },
       { label: 'Policies',    href: '/policies',    icon: ShieldAlert,   adminOnly: true, requiredPermission: 'policy:read' },
     ],
   },
@@ -204,10 +205,9 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         const permissions = session?.user.permissions ?? []
         const items = group.items.filter(item => {
           if (DISABLED_NAV_HREFS.has(item.href)) return false
+          if (item.requiredPermission) return permissions.includes(item.requiredPermission)
           if (!item.adminOnly) return true
-          if (isAdmin) return true
-          if (item.requiredPermission && permissions.includes(item.requiredPermission)) return true
-          return false
+          return isAdmin
         })
         if (items.length === 0) return null
 

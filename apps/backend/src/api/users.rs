@@ -99,8 +99,7 @@ pub async fn invite(
     let name = input.name.as_deref().unwrap_or(&name_fallback);
 
     let (user, api_key) =
-        queries::invite_user(&conn, &auth.org_id, &input.email, name, role)
-            .map_err(db_err)?;
+        queries::invite_user(&conn, &auth.org_id, &input.email, name, role).map_err(db_err)?;
 
     // Resolve which project IDs to grant access to
     let project_ids: Vec<String> = match &input.project_access {
@@ -109,12 +108,16 @@ pub async fn invite(
             queries::list_project_ids_for_org(&conn, &auth.org_id).map_err(db_err)?
         }
         Some(ProjectAccess::All) => {
-            queries::list_project_ids_for_user(&conn, &auth.org_id, &auth.user_id).map_err(db_err)?
+            queries::list_project_ids_for_user(&conn, &auth.org_id, &auth.user_id)
+                .map_err(db_err)?
         }
         Some(ProjectAccess::Specific { project_ids }) => {
-            if !auth.role.is_super_user() && project_ids.iter().any(|id| {
-                !queries::user_is_project_member(&conn, &auth.org_id, id, &auth.user_id).unwrap_or(false)
-            }) {
+            if !auth.role.is_super_user()
+                && project_ids.iter().any(|id| {
+                    !queries::user_is_project_member(&conn, &auth.org_id, id, &auth.user_id)
+                        .unwrap_or(false)
+                })
+            {
                 return Err(forbidden());
             }
             project_ids.clone()
@@ -155,8 +158,11 @@ pub async fn remove(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_permission(&conn, &auth, None, "user:revoke")?;
-    if queries::get_user_by_id(&conn, &user_id).map_err(db_err)?.is_some()
-        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))? {
+    if queries::get_user_by_id(&conn, &user_id)
+        .map_err(db_err)?
+        .is_some()
+        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))?
+    {
         return Err(forbidden());
     }
 
@@ -197,8 +203,11 @@ pub async fn rotate_key(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    if queries::get_user_by_id(&conn, &user_id).map_err(db_err)?.is_some()
-        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))? {
+    if queries::get_user_by_id(&conn, &user_id)
+        .map_err(db_err)?
+        .is_some()
+        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))?
+    {
         return Err(forbidden());
     }
     let new_key = queries::rotate_key(&conn, &auth.org_id, &user_id).map_err(db_err)?;
@@ -228,13 +237,16 @@ pub async fn update_role(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    if queries::get_user_by_id(&conn, &user_id).map_err(db_err)?.is_some()
-        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))? {
+    if queries::get_user_by_id(&conn, &user_id)
+        .map_err(db_err)?
+        .is_some()
+        && !user_is_visible_to_actor(&conn, &auth, &user_id).map_err(|e| db_err(e.into()))?
+    {
         return Err(forbidden());
     }
-    
-    let updated = queries::update_user_role(&conn, &auth.org_id, &user_id, &input.role)
-        .map_err(db_err)?;
+
+    let updated =
+        queries::update_user_role(&conn, &auth.org_id, &user_id, &input.role).map_err(db_err)?;
 
     if !updated {
         return Err((
@@ -429,15 +441,23 @@ mod tests {
             let db = store.conn();
             let conn = db.lock().unwrap();
             let invited_user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 AND email = 'limited@acme.com'", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 AND email = 'limited@acme.com'",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
             conn.query_row(
                 "SELECT COUNT(*) FROM project_members WHERE user_id = ?1",
                 [invited_user_id],
                 |r| r.get(0),
-            ).unwrap()
+            )
+            .unwrap()
         };
-        assert_eq!(membership_count, 0, "omitted project_access must not imply all projects");
+        assert_eq!(
+            membership_count, 0,
+            "omitted project_access must not imply all projects"
+        );
     }
 
     #[tokio::test]
@@ -481,10 +501,16 @@ mod tests {
         let db = store.conn();
         let conn = db.lock().unwrap();
         let invited_id: String = conn
-            .query_row("SELECT id FROM users WHERE email = 'scoped@acme.com'", [], |row| row.get(0))
+            .query_row(
+                "SELECT id FROM users WHERE email = 'scoped@acme.com'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let project_ids: Vec<String> = conn
-            .prepare("SELECT project_id FROM project_members WHERE user_id = ?1 ORDER BY project_id")
+            .prepare(
+                "SELECT project_id FROM project_members WHERE user_id = ?1 ORDER BY project_id",
+            )
             .unwrap()
             .query_map([invited_id], |row| row.get(0))
             .unwrap()
@@ -512,8 +538,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-        assert!(ct.contains("application/json"), "expected JSON content-type, got: {ct}");
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "expected JSON content-type, got: {ct}"
+        );
     }
 
     #[tokio::test]
@@ -541,10 +575,18 @@ mod tests {
         let (scoped_admin_key, hidden_user_id) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", []).unwrap();
-            let org_id: String = conn.query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0)).unwrap();
-            let (scoped_admin, key) = q::invite_user(&conn, &org_id, "scoped@acme.com", "Scoped", "admin").unwrap();
-            let (hidden, _) = q::invite_user(&conn, &org_id, "hidden@acme.com", "Hidden", "member").unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE role = 'admin'",
+                [],
+            )
+            .unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0))
+                .unwrap();
+            let (scoped_admin, key) =
+                q::invite_user(&conn, &org_id, "scoped@acme.com", "Scoped", "admin").unwrap();
+            let (hidden, _) =
+                q::invite_user(&conn, &org_id, "hidden@acme.com", "Hidden", "member").unwrap();
             let visible = q::create_project(&conn, &org_id, "visible", None, None).unwrap();
             q::upsert_project_member(&conn, &visible.id, &scoped_admin.id, "admin").unwrap();
             (key, hidden.id)
@@ -552,17 +594,50 @@ mod tests {
 
         for (method, uri, body) in [
             ("DELETE", format!("/v1/users/{hidden_user_id}"), None),
-            ("POST", format!("/v1/users/{hidden_user_id}/rotate-key"), None),
-            ("PATCH", format!("/v1/users/{hidden_user_id}/role"), Some(serde_json::json!({"role": "viewer"}))),
+            (
+                "POST",
+                format!("/v1/users/{hidden_user_id}/rotate-key"),
+                None,
+            ),
+            (
+                "PATCH",
+                format!("/v1/users/{hidden_user_id}/role"),
+                Some(serde_json::json!({"role": "viewer"})),
+            ),
         ] {
-            assert_eq!(app(store.clone()).oneshot(
-                Request::builder().method(method).uri(uri).header("Authorization", format!("Bearer {scoped_admin_key}")).header("Content-Type", "application/json").body(body.map(|value| Body::from(value.to_string())).unwrap_or_else(Body::empty)).unwrap()
-            ).await.unwrap().status(), StatusCode::FORBIDDEN);
+            assert_eq!(
+                app(store.clone())
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(uri)
+                            .header("Authorization", format!("Bearer {scoped_admin_key}"))
+                            .header("Content-Type", "application/json")
+                            .body(
+                                body.map(|value| Body::from(value.to_string()))
+                                    .unwrap_or_else(Body::empty)
+                            )
+                            .unwrap()
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
         }
 
-        let allowed = app(store.clone()).oneshot(
-            Request::builder().method("PATCH").uri(format!("/v1/users/{hidden_user_id}/role")).header("Authorization", format!("Bearer {super_user_key}")).header("Content-Type", "application/json").body(Body::from(r#"{"role":"viewer"}"#)).unwrap()
-        ).await.unwrap();
+        let allowed = app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/users/{hidden_user_id}/role"))
+                    .header("Authorization", format!("Bearer {super_user_key}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
     }
 }

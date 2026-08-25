@@ -81,9 +81,8 @@ fn load_visible_run(
     run_id: &str,
     method: &str,
 ) -> Result<MigrationRun, (StatusCode, Json<ApiError>)> {
-    let denied = || {
-        hidden_resource_not_found(conn, auth, "migration_run", run_id, method, "migrations")
-    };
+    let denied =
+        || hidden_resource_not_found(conn, auth, "migration_run", run_id, method, "migrations");
     let run = mq::get_run(conn, &auth.org_id, run_id)
         .map_err(db_err)?
         .ok_or_else(denied)?;
@@ -115,7 +114,12 @@ pub async fn create_run(
                 .map_err(db_err)?;
         if !allowed {
             return Err(hidden_resource_not_found(
-                &conn, &auth, "client", client_id, "POST", "migrations",
+                &conn,
+                &auth,
+                "client",
+                client_id,
+                "POST",
+                "migrations",
             ));
         }
     }
@@ -285,7 +289,10 @@ pub async fn stage_candidates(
 
     if run.status != "staging" && run.status != "in_review" {
         return Err(bad_request(
-            &format!("run is {}; candidates may only be added while staging", run.status),
+            &format!(
+                "run is {}; candidates may only be added while staging",
+                run.status
+            ),
             "run_not_open",
         ));
     }
@@ -527,7 +534,11 @@ pub async fn commit(
         let conn = db.lock().map_err(|_| lock_err())?;
 
         if let Err(denied) = require_permission(&conn, &auth, None, "migration:review") {
-            if mq::get_run(&conn, &auth.org_id, &run_id).ok().flatten().is_some() {
+            if mq::get_run(&conn, &auth.org_id, &run_id)
+                .ok()
+                .flatten()
+                .is_some()
+            {
                 let _ = mq::record_permission_denied(&conn, &run_id, None, &auth.user_id, None);
             }
             return Err(denied);
@@ -570,10 +581,9 @@ pub async fn commit(
                 }
                 // Never fails the commit: the memory is already persisted and
                 // correct, and reconciliation will pick it up later.
-                Err(e) => tracing::warn!(
-                    "migration: failed to embed candidate {}: {e}",
-                    candidate.id
-                ),
+                Err(e) => {
+                    tracing::warn!("migration: failed to embed candidate {}: {e}", candidate.id)
+                }
             }
         }
     }
@@ -742,12 +752,20 @@ mod tests {
         resp
     }
 
-    async fn candidates_of(store: &SqliteStore, auth: &AuthContext, run: &str) -> Vec<MigrationCandidate> {
+    async fn candidates_of(
+        store: &SqliteStore,
+        auth: &AuthContext,
+        run: &str,
+    ) -> Vec<MigrationCandidate> {
         let Json(list) = list_candidates(
             State(store.clone()),
             Extension(auth.clone()),
             Path(run.to_string()),
-            Query(ListCandidatesParams { status: None, destination_kind: None, limit: None }),
+            Query(ListCandidatesParams {
+                status: None,
+                destination_kind: None,
+                limit: None,
+            }),
         )
         .await
         .unwrap();
@@ -838,16 +856,27 @@ mod tests {
         )
         .await
         .expect_err("client B must not see client A's run");
-        assert_eq!(err.0, StatusCode::NOT_FOUND, "a 403 would confirm it exists");
+        assert_eq!(
+            err.0,
+            StatusCode::NOT_FOUND,
+            "a 403 would confirm it exists"
+        );
 
         let Json(listed) = list_runs(
             State(store.clone()),
             Extension(reader_b),
-            Query(ListRunsParams { client_id: None, source_kind: None, limit: None }),
+            Query(ListRunsParams {
+                client_id: None,
+                source_kind: None,
+                limit: None,
+            }),
         )
         .await
         .unwrap();
-        assert!(listed.is_empty(), "it must not appear in the listing either");
+        assert!(
+            listed.is_empty(),
+            "it must not appear in the listing either"
+        );
     }
 
     #[tokio::test]
@@ -866,7 +895,10 @@ mod tests {
         }
         let _ = get_run(
             State(store.clone()),
-            Extension(auth_for("dev_b", UserRole::Custom("migration_reader".to_string()))),
+            Extension(auth_for(
+                "dev_b",
+                UserRole::Custom("migration_reader".to_string()),
+            )),
             Path(run.id.clone()),
         )
         .await;
@@ -993,7 +1025,13 @@ mod tests {
     async fn stale_version_is_reported_as_a_conflict_not_an_overwrite() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![cand("src:a", DestinationKind::Memory, "verified_manifest")]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![cand("src:a", DestinationKind::Memory, "verified_manifest")],
+        )
+        .await;
         let list = candidates_of(&store, &admin(), &run.id).await;
         let id = list[0].id.clone();
 
@@ -1008,13 +1046,23 @@ mod tests {
         };
 
         let Json(first) = review(
-            State(store.clone()), Extension(admin()), Path(run.id.clone()), AppJson(approve(1, ReviewVerdict::Approved)),
-        ).await.unwrap();
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+            AppJson(approve(1, ReviewVerdict::Approved)),
+        )
+        .await
+        .unwrap();
         assert_eq!(first.applied, 1);
 
         let Json(second) = review(
-            State(store.clone()), Extension(admin()), Path(run.id.clone()), AppJson(approve(1, ReviewVerdict::Rejected)),
-        ).await.unwrap();
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+            AppJson(approve(1, ReviewVerdict::Rejected)),
+        )
+        .await
+        .unwrap();
         assert_eq!(second.conflicts, 1);
         assert_eq!(second.applied, 0);
         assert_eq!(second.results[0].actual_version, Some(2));
@@ -1055,9 +1103,13 @@ mod tests {
         .await
         .unwrap();
 
-        let Json(report) = get_report(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(report) = get_report(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.rejected, 1);
         assert_eq!(report.staged, 1);
         assert_eq!(report.outcomes.len(), 2);
@@ -1070,7 +1122,13 @@ mod tests {
     async fn rejected_candidate_is_not_restaged_by_identical_rescan() {
         let store = store();
         let run1 = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run1.id, vec![cand("src:a", DestinationKind::Memory, "verified_manifest")]).await;
+        stage(
+            &store,
+            &admin(),
+            &run1.id,
+            vec![cand("src:a", DestinationKind::Memory, "verified_manifest")],
+        )
+        .await;
         let list = candidates_of(&store, &admin(), &run1.id).await;
         let _ = review(
             State(store.clone()),
@@ -1090,12 +1148,20 @@ mod tests {
         .unwrap();
 
         let run2 = create(&store, &admin(), None).await;
-        let resp = stage(&store, &admin(), &run2.id, vec![cand("src:a", DestinationKind::Memory, "verified_manifest")]).await;
+        let resp = stage(
+            &store,
+            &admin(),
+            &run2.id,
+            vec![cand("src:a", DestinationKind::Memory, "verified_manifest")],
+        )
+        .await;
         assert_eq!(resp.staged, 0);
         assert_eq!(resp.skipped, 1);
         assert_eq!(
             resp.results[0],
-            StageResult::Skipped { reason: "previously_rejected".to_string() }
+            StageResult::Skipped {
+                reason: "previously_rejected".to_string()
+            }
         );
     }
 
@@ -1114,14 +1180,22 @@ mod tests {
         )
         .await;
 
-        let Json(resp) = cancel_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = cancel_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(resp["cancelled"], serde_json::json!(2));
 
-        let reloaded = get_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let reloaded = get_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(reloaded.0.status, "cancelled");
     }
 
@@ -1129,9 +1203,13 @@ mod tests {
     async fn staging_is_refused_once_the_run_is_cancelled() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        let _ = cancel_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let _ = cancel_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
         let err = stage_candidates(
             State(store.clone()),
@@ -1170,11 +1248,7 @@ mod tests {
         }
     }
 
-    fn with_hint(
-        identity: &str,
-        kind: DestinationKind,
-        hint: serde_json::Value,
-    ) -> CandidateInput {
+    fn with_hint(identity: &str, kind: DestinationKind, hint: serde_json::Value) -> CandidateInput {
         let mut c = cand(identity, kind, "verified_manifest");
         c.destination_hint = hint;
         c
@@ -1189,8 +1263,16 @@ mod tests {
             &admin(),
             &run.id,
             vec![
-                with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" })),
-                with_hint("src:b", DestinationKind::Memory, serde_json::json!({ "title": "B" })),
+                with_hint(
+                    "src:a",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "A" }),
+                ),
+                with_hint(
+                    "src:b",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "B" }),
+                ),
             ],
         )
         .await;
@@ -1213,10 +1295,17 @@ mod tests {
         .await
         .unwrap();
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
-        assert_eq!(resp.committed, 1, "only the approved candidate is committed");
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resp.committed, 1,
+            "only the approved candidate is committed"
+        );
 
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -1237,7 +1326,11 @@ mod tests {
             &admin(),
             &run.id,
             vec![
-                with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" })),
+                with_hint(
+                    "src:a",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "A" }),
+                ),
                 // A spec artifact with no capability — `save_sdd_artifact` requires
                 // one, so this candidate must fail on its own.
                 with_hint(
@@ -1245,15 +1338,23 @@ mod tests {
                     DestinationKind::SddArtifact,
                     serde_json::json!({ "kind": "spec", "change_name": "x" }),
                 ),
-                with_hint("src:c", DestinationKind::Memory, serde_json::json!({ "title": "C" })),
+                with_hint(
+                    "src:c",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "C" }),
+                ),
             ],
         )
         .await;
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.committed, 2, "the two good candidates commit");
         assert_eq!(resp.failed, 1, "the malformed one fails alone");
 
@@ -1269,7 +1370,10 @@ mod tests {
         let memories: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(memories, 2, "candidates committed before the failure stay committed");
+        assert_eq!(
+            memories, 2,
+            "candidates committed before the failure stay committed"
+        );
     }
 
     /// A failed candidate must leave no provenance row, or a re-run would skip
@@ -1290,9 +1394,13 @@ mod tests {
         )
         .await;
         approve_all(&store, &run.id).await;
-        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let _ = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -1310,20 +1418,51 @@ mod tests {
     async fn commit_twice_produces_no_duplicate_destination() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
         approve_all(&store, &run.id).await;
 
-        let Json(first) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone())).await.unwrap();
+        let Json(first) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(first.committed, 1);
 
         // A second run rescans the same unchanged source and is approved again.
         let run2 = create(&store, &admin(), None).await;
-        let staged = stage(&store, &admin(), &run2.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
-        assert_eq!(staged.skipped, 1, "staging already refuses a committed source");
+        let staged = stage(
+            &store,
+            &admin(),
+            &run2.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
+        assert_eq!(
+            staged.skipped, 1,
+            "staging already refuses a committed source"
+        );
 
         let db = store.conn();
         let conn = db.lock().unwrap();
-        let memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
+        let memories: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(memories, 1, "no duplicate destination record");
     }
 
@@ -1331,9 +1470,25 @@ mod tests {
     async fn commit_writes_audit_row_per_destination() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
         approve_all(&store, &run.id).await;
-        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone())).await.unwrap();
+        let _ = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -1344,7 +1499,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(audited, 1, "a migrated memory is audited exactly like any other");
+        assert_eq!(
+            audited, 1,
+            "a migrated memory is audited exactly like any other"
+        );
     }
 
     #[tokio::test]
@@ -1369,9 +1527,13 @@ mod tests {
         .await;
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.failed, 1);
         assert_eq!(resp.results[0].reason.as_deref(), Some("invalid_manifest"));
 
@@ -1380,7 +1542,10 @@ mod tests {
         let harnesses: i64 = conn
             .query_row("SELECT COUNT(*) FROM harnesses", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(harnesses, 0, "an invalid manifest must not leave a half-built harness");
+        assert_eq!(
+            harnesses, 0,
+            "an invalid manifest must not leave a half-built harness"
+        );
     }
 
     #[tokio::test]
@@ -1433,9 +1598,13 @@ mod tests {
         .await;
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             resp.committed, 6,
             "all six destination kinds must land: {:?}",
@@ -1467,12 +1636,26 @@ mod tests {
         assert!(store.embed_service().is_none());
 
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.committed, 1);
         assert_eq!(resp.indexed, 0);
         assert_eq!(resp.pending_index, 1, "the backlog is visible, not hidden");
@@ -1508,7 +1691,10 @@ mod tests {
             conn.execute(
                 "INSERT INTO roles (id, org_id, name, display_name, permissions)
                  VALUES ('r_reader', 'org1', 'migration_reader', 'Migration Reader', ?1)",
-                [serde_json::json!(["migration:read", "memory:read", "memory:search"]).to_string()],
+                [
+                    serde_json::json!(["migration:read", "memory:read", "memory:search"])
+                        .to_string(),
+                ],
             )
             .unwrap();
         }
@@ -1540,35 +1726,54 @@ mod tests {
         )
         .await;
         approve_all(&store, &run.id).await;
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.committed, 1);
 
         let reader_b = auth_for("dev_b", UserRole::Custom("migration_reader".to_string()));
 
         // Surface 1 — the run itself.
-        let err = get_run(State(store.clone()), Extension(reader_b.clone()), Path(run.id.clone()))
-            .await
-            .expect_err("client B must not load client A's run");
+        let err = get_run(
+            State(store.clone()),
+            Extension(reader_b.clone()),
+            Path(run.id.clone()),
+        )
+        .await
+        .expect_err("client B must not load client A's run");
         assert_eq!(err.0, StatusCode::NOT_FOUND);
 
         // Surface 2 — the run listing.
         let Json(listed) = list_runs(
             State(store.clone()),
             Extension(reader_b.clone()),
-            Query(ListRunsParams { client_id: None, source_kind: None, limit: None }),
+            Query(ListRunsParams {
+                client_id: None,
+                source_kind: None,
+                limit: None,
+            }),
         )
         .await
         .unwrap();
-        assert!(listed.is_empty(), "client A's run must not appear in B's listing");
+        assert!(
+            listed.is_empty(),
+            "client A's run must not appear in B's listing"
+        );
 
         // Surface 3 — the candidate queue.
         let err = list_candidates(
             State(store.clone()),
             Extension(reader_b.clone()),
             Path(run.id.clone()),
-            Query(ListCandidatesParams { status: None, destination_kind: None, limit: None }),
+            Query(ListCandidatesParams {
+                status: None,
+                destination_kind: None,
+                limit: None,
+            }),
         )
         .await
         .expect_err("the candidate queue must be closed too");
@@ -1579,10 +1784,16 @@ mod tests {
         let db = store.conn();
         let conn = db.lock().unwrap();
         let visible = crate::db::queries::user_can_view_project_name(
-            &conn, "org1", "acme-billing", Some("dev_b"),
+            &conn,
+            "org1",
+            "acme-billing",
+            Some("dev_b"),
         )
         .unwrap();
-        assert!(!visible, "dev_b must not see the project the memory landed in");
+        assert!(
+            !visible,
+            "dev_b must not see the project the memory landed in"
+        );
 
         // And every denial left evidence.
         let audited: i64 = conn
@@ -1592,7 +1803,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(audited >= 2, "each denied read must be audited; got {audited}");
+        assert!(
+            audited >= 2,
+            "each denied read must be audited; got {audited}"
+        );
     }
 
     // ── T-23: BYOM, end to end ───────────────────────────────────────────────
@@ -1636,9 +1850,13 @@ mod tests {
 
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .expect("the commit must succeed with no model credentials");
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .expect("the commit must succeed with no model credentials");
         assert_eq!(resp.committed, 1);
         assert_eq!(resp.failed, 0);
         assert_eq!(resp.indexed, 0, "nothing is vectorized, and that is fine");
@@ -1654,9 +1872,13 @@ mod tests {
 
         // And the report agrees.
         drop(conn);
-        let Json(report) = get_report(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(report) = get_report(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.committed, 1);
         assert_eq!(report.pending_index, 1);
     }
@@ -1675,8 +1897,16 @@ mod tests {
             &admin(),
             &run.id,
             vec![
-                with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" })),
-                with_hint("src:b", DestinationKind::Memory, serde_json::json!({ "title": "B" })),
+                with_hint(
+                    "src:a",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "A" }),
+                ),
+                with_hint(
+                    "src:b",
+                    DestinationKind::Memory,
+                    serde_json::json!({ "title": "B" }),
+                ),
             ],
         )
         .await;
@@ -1699,13 +1929,21 @@ mod tests {
         .await
         .unwrap();
 
-        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let _ = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
-        let reloaded = get_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let reloaded = get_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             reloaded.0.status, "in_review",
             "one candidate is still staged, so the run is not completed"
@@ -1716,13 +1954,33 @@ mod tests {
     async fn committing_an_entirely_decided_queue_completes_the_run() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
         approve_all(&store, &run.id).await;
-        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone())).await.unwrap();
+        let _ = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
-        let reloaded = get_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let reloaded = get_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
         assert_eq!(reloaded.0.status, "completed");
     }
 
@@ -1732,19 +1990,46 @@ mod tests {
     async fn a_completed_run_cannot_be_cancelled() {
         let store = store();
         let run = create(&store, &admin(), None).await;
-        stage(&store, &admin(), &run.id, vec![with_hint("src:a", DestinationKind::Memory, serde_json::json!({ "title": "A" }))]).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
         approve_all(&store, &run.id).await;
-        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone())).await.unwrap();
+        let _ = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
-        let err = cancel_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .expect_err("a completed run has nothing pending to cancel");
+        let err = cancel_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .expect_err("a completed run has nothing pending to cancel");
         assert_eq!(err.1.code, "run_already_completed");
 
-        let reloaded = get_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
-        assert_eq!(reloaded.0.status, "completed", "the status must not have been rewritten");
+        let reloaded = get_run(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reloaded.0.status, "completed",
+            "the status must not have been rewritten"
+        );
     }
 
     /// A harness is two writes and only means something with both. If publishing
@@ -1786,9 +2071,13 @@ mod tests {
         .await;
         approve_all(&store, &run.id).await;
 
-        let Json(resp) = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
-            .await
-            .unwrap();
+        let Json(resp) = commit(
+            State(store.clone()),
+            Extension(admin()),
+            Path(run.id.clone()),
+        )
+        .await
+        .unwrap();
 
         // The manifest above carries a deliberately wrong sha256, so validation
         // fails before either write — the candidate fails and nothing is created.

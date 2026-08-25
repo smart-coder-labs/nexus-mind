@@ -11,3 +11,24 @@
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
 }
+
+/* ── Cinematic redesign: display type + Lenis smooth-scroll ───────────── */
+.font-display {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* Lenis smooth-scroll baseline (per library guidance). */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}

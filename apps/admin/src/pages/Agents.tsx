@@ -521,9 +521,9 @@ export default function Agents() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Agents</h1>
+          <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Agent identities</h1>
           <p className="text-[13px] text-text-secondary mt-1">
-            AI agents connected to NexusMind via API key.
+            Identities connected to NexusMind via API key; autonomous jobs are managed under Automation.
           </p>
         </div>
         <button

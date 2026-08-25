@@ -116,6 +116,30 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentOrgSettings {
+    pub enabled: bool,
+    pub retention_days: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentMetrics {
+    pub queued: i64,
+    pub running: i64,
+    pub blocked: i64,
+    pub open_findings: i64,
+    pub failed_deliveries: i64,
+    pub dead_letters: i64,
+    pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchAutonomousAgentOrgSettingsRequest {
+    pub enabled: Option<bool>,
+    pub retention_days: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentEventSettings {
     #[serde(default = "default_true")]
@@ -1734,6 +1758,230 @@ pub struct AgentAssignment {
     pub org_id: String,
     pub repo_url: String,
     pub created_at: String,
+}
+
+// ── Autonomous agent control plane ──────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentDefinition {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub template_key: String,
+    pub template_version: i64,
+    pub status: String,
+    pub current_revision: i64,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Validation status of the current revision ('pending' | 'valid' | 'invalid').
+    /// Lets the admin gate the Enable action without fetching each agent's detail.
+    #[serde(default)]
+    pub validation_status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentRevision {
+    pub id: String,
+    pub definition_id: String,
+    pub revision: i64,
+    pub config: serde_json::Value,
+    pub config_hash: String,
+    pub capabilities: Vec<String>,
+    pub budgets: serde_json::Value,
+    pub policy_generation: i64,
+    pub validation_status: String,
+    pub validation: Option<serde_json::Value>,
+    pub validated_at: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentDetail {
+    #[serde(flatten)]
+    pub definition: AutonomousAgentDefinition,
+    pub revision: AutonomousAgentRevision,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAutonomousAgentRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub template_key: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default)]
+    pub budgets: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAutonomousAgentRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub config: Option<serde_json::Value>,
+    pub budgets: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentTemplate {
+    pub key: String,
+    pub version: i64,
+    pub name: String,
+    pub description: String,
+    pub capabilities: Vec<String>,
+    pub default_budgets: serde_json::Value,
+    pub config_schema: serde_json::Value,
+    pub workflow: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentSchedule {
+    pub id: String,
+    pub definition_id: String,
+    pub kind: String,
+    pub expression: Option<String>,
+    pub timezone: String,
+    pub misfire_policy: String,
+    pub next_run_at: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutAutonomousAgentScheduleRequest {
+    pub kind: String,
+    pub expression: Option<String>,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default = "default_misfire_policy")]
+    pub misfire_policy: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+fn default_timezone() -> String {
+    "UTC".into()
+}
+fn default_misfire_policy() -> String {
+    "run_once".into()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentRun {
+    pub id: String,
+    pub definition_id: String,
+    pub revision_id: String,
+    pub trigger_kind: String,
+    pub occurrence_key: String,
+    pub scheduled_for: Option<String>,
+    pub snapshot_sha: Option<String>,
+    pub status: String,
+    pub budget: serde_json::Value,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentConnector {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub metadata: serde_json::Value,
+    pub scopes: Vec<String>,
+    pub health: String,
+    pub revocation_generation: i64,
+    pub secret_configured: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutAutonomousAgentConnectorRequest {
+    pub kind: String,
+    pub name: String,
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentFinding {
+    pub id: String,
+    pub definition_id: String,
+    pub run_id: String,
+    pub fingerprint: String,
+    pub title: String,
+    pub severity: String,
+    pub status: String,
+    pub summary: String,
+    pub evidence: serde_json::Value,
+    pub occurrence_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchAutonomousAgentFindingRequest {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentDelivery {
+    pub id: String,
+    pub run_id: String,
+    pub finding_id: Option<String>,
+    pub channel: String,
+    pub status: String,
+    pub external_id: Option<String>,
+    pub external_url: Option<String>,
+    pub attempts: i64,
+    pub last_error_code: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentEvent {
+    pub sequence: i64,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AutonomousAgentTarget {
+    pub id: String,
+    pub definition_id: String,
+    pub kind: String,
+    pub name: String,
+    pub config: serde_json::Value,
+    pub credential_connector_id: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutAutonomousAgentTargetRequest {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    pub credential_connector_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 // ── Harness sharing types ────────────────────────────────────────────────────
@@ -3656,9 +3904,18 @@ mod tests {
         }
 
         // The other patterns are unchanged.
-        assert_eq!(validate_safe_manifest_content("ghp_0123456789abcdef"), Err("secret_scan_failed"));
-        assert_eq!(validate_safe_manifest_content("Authorization: Bearer x"), Err("secret_scan_failed"));
-        assert_eq!(validate_safe_manifest_content("/Users/cesar/.ssh/id_rsa"), Err("secret_scan_failed"));
+        assert_eq!(
+            validate_safe_manifest_content("ghp_0123456789abcdef"),
+            Err("secret_scan_failed")
+        );
+        assert_eq!(
+            validate_safe_manifest_content("Authorization: Bearer x"),
+            Err("secret_scan_failed")
+        );
+        assert_eq!(
+            validate_safe_manifest_content("/Users/cesar/.ssh/id_rsa"),
+            Err("secret_scan_failed")
+        );
     }
 
     #[test]
@@ -4203,19 +4460,34 @@ mod tests {
 
     #[test]
     fn task_status_from_str_parses_all_valid_values() {
-        assert_eq!(TaskStatus::from_str("backlog").unwrap(), TaskStatus::Backlog);
+        assert_eq!(
+            TaskStatus::from_str("backlog").unwrap(),
+            TaskStatus::Backlog
+        );
         assert_eq!(TaskStatus::from_str("todo").unwrap(), TaskStatus::Todo);
-        assert_eq!(TaskStatus::from_str("in_progress").unwrap(), TaskStatus::InProgress);
-        assert_eq!(TaskStatus::from_str("in_review").unwrap(), TaskStatus::InReview);
+        assert_eq!(
+            TaskStatus::from_str("in_progress").unwrap(),
+            TaskStatus::InProgress
+        );
+        assert_eq!(
+            TaskStatus::from_str("in_review").unwrap(),
+            TaskStatus::InReview
+        );
         assert_eq!(TaskStatus::from_str("done").unwrap(), TaskStatus::Done);
-        assert_eq!(TaskStatus::from_str("cancelled").unwrap(), TaskStatus::Cancelled);
+        assert_eq!(
+            TaskStatus::from_str("cancelled").unwrap(),
+            TaskStatus::Cancelled
+        );
     }
 
     #[test]
     fn task_status_from_str_rejects_unrecognized_value() {
         assert!(TaskStatus::from_str("bogus").is_err());
         assert!(TaskStatus::from_str("").is_err());
-        assert!(TaskStatus::from_str("Backlog").is_err(), "must be case-sensitive snake_case");
+        assert!(
+            TaskStatus::from_str("Backlog").is_err(),
+            "must be case-sensitive snake_case"
+        );
     }
 
     #[test]
@@ -4263,7 +4535,10 @@ mod tests {
         for from in all {
             for to in all {
                 if from == to {
-                    assert!(can_transition(from, to), "{from} -> {to} same-state no-op must be allowed");
+                    assert!(
+                        can_transition(from, to),
+                        "{from} -> {to} same-state no-op must be allowed"
+                    );
                     continue;
                 }
                 let expected_allowed = allowed.contains(&(from, to));
@@ -4271,7 +4546,11 @@ mod tests {
                     can_transition(from, to),
                     expected_allowed,
                     "{from} -> {to} must be {}",
-                    if expected_allowed { "allowed" } else { "rejected" }
+                    if expected_allowed {
+                        "allowed"
+                    } else {
+                        "rejected"
+                    }
                 );
             }
         }
@@ -4280,12 +4559,30 @@ mod tests {
     #[test]
     fn can_transition_rejects_illegal_edges() {
         use TaskStatus::*;
-        assert!(!can_transition(Done, Todo), "done cannot revert directly to todo");
-        assert!(!can_transition(Done, Backlog), "done cannot revert directly to backlog");
-        assert!(!can_transition(Cancelled, Todo), "cancelled can only reopen to backlog");
-        assert!(!can_transition(Cancelled, InProgress), "cancelled can only reopen to backlog");
-        assert!(!can_transition(Backlog, InReview), "backlog cannot jump straight to in_review");
-        assert!(!can_transition(Backlog, Done), "backlog cannot jump straight to done");
+        assert!(
+            !can_transition(Done, Todo),
+            "done cannot revert directly to todo"
+        );
+        assert!(
+            !can_transition(Done, Backlog),
+            "done cannot revert directly to backlog"
+        );
+        assert!(
+            !can_transition(Cancelled, Todo),
+            "cancelled can only reopen to backlog"
+        );
+        assert!(
+            !can_transition(Cancelled, InProgress),
+            "cancelled can only reopen to backlog"
+        );
+        assert!(
+            !can_transition(Backlog, InReview),
+            "backlog cannot jump straight to in_review"
+        );
+        assert!(
+            !can_transition(Backlog, Done),
+            "backlog cannot jump straight to done"
+        );
     }
 
     // ── Knowledge migration review state ───────────────────────────────────────

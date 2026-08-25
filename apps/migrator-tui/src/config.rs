@@ -111,6 +111,11 @@ pub struct RunConfig {
     pub no_llm: bool,
     pub max_tokens: String,
     pub claude_bin: String,
+    /// How many classifier calls run at once. Empty or "1" means serial (the
+    /// runner's default); a value above 1 becomes `--parallel N`. Kept as a
+    /// string like the other typed fields so an in-progress edit is never a
+    /// parse error.
+    pub parallel: String,
 }
 
 impl Default for RunConfig {
@@ -146,6 +151,7 @@ impl Default for RunConfig {
             no_llm: false,
             max_tokens: String::new(),
             claude_bin: "claude".to_string(),
+            parallel: String::new(),
         }
     }
 }
@@ -241,6 +247,17 @@ impl RunConfig {
         push_flag(&mut a, "--since-commit", &self.since_commit);
         push_flag(&mut a, "--max-tokens", &self.max_tokens);
         push_flag(&mut a, "--claude-bin", &self.claude_bin);
+        // A pool only makes sense with a model to wait on, and only above 1.
+        // "1" and blank are the serial default and emit no flag; an invalid
+        // value is caught by `blockers`, so parsing failures are simply not
+        // emitted rather than passed through.
+        if !self.no_llm {
+            if let Ok(n) = self.parallel.trim().parse::<usize>() {
+                if n > 1 {
+                    push_flag(&mut a, "--parallel", &n.to_string());
+                }
+            }
+        }
 
         match self.source {
             Source::RepoDocs if self.include_sdd => a.push("--include-sdd".into()),
@@ -399,6 +416,15 @@ impl RunConfig {
                 });
             }
         }
+
+        if let Some(raw) = Some(self.parallel.trim()).filter(|s| !s.is_empty()) {
+            if raw.parse::<usize>().map(|n| n < 1).unwrap_or(true) {
+                b.push(Blocker {
+                    field: "parallel",
+                    why: "parallel must be a positive whole number — 1 is serial".into(),
+                });
+            }
+        }
         b
     }
 
@@ -435,6 +461,19 @@ impl RunConfig {
                          to make the first run of an unfamiliar source cheap."
                     .into(),
             });
+        }
+        if !self.no_llm {
+            if let Ok(n) = self.parallel.trim().parse::<usize>() {
+                if n > 8 {
+                    w.push(Warning {
+                        headline: format!("{n} classifier calls at once"),
+                        detail: "The provider may rate-limit this many concurrent calls; a \
+                                 rate-limited item falls back to its deterministic draft rather \
+                                 than failing the run. Around 6 is a safe start."
+                            .into(),
+                    });
+                }
+            }
         }
         w
     }
@@ -617,6 +656,61 @@ mod tests {
         assert!(args.contains(&"--include-sdd".to_string()));
         assert!(!args.contains(&"--host-scope".to_string()));
         assert!(!args.contains(&"--supabase".to_string()));
+    }
+
+    /// The pool is a per-item, model-only concern: it reaches argv only above 1
+    /// and never under `--no-llm`, where there is no model call to parallelise.
+    #[test]
+    fn parallel_reaches_argv_only_above_one_and_never_under_no_llm() {
+        let mut cfg = RunConfig {
+            api_url: "http://localhost:8080".into(),
+            api_key: "nm_x".into(),
+            ..Default::default()
+        };
+        assert!(
+            !cfg.to_args(false).contains(&"--parallel".to_string()),
+            "serial by default emits no flag"
+        );
+        cfg.parallel = "1".into();
+        assert!(
+            !cfg.to_args(false).contains(&"--parallel".to_string()),
+            "1 is serial, not a flag"
+        );
+
+        cfg.parallel = "6".into();
+        let args = cfg.to_args(false);
+        let i = args
+            .iter()
+            .position(|a| a == "--parallel")
+            .expect("a pool of 6 must emit the flag");
+        assert_eq!(args[i + 1], "6");
+
+        cfg.no_llm = true;
+        assert!(
+            !cfg.to_args(false).contains(&"--parallel".to_string()),
+            "no model means no pool, whatever the value"
+        );
+    }
+
+    #[test]
+    fn a_non_positive_parallel_blocks_the_run_but_blank_is_serial() {
+        let mut cfg = RunConfig {
+            api_url: "http://localhost:8080".into(),
+            api_key: "nm_x".into(),
+            ..Default::default()
+        };
+        for bad in ["0", "-2", "lots"] {
+            cfg.parallel = bad.into();
+            let fields: Vec<&str> = cfg.blockers(false).iter().map(|b| b.field).collect();
+            assert!(fields.contains(&"parallel"), "{bad:?} slipped through");
+        }
+        cfg.parallel = "6".into();
+        assert!(cfg.blockers(false).iter().all(|b| b.field != "parallel"));
+        cfg.parallel = "  ".into();
+        assert!(
+            cfg.blockers(false).iter().all(|b| b.field != "parallel"),
+            "blank is serial, not an error"
+        );
     }
 
     #[test]

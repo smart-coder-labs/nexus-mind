@@ -48,6 +48,14 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      initContainers:
+        - name: prepare-autonomous-agent-storage
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          imagePullPolicy: Always
+          command: ["sh", "-c", "mkdir -p /data/claude-home"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: backend
           image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
@@ -58,6 +66,13 @@ spec:
           envFrom:
             - secretRef:
                 name: nexusmind-env
+          env:
+            - name: AUTONOMOUS_AGENTS_ENABLED
+              value: "true"
+            - name: CLAUDE_CODE_BIN
+              value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+            - name: HOME
+              value: /claude-home
           volumeMounts:
             - name: data
               mountPath: /data
@@ -69,6 +84,11 @@ spec:
             - name: data
               mountPath: /app/.fastembed_cache
               subPath: fastembed-cache
+            # Persist Claude Code's complete HOME: it uses both ~/.claude and
+            # ~/.claude.json for authentication/configuration state.
+            - name: data
+              mountPath: /claude-home
+              subPath: claude-home
           readinessProbe:
             httpGet:
               path: /v1/health
@@ -89,7 +109,35 @@ spec:
               cpu: 250m
               memory: 512Mi
             limits:
-              memory: 2Gi
+              memory: 6Gi
+        # Exactly one worker for the MVP. It shares SQLite and Claude Code's
+        # persisted host identity with the API container in this single pod.
+        - name: autonomous-worker
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          imagePullPolicy: Always
+          command: ["/app/autonomous_worker"]
+          envFrom:
+            - secretRef:
+                name: nexusmind-env
+          env:
+            - name: AUTONOMOUS_AGENTS_ENABLED
+              value: "true"
+            - name: CLAUDE_CODE_BIN
+              value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+            - name: HOME
+              value: /claude-home
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: data
+              mountPath: /claude-home
+              subPath: claude-home
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 6Gi
       volumes:
         - name: data
           persistentVolumeClaim:

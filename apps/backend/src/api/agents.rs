@@ -6,7 +6,9 @@ use axum::{
 
 use crate::{
     db::queries,
-    models::types::{Agent, AgentAssignment, ApiError, AuthContext, CreateAgentRequest, UpdateAgentRequest},
+    models::types::{
+        Agent, AgentAssignment, ApiError, AuthContext, CreateAgentRequest, UpdateAgentRequest,
+    },
     store::sqlite::SqliteStore,
 };
 
@@ -45,7 +47,9 @@ pub async fn list_agents(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<Agent>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let agents = queries::list_agents(&conn, &auth.org_id).map_err(db_err)?;
     Ok(Json(agents))
 }
@@ -56,7 +60,9 @@ pub async fn get_agent(
     Path(id): Path<String>,
 ) -> Result<Json<Agent>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let agent = queries::get_agent(&conn, &auth.org_id, &id)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
@@ -72,7 +78,9 @@ pub async fn create_agent(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let agent = queries::create_agent(&conn, &auth.org_id, &req).map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(agent)))
 }
@@ -87,7 +95,9 @@ pub async fn update_agent(
         return Err(forbidden());
     }
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     let agent = queries::update_agent(&conn, &auth.org_id, &id, &req)
         .map_err(db_err)?
         .ok_or_else(not_found)?;
@@ -100,7 +110,9 @@ pub async fn list_agent_assignments(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<AgentAssignment>>, (StatusCode, Json<ApiError>)> {
     let db = store.conn();
-    let conn = db.lock().map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
+    let conn = db
+        .lock()
+        .map_err(|_| db_err(anyhow::anyhow!("db lock poisoned")))?;
     // Verify agent exists and belongs to this org
     queries::get_agent(&conn, &auth.org_id, &id)
         .map_err(db_err)?

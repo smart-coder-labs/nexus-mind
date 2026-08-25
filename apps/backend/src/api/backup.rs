@@ -8,8 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::backup::client::{
-    fetch_full_backup, get_backup, list_backups, list_tables_for_backup, BackupRow,
-    BackupTableRow,
+    fetch_full_backup, get_backup, list_backups, list_tables_for_backup, BackupRow, BackupTableRow,
 };
 use crate::backup::job::{run_backup, BackupResult};
 use crate::backup::restore::{fetch_restore_payload, restore_from_dump, RestoreSummary};
@@ -66,22 +65,27 @@ pub async fn list_backups_handler(
     if !auth.role.is_super_user() {
         return Err(forbidden());
     }
-    let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
-    let rows = list_backups(&pool, &auth.org_id, limit).await.map_err(internal)?;
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .clamp(1, MAX_LIST_LIMIT);
+    let rows = list_backups(&pool, &auth.org_id, limit)
+        .await
+        .map_err(internal)?;
     Ok(Json(rows))
 }
 
 #[derive(Serialize)]
 pub struct BackupDetail {
     #[serde(flatten)]
-    pub backup:     BackupRow,
+    pub backup: BackupRow,
     pub table_list: Vec<TableInfo>,
 }
 
 #[derive(Serialize)]
 pub struct TableInfo {
     pub table_name: String,
-    pub row_count:  i32,
+    pub row_count: i32,
 }
 
 /// `GET /v1/backups/:id` — get backup metadata + table list (no row data).
@@ -103,7 +107,10 @@ pub async fn get_backup_handler(
         .await
         .map_err(internal)?
         .into_iter()
-        .map(|(table_name, row_count)| TableInfo { table_name, row_count })
+        .map(|(table_name, row_count)| TableInfo {
+            table_name,
+            row_count,
+        })
         .collect();
 
     Ok(Json(BackupDetail {
@@ -138,7 +145,7 @@ pub struct RestoreParams {
 #[derive(Serialize)]
 pub struct RestoreResponse {
     pub backup_id: Uuid,
-    pub summary:   RestoreSummary,
+    pub summary: RestoreSummary,
 }
 
 /// `POST /v1/backups/:id/restore?confirm=true` — DESTRUCTIVE: drops all rows
@@ -163,8 +170,7 @@ pub async fn restore_backup_handler(
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
-                error: "Restore is destructive: pass ?confirm=true to proceed"
-                    .to_string(),
+                error: "Restore is destructive: pass ?confirm=true to proceed".to_string(),
                 code: "confirmation_required".to_string(),
             }),
         ));
@@ -177,8 +183,7 @@ pub async fn restore_backup_handler(
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
-                error: "Restore is destructive: set header `X-Confirm-Restore: yes`"
-                    .to_string(),
+                error: "Restore is destructive: set header `X-Confirm-Restore: yes`".to_string(),
                 code: "confirmation_required".to_string(),
             }),
         ));
@@ -200,9 +205,7 @@ pub async fn restore_backup_handler(
     }
 
     // Fetch the rows from Postgres off the SQLite lock.
-    let payload = fetch_restore_payload(&pool, id)
-        .await
-        .map_err(internal)?;
+    let payload = fetch_restore_payload(&pool, id).await.map_err(internal)?;
 
     // Apply on the SQLite connection. Restore runs synchronously inside a
     // transaction; we hold the lock for the duration. Long restores will
@@ -232,8 +235,8 @@ pub async fn restore_backup_handler(
 #[derive(Serialize)]
 pub struct BackupDownload {
     pub backup_id: Uuid,
-    pub org_id:    String,
-    pub tables:    Vec<BackupTableRow>,
+    pub org_id: String,
+    pub tables: Vec<BackupTableRow>,
 }
 
 /// `GET /v1/backups/:id/download` — return the full backup as a single JSON
@@ -306,37 +309,92 @@ mod tests {
         let backup_id = Uuid::new_v4();
         let headers = HeaderMap::new();
 
-        let list_admin = error(list_backups_handler(
-            Extension(pool()), Extension(auth("admin")), Query(ListBackupsParams::default()),
-        ).await);
+        let list_admin = error(
+            list_backups_handler(
+                Extension(pool()),
+                Extension(auth("admin")),
+                Query(ListBackupsParams::default()),
+            )
+            .await,
+        );
         assert_eq!(list_admin.0, StatusCode::FORBIDDEN);
-        let list_super = error(list_backups_handler(
-            Extension(pool()), Extension(auth("super_user")), Query(ListBackupsParams::default()),
-        ).await);
+        let list_super = error(
+            list_backups_handler(
+                Extension(pool()),
+                Extension(auth("super_user")),
+                Query(ListBackupsParams::default()),
+            )
+            .await,
+        );
         assert_ne!(list_super.0, StatusCode::FORBIDDEN);
 
-        let get_admin = error(get_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id)).await);
+        let get_admin = error(
+            get_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id)).await,
+        );
         assert_eq!(get_admin.0, StatusCode::FORBIDDEN);
-        let get_super = error(get_backup_handler(Extension(pool()), Extension(auth("super_user")), Path(backup_id)).await);
+        let get_super = error(
+            get_backup_handler(
+                Extension(pool()),
+                Extension(auth("super_user")),
+                Path(backup_id),
+            )
+            .await,
+        );
         assert_ne!(get_super.0, StatusCode::FORBIDDEN);
 
-        let create_admin = error(create_backup_handler(Extension(pool()), Extension(auth("admin")), State(store())).await);
+        let create_admin = error(
+            create_backup_handler(Extension(pool()), Extension(auth("admin")), State(store()))
+                .await,
+        );
         assert_eq!(create_admin.0, StatusCode::FORBIDDEN);
-        let create_super = error(create_backup_handler(Extension(pool()), Extension(auth("super_user")), State(store())).await);
+        let create_super = error(
+            create_backup_handler(
+                Extension(pool()),
+                Extension(auth("super_user")),
+                State(store()),
+            )
+            .await,
+        );
         assert_ne!(create_super.0, StatusCode::FORBIDDEN);
 
-        let restore_admin = error(restore_backup_handler(
-            Extension(pool()), Extension(auth("admin")), State(store()), Path(backup_id), Query(RestoreParams::default()), headers.clone(),
-        ).await);
+        let restore_admin = error(
+            restore_backup_handler(
+                Extension(pool()),
+                Extension(auth("admin")),
+                State(store()),
+                Path(backup_id),
+                Query(RestoreParams::default()),
+                headers.clone(),
+            )
+            .await,
+        );
         assert_eq!(restore_admin.0, StatusCode::FORBIDDEN);
-        let restore_super = error(restore_backup_handler(
-            Extension(pool()), Extension(auth("super_user")), State(store()), Path(backup_id), Query(RestoreParams::default()), headers,
-        ).await);
+        let restore_super = error(
+            restore_backup_handler(
+                Extension(pool()),
+                Extension(auth("super_user")),
+                State(store()),
+                Path(backup_id),
+                Query(RestoreParams::default()),
+                headers,
+            )
+            .await,
+        );
         assert_eq!(restore_super.0, StatusCode::UNPROCESSABLE_ENTITY);
 
-        let download_admin = error(download_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id)).await);
+        let download_admin = error(
+            download_backup_handler(Extension(pool()), Extension(auth("admin")), Path(backup_id))
+                .await,
+        );
         assert_eq!(download_admin.0, StatusCode::FORBIDDEN);
-        let download_super = error(download_backup_handler(Extension(pool()), Extension(auth("super_user")), Path(backup_id)).await);
+        let download_super = error(
+            download_backup_handler(
+                Extension(pool()),
+                Extension(auth("super_user")),
+                Path(backup_id),
+            )
+            .await,
+        );
         assert_ne!(download_super.0, StatusCode::FORBIDDEN);
     }
 }

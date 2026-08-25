@@ -42,6 +42,10 @@ fn build_app_without_backup_pool() -> axum::Router {
         github_redirect_uri: None,
         backup_database_url: None,
         backup_interval_hours: 6,
+        autonomous_agents_enabled: false,
+        claude_code_bin: "/usr/local/bin/claude".to_string(),
+        claude_code_probe_interval_seconds: 300,
+        autonomous_agent_poll_seconds: 15,
     };
     build(conn, cfg)
 }

@@ -20,7 +20,7 @@ vi.mock('../api/client', () => ({
   })),
 }))
 
-/** `permissions === null` ⇒ an admin (privileged, sees every adminOnly item). */
+/** Permissions are authoritative even for built-in admin users. */
 function renderLayout(role: 'admin' | 'member', permissions: string[] | null) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -71,7 +71,7 @@ describe('Layout — SDD nav entry', () => {
   })
 
   it('nav_item_sdd_sits_in_the_knowledge_group', async () => {
-    renderLayout('admin', null)
+    renderLayout('admin', ['sdd:read'])
 
     await waitFor(() => {
       expect(screen.getAllByRole('link', { name: /^sdd$/i }).length).toBeGreaterThan(0)

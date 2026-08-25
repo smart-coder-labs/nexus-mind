@@ -9,12 +9,10 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
-    admin, agents, audit, auth, automation, backup, clients, code, context, conventions, docs,
-    github_auth,
-    harnesses, health,
-    internal, memory, middleware as api_mw, migrations as migrations_api, policy, rate_limit,
-    search, sdd, sessions, tasks,
-    usage, users, webhooks,
+    admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
+    clients, code, context, conventions, docs, github_auth, harnesses, health, internal, memory,
+    middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
+    tasks, usage, users, webhooks,
 };
 use crate::config::Config;
 use crate::email::EmailConfig;
@@ -142,7 +140,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route("/v1/migrations/:id/review", post(migrations_api::review))
         .route("/v1/migrations/:id/commit", post(migrations_api::commit))
-        .route("/v1/migrations/:id/cancel", post(migrations_api::cancel_run))
+        .route(
+            "/v1/migrations/:id/cancel",
+            post(migrations_api::cancel_run),
+        )
         .route("/v1/migrations/:id/report", get(migrations_api::get_report))
         .route("/v1/docs/search", get(docs::search))
         .route("/v1/docs/index-status", get(docs::index_status))
@@ -193,7 +194,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         )
         .route("/v1/policy/check", post(policy::check_policy))
         .route("/v1/automation/profiles", get(automation::list_profiles))
-        .route("/v1/automation/authorize", post(automation::authorize_profile))
+        .route(
+            "/v1/automation/authorize",
+            post(automation::authorize_profile),
+        )
         .route(
             "/v1/conventions",
             get(conventions::list_conventions).post(conventions::create_convention),
@@ -271,33 +275,63 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(sdd::get_artifact_by_key_handler).put(sdd::put_artifact_handler),
         )
         .route("/v1/sdd/artifacts/:id", get(sdd::get_artifact_handler))
-        .route("/v1/sdd/artifacts/:id/revisions", get(sdd::list_artifact_revisions_handler))
+        .route(
+            "/v1/sdd/artifacts/:id/revisions",
+            get(sdd::list_artifact_revisions_handler),
+        )
         // GET only, deliberately: revisions are immutable, so PUT/PATCH/DELETE here must 405.
-        .route("/v1/sdd/artifacts/:id/revisions/:rev", get(sdd::get_artifact_revision_handler))
-        .route("/v1/sdd/changes", get(sdd::list_changes_handler).post(sdd::create_change_handler))
+        .route(
+            "/v1/sdd/artifacts/:id/revisions/:rev",
+            get(sdd::get_artifact_revision_handler),
+        )
+        .route(
+            "/v1/sdd/changes",
+            get(sdd::list_changes_handler).post(sdd::create_change_handler),
+        )
         .route(
             "/v1/sdd/changes/:id",
             get(sdd::get_change_handler)
                 .patch(sdd::patch_change_handler)
                 .delete(sdd::delete_change_handler),
         )
-        .route("/v1/sdd/changes/:id/artifacts", get(sdd::list_change_artifacts_handler))
-        .route("/v1/sdd/changes/:id/tasks", get(sdd::list_change_tasks_handler))
-        .route("/v1/sdd/changes/:id/memories", post(sdd::link_change_memory_handler))
+        .route(
+            "/v1/sdd/changes/:id/artifacts",
+            get(sdd::list_change_artifacts_handler),
+        )
+        .route(
+            "/v1/sdd/changes/:id/tasks",
+            get(sdd::list_change_tasks_handler),
+        )
+        .route(
+            "/v1/sdd/changes/:id/memories",
+            post(sdd::link_change_memory_handler),
+        )
         .route(
             "/v1/sdd/changes/:id/memories/:memory_id",
             delete(sdd::unlink_change_memory_handler),
         )
         // Which living specifications this change has merged its deltas into.
-        .route("/v1/sdd/changes/:id/specs", get(sdd::list_change_specs_handler))
+        .route(
+            "/v1/sdd/changes/:id/specs",
+            get(sdd::list_change_specs_handler),
+        )
         // ── The living specification: openspec/specs/{capability}/spec.md ──
         // Same ordering rule: the static /v1/sdd/specs collection is registered BEFORE
         // /v1/sdd/specs/:id, or ":id" would swallow it.
-        .route("/v1/sdd/specs", get(sdd::get_specs_handler).put(sdd::put_spec_handler))
+        .route(
+            "/v1/sdd/specs",
+            get(sdd::get_specs_handler).put(sdd::put_spec_handler),
+        )
         .route("/v1/sdd/specs/:id", get(sdd::get_spec_handler))
-        .route("/v1/sdd/specs/:id/revisions", get(sdd::list_spec_revisions_handler))
+        .route(
+            "/v1/sdd/specs/:id/revisions",
+            get(sdd::list_spec_revisions_handler),
+        )
         // GET only, deliberately: spec revisions are immutable, so a write here must 405.
-        .route("/v1/sdd/specs/:id/revisions/:rev", get(sdd::get_spec_revision_handler))
+        .route(
+            "/v1/sdd/specs/:id/revisions/:rev",
+            get(sdd::get_spec_revision_handler),
+        )
         .route(
             "/v1/tasks/resolve-by-spec",
             post(tasks::resolve_by_spec_handler),
@@ -529,6 +563,103 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(agents::list_agent_assignments),
         )
         .route(
+            "/v1/autonomous-agents/templates",
+            get(autonomous_agents::list_templates),
+        )
+        .route(
+            "/v1/autonomous-agents/runtime",
+            get(autonomous_agents::get_runtime_health)
+                .post(autonomous_agents::check_runtime_health),
+        )
+        .route(
+            "/v1/autonomous-agents/settings",
+            get(autonomous_agents::get_org_settings).patch(autonomous_agents::patch_org_settings),
+        )
+        .route(
+            "/v1/autonomous-agents/metrics",
+            get(autonomous_agents::get_metrics),
+        )
+        .route(
+            "/v1/autonomous-agents",
+            get(autonomous_agents::list_definitions).post(autonomous_agents::create_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id",
+            get(autonomous_agents::get_definition).patch(autonomous_agents::update_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/validate",
+            post(autonomous_agents::validate_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/enable",
+            post(autonomous_agents::enable_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/disable",
+            post(autonomous_agents::disable_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/archive",
+            post(autonomous_agents::archive_definition),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/schedule",
+            get(autonomous_agents::get_schedule).put(autonomous_agents::put_schedule),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/run",
+            post(autonomous_agents::run_now),
+        )
+        .route(
+            "/v1/autonomous-agents/:id/targets",
+            get(autonomous_agents::list_targets).post(autonomous_agents::put_target),
+        )
+        .route(
+            "/v1/autonomous-agent-runs",
+            get(autonomous_agents::list_runs),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id",
+            get(autonomous_agents::get_run),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/cancel",
+            post(autonomous_agents::cancel_run),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/events",
+            get(autonomous_agents::list_run_events),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/transcript",
+            get(autonomous_agents::list_run_transcript),
+        )
+        .route(
+            "/v1/autonomous-agent-findings",
+            get(autonomous_agents::list_findings),
+        )
+        .route(
+            "/v1/autonomous-agent-findings/:id",
+            patch(autonomous_agents::patch_finding),
+        )
+        .route(
+            "/v1/autonomous-agent-deliveries",
+            get(autonomous_agents::list_deliveries),
+        )
+        .route(
+            "/v1/autonomous-agent-deliveries/:id/retry",
+            post(autonomous_agents::retry_delivery),
+        )
+        .route(
+            "/v1/autonomous-agent-connectors",
+            get(autonomous_agents::list_connectors).put(autonomous_agents::put_connector),
+        )
+        .route(
+            "/v1/autonomous-agent-connectors/:id",
+            delete(autonomous_agents::revoke_connector),
+        )
+        .route(
             "/v1/backups",
             get(backup::list_backups_handler).post(backup::create_backup_handler),
         )
@@ -605,6 +736,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
             axum::http::Method::PATCH,
             axum::http::Method::DELETE,
         ])
@@ -646,6 +778,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/admin/auth/logout", post(auth::logout))
         .route("/v1/auth/forgot-password", post(auth::request_reset))
         .route("/v1/auth/reset-password/confirm", post(auth::set_password))
+        .route(
+            "/v1/autonomous-agents/github/webhook",
+            post(autonomous_webhooks::github_webhook),
+        )
         .route("/v1/invites/:token", get(admin::get_invite_link))
         .route("/v1/invites/:token/redeem", post(admin::redeem_invite))
         .merge(protected)

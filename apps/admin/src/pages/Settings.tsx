@@ -343,7 +343,6 @@ export default function Settings() {
   const NAV_ITEMS: { id: SectionId; label: string }[] = [
     { id: 'account', label: 'My account' },
     { id: 'org', label: 'Organization' },
-    { id: 'agents', label: 'Agents' },
     // Every card in Integrations & data is admin/super_user only — omit the
     // tab entirely for other roles instead of showing an empty panel.
     ...(isAdmin ? [{ id: 'integrations' as SectionId, label: 'Integrations & data' }] : []),

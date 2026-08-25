@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(pool) = backup_pool {
         let job_cfg = backup::job::BackupJobConfig {
             interval: std::time::Duration::from_secs(config.backup_interval_hours * 3600),
-            org_id:   "default".to_string(),
+            org_id: "default".to_string(),
         };
         // The handle is intentionally not awaited — the loop runs for the
         // lifetime of the process. Dropping it is fine; we just need to

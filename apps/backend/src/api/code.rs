@@ -3,8 +3,8 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use serde::Deserialize;
 use chrono::Utc;
+use serde::Deserialize;
 
 // Token cipher lives in `crate::crypto` — it is used by the code index, the
 // GitHub connection queries and migration v58, so it is not an HTTP concern.
@@ -67,7 +67,8 @@ fn git_cmd() -> std::process::Command {
 fn redact_credentials(s: &str) -> String {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"://[^/@\s]+@").expect("static regex must compile"));
+    let re =
+        RE.get_or_init(|| regex::Regex::new(r"://[^/@\s]+@").expect("static regex must compile"));
     re.replace_all(s, "://***@").into_owned()
 }
 
@@ -94,7 +95,10 @@ fn is_auth_failure(stderr: &str) -> bool {
 ///
 /// When `token` is `Some`, the check is authenticated. A 404 with a valid token
 /// means the token cannot access the repo → `code = "TOKEN_ACCESS_DENIED"`.
-async fn check_repo_access(url: &str, token: Option<&str>) -> Result<(), (StatusCode, Json<ApiError>)> {
+async fn check_repo_access(
+    url: &str,
+    token: Option<&str>,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
     if !url.starts_with("https://github.com/") {
         return Ok(());
     }
@@ -129,7 +133,8 @@ async fn check_repo_access(url: &str, token: Option<&str>) -> Result<(), (Status
             Json(ApiError {
                 error: "This repository is not accessible without authentication. \
                         It may be private — provide a GitHub Personal Access Token \
-                        with the 'repo' (read) scope.".to_string(),
+                        with the 'repo' (read) scope."
+                    .to_string(),
                 code: "PRIVATE_REPO_TOKEN_REQUIRED".to_string(),
             }),
         ))
@@ -138,7 +143,8 @@ async fn check_repo_access(url: &str, token: Option<&str>) -> Result<(), (Status
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
                 error: "The provided token cannot access this repository. \
-                        Verify it has the 'repo' scope and grants access to this repository.".to_string(),
+                        Verify it has the 'repo' scope and grants access to this repository."
+                    .to_string(),
                 code: "TOKEN_ACCESS_DENIED".to_string(),
             }),
         ))
@@ -167,8 +173,7 @@ fn clone_or_pull(bare_url: &str, token: Option<&str>, dest: &str) -> Result<(), 
     // Inject the token via a credential helper that reads GIT_TOKEN from the environment.
     // This keeps the secret out of the command line (not visible in `ps aux`) and out of
     // .git/config (which git clone writes the remote URL into verbatim).
-    const CRED_HELPER: &str =
-        r#"credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f"#;
+    const CRED_HELPER: &str = r#"credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f"#;
 
     let mut cmd = git_cmd();
     if let Some(tok) = token {
@@ -176,10 +181,12 @@ fn clone_or_pull(bare_url: &str, token: Option<&str>, dest: &str) -> Result<(), 
     }
 
     let output = if already_cloned {
-        cmd.args(["-C", dest, "pull", "--rebase", "--quiet"]).output()
+        cmd.args(["-C", dest, "pull", "--rebase", "--quiet"])
+            .output()
     } else {
         let _ = std::fs::create_dir_all(dest);
-        cmd.args(["clone", "--depth=1", "--quiet", bare_url, dest]).output()
+        cmd.args(["clone", "--depth=1", "--quiet", bare_url, dest])
+            .output()
     };
 
     match output {
@@ -189,7 +196,10 @@ fn clone_or_pull(bare_url: &str, token: Option<&str>, dest: &str) -> Result<(), 
             let stderr_raw = String::from_utf8_lossy(&o.stderr);
             let stderr = redact_credentials(stderr_raw.trim());
             if is_auth_failure(&stderr_raw) {
-                Err(format!("PRIVATE_REPO_AUTH_FAILURE: git {op} failed ({}): {}", o.status, stderr))
+                Err(format!(
+                    "PRIVATE_REPO_AUTH_FAILURE: git {op} failed ({}): {}",
+                    o.status, stderr
+                ))
             } else {
                 Err(format!("git {op} failed ({}): {}", o.status, stderr))
             }
@@ -239,29 +249,48 @@ const KEYWORD_BOOST_CAP: f32 = 0.20;
 /// English stopwords dropped from the query before keyword matching, so a
 /// phrase like "list the ORDER endpoint" only boosts on `order`/`endpoint`.
 const QUERY_STOPWORDS: &[&str] = &[
-    "where", "is", "the", "a", "an", "of", "to", "in", "for", "list", "and",
-    "on", "at", "by", "with", "how", "does", "do",
+    "where", "is", "the", "a", "an", "of", "to", "in", "for", "list", "and", "on", "at", "by",
+    "with", "how", "does", "do",
 ];
 
 /// Path fragments that mark a file/dir as declaration-only (types, interfaces,
 /// enums, DTOs, event/command definitions). Matched case-insensitively.
 const DECL_PATH_PATTERNS: &[&str] = &[
-    ".interface.", ".enum.", ".type.", ".dto.", ".d.ts",
-    "/types/", "/interfaces/", "/events/", "/dto/", "/enums/",
+    ".interface.",
+    ".enum.",
+    ".type.",
+    ".dto.",
+    ".d.ts",
+    "/types/",
+    "/interfaces/",
+    "/events/",
+    "/dto/",
+    "/enums/",
 ];
 
 /// Path fragments that mark a file/dir as imperative "does the thing" code.
 /// Matched case-insensitively.
 const IMPERATIVE_PATH_PATTERNS: &[&str] = &[
-    ".service.", ".controller.", ".handler.", ".resolver.",
-    ".usecase.", ".use-case.", ".repository.", ".step.",
-    "/handlers/", "/controllers/", "/services/", "/steps/",
-    "/usecases/", "/use-cases/", "/repositories/", "/resolvers/",
+    ".service.",
+    ".controller.",
+    ".handler.",
+    ".resolver.",
+    ".usecase.",
+    ".use-case.",
+    ".repository.",
+    ".step.",
+    "/handlers/",
+    "/controllers/",
+    "/services/",
+    "/steps/",
+    "/usecases/",
+    "/use-cases/",
+    "/repositories/",
+    "/resolvers/",
 ];
 
 /// Symbol-name suffixes that identify a declaration (type/enum/interface/DTO).
-const DECL_SYMBOL_SUFFIXES: &[&str] =
-    &["interface", "enum", "dto", "event", "command", "props"];
+const DECL_SYMBOL_SUFFIXES: &[&str] = &["interface", "enum", "dto", "event", "command", "props"];
 
 fn matches_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
@@ -269,7 +298,9 @@ fn matches_any(haystack: &str, needles: &[&str]) -> bool {
 
 /// True when the symbol name looks like a type/enum/interface declaration.
 fn is_declaration_symbol(symbol_lower: &str) -> bool {
-    DECL_SYMBOL_SUFFIXES.iter().any(|s| symbol_lower.ends_with(s))
+    DECL_SYMBOL_SUFFIXES
+        .iter()
+        .any(|s| symbol_lower.ends_with(s))
 }
 
 /// Kind/path multiplicative weight. Imperative code wins ties over
@@ -301,7 +332,9 @@ fn keyword_boost(
     let mut matched = 0u32;
     for tok in query_tokens {
         let hit = file_path_lower.contains(tok.as_str())
-            || symbol_lower.map(|s| s.contains(tok.as_str())).unwrap_or(false);
+            || symbol_lower
+                .map(|s| s.contains(tok.as_str()))
+                .unwrap_or(false);
         if hit {
             matched += 1;
         }
@@ -367,32 +400,52 @@ pub async fn post_index(
     }
 
     if input.project.trim().is_empty() {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-            error: "project must not be empty".to_string(),
-            code: "validation_error".to_string(),
-        })));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "project must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
     }
 
     // Validate that exactly one source is provided and non-empty.
-    let has_repo = input.repo_url.as_ref().map(|u| !u.trim().is_empty()).unwrap_or(false);
-    let has_path = input.root_path.as_ref().map(|p| !p.trim().is_empty()).unwrap_or(false);
+    let has_repo = input
+        .repo_url
+        .as_ref()
+        .map(|u| !u.trim().is_empty())
+        .unwrap_or(false);
+    let has_path = input
+        .root_path
+        .as_ref()
+        .map(|p| !p.trim().is_empty())
+        .unwrap_or(false);
     if input.repo_url.is_some() && !has_repo {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-            error: "repo_url must not be empty".to_string(),
-            code: "validation_error".to_string(),
-        })));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "repo_url must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
     }
     if input.root_path.is_some() && !has_path {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-            error: "root_path must not be empty".to_string(),
-            code: "validation_error".to_string(),
-        })));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "root_path must not be empty".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
     }
     if !has_repo && !has_path {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError {
-            error: "either repo_url or root_path must be provided".to_string(),
-            code: "validation_error".to_string(),
-        })));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "either repo_url or root_path must be provided".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        ));
     }
 
     let project_name = input.project.trim().to_string();
@@ -419,7 +472,9 @@ pub async fn post_index(
     // We check only for GitHub URLs; non-GitHub remotes skip this step.
     // The check is skipped when an org-level OAuth connection already exists —
     // in that case we can assume the token covers the repo.
-    let provided_pat: Option<String> = input.github_token.as_ref()
+    let provided_pat: Option<String> = input
+        .github_token
+        .as_ref()
         .filter(|t| !t.trim().is_empty())
         .map(|t| t.trim().to_string());
 
@@ -428,8 +483,15 @@ pub async fn post_index(
         if url.starts_with("https://github.com/") {
             // Only pre-check when no OAuth connection and no PAT provided,
             // or when a PAT is explicitly provided (validate it grants access).
-            let oauth_exists = store.conn().lock().ok()
-                .and_then(|conn| db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten())
+            let oauth_exists = store
+                .conn()
+                .lock()
+                .ok()
+                .and_then(|conn| {
+                    db_queries::get_github_connection(&conn, &auth.org_id)
+                        .ok()
+                        .flatten()
+                })
                 .is_some();
             if !oauth_exists || provided_pat.is_some() {
                 let token_ref = provided_pat.as_deref();
@@ -453,8 +515,15 @@ pub async fn post_index(
         let url = input.repo_url.as_ref().unwrap().trim();
         if url.starts_with("https://github.com/") {
             provided_pat.clone().or_else(|| {
-                store.conn().lock().ok()
-                    .and_then(|conn| db_queries::get_github_connection(&conn, &auth.org_id).ok().flatten())
+                store
+                    .conn()
+                    .lock()
+                    .ok()
+                    .and_then(|conn| {
+                        db_queries::get_github_connection(&conn, &auth.org_id)
+                            .ok()
+                            .flatten()
+                    })
                     .map(|gh| gh.access_token)
             })
         } else {
@@ -469,15 +538,23 @@ pub async fn post_index(
     let project_id = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
-        let pid = db_queries::upsert_code_project(&conn, &auth.org_id, &project_name, &effective_root_path)
-            .map_err(db_err)?;
+        let pid = db_queries::upsert_code_project(
+            &conn,
+            &auth.org_id,
+            &project_name,
+            &effective_root_path,
+        )
+        .map_err(db_err)?;
         // Ensure the creator can actually see/search the project they just indexed.
         // upsert_code_project only writes the code_projects row; the visible-project
         // queries additionally require a canonical projects row + a project_visibility
         // membership. Enroll the creator so a non-super_user isn't locked out of their
         // own index. Idempotent on re-index.
         if let Err(e) = db_queries::ensure_code_project_visible_to_creator(
-            &conn, &auth.org_id, &project_name, &auth.user_id,
+            &conn,
+            &auth.org_id,
+            &project_name,
+            &auth.user_id,
         ) {
             tracing::warn!("Failed to enroll creator for code project {project_name}: {e}");
         }
@@ -525,7 +602,14 @@ pub async fn post_index(
         // Isolate the index so a panic sets error status instead of poisoning the
         // shared connection mutex / taking the process down.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            indexer::index_project(&org_id, &spawn_project, &spawn_path, &db, embed_svc.as_ref(), graph_only)
+            indexer::index_project(
+                &org_id,
+                &spawn_project,
+                &spawn_path,
+                &db,
+                embed_svc.as_ref(),
+                graph_only,
+            )
         }));
         let err_msg = match outcome {
             Ok(Ok(_)) => None,
@@ -542,13 +626,16 @@ pub async fn post_index(
         }
     });
 
-    Ok((StatusCode::OK, Json(IndexProjectResponse {
-        project: project_name,
-        status: "indexing_started".to_string(),
-        file_count: 0,
-        chunk_count: 0,
-        last_indexed: String::new(),
-    })))
+    Ok((
+        StatusCode::OK,
+        Json(IndexProjectResponse {
+            project: project_name,
+            status: "indexing_started".to_string(),
+            file_count: 0,
+            chunk_count: 0,
+            last_indexed: String::new(),
+        }),
+    ))
 }
 
 /// `POST /v1/code/search`
@@ -575,8 +662,7 @@ pub async fn post_search(
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         ensure_code_project_name_access(&conn, &auth, &input.project)?;
-        db_queries::get_code_project(&auth.org_id, &input.project, &conn)
-            .map_err(db_err)?
+        db_queries::get_code_project(&auth.org_id, &input.project, &conn).map_err(db_err)?
     };
 
     let code_project = match code_project {
@@ -584,9 +670,10 @@ pub async fn post_search(
         Some(p) => p,
     };
 
-    let code_project_id: i64 = code_project.id.parse().map_err(|_| {
-        db_err(anyhow::anyhow!("invalid code_project_id"))
-    })?;
+    let code_project_id: i64 = code_project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
 
     // Embed the query
     let embed_svc = store.embed_service();
@@ -759,9 +846,7 @@ pub async fn post_locate(
         let cosine = embed::cosine(&q_vec, &v);
         if let Some((file_path, symbol)) = loc_map.get(&id) {
             let score = rerank_score(cosine, file_path, symbol.as_deref(), &query_tokens);
-            let entry = best
-                .entry(file_path.clone())
-                .or_insert((f32::MIN, None));
+            let entry = best.entry(file_path.clone()).or_insert((f32::MIN, None));
             if score > entry.0 {
                 *entry = (score, symbol.clone());
             }
@@ -777,7 +862,11 @@ pub async fn post_locate(
         })
         .collect();
 
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit as usize);
 
     Ok(Json(LocateCodeResponse { results }))
@@ -861,9 +950,10 @@ pub async fn get_context(
         Some(p) => p,
     };
 
-    let code_project_id: i64 = project.id.parse().map_err(|_| {
-        db_err(anyhow::anyhow!("invalid code_project_id"))
-    })?;
+    let code_project_id: i64 = project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
 
     // Fetch context chunks
     let chunks = {
@@ -877,7 +967,10 @@ pub async fn get_context(
         return Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
-                error: format!("Symbol '{}' not found in '{}'", params.symbol, params.file_path),
+                error: format!(
+                    "Symbol '{}' not found in '{}'",
+                    params.symbol, params.file_path
+                ),
                 code: "symbol_not_found".to_string(),
             }),
         ));
@@ -964,13 +1057,10 @@ fn load_visible_code_project(
     id: i64,
     method: &str,
 ) -> Result<CodeProject, (StatusCode, Json<ApiError>)> {
-    if let Some(project) = db_queries::get_code_project_by_id_visible(
-        conn,
-        &auth.org_id,
-        id,
-        viewer_user_id(auth),
-    )
-    .map_err(db_err)? {
+    if let Some(project) =
+        db_queries::get_code_project_by_id_visible(conn, &auth.org_id, id, viewer_user_id(auth))
+            .map_err(db_err)?
+    {
         return Ok(project);
     }
     if db_queries::get_code_project_by_id(conn, &auth.org_id, id)
@@ -1028,7 +1118,9 @@ pub async fn archive_project(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     load_visible_code_project(&conn, &auth, id, "POST")?;
-    if !auth.role.is_privileged() { return Err(forbidden()); }
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
     let found = db_queries::archive_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -1054,7 +1146,9 @@ pub async fn restore_project(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     load_visible_code_project(&conn, &auth, id, "POST")?;
-    if !auth.role.is_privileged() { return Err(forbidden()); }
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
     let found = db_queries::restore_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if found {
         Ok(StatusCode::NO_CONTENT)
@@ -1080,7 +1174,9 @@ pub async fn delete_project(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     load_visible_code_project(&conn, &auth, id, "DELETE")?;
-    if !auth.role.is_privileged() { return Err(forbidden()); }
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
     let deleted = db_queries::delete_code_project(&conn, &auth.org_id, id).map_err(db_err)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -1108,7 +1204,9 @@ pub async fn update_schedule(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     load_visible_code_project(&conn, &auth, id, "PATCH")?;
-    if !auth.role.is_privileged() { return Err(forbidden()); }
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
     let found = db_queries::update_reindex_interval(&conn, &auth.org_id, id, body.interval_hours)
         .map_err(db_err)?;
     if found {
@@ -1133,17 +1231,21 @@ pub async fn update_code_project(
     Path(id_str): Path<String>,
     AppJson(body): AppJson<UpdateCodeProjectRequest>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    let id: i64 = id_str.parse().map_err(|_| (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Json(ApiError {
-            error: "Invalid project id".to_string(),
-            code: "validation_error".to_string(),
-        }),
-    ))?;
+    let id: i64 = id_str.parse().map_err(|_| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: "Invalid project id".to_string(),
+                code: "validation_error".to_string(),
+            }),
+        )
+    })?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     load_visible_code_project(&conn, &auth, id, "PATCH")?;
-    if !auth.role.is_privileged() { return Err(forbidden()); }
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
     let patterns = body.exclude_patterns.unwrap_or_default();
     // Enforce maximum 20 patterns
     if patterns.len() > 20 {
@@ -1155,8 +1257,9 @@ pub async fn update_code_project(
             }),
         ));
     }
-    let found = db_queries::update_code_project_exclude_patterns(&conn, &auth.org_id, id, &patterns)
-        .map_err(db_err)?;
+    let found =
+        db_queries::update_code_project_exclude_patterns(&conn, &auth.org_id, id, &patterns)
+            .map_err(db_err)?;
     if found {
         Ok(axum::Json(serde_json::json!({ "ok": true })))
     } else {
@@ -1202,7 +1305,9 @@ pub async fn post_reindex(
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         let project = load_visible_code_project(&conn, &auth, id, "POST")?;
-        if !auth.role.is_privileged() { return Err(forbidden()); }
+        if !auth.role.is_privileged() {
+            return Err(forbidden());
+        }
         Some(project)
     };
 
@@ -1236,15 +1341,17 @@ pub async fn post_reindex(
 
     // Resolve the clone token BEFORE spawning. Priority: stored PAT → org OAuth.
     // The token is injected via GIT_TOKEN env var in clone_or_pull — never embedded in the URL.
-    let clone_token: Option<String> = if repo_url.as_deref().map(|u| u.trim().starts_with("https://github.com/")).unwrap_or(false) {
+    let clone_token: Option<String> = if repo_url
+        .as_deref()
+        .map(|u| u.trim().starts_with("https://github.com/"))
+        .unwrap_or(false)
+    {
         // Attempt to decrypt the per-project PAT stored during the original index.
         let stored_token: Option<String> = {
             let spawn_db = store.conn();
             let result = match spawn_db.lock() {
                 Ok(conn) => {
-                    let encrypted = db_queries::get_code_project_token(&conn, id)
-                        .ok()
-                        .flatten();
+                    let encrypted = db_queries::get_code_project_token(&conn, id).ok().flatten();
                     encrypted.as_deref().and_then(token_cipher::decrypt)
                 }
                 Err(_) => None,
@@ -1287,7 +1394,14 @@ pub async fn post_reindex(
             root_path
         };
 
-        let result = indexer::index_project(&org_id, &project_name, &effective_path, &db, embed_svc.as_ref(), false);
+        let result = indexer::index_project(
+            &org_id,
+            &project_name,
+            &effective_path,
+            &db,
+            embed_svc.as_ref(),
+            false,
+        );
         if let Err(e) = result {
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             if let Ok(conn) = db.lock() {
@@ -1388,9 +1502,15 @@ pub async fn get_graph(
         )
     })?;
 
-    let (nodes, edges) =
-        db_queries::get_graph(&conn, code_project_id, &node_types, &edge_types, limit, offset)
-            .map_err(db_err)?;
+    let (nodes, edges) = db_queries::get_graph(
+        &conn,
+        code_project_id,
+        &node_types,
+        &edge_types,
+        limit,
+        offset,
+    )
+    .map_err(db_err)?;
 
     let node_count = nodes.len();
     let edge_count = edges.len();
@@ -1459,7 +1579,9 @@ pub async fn get_snippet(
 
     // Preferred path: the exact stored file source. A symbol returns its exact
     // line range [start, end]; a File node (no range) returns the whole file.
-    if let Some(content) = db_queries::get_code_file(&conn, code_project_id, &params.file).map_err(db_err)? {
+    if let Some(content) =
+        db_queries::get_code_file(&conn, code_project_id, &params.file).map_err(db_err)?
+    {
         let total = content.lines().count() as i64;
         let (start_line, end_line, body) = match (params.start, params.end) {
             (Some(s), Some(e)) if total > 0 => {
@@ -1482,8 +1604,8 @@ pub async fn get_snippet(
 
     // Fallback for projects indexed before code_files existed: reconstruct from
     // chunks (overlapping the range, or all chunks for a whole file).
-    let all_chunks = db_queries::get_file_chunks(&conn, code_project_id, &params.file)
-        .map_err(db_err)?;
+    let all_chunks =
+        db_queries::get_file_chunks(&conn, code_project_id, &params.file).map_err(db_err)?;
     let selected: Vec<_> = match (params.start, params.end) {
         (Some(s), Some(e)) => all_chunks
             .into_iter()
@@ -1550,8 +1672,18 @@ mod tests {
     #[test]
     fn rerank_downweights_interface_vs_service_at_equal_cosine() {
         let cos = 0.60_f32;
-        let iface = rerank_score(cos, "packages/domain/interfaces/order.interface.ts", Some("OrderInterface"), &[]);
-        let svc = rerank_score(cos, "apps/api/src/order/order.service.ts", Some("OrderService"), &[]);
+        let iface = rerank_score(
+            cos,
+            "packages/domain/interfaces/order.interface.ts",
+            Some("OrderInterface"),
+            &[],
+        );
+        let svc = rerank_score(
+            cos,
+            "apps/api/src/order/order.service.ts",
+            Some("OrderService"),
+            &[],
+        );
         assert!(
             svc > iface,
             "service must outrank interface at equal cosine (svc={svc}, iface={iface})"
@@ -1561,19 +1693,50 @@ mod tests {
     #[test]
     fn rerank_downweights_domain_events_and_dtos() {
         let cos = 0.55_f32;
-        let base = rerank_score(cos, "apps/api/src/order/order.usecase.ts", Some("createOrder"), &[]);
-        let event = rerank_score(cos, "packages/domain/events/create-order.event.ts", Some("CreateOrderEvent"), &[]);
-        let dto = rerank_score(cos, "packages/domain/dto/create-order.dto.ts", Some("CreateOrderDto"), &[]);
-        assert!(base > event, "usecase must beat event decl (base={base}, event={event})");
-        assert!(base > dto, "usecase must beat dto decl (base={base}, dto={dto})");
+        let base = rerank_score(
+            cos,
+            "apps/api/src/order/order.usecase.ts",
+            Some("createOrder"),
+            &[],
+        );
+        let event = rerank_score(
+            cos,
+            "packages/domain/events/create-order.event.ts",
+            Some("CreateOrderEvent"),
+            &[],
+        );
+        let dto = rerank_score(
+            cos,
+            "packages/domain/dto/create-order.dto.ts",
+            Some("CreateOrderDto"),
+            &[],
+        );
+        assert!(
+            base > event,
+            "usecase must beat event decl (base={base}, event={event})"
+        );
+        assert!(
+            base > dto,
+            "usecase must beat dto decl (base={base}, dto={dto})"
+        );
     }
 
     #[test]
     fn rerank_keyword_match_in_path_boosts() {
         let cos = 0.50_f32;
         let tokens = tokenize_query("create ORDER endpoint");
-        let with_kw = rerank_score(cos, "apps/api/src/order/order.controller.ts", Some("createOrder"), &tokens);
-        let without_kw = rerank_score(cos, "apps/api/src/billing/billing.controller.ts", Some("charge"), &tokens);
+        let with_kw = rerank_score(
+            cos,
+            "apps/api/src/order/order.controller.ts",
+            Some("createOrder"),
+            &tokens,
+        );
+        let without_kw = rerank_score(
+            cos,
+            "apps/api/src/billing/billing.controller.ts",
+            Some("charge"),
+            &tokens,
+        );
         assert!(
             with_kw > without_kw,
             "path/symbol keyword match must boost (with={with_kw}, without={without_kw})"
@@ -1584,8 +1747,18 @@ mod tests {
     fn rerank_semantics_dominate_strong_cosine_beats_weak_service() {
         // A very strong cosine on a declaration must still beat a weak cosine on
         // an imperative file — the heuristic nudges, it does not override.
-        let strong_decl = rerank_score(0.95, "packages/domain/interfaces/order.interface.ts", Some("OrderInterface"), &[]);
-        let weak_service = rerank_score(0.30, "apps/api/src/order/order.service.ts", Some("OrderService"), &[]);
+        let strong_decl = rerank_score(
+            0.95,
+            "packages/domain/interfaces/order.interface.ts",
+            Some("OrderInterface"),
+            &[],
+        );
+        let weak_service = rerank_score(
+            0.30,
+            "apps/api/src/order/order.service.ts",
+            Some("OrderService"),
+            &[],
+        );
         assert!(
             strong_decl > weak_service,
             "strong cosine on decl must beat weak cosine on service (decl={strong_decl}, svc={weak_service})"
@@ -1598,17 +1771,33 @@ mod tests {
         assert!(toks.contains(&"order".to_string()));
         assert!(toks.contains(&"endpoint".to_string()));
         assert!(toks.contains(&"user".to_string()));
-        assert!(!toks.contains(&"where".to_string()), "stopword must be dropped");
-        assert!(!toks.contains(&"the".to_string()), "stopword must be dropped");
-        assert!(!toks.contains(&"for".to_string()), "stopword must be dropped");
-        assert!(!toks.iter().any(|t| t == "a"), "short/stopword token must be dropped");
+        assert!(
+            !toks.contains(&"where".to_string()),
+            "stopword must be dropped"
+        );
+        assert!(
+            !toks.contains(&"the".to_string()),
+            "stopword must be dropped"
+        );
+        assert!(
+            !toks.contains(&"for".to_string()),
+            "stopword must be dropped"
+        );
+        assert!(
+            !toks.iter().any(|t| t == "a"),
+            "short/stopword token must be dropped"
+        );
     }
 
     #[test]
     fn keyword_boost_is_capped() {
         let tokens: Vec<String> = vec![
-            "order".into(), "create".into(), "user".into(), "item".into(),
-            "line".into(), "price".into(),
+            "order".into(),
+            "create".into(),
+            "user".into(),
+            "item".into(),
+            "line".into(),
+            "price".into(),
         ];
         // A path containing every token would boost 6×0.05=0.30 uncapped;
         // the cap holds it at 0.20.
@@ -1617,7 +1806,10 @@ mod tests {
             None,
             &tokens,
         );
-        assert!((boost - KEYWORD_BOOST_CAP).abs() < 1e-6, "boost must be capped at {KEYWORD_BOOST_CAP}, got {boost}");
+        assert!(
+            (boost - KEYWORD_BOOST_CAP).abs() < 1e-6,
+            "boost must be capped at {KEYWORD_BOOST_CAP}, got {boost}"
+        );
     }
 
     // ── Private-repo clone-failure handling ───────────────────────────────────
@@ -1635,7 +1827,10 @@ mod tests {
             None,
             dest.to_str().unwrap(),
         );
-        assert!(res.is_err(), "a failed clone must return Err, not silently succeed");
+        assert!(
+            res.is_err(),
+            "a failed clone must return Err, not silently succeed"
+        );
     }
 
     #[test]
@@ -1649,7 +1844,11 @@ mod tests {
                 .env("GIT_COMMITTER_EMAIL", "t@t.dev")
                 .output()
                 .expect("git runs");
-            assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         let src = tempfile::TempDir::new().unwrap();
         let src_path = src.path().to_str().unwrap();
@@ -1661,7 +1860,10 @@ mod tests {
         let dst = tempfile::TempDir::new().unwrap();
         let dest = dst.path().join("clone");
         let res = clone_or_pull(src_path, None, dest.to_str().unwrap());
-        assert!(res.is_ok(), "cloning a valid local repo must succeed: {res:?}");
+        assert!(
+            res.is_ok(),
+            "cloning a valid local repo must succeed: {res:?}"
+        );
         assert!(dest.join(".git").exists(), "clone must produce a .git dir");
     }
 
@@ -1669,8 +1871,14 @@ mod tests {
     fn redact_credentials_strips_oauth_token() {
         let s = "fatal: Authentication failed for 'https://oauth2:ghp_SECRETTOKEN@github.com/org/repo.git'";
         let out = redact_credentials(s);
-        assert!(!out.contains("ghp_SECRETTOKEN"), "token must be redacted: {out}");
-        assert!(out.contains("://***@github.com"), "redacted marker must be present: {out}");
+        assert!(
+            !out.contains("ghp_SECRETTOKEN"),
+            "token must be redacted: {out}"
+        );
+        assert!(
+            out.contains("://***@github.com"),
+            "redacted marker must be present: {out}"
+        );
     }
 
     fn app(store: SqliteStore) -> Router {
@@ -1684,8 +1892,14 @@ mod tests {
             .route("/v1/code/projects/:id/files", get(get_project_files))
             .route("/v1/code/projects/:id/archive", post(archive_project))
             .route("/v1/code/projects/:id/restore", post(restore_project))
-            .route("/v1/code/projects/:id", axum::routing::patch(update_code_project).delete(delete_project))
-            .route("/v1/code/projects/:id/schedule", axum::routing::patch(update_schedule))
+            .route(
+                "/v1/code/projects/:id",
+                axum::routing::patch(update_code_project).delete(delete_project),
+            )
+            .route(
+                "/v1/code/projects/:id/schedule",
+                axum::routing::patch(update_schedule),
+            )
             .route("/v1/code/projects/:id/reindex", post(post_reindex))
             .route("/v1/code/graph", get(get_graph))
             .route("/v1/code/snippet", get(get_snippet))
@@ -1699,8 +1913,13 @@ mod tests {
         let raw_key = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, admin, key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
+            let (org, admin, key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE id = ?1",
+                [&admin.id],
+            )
+            .unwrap();
             let _ = org;
             key
         };
@@ -1712,23 +1931,59 @@ mod tests {
         let (admin_key, member_key, project_b_code_id) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let (org, _, admin_key) = q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE org_id = ?1", [&org.id]).unwrap();
-            let (member, member_key) = q::invite_user(&conn, &org.id, "member@acme.com", "Member", "member").unwrap();
+            let (org, _, admin_key) =
+                q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE org_id = ?1",
+                [&org.id],
+            )
+            .unwrap();
+            let (member, member_key) =
+                q::invite_user(&conn, &org.id, "member@acme.com", "Member", "member").unwrap();
             let project_a = q::create_project(&conn, &org.id, "project-a", None, None).unwrap();
             let _project_b = q::create_project(&conn, &org.id, "project-b", None, None).unwrap();
             q::upsert_project_member(&conn, &project_a.id, &member.id, "member").unwrap();
 
-            let project_a_code_id = q::upsert_code_project(&conn, &org.id, "project-a", "/ws/a").unwrap();
-            q::update_code_project_stats(&conn, project_a_code_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
-            q::insert_code_chunk(&conn, project_a_code_id, "src/lib.rs", "h1", None, Some("allowed"), 1, 1, "fn allowed() {}", None).unwrap();
+            let project_a_code_id =
+                q::upsert_code_project(&conn, &org.id, "project-a", "/ws/a").unwrap();
+            q::update_code_project_stats(&conn, project_a_code_id, 1, 1, "2026-06-19T12:00:00Z")
+                .unwrap();
+            q::insert_code_chunk(
+                &conn,
+                project_a_code_id,
+                "src/lib.rs",
+                "h1",
+                None,
+                Some("allowed"),
+                1,
+                1,
+                "fn allowed() {}",
+                None,
+            )
+            .unwrap();
 
-            let project_b_code_id = q::upsert_code_project(&conn, &org.id, "project-b", "/ws/b").unwrap();
-            q::update_code_project_stats(&conn, project_b_code_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
-            q::insert_code_chunk(&conn, project_b_code_id, "src/lib.rs", "h2", None, Some("denied"), 1, 1, "fn denied() {}", None).unwrap();
+            let project_b_code_id =
+                q::upsert_code_project(&conn, &org.id, "project-b", "/ws/b").unwrap();
+            q::update_code_project_stats(&conn, project_b_code_id, 1, 1, "2026-06-19T12:00:00Z")
+                .unwrap();
+            q::insert_code_chunk(
+                &conn,
+                project_b_code_id,
+                "src/lib.rs",
+                "h2",
+                None,
+                Some("denied"),
+                1,
+                1,
+                "fn denied() {}",
+                None,
+            )
+            .unwrap();
 
-            let code_only_id = q::upsert_code_project(&conn, &org.id, "code-only", "/ws/code-only").unwrap();
-            q::update_code_project_stats(&conn, code_only_id, 2, 3, "2026-06-19T12:00:00Z").unwrap();
+            let code_only_id =
+                q::upsert_code_project(&conn, &org.id, "code-only", "/ws/code-only").unwrap();
+            q::update_code_project_stats(&conn, code_only_id, 2, 3, "2026-06-19T12:00:00Z")
+                .unwrap();
 
             (admin_key, member_key, project_b_code_id)
         };
@@ -1753,13 +2008,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["status"], "not_indexed");
         assert_eq!(body["project"], "ghost");
         // Optional fields must be absent (skip_serializing_if)
-        assert!(body.get("last_indexed").is_none() || body["last_indexed"].is_null(),
-                "last_indexed must be absent for not_indexed projects");
+        assert!(
+            body.get("last_indexed").is_none() || body["last_indexed"].is_null(),
+            "last_indexed must be absent for not_indexed projects"
+        );
     }
 
     #[tokio::test]
@@ -1787,9 +2046,9 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let org_id: String = conn.query_row(
-                "SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)
-            ).unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
             let project_id = q::upsert_code_project(&conn, &org_id, "myapp", "/ws/myapp").unwrap();
             q::update_code_project_stats(&conn, project_id, 5, 42, "2026-06-19T12:00:00Z").unwrap();
         }
@@ -1806,12 +2065,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["status"], "indexed");
         assert_eq!(body["file_count"], 5);
         assert_eq!(body["chunk_count"], 42);
-        assert!(body["last_indexed"].as_str().is_some(), "last_indexed must be present for indexed projects");
+        assert!(
+            body["last_indexed"].as_str().is_some(),
+            "last_indexed must be present for indexed projects"
+        );
     }
 
     #[tokio::test]
@@ -1830,7 +2094,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["status"], "indexed");
         assert_eq!(body["project"], "code-only");
@@ -1852,7 +2118,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["code"], "not_found");
     }
@@ -1884,7 +2152,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list_resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(list_resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let projects: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(projects.iter().any(|p| p["name"] == "project-a"));
         assert!(projects.iter().all(|p| p["name"] != "project-b"));
@@ -1919,16 +2189,34 @@ mod tests {
     async fn hidden_code_lifecycle_ids_return_404_and_one_audit_each() {
         let (store, _, member_key, project_b_code_id) = setup_code_access_fixture();
         for (method, suffix, body) in [
-            ("POST", "archive", None), ("POST", "restore", None), ("DELETE", "", None),
+            ("POST", "archive", None),
+            ("POST", "restore", None),
+            ("DELETE", "", None),
             ("PATCH", "schedule", Some(r#"{"interval_hours": 6}"#)),
-            ("PATCH", "", Some(r#"{"exclude_patterns": []}"#)), ("POST", "reindex", None),
+            ("PATCH", "", Some(r#"{"exclude_patterns": []}"#)),
+            ("POST", "reindex", None),
         ] {
-            let path = if suffix.is_empty() { format!("/v1/code/projects/{project_b_code_id}") } else { format!("/v1/code/projects/{project_b_code_id}/{suffix}") };
-            let mut request = Request::builder().method(method).uri(path)
+            let path = if suffix.is_empty() {
+                format!("/v1/code/projects/{project_b_code_id}")
+            } else {
+                format!("/v1/code/projects/{project_b_code_id}/{suffix}")
+            };
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
                 .header("Authorization", format!("Bearer {member_key}"));
-            if body.is_some() { request = request.header("Content-Type", "application/json"); }
-            let response = app(store.clone()).oneshot(request.body(Body::from(body.unwrap_or_default())).unwrap()).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {suffix}");
+            if body.is_some() {
+                request = request.header("Content-Type", "application/json");
+            }
+            let response = app(store.clone())
+                .oneshot(request.body(Body::from(body.unwrap_or_default())).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {suffix}"
+            );
         }
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -1960,11 +2248,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp_body["code"], "project_not_indexed");
-        assert!(resp_body["error"].as_str().unwrap().contains("ghost"),
-                "error message must mention the project name");
+        assert!(
+            resp_body["error"].as_str().unwrap().contains("ghost"),
+            "error message must mention the project name"
+        );
     }
 
     #[tokio::test]
@@ -1992,9 +2284,9 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let org_id: String = conn.query_row(
-                "SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)
-            ).unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
             let project_id = q::upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
             q::update_code_project_stats(&conn, project_id, 1, 1, "2026-06-19T12:00:00Z").unwrap();
         }
@@ -2014,9 +2306,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let results: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
-        assert!(results.is_empty(), "no embed service must return empty array, not error");
+        assert!(
+            results.is_empty(),
+            "no embed service must return empty array, not error"
+        );
     }
 
     // ── POST /v1/code/locate ──────────────────────────────────────────────────
@@ -2038,7 +2335,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(resp_body["code"], "project_not_indexed");
     }
@@ -2073,9 +2372,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let resp_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(resp_body["results"].is_array(), "response must carry a results array");
+        assert!(
+            resp_body["results"].is_array(),
+            "response must carry a results array"
+        );
         assert!(resp_body["results"].as_array().unwrap().is_empty());
     }
 
@@ -2140,8 +2444,10 @@ mod tests {
             .unwrap();
         // Should return 200 with 0 files
         let status = resp.status();
-        assert!(status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
-                "nonexistent path must return 200 (empty walk) or 500, got {status}");
+        assert!(
+            status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "nonexistent path must return 200 (empty walk) or 500, got {status}"
+        );
     }
 
     // ── GET /v1/code/context ──────────────────────────────────────────────────
@@ -2152,9 +2458,9 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let org_id: String = conn.query_row(
-                "SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)
-            ).unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
             q::upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
         }
 
@@ -2170,11 +2476,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["code"], "symbol_not_found");
-        assert!(body["error"].as_str().unwrap().contains("ghost_fn"),
-                "error message must mention the symbol name");
+        assert!(
+            body["error"].as_str().unwrap().contains("ghost_fn"),
+            "error message must mention the symbol name"
+        );
     }
 
     #[tokio::test]
@@ -2192,7 +2502,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["code"], "project_not_indexed");
     }
@@ -2218,13 +2530,49 @@ mod tests {
         {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            let org_id: String = conn.query_row(
-                "SELECT id FROM organizations LIMIT 1", [], |r| r.get(0)
-            ).unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
+                .unwrap();
             let project_id = q::upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
-            q::insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("validate_token"), 1, 20, "fn validate_token() {}", None).unwrap();
-            q::insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("authenticate_user"), 21, 60, "fn authenticate_user() {}", None).unwrap();
-            q::insert_code_chunk(&conn, project_id, "src/auth.rs", "h1", None, Some("refresh_token"), 61, 80, "fn refresh_token() {}", None).unwrap();
+            q::insert_code_chunk(
+                &conn,
+                project_id,
+                "src/auth.rs",
+                "h1",
+                None,
+                Some("validate_token"),
+                1,
+                20,
+                "fn validate_token() {}",
+                None,
+            )
+            .unwrap();
+            q::insert_code_chunk(
+                &conn,
+                project_id,
+                "src/auth.rs",
+                "h1",
+                None,
+                Some("authenticate_user"),
+                21,
+                60,
+                "fn authenticate_user() {}",
+                None,
+            )
+            .unwrap();
+            q::insert_code_chunk(
+                &conn,
+                project_id,
+                "src/auth.rs",
+                "h1",
+                None,
+                Some("refresh_token"),
+                61,
+                80,
+                "fn refresh_token() {}",
+                None,
+            )
+            .unwrap();
         }
 
         let resp = app(store)
@@ -2239,11 +2587,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let results: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(!results.is_empty(), "must return at least the target chunk");
         assert!(
-            results.iter().any(|r| r["symbol"].as_str() == Some("authenticate_user")),
+            results
+                .iter()
+                .any(|r| r["symbol"].as_str() == Some("authenticate_user")),
             "target chunk must be present in results"
         );
     }
@@ -2265,7 +2617,11 @@ mod tests {
             let conn = db.lock().unwrap();
             let (org, admin, key) =
                 q::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE id = ?1", [&admin.id]).unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE id = ?1",
+                [&admin.id],
+            )
+            .unwrap();
             let pid = q::upsert_code_project(&conn, &org.id, "myapp", "/ws").unwrap();
             (key, pid)
         };
@@ -2323,7 +2679,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["project"], "myapp");
         assert_eq!(body["node_count"], 0);
@@ -2349,22 +2707,22 @@ mod tests {
             let fg = FileGraph {
                 file_rel_path: "src/lib.rs".to_string(),
                 symbols: vec![RawSymbol {
-                    symbol_type:    SymbolType::Function,
-                    name:           "do_work".to_string(),
+                    symbol_type: SymbolType::Function,
+                    name: "do_work".to_string(),
                     qualified_name: "src/lib.rs::do_work#1".to_string(),
-                    file_path:      Some("src/lib.rs".to_string()),
-                    file_hash:      Some("h".to_string()),
-                    start_line:     Some(1),
-                    end_line:       Some(5),
-                    language:       "rust".to_string(),
-                    persist:        Persist::FileOwned,
+                    file_path: Some("src/lib.rs".to_string()),
+                    file_hash: Some("h".to_string()),
+                    start_line: Some(1),
+                    end_line: Some(5),
+                    language: "rust".to_string(),
+                    persist: Persist::FileOwned,
                 }],
                 edges: vec![RawEdge {
                     from_qname: "file::src/lib.rs".to_string(),
-                    to_qname:   "src/lib.rs::do_work#1".to_string(),
-                    edge_type:  EdgeType::Defines,
-                    file_path:  Some("src/lib.rs".to_string()),
-                    persist:    Persist::FileOwned,
+                    to_qname: "src/lib.rs::do_work#1".to_string(),
+                    edge_type: EdgeType::Defines,
+                    file_path: Some("src/lib.rs".to_string()),
+                    persist: Persist::FileOwned,
                 }],
             };
             db_q::persist_file_graph(&conn, pid, &fg).unwrap();
@@ -2382,13 +2740,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["project"], "myapp");
         let node_count = body["node_count"].as_u64().unwrap();
-        assert!(node_count >= 1, "at least the Function node must be present; got {}", node_count);
+        assert!(
+            node_count >= 1,
+            "at least the Function node must be present; got {}",
+            node_count
+        );
         let edge_count = body["edge_count"].as_u64().unwrap();
-        assert!(edge_count >= 1, "at least the defines edge must be present; got {}", edge_count);
+        assert!(
+            edge_count >= 1,
+            "at least the defines edge must be present; got {}",
+            edge_count
+        );
 
         // node_count field matches nodes array length
         assert_eq!(
@@ -2411,7 +2779,7 @@ mod tests {
             .collect();
         for edge in body["edges"].as_array().unwrap() {
             let from = edge["from_id"].as_u64().unwrap();
-            let to   = edge["to_id"].as_u64().unwrap();
+            let to = edge["to_id"].as_u64().unwrap();
             assert!(node_ids.contains(&from), "from_id {from} not in node set");
             assert!(node_ids.contains(&to), "to_id {to} not in node set");
         }
@@ -2471,7 +2839,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let nodes = body["nodes"].as_array().unwrap();
         assert!(

@@ -134,28 +134,55 @@ pub fn require_permission(
     project: Option<&str>,
     permission: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
-    if auth.role.is_privileged() {
+    require_permission_inner(conn, auth, project, permission, true)
+}
+
+/// Checks an exact permission without the legacy privileged-role bypass.
+/// New permission-driven domains should use this helper so authorization is
+/// determined by grants rather than by role names.
+pub fn require_explicit_permission(
+    conn: &Connection,
+    auth: &AuthContext,
+    project: Option<&str>,
+    permission: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    require_permission_inner(conn, auth, project, permission, false)
+}
+
+fn require_permission_inner(
+    conn: &Connection,
+    auth: &AuthContext,
+    project: Option<&str>,
+    permission: &str,
+    privileged_bypass: bool,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if privileged_bypass && auth.role.is_privileged() {
         return Ok(());
     }
 
     let effective_role = if let Some(p_name) = project {
-        match crate::db::queries::get_project_member_role(conn, &auth.org_id, p_name, &auth.user_id) {
+        match crate::db::queries::get_project_member_role(conn, &auth.org_id, p_name, &auth.user_id)
+        {
             Ok(Some(role_str)) => {
-                role_str.parse::<crate::models::types::UserRole>()
-                    .map_err(|_| (
-                        StatusCode::FORBIDDEN,
-                        Json(ApiError {
-                            error: "Access denied to this project".to_string(),
-                            code: "forbidden".to_string(),
-                        }),
-                    ))?
+                role_str
+                    .parse::<crate::models::types::UserRole>()
+                    .map_err(|_| {
+                        (
+                            StatusCode::FORBIDDEN,
+                            Json(ApiError {
+                                error: "Access denied to this project".to_string(),
+                                code: "forbidden".to_string(),
+                            }),
+                        )
+                    })?
             }
             Ok(None) => {
                 // Only enforce membership if the project already exists.
                 // If it doesn't exist yet it will be auto-created on write,
                 // so fall back to the global role for this request.
-                let project_exists = crate::db::queries::project_name_exists(conn, &auth.org_id, p_name)
-                    .unwrap_or(false);
+                let project_exists =
+                    crate::db::queries::project_name_exists(conn, &auth.org_id, p_name)
+                        .unwrap_or(false);
                 if project_exists {
                     return Err((
                         StatusCode::FORBIDDEN,
@@ -173,14 +200,54 @@ pub fn require_permission(
         auth.role.clone()
     };
 
-    let permissions = crate::db::queries::get_role_permissions(conn, &auth.org_id, effective_role.as_str())
-        .map_err(|_| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "Database error resolving permissions".to_string(),
-                code: "internal_error".to_string(),
-            }),
-        ))?;
+    let permissions =
+        crate::db::queries::get_role_permissions(conn, &auth.org_id, effective_role.as_str())
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: "Database error resolving permissions".to_string(),
+                        code: "internal_error".to_string(),
+                    }),
+                )
+            })?;
+
+    // Autonomous-agent endpoints deliberately do not inherit the legacy
+    // privileged-role bypass. Their built-in grants live in persisted role
+    // templates so an operator can remove a grant and the exact permission
+    // check will fail closed even when the actor's role is named `admin`.
+    if !privileged_bypass
+        && permission.starts_with("autonomous_agent:")
+        && matches!(effective_role.as_str(), "admin" | "super_user")
+    {
+        let template_id = if effective_role.as_str() == "admin" {
+            "admin_template"
+        } else {
+            "super_user_template"
+        };
+        let granted = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM roles, json_each(roles.permissions)
+                    WHERE roles.id=?1 AND roles.enabled=1 AND json_each.value=?2
+                )",
+                rusqlite::params![template_id, permission],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            != 0;
+        return if granted {
+            Ok(())
+        } else {
+            Err((
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    error: "Insufficient permissions".to_string(),
+                    code: "forbidden".to_string(),
+                }),
+            ))
+        };
+    }
 
     if permissions.iter().any(|p| p == permission) {
         Ok(())
@@ -232,7 +299,9 @@ pub fn project_is_visible_to_actor(
     if auth.role.is_super_user() {
         return Ok(true);
     }
-    let Some(project_id) = crate::db::queries::get_project_id_by_name(conn, &auth.org_id, project_name)? else {
+    let Some(project_id) =
+        crate::db::queries::get_project_id_by_name(conn, &auth.org_id, project_name)?
+    else {
         return Ok(true);
     };
     crate::db::queries::user_is_project_member(conn, &auth.org_id, &project_id, &auth.user_id)
@@ -266,7 +335,11 @@ mod tests {
             [],
         )
         .unwrap();
-        for (id, role) in [("admin", "admin"), ("shared", "member"), ("hidden", "member")] {
+        for (id, role) in [
+            ("admin", "admin"),
+            ("shared", "member"),
+            ("hidden", "member"),
+        ] {
             conn.execute(
                 "INSERT INTO users (id, org_id, email, name, role, status, created_at) VALUES (?1, 'org', ?2, ?1, ?3, 'active', datetime('now'))",
                 rusqlite::params![id, format!("{id}@example.com"), role],
@@ -286,8 +359,16 @@ mod tests {
             .unwrap();
         }
 
-        let admin = AuthContext { org_id: "org".into(), user_id: "admin".into(), role: UserRole::Standard(Role::Admin) };
-        let super_user = AuthContext { org_id: "org".into(), user_id: "admin".into(), role: UserRole::Custom("super_user".into()) };
+        let admin = AuthContext {
+            org_id: "org".into(),
+            user_id: "admin".into(),
+            role: UserRole::Standard(Role::Admin),
+        };
+        let super_user = AuthContext {
+            org_id: "org".into(),
+            user_id: "admin".into(),
+            role: UserRole::Custom("super_user".into()),
+        };
 
         assert!(user_is_visible_to_actor(&conn, &admin, "shared").unwrap());
         assert!(!user_is_visible_to_actor(&conn, &admin, "hidden").unwrap());
@@ -309,6 +390,53 @@ mod tests {
         assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
         assert!(require_permission(&conn, &auth, None, "user:invite").is_ok());
         assert!(require_permission(&conn, &auth, None, "nonexistent:permission").is_ok());
+    }
+
+    #[test]
+    fn explicit_permission_does_not_bypass_admin_role() {
+        let conn = setup_db();
+        let auth = make_auth(Role::Admin);
+        assert!(require_explicit_permission(&conn, &auth, None, "nonexistent:permission").is_err());
+    }
+
+    #[test]
+    fn autonomous_agent_permissions_are_explicit_for_admin() {
+        let conn = setup_db();
+        let auth = make_auth(Role::Admin);
+        for permission in [
+            "autonomous_agent:read",
+            "autonomous_agent:create",
+            "autonomous_agent:update",
+            "autonomous_agent:enable",
+            "autonomous_agent:run",
+            "autonomous_agent:cancel",
+            "autonomous_agent:manage_connectors",
+        ] {
+            assert!(require_explicit_permission(&conn, &auth, None, permission).is_ok());
+        }
+    }
+
+    #[test]
+    fn admin_is_denied_when_the_exact_persisted_grant_is_removed() {
+        let conn = setup_db();
+        let raw: String = conn
+            .query_row(
+                "SELECT permissions FROM roles WHERE id='admin_template'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut permissions: Vec<String> = serde_json::from_str(&raw).unwrap();
+        permissions.retain(|permission| permission != "autonomous_agent:read");
+        conn.execute(
+            "UPDATE roles SET permissions=?1 WHERE id='admin_template'",
+            [serde_json::to_string(&permissions).unwrap()],
+        )
+        .unwrap();
+
+        let auth = make_auth(Role::Admin);
+        assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:read").is_err());
+        assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:create").is_ok());
     }
 
     #[test]
@@ -339,7 +467,8 @@ mod tests {
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Insert custom role "custom-operator" with memory:read and user:invite
         crate::db::queries::create_role(
             &conn,
@@ -347,8 +476,9 @@ mod tests {
             "custom-operator",
             "Custom Operator",
             &["memory:read".to_string(), "user:invite".to_string()],
-            None
-        ).unwrap();
+            None,
+        )
+        .unwrap();
 
         let auth = make_custom_auth("custom-operator");
         assert!(require_permission(&conn, &auth, None, "memory:read").is_ok());
@@ -357,17 +487,46 @@ mod tests {
     }
 
     #[test]
+    fn custom_role_can_operate_autonomous_agents_only_with_exact_grant() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO organizations (id,name,slug) VALUES ('org1','Acme','acme')",
+            [],
+        )
+        .unwrap();
+        crate::db::queries::create_role(
+            &conn,
+            "org1",
+            "agent-operator",
+            "Agent operator",
+            &[
+                "autonomous_agent:read".to_string(),
+                "autonomous_agent:run".to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+        let auth = make_custom_auth("agent-operator");
+        assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:read").is_ok());
+        assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:run").is_ok());
+        assert!(
+            require_explicit_permission(&conn, &auth, None, "autonomous_agent:enable").is_err()
+        );
+    }
+
+    #[test]
     fn project_role_override_permissions() {
         let conn = setup_db();
         conn.execute(
             "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, org_id, email, name, role) VALUES ('u1', 'org1', 'dev@acme.com', 'Dev', 'viewer')",
             [],
         ).unwrap();
-        
+
         // Add a project
         let p_id = crate::db::queries::get_or_create_project(&conn, "org1", "payments").unwrap();
 

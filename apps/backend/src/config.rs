@@ -1,7 +1,10 @@
 use clap::Parser;
 
 #[derive(Parser, Clone, Debug)]
-#[command(name = "nexusmind", about = "NexusMind — enterprise memory control plane")]
+#[command(
+    name = "nexusmind",
+    about = "NexusMind — enterprise memory control plane"
+)]
 pub struct Config {
     #[arg(long, env = "PORT", default_value = "8080")]
     pub port: u16,
@@ -73,4 +76,22 @@ pub struct Config {
     /// are unaffected by this setting.
     #[arg(long, env = "BACKUP_INTERVAL_HOURS", default_value_t = 6)]
     pub backup_interval_hours: u64,
+
+    #[arg(long, env = "AUTONOMOUS_AGENTS_ENABLED", default_value_t = false)]
+    pub autonomous_agents_enabled: bool,
+
+    /// Absolute, operator-pinned Claude Code executable path. The worker never
+    /// resolves PATH aliases because that would make the runtime mutable.
+    #[arg(long, env = "CLAUDE_CODE_BIN", default_value = "/usr/local/bin/claude")]
+    pub claude_code_bin: String,
+
+    #[arg(
+        long,
+        env = "CLAUDE_CODE_PROBE_INTERVAL_SECONDS",
+        default_value_t = 300
+    )]
+    pub claude_code_probe_interval_seconds: u64,
+
+    #[arg(long, env = "AUTONOMOUS_AGENT_POLL_SECONDS", default_value_t = 15)]
+    pub autonomous_agent_poll_seconds: u64,
 }

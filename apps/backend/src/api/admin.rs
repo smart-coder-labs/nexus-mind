@@ -2,8 +2,8 @@
 // were added after the test scaffolding landed). The lint is purely stylistic.
 #![allow(clippy::items_after_test_module)]
 
-use axum::{extract::State, extract::Path, extract::Query, http::StatusCode, Extension, Json};
 use crate::api::helpers::{user_is_visible_to_actor, AppJson};
+use axum::{extract::Path, extract::Query, extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -22,7 +22,19 @@ fn unauthorized() -> (StatusCode, Json<ApiError>) {
 use crate::{
     config::Config,
     db::queries,
-    models::types::{AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest, AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat, CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, DashboardData, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest, ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MergeMemoriesRequest, MemoryTrends, NameCount, NotificationItem, Org, OrgSettings, OrgStats, OnboardingStatus, OverEnrolledProject, RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview, ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest, UpdateNoteRequest, UpdateOrgLogoRequest, UpdateUserNoteRequest, UsageStats, User, CustomRole, Project, ProjectMember, ProjectEventOverrides, UpdateProjectEventOverridesRequest, ProjectStats, UserRole},
+    models::types::{
+        AgentActivity, ApiError, ApiKeyCreatedResponse, ApiKeyWithUser, AssignCollectionRequest,
+        AuthContext, BulkTagRequest, BulkTagResponse, Collection, ContributorStat,
+        CreateApiKeyRequest, CreateCollectionRequest, CreateInviteLinkRequest, CustomRole,
+        DashboardData, HeatmapDay, ImportConfigResponse, ImportMemoriesRequest,
+        ImportMemoriesResponse, InviteLinkResponse, Memory, MemoryFacets, MemoryTrends,
+        MergeMemoriesRequest, NameCount, NotificationItem, OnboardingStatus, Org, OrgSettings,
+        OrgStats, OverEnrolledProject, Project, ProjectEventOverrides, ProjectMember, ProjectStats,
+        RenameTagRequest, RenameTagResponse, ResetKeyResponse, RetentionPreview,
+        ScheduleDeleteRequest, StoreMemoryRequest, UpdateAnnouncementRequest, UpdateApiKeyRequest,
+        UpdateNoteRequest, UpdateOrgLogoRequest, UpdateProjectEventOverridesRequest,
+        UpdateUserNoteRequest, UsageStats, User, UserRole,
+    },
     store::sqlite::SqliteStore,
 };
 
@@ -62,10 +74,22 @@ fn require_visible_user(
     user_id: &str,
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     let Some(user) = queries::get_user_by_id(conn, user_id).map_err(db_err)? else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     };
     if user.org_id != auth.org_id {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "User not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "User not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     }
     if user_is_visible_to_actor(conn, auth, user_id).map_err(|e| db_err(e.into()))? {
         Ok(())
@@ -93,19 +117,19 @@ fn require_visible_project(
     if auth.role.is_super_user() {
         return Ok(());
     }
-    if queries::get_project_by_id(conn, &auth.org_id, project_id).map_err(db_err)?.is_none() {
+    if queries::get_project_by_id(conn, &auth.org_id, project_id)
+        .map_err(db_err)?
+        .is_none()
+    {
         return Err(project_not_found());
     }
-    if queries::user_is_project_member(conn, &auth.org_id, project_id, &auth.user_id).map_err(db_err)? {
+    if queries::user_is_project_member(conn, &auth.org_id, project_id, &auth.user_id)
+        .map_err(db_err)?
+    {
         Ok(())
     } else {
         Err(crate::api::helpers::hidden_resource_not_found(
-            conn,
-            auth,
-            "project",
-            project_id,
-            method,
-            "projects",
+            conn, auth, "project", project_id, method, "projects",
         ))
     }
 }
@@ -164,8 +188,8 @@ pub async fn create_org(
             }
         })?;
 
-        let (raw_token, _) = queries::create_password_reset_token(&conn, &user.id)
-            .map_err(db_err)?;
+        let (raw_token, _) =
+            queries::create_password_reset_token(&conn, &user.id).map_err(db_err)?;
 
         (org, user, api_key, raw_token)
     };
@@ -258,11 +282,33 @@ pub async fn dashboard(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<DaysParam>,
 ) -> Result<Json<DashboardData>, (StatusCode, Json<ApiError>)> {
-    if !auth.role.is_privileged() { return Err(forbidden()); }
-    let days = match params.days.unwrap_or(30) { 7 | 30 | 90 => params.days.unwrap_or(30), _ => return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "days must be one of 7, 30, or 90".to_string(), code: "invalid_period".to_string() }))) };
+    if !auth.role.is_privileged() {
+        return Err(forbidden());
+    }
+    let days = match params.days.unwrap_or(30) {
+        7 | 30 | 90 => params.days.unwrap_or(30),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "days must be one of 7, 30, or 90".to_string(),
+                    code: "invalid_period".to_string(),
+                }),
+            ))
+        }
+    };
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    Ok(Json(queries::get_dashboard_data(&conn, &auth.org_id, &auth.user_id, auth.role.is_super_user(), days).map_err(db_err)?))
+    Ok(Json(
+        queries::get_dashboard_data(
+            &conn,
+            &auth.org_id,
+            &auth.user_id,
+            auth.role.is_super_user(),
+            days,
+        )
+        .map_err(db_err)?,
+    ))
 }
 
 pub async fn usage_stats(
@@ -288,7 +334,8 @@ pub async fn memory_facets(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let is_super_user = matches!(auth.role, UserRole::Custom(ref s) if s == "super_user");
-    let facets = queries::get_memory_facets(&conn, &auth.org_id, &auth.user_id, is_super_user).map_err(db_err)?;
+    let facets = queries::get_memory_facets(&conn, &auth.org_id, &auth.user_id, is_super_user)
+        .map_err(db_err)?;
     Ok(Json(facets))
 }
 
@@ -432,7 +479,9 @@ pub async fn update_org_settings_api(
         settings.logo_url = val.as_str().map(|s| s.to_string());
     }
     if let Some(val) = body.get("events") {
-        if let Ok(parsed) = serde_json::from_value::<crate::models::types::AgentEventSettings>(val.clone()) {
+        if let Ok(parsed) =
+            serde_json::from_value::<crate::models::types::AgentEventSettings>(val.clone())
+        {
             settings.events = parsed;
         }
     }
@@ -562,8 +611,9 @@ pub async fn update_role_api(
 
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let updated = queries::update_role_permissions(&conn, &auth.org_id, &role_id, &input.permissions)
-        .map_err(db_err)?;
+    let updated =
+        queries::update_role_permissions(&conn, &auth.org_id, &role_id, &input.permissions)
+            .map_err(db_err)?;
 
     if !updated {
         return Err((
@@ -605,7 +655,10 @@ fn validate_project_name(name: &str) -> Result<(), (StatusCode, Json<ApiError>)>
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiError {
-                error: format!("Project name must not exceed {} characters", PROJECT_NAME_MAX_LEN),
+                error: format!(
+                    "Project name must not exceed {} characters",
+                    PROJECT_NAME_MAX_LEN
+                ),
                 code: "validation_error".to_string(),
             }),
         ));
@@ -729,20 +782,28 @@ pub async fn create_project_api(
     validate_project_name(&input.name)?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    let project = queries::create_project_with_creator_membership(&conn, &auth.org_id, &auth.user_id, &input.name, input.description.as_deref(), input.parent_id.as_deref(), input.client_id.as_deref())
-        .map_err(|e| {
-            if e.to_string().contains("UNIQUE constraint failed") {
-                (
-                    StatusCode::CONFLICT,
-                    Json(ApiError {
-                        error: "Project name already exists in this organization".to_string(),
-                        code: "project_conflict".to_string(),
-                    }),
-                )
-            } else {
-                db_err(e)
-            }
-        })?;
+    let project = queries::create_project_with_creator_membership(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        &input.name,
+        input.description.as_deref(),
+        input.parent_id.as_deref(),
+        input.client_id.as_deref(),
+    )
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE constraint failed") {
+            (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "Project name already exists in this organization".to_string(),
+                    code: "project_conflict".to_string(),
+                }),
+            )
+        } else {
+            db_err(e)
+        }
+    })?;
     Ok((StatusCode::CREATED, Json(project)))
 }
 
@@ -840,35 +901,41 @@ pub async fn update_project_api(
 
     let found = queries::update_project(&conn, &auth.org_id, &project_id, parent_arg, client_arg)
         .map_err(|e| {
-            let msg = e.to_string();
-            if msg.starts_with("client_not_found:") {
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(ApiError {
-                        error: msg.strip_prefix("client_not_found: ").unwrap_or(&msg).to_string(),
-                        code: "client_not_found".to_string(),
-                    }),
-                )
-            } else if msg.starts_with("cycle_detected:") {
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(ApiError {
-                        error: msg.strip_prefix("cycle_detected: ").unwrap_or(&msg).to_string(),
-                        code: "cycle_detected".to_string(),
-                    }),
-                )
-            } else if msg.starts_with("not_found:") {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError {
-                        error: msg.strip_prefix("not_found: ").unwrap_or(&msg).to_string(),
-                        code: "not_found".to_string(),
-                    }),
-                )
-            } else {
-                db_err(e)
-            }
-        })?;
+        let msg = e.to_string();
+        if msg.starts_with("client_not_found:") {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: msg
+                        .strip_prefix("client_not_found: ")
+                        .unwrap_or(&msg)
+                        .to_string(),
+                    code: "client_not_found".to_string(),
+                }),
+            )
+        } else if msg.starts_with("cycle_detected:") {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    error: msg
+                        .strip_prefix("cycle_detected: ")
+                        .unwrap_or(&msg)
+                        .to_string(),
+                    code: "cycle_detected".to_string(),
+                }),
+            )
+        } else if msg.starts_with("not_found:") {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: msg.strip_prefix("not_found: ").unwrap_or(&msg).to_string(),
+                    code: "not_found".to_string(),
+                }),
+            )
+        } else {
+            db_err(e)
+        }
+    })?;
 
     if !found {
         return Err((
@@ -895,7 +962,8 @@ pub async fn list_project_members_api(
     let conn = db.lock().map_err(|_| lock_err())?;
     require_visible_project(&conn, &auth, &project_id, "GET")?;
 
-    let members = queries::list_project_members(&conn, &auth.org_id, &project_id).map_err(db_err)?;
+    let members =
+        queries::list_project_members(&conn, &auth.org_id, &project_id).map_err(db_err)?;
     Ok(Json(members))
 }
 
@@ -913,11 +981,14 @@ pub async fn upsert_project_member_api(
     require_visible_project(&conn, &auth, &project_id, "POST")?;
 
     // Security check: ensure the user to add belongs to the user's org!
-    let user_belongs = conn.query_row(
-        "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
-        rusqlite::params![input.user_id, auth.org_id],
-        |row| row.get::<_, i32>(0),
-    ).map_err(|_| lock_err())? > 0;
+    let user_belongs = conn
+        .query_row(
+            "SELECT count(*) FROM users WHERE id = ?1 AND org_id = ?2",
+            rusqlite::params![input.user_id, auth.org_id],
+            |row| row.get::<_, i32>(0),
+        )
+        .map_err(|_| lock_err())?
+        > 0;
 
     if !user_belongs {
         return Err((
@@ -937,7 +1008,9 @@ pub async fn upsert_project_member_api(
                 "SELECT count(*) FROM roles WHERE name = ?1 AND (org_id = ?2 OR org_id IS NULL)",
                 rusqlite::params![&input.role, &auth.org_id],
                 |row| row.get::<_, i32>(0),
-            ).unwrap_or(0) > 0
+            )
+            .unwrap_or(0)
+                > 0
         }
     };
     if !role_valid {
@@ -950,7 +1023,8 @@ pub async fn upsert_project_member_api(
         ));
     }
 
-    queries::upsert_project_member(&conn, &project_id, &input.user_id, &input.role).map_err(db_err)?;
+    queries::upsert_project_member(&conn, &project_id, &input.user_id, &input.role)
+        .map_err(db_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1009,7 +1083,13 @@ pub async fn revoke_org_key(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     };
     require_visible_user(&conn, &auth, &key.user_id)?;
     let revoked = queries::revoke_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)?;
@@ -1083,7 +1163,13 @@ pub async fn update_org_key(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     };
     require_visible_user(&conn, &auth, &key.user_id)?;
 
@@ -1136,7 +1222,13 @@ pub async fn rotate_org_key(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     };
     require_visible_user(&conn, &auth, &key.user_id)?;
     match queries::rotate_key_by_id(&conn, &auth.org_id, &key_id).map_err(db_err)? {
@@ -1174,7 +1266,13 @@ pub async fn revoke_org_key_post(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     let Some(key) = queries::get_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)? else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "API key not found".to_string(), code: "not_found".to_string() })));
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "API key not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
     };
     require_visible_user(&conn, &auth, &key.user_id)?;
     let revoked = queries::revoke_key_admin(&conn, &auth.org_id, &key_id).map_err(db_err)?;
@@ -1245,7 +1343,10 @@ pub async fn create_org_key(
         serde_json::json!({ "user_id": body.user_id, "label": label }),
     );
 
-    Ok((StatusCode::CREATED, Json(ApiKeyCreatedResponse { key, raw_key })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiKeyCreatedResponse { key, raw_key }),
+    ))
 }
 
 // ── Per-project agent event override handlers ─────────────────────────────────
@@ -1260,8 +1361,8 @@ pub async fn get_project_settings_api(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_visible_project(&conn, &ctx, &project_id, "GET")?;
-    let overrides = queries::get_project_event_overrides(&conn, &ctx.org_id, &project_id)
-        .map_err(db_err)?;
+    let overrides =
+        queries::get_project_event_overrides(&conn, &ctx.org_id, &project_id).map_err(db_err)?;
     Ok(Json(overrides))
 }
 
@@ -1279,20 +1380,21 @@ pub async fn update_project_settings_api(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
     require_visible_project(&conn, &ctx, &project_id, "PATCH")?;
-    let saved = queries::update_project_event_overrides(&conn, &ctx.org_id, &project_id, body.overrides)
-        .map_err(|e| {
-            if e.to_string().contains("project not found") {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError {
-                        error: "Project not found".to_string(),
-                        code: "not_found".to_string(),
-                    }),
-                )
-            } else {
-                db_err(e)
-            }
-        })?;
+    let saved =
+        queries::update_project_event_overrides(&conn, &ctx.org_id, &project_id, body.overrides)
+            .map_err(|e| {
+                if e.to_string().contains("project not found") {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError {
+                            error: "Project not found".to_string(),
+                            code: "not_found".to_string(),
+                        }),
+                    )
+                } else {
+                    db_err(e)
+                }
+            })?;
     Ok(Json(saved))
 }
 
@@ -1385,12 +1487,19 @@ pub async fn get_notifications(
     let conn = db.lock().map_err(|_| lock_err())?;
 
     let actions = [
-        "user.created", "user.suspended", "user.deleted",
-        "key.revoked", "key.reset",
-        "project.deleted", "project.archived",
-        "memory.bulk_deleted", "memory.imported",
-        "webhook.created", "webhook.deleted",
-        "invite.created", "invite.redeemed",
+        "user.created",
+        "user.suspended",
+        "user.deleted",
+        "key.revoked",
+        "key.reset",
+        "project.deleted",
+        "project.archived",
+        "memory.bulk_deleted",
+        "memory.imported",
+        "webhook.created",
+        "webhook.deleted",
+        "invite.created",
+        "invite.redeemed",
     ];
 
     // Build IN clause placeholders.
@@ -1411,10 +1520,8 @@ pub async fn get_notifications(
     let mut stmt = conn.prepare(&sql).map_err(|e| db_err(e.into()))?;
 
     // Bind all parameters: org_id, limit, then each action string.
-    let mut raw_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(auth.org_id.clone()),
-        Box::new(limit),
-    ];
+    let mut raw_params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(auth.org_id.clone()), Box::new(limit)];
     for action in &actions {
         raw_params.push(Box::new(action.to_string()));
     }
@@ -1424,30 +1531,41 @@ pub async fn get_notifications(
     let items = stmt
         .query_map(params_refs.as_slice(), |row| {
             Ok((
-                row.get::<_, String>(0)?,   // id
-                row.get::<_, String>(1)?,   // action
+                row.get::<_, String>(0)?,         // id
+                row.get::<_, String>(1)?,         // action
                 row.get::<_, Option<String>>(2)?, // resource_type
                 row.get::<_, Option<String>>(3)?, // resource_id
-                row.get::<_, String>(4)?,   // user_id
-                row.get::<_, String>(5)?,   // timestamp
+                row.get::<_, String>(4)?,         // user_id
+                row.get::<_, String>(5)?,         // timestamp
                 row.get::<_, Option<String>>(6)?, // user name
                 row.get::<_, Option<String>>(7)?, // user email
             ))
         })
         .map_err(|e| db_err(e.into()))?
         .filter_map(|r| r.ok())
-        .map(|(id, action, resource_type, _resource_id, _user_id, timestamp, user_name, user_email)| {
-            let message = action_to_message(&action);
-            let actor = user_name.or(user_email);
-            NotificationItem {
+        .map(
+            |(
                 id,
-                message: message.to_string(),
                 action,
                 resource_type,
-                created_at: timestamp,
-                actor,
-            }
-        })
+                _resource_id,
+                _user_id,
+                timestamp,
+                user_name,
+                user_email,
+            )| {
+                let message = action_to_message(&action);
+                let actor = user_name.or(user_email);
+                NotificationItem {
+                    id,
+                    message: message.to_string(),
+                    action,
+                    resource_type,
+                    created_at: timestamp,
+                    actor,
+                }
+            },
+        )
         .collect::<Vec<_>>();
 
     Ok(Json(items))
@@ -1483,20 +1601,20 @@ pub async fn mark_all_notifications_read(
 
 fn action_to_message(action: &str) -> &'static str {
     match action {
-        "user.created"        => "New user joined",
-        "user.suspended"      => "User suspended",
-        "user.deleted"        => "User deleted",
-        "key.revoked"         => "API key revoked",
-        "key.reset"           => "API key reset",
-        "project.deleted"     => "Project deleted",
-        "project.archived"    => "Project archived",
+        "user.created" => "New user joined",
+        "user.suspended" => "User suspended",
+        "user.deleted" => "User deleted",
+        "key.revoked" => "API key revoked",
+        "key.reset" => "API key reset",
+        "project.deleted" => "Project deleted",
+        "project.archived" => "Project archived",
         "memory.bulk_deleted" => "Bulk memory delete",
-        "memory.imported"     => "Memories imported",
-        "webhook.created"     => "Webhook created",
-        "webhook.deleted"     => "Webhook deleted",
-        "invite.created"      => "Invite link created",
-        "invite.redeemed"     => "Invite accepted",
-        _                     => "Admin action",
+        "memory.imported" => "Memories imported",
+        "webhook.created" => "Webhook created",
+        "webhook.deleted" => "Webhook deleted",
+        "invite.created" => "Invite link created",
+        "invite.redeemed" => "Invite accepted",
+        _ => "Admin action",
     }
 }
 
@@ -1518,8 +1636,8 @@ pub async fn create_invite_link(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    let invite = queries::create_invite_link(&conn, &auth.org_id, &role, &auth.user_id)
-        .map_err(db_err)?;
+    let invite =
+        queries::create_invite_link(&conn, &auth.org_id, &role, &auth.user_id).map_err(db_err)?;
 
     let base = config.app_base_url.trim_end_matches('/');
     let invite_url = format!("{}/set-password?invite={}", base, invite.token);
@@ -1819,7 +1937,11 @@ pub async fn import_memories(
 
     Ok((
         StatusCode::OK,
-        Json(ImportMemoriesResponse { imported, skipped, errors }),
+        Json(ImportMemoriesResponse {
+            imported,
+            skipped,
+            errors,
+        }),
     ))
 }
 
@@ -1836,7 +1958,12 @@ pub async fn bulk_tag_memories(
         return Err(forbidden());
     }
 
-    let tags: Vec<String> = body.tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    let tags: Vec<String> = body
+        .tags
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     if tags.is_empty() {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1969,21 +2096,29 @@ pub async fn export_org_config(
 
     let org = queries::get_org(&conn, &auth.org_id)
         .map_err(db_err)?
-        .ok_or_else(|| (
-            StatusCode::NOT_FOUND,
-            Json(ApiError { error: "Org not found".to_string(), code: "not_found".to_string() }),
-        ))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "Org not found".to_string(),
+                    code: "not_found".to_string(),
+                }),
+            )
+        })?;
 
     let settings = queries::get_org_settings(&conn, &auth.org_id).map_err(db_err)?;
     let webhooks = queries::list_webhooks(&conn, &auth.org_id).map_err(db_err)?;
     let projects = queries::list_projects(&conn, &auth.org_id).map_err(db_err)?;
 
-    let webhook_export: Vec<serde_json::Value> = webhooks.iter().map(|w| {
-        serde_json::json!({
-            "url": w.target_url,
-            "events": w.events,
+    let webhook_export: Vec<serde_json::Value> = webhooks
+        .iter()
+        .map(|w| {
+            serde_json::json!({
+                "url": w.target_url,
+                "events": w.events,
+            })
         })
-    }).collect();
+        .collect();
 
     let project_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
 
@@ -1997,15 +2132,17 @@ pub async fn export_org_config(
         "projects": project_names,
     });
 
-    let body = serde_json::to_string_pretty(&payload)
-        .map_err(|e| db_err(e.into()))?;
+    let body = serde_json::to_string_pretty(&payload).map_err(|e| db_err(e.into()))?;
 
     use axum::http::header;
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/json"),
-            (header::CONTENT_DISPOSITION, "attachment; filename=\"nexusmind-config.json\""),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"nexusmind-config.json\"",
+            ),
         ],
         body,
     ))
@@ -2065,9 +2202,13 @@ pub async fn import_org_config(
     }
 
     // agent_events (exported as "agent_events", may also appear as "events")
-    let events_val = source.get("agent_events").or_else(|| source.get("event_captures"));
+    let events_val = source
+        .get("agent_events")
+        .or_else(|| source.get("event_captures"));
     if let Some(ev) = events_val {
-        if let Ok(parsed) = serde_json::from_value::<crate::models::types::AgentEventSettings>(ev.clone()) {
+        if let Ok(parsed) =
+            serde_json::from_value::<crate::models::types::AgentEventSettings>(ev.clone())
+        {
             settings.events = parsed;
             applied_fields.push("agent_events".to_string());
         }
@@ -2081,12 +2222,18 @@ pub async fn import_org_config(
     }
 
     if applied_fields.is_empty() {
-        return Ok(Json(ImportConfigResponse { applied_fields, skipped_fields }));
+        return Ok(Json(ImportConfigResponse {
+            applied_fields,
+            skipped_fields,
+        }));
     }
 
     queries::update_org_settings(&conn, &auth.org_id, &settings).map_err(db_err)?;
 
-    Ok(Json(ImportConfigResponse { applied_fields, skipped_fields }))
+    Ok(Json(ImportConfigResponse {
+        applied_fields,
+        skipped_fields,
+    }))
 }
 
 #[cfg(test)]
@@ -2123,7 +2270,10 @@ mod tests {
             .route("/v1/admin/stats/tags", get(get_tag_stats_handler))
             .route("/v1/admin/stats/trends", get(get_memory_trends_handler))
             .route("/v1/admin/org", get(get_org).patch(update_org))
-            .route("/v1/admin/org/settings", get(get_org_settings_api).patch(update_org_settings_api))
+            .route(
+                "/v1/admin/org/settings",
+                get(get_org_settings_api).patch(update_org_settings_api),
+            )
             .route("/v1/admin/export", get(export_org_config))
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
@@ -2151,8 +2301,11 @@ mod tests {
     fn promote_admin_to_super_user(store: &SqliteStore) {
         let db = store.conn();
         let conn = db.lock().unwrap();
-        conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE users SET role = 'super_user' WHERE role = 'admin'",
+            [],
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2182,8 +2335,7 @@ mod tests {
             let org: String = conn
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
-            let (_, key) =
-                q::invite_user(&conn, &org, "m@acme.com", "M", "member").unwrap();
+            let (_, key) = q::invite_user(&conn, &org, "m@acme.com", "M", "member").unwrap();
             key
         };
 
@@ -2208,7 +2360,8 @@ mod tests {
         let org: String = conn
             .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        let (_, key) = q::invite_user(&conn, &org, &format!("{role}@acme.com"), role, role).unwrap();
+        let (_, key) =
+            q::invite_user(&conn, &org, &format!("{role}@acme.com"), role, role).unwrap();
         key
     }
 
@@ -2352,7 +2505,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -2389,8 +2544,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert!(!std::str::from_utf8(&body).unwrap().contains("custom_instructions"));
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!std::str::from_utf8(&body)
+            .unwrap()
+            .contains("custom_instructions"));
     }
 
     #[tokio::test]
@@ -2403,7 +2562,9 @@ mod tests {
                     .uri("/v1/admin/org/settings")
                     .header("Authorization", format!("Bearer {admin_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "custom_instructions": "x" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "custom_instructions": "x" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2415,11 +2576,16 @@ mod tests {
     async fn org_settings_super_user_reads_and_updates_full_config() {
         let (store, super_user_key) = setup_with_admin_key();
         promote_admin_to_super_user(&store);
-        patch_settings(&store, &super_user_key, serde_json::json!({
-            "custom_instructions": "SECRETPROMPT",
-            "retention_days": 30,
-            "min_password_length": 12,
-        })).await;
+        patch_settings(
+            &store,
+            &super_user_key,
+            serde_json::json!({
+                "custom_instructions": "SECRETPROMPT",
+                "retention_days": 30,
+                "min_password_length": 12,
+            }),
+        )
+        .await;
 
         let json = get_settings_json(&store, &super_user_key).await;
         assert_eq!(json["custom_instructions"], "SECRETPROMPT");
@@ -2588,7 +2754,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let tags: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(tags, serde_json::json!([]));
     }
@@ -2607,32 +2775,48 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
             let user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
 
-            q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: None,
-                tool: "test".to_string(),
-                content: "memory one".to_string(),
-                tags: Some(vec!["rust".to_string(), "backend".to_string()]),
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+            q::upsert_memory(
+                &conn,
+                &org_id,
+                &user_id,
+                &StoreMemoryRequest {
+                    project: None,
+                    tool: "test".to_string(),
+                    content: "memory one".to_string(),
+                    tags: Some(vec!["rust".to_string(), "backend".to_string()]),
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
 
-            q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: None,
-                tool: "test".to_string(),
-                content: "memory two".to_string(),
-                tags: Some(vec!["rust".to_string(), "frontend".to_string()]),
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+            q::upsert_memory(
+                &conn,
+                &org_id,
+                &user_id,
+                &StoreMemoryRequest {
+                    project: None,
+                    tool: "test".to_string(),
+                    content: "memory two".to_string(),
+                    tags: Some(vec!["rust".to_string(), "frontend".to_string()]),
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
         }
 
         let resp = app(store)
@@ -2647,7 +2831,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let tags: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
 
         // "rust" should appear first with count 2
@@ -2711,11 +2897,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let new_key = json["new_key"].as_str().expect("new_key must be a string");
         assert!(new_key.starts_with("nm_"), "key must have nm_ prefix");
-        assert_ne!(new_key, original_key, "new key must differ from the original");
+        assert_ne!(
+            new_key, original_key,
+            "new key must differ from the original"
+        );
     }
 
     #[tokio::test]
@@ -2738,13 +2929,15 @@ mod tests {
             conn.execute(
                 "UPDATE api_keys SET revoked = 1 WHERE user_id = ?1",
                 rusqlite::params![user.id],
-            ).unwrap();
+            )
+            .unwrap();
             let hash = api_keys::hash_key("nm_demo_acme_demo");
             conn.execute(
                 "INSERT INTO api_keys (id, user_id, org_id, key_hash, label, created_at)
                  VALUES ('demo-key-id', ?1, ?2, ?3, 'demo', datetime('now'))",
                 rusqlite::params![user.id, org, hash],
-            ).unwrap();
+            )
+            .unwrap();
             user.id
         };
 
@@ -2761,7 +2954,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "demo_key");
     }
@@ -2811,7 +3006,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["imported"], 3);
         assert_eq!(json["skipped"], 0);
@@ -2844,7 +3041,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["imported"], 2);
         assert_eq!(json["skipped"], 1);
@@ -2873,7 +3072,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["imported"], 2);
         assert_eq!(json["skipped"], 0);
@@ -2930,32 +3131,48 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
             let user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
 
-            let keep = q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: None,
-                tool: "test".to_string(),
-                content: "Content A".to_string(),
-                tags: None,
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+            let keep = q::upsert_memory(
+                &conn,
+                &org_id,
+                &user_id,
+                &StoreMemoryRequest {
+                    project: None,
+                    tool: "test".to_string(),
+                    content: "Content A".to_string(),
+                    tags: None,
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
 
-            let merge = q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: None,
-                tool: "test".to_string(),
-                content: "Content B".to_string(),
-                tags: None,
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+            let merge = q::upsert_memory(
+                &conn,
+                &org_id,
+                &user_id,
+                &StoreMemoryRequest {
+                    project: None,
+                    tool: "test".to_string(),
+                    content: "Content B".to_string(),
+                    tags: None,
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
 
             (keep.id, merge.id)
         };
@@ -2976,18 +3193,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         let content = json["content"].as_str().unwrap();
-        assert!(content.contains("Content A"), "merged content must contain keep content");
-        assert!(content.contains("Content B"), "merged content must contain merge content");
-        assert!(content.contains("---"), "merged content must include separator");
+        assert!(
+            content.contains("Content A"),
+            "merged content must contain keep content"
+        );
+        assert!(
+            content.contains("Content B"),
+            "merged content must contain merge content"
+        );
+        assert!(
+            content.contains("---"),
+            "merged content must include separator"
+        );
 
         // The merge_id memory must be gone
         let db = store.conn();
         let conn = db.lock().unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE id = ?1", [&merge_id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1",
+                [&merge_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0, "merge_id memory must be deleted");
     }
@@ -3004,19 +3236,31 @@ mod tests {
             let conn = db.lock().unwrap();
             let superuser_key = Some("test-superuser-key".to_string());
             let _ = superuser_key;
-            let (other_org, other_user, _) =
-                q::create_org(&conn, "Other Corp", "other-corp", "admin@other.com", "Admin Other").unwrap();
-            let mem = q::upsert_memory(&conn, &other_org.id, &other_user.id, &StoreMemoryRequest {
-                project: None,
-                tool: "test".to_string(),
-                content: "Foreign content".to_string(),
-                tags: None,
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+            let (other_org, other_user, _) = q::create_org(
+                &conn,
+                "Other Corp",
+                "other-corp",
+                "admin@other.com",
+                "Admin Other",
+            )
+            .unwrap();
+            let mem = q::upsert_memory(
+                &conn,
+                &other_org.id,
+                &other_user.id,
+                &StoreMemoryRequest {
+                    project: None,
+                    tool: "test".to_string(),
+                    content: "Foreign content".to_string(),
+                    tags: None,
+                    title: None,
+                    memory_type: None,
+                    scope: None,
+                    topic_key: None,
+                    session_id: None,
+                },
+            )
+            .unwrap();
             mem.id
         };
 
@@ -3052,34 +3296,50 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
             let user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
 
             // Insert 3 memories with tool "claude-code" and 1 with "cursor"
             for i in 0..3 {
-                q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
+                q::upsert_memory(
+                    &conn,
+                    &org_id,
+                    &user_id,
+                    &StoreMemoryRequest {
+                        project: None,
+                        tool: "claude-code".to_string(),
+                        content: format!("claude memory {i}"),
+                        tags: None,
+                        title: None,
+                        memory_type: None,
+                        scope: None,
+                        topic_key: None,
+                        session_id: None,
+                    },
+                )
+                .unwrap();
+            }
+            q::upsert_memory(
+                &conn,
+                &org_id,
+                &user_id,
+                &StoreMemoryRequest {
                     project: None,
-                    tool: "claude-code".to_string(),
-                    content: format!("claude memory {i}"),
+                    tool: "cursor".to_string(),
+                    content: "cursor memory".to_string(),
                     tags: None,
                     title: None,
                     memory_type: None,
                     scope: None,
                     topic_key: None,
                     session_id: None,
-                }).unwrap();
-            }
-            q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                project: None,
-                tool: "cursor".to_string(),
-                content: "cursor memory".to_string(),
-                tags: None,
-                title: None,
-                memory_type: None,
-                scope: None,
-                topic_key: None,
-                session_id: None,
-            }).unwrap();
+                },
+            )
+            .unwrap();
         }
 
         let resp = app_with_agent_activity(store)
@@ -3094,7 +3354,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let items: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
 
         // Should have 2 tools
@@ -3140,17 +3402,66 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
             let user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
 
             // Relevant events (should appear in response).
-            q::log_audit(&conn, &org_id, &user_id, "user.created", "user", None, serde_json::json!({})).unwrap();
-            q::log_audit(&conn, &org_id, &user_id, "key.revoked", "api_key", None, serde_json::json!({})).unwrap();
-            q::log_audit(&conn, &org_id, &user_id, "invite.redeemed", "invite", None, serde_json::json!({})).unwrap();
+            q::log_audit(
+                &conn,
+                &org_id,
+                &user_id,
+                "user.created",
+                "user",
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
+            q::log_audit(
+                &conn,
+                &org_id,
+                &user_id,
+                "key.revoked",
+                "api_key",
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
+            q::log_audit(
+                &conn,
+                &org_id,
+                &user_id,
+                "invite.redeemed",
+                "invite",
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
 
             // Non-relevant event (should NOT appear).
-            q::log_audit(&conn, &org_id, &user_id, "memory.search", "memory", None, serde_json::json!({})).unwrap();
-            q::log_audit(&conn, &org_id, &user_id, "memory.store", "memory", None, serde_json::json!({})).unwrap();
+            q::log_audit(
+                &conn,
+                &org_id,
+                &user_id,
+                "memory.search",
+                "memory",
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
+            q::log_audit(
+                &conn,
+                &org_id,
+                &user_id,
+                "memory.store",
+                "memory",
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
         }
 
         let resp = app_with_notifications(store)
@@ -3166,28 +3477,54 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let items: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
 
         // Should have exactly 3 relevant events (not the 2 non-relevant ones).
-        assert_eq!(items.len(), 3, "expected 3 notification items, got {}", items.len());
+        assert_eq!(
+            items.len(),
+            3,
+            "expected 3 notification items, got {}",
+            items.len()
+        );
 
         // All returned items must have a non-empty message.
         for item in &items {
             assert!(item["message"].is_string(), "message must be a string");
-            assert!(!item["message"].as_str().unwrap().is_empty(), "message must not be empty");
-            assert!(item["created_at"].is_string(), "created_at must be a string");
+            assert!(
+                !item["message"].as_str().unwrap().is_empty(),
+                "message must not be empty"
+            );
+            assert!(
+                item["created_at"].is_string(),
+                "created_at must be a string"
+            );
         }
 
         // Verify expected actions are present.
-        let actions: Vec<&str> = items.iter()
-            .filter_map(|i| i["action"].as_str())
-            .collect();
-        assert!(actions.contains(&"user.created"), "user.created must be in notifications");
-        assert!(actions.contains(&"key.revoked"), "key.revoked must be in notifications");
-        assert!(actions.contains(&"invite.redeemed"), "invite.redeemed must be in notifications");
-        assert!(!actions.contains(&"memory.search"), "memory.search must NOT be in notifications");
-        assert!(!actions.contains(&"memory.store"), "memory.store must NOT be in notifications");
+        let actions: Vec<&str> = items.iter().filter_map(|i| i["action"].as_str()).collect();
+        assert!(
+            actions.contains(&"user.created"),
+            "user.created must be in notifications"
+        );
+        assert!(
+            actions.contains(&"key.revoked"),
+            "key.revoked must be in notifications"
+        );
+        assert!(
+            actions.contains(&"invite.redeemed"),
+            "invite.redeemed must be in notifications"
+        );
+        assert!(
+            !actions.contains(&"memory.search"),
+            "memory.search must NOT be in notifications"
+        );
+        assert!(
+            !actions.contains(&"memory.store"),
+            "memory.store must NOT be in notifications"
+        );
     }
 
     // ── rename_tag tests ─────────────────────────────────────────────────────
@@ -3248,10 +3585,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert!(json["applied_fields"].as_array().unwrap().contains(&serde_json::json!("retention_days")),
-            "retention_days must be in applied_fields");
+        assert!(
+            json["applied_fields"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("retention_days")),
+            "retention_days must be in applied_fields"
+        );
 
         // Verify DB was updated
         let db = store.conn();
@@ -3260,7 +3604,11 @@ mod tests {
             .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
             .unwrap();
         let retention: Option<i64> = conn
-            .query_row("SELECT retention_days FROM organizations WHERE id = ?1", [&org_id], |r| r.get(0))
+            .query_row(
+                "SELECT retention_days FROM organizations WHERE id = ?1",
+                [&org_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(retention, Some(60), "org retention_days must be 60");
     }
@@ -3279,21 +3627,31 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
             let user_id: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 LIMIT 1", [&org_id], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 LIMIT 1",
+                    [&org_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
 
             for i in 0..3 {
-                q::upsert_memory(&conn, &org_id, &user_id, &StoreMemoryRequest {
-                    project: None,
-                    tool: "test".to_string(),
-                    content: format!("memory {i}"),
-                    tags: Some(vec!["foo".to_string()]),
-                    title: None,
-                    memory_type: None,
-                    scope: None,
-                    topic_key: None,
-                    session_id: None,
-                }).unwrap();
+                q::upsert_memory(
+                    &conn,
+                    &org_id,
+                    &user_id,
+                    &StoreMemoryRequest {
+                        project: None,
+                        tool: "test".to_string(),
+                        content: format!("memory {i}"),
+                        tags: Some(vec!["foo".to_string()]),
+                        title: None,
+                        memory_type: None,
+                        scope: None,
+                        topic_key: None,
+                        session_id: None,
+                    },
+                )
+                .unwrap();
             }
         }
 
@@ -3313,7 +3671,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(json["updated_count"], 3, "must have updated all 3 memories");
 
@@ -3325,22 +3685,26 @@ mod tests {
                 .query_row("SELECT id FROM organizations LIMIT 1", [], |r| r.get(0))
                 .unwrap();
 
-            let bar_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM memories
+            let bar_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories
                  WHERE org_id = ?1
                    AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'bar')",
-                rusqlite::params![org_id],
-                |r| r.get(0),
-            ).unwrap();
+                    rusqlite::params![org_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(bar_count, 3, "'bar' must appear in all 3 memories");
 
-            let foo_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM memories
+            let foo_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories
                  WHERE org_id = ?1
                    AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'foo')",
-                rusqlite::params![org_id],
-                |r| r.get(0),
-            ).unwrap();
+                    rusqlite::params![org_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(foo_count, 0, "'foo' must be gone from all memories");
         }
     }
@@ -3353,7 +3717,10 @@ mod tests {
         let email_config: Option<Arc<EmailConfig>> = None;
 
         let protected = Router::new()
-            .route("/v1/admin/org/settings", get(get_org_settings_api).patch(update_org_settings_api))
+            .route(
+                "/v1/admin/org/settings",
+                get(get_org_settings_api).patch(update_org_settings_api),
+            )
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth));
 
         Router::new()
@@ -3385,11 +3752,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK, "partial PATCH must not 500");
-        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(json["retention_days"], 365, "retention_days must be updated");
+        assert_eq!(
+            json["retention_days"], 365,
+            "retention_days must be updated"
+        );
         // min_password_length was not in the request — DB default is 8, must still be 8.
-        assert_eq!(json["min_password_length"], 8, "min_password_length must be preserved");
+        assert_eq!(
+            json["min_password_length"], 8,
+            "min_password_length must be preserved"
+        );
     }
 
     // ── over_enrolled_projects_handler tests ─────────────────────────────────
@@ -3457,7 +3832,11 @@ mod tests {
                 .unwrap();
             let pid = q::get_or_create_project(&conn, &org, "full-enrollment").unwrap();
             let aid: String = conn
-                .query_row("SELECT id FROM users WHERE org_id = ?1 AND role = 'admin'", [&org], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM users WHERE org_id = ?1 AND role = 'admin'",
+                    [&org],
+                    |r| r.get(0),
+                )
                 .unwrap();
             (pid, aid)
         };
@@ -3481,11 +3860,15 @@ mod tests {
             .unwrap();
 
         let status = resp.status();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status, StatusCode::OK, "expected 200 but got error: {json}");
 
-        let projects = json["projects"].as_array().expect("projects must be an array");
+        let projects = json["projects"]
+            .as_array()
+            .expect("projects must be an array");
         let found = projects
             .iter()
             .find(|p| p["project_name"] == "full-enrollment");
@@ -3502,7 +3885,10 @@ mod tests {
         use axum::routing::{delete, post};
 
         Router::new()
-            .route("/v1/projects", get(list_projects_api).post(create_project_api))
+            .route(
+                "/v1/projects",
+                get(list_projects_api).post(create_project_api),
+            )
             .route(
                 "/v1/projects/:id",
                 get(get_project_api)
@@ -3555,10 +3941,18 @@ mod tests {
                 q::invite_user(&conn, &org_id, "assigned@acme.com", "Assigned", "admin").unwrap();
             let (member, _) =
                 q::invite_user(&conn, &org_id, "member@acme.com", "Member", "member").unwrap();
-            let project_a = q::create_project(&conn, &org_id, "assigned-project", None, None).unwrap();
-            let project_b = q::create_project(&conn, &org_id, "hidden-project", None, None).unwrap();
+            let project_a =
+                q::create_project(&conn, &org_id, "assigned-project", None, None).unwrap();
+            let project_b =
+                q::create_project(&conn, &org_id, "hidden-project", None, None).unwrap();
             q::upsert_project_member(&conn, &project_a.id, &assigned_admin.id, "admin").unwrap();
-            (assigned_admin_key, assigned_admin.id, member.id, project_a.id, project_b.id)
+            (
+                assigned_admin_key,
+                assigned_admin.id,
+                member.id,
+                project_a.id,
+                project_b.id,
+            )
         };
 
         let list = project_admin_app(store.clone())
@@ -3572,8 +3966,15 @@ mod tests {
             .await
             .unwrap();
         let list_status = list.status();
-        let list_body = axum::body::to_bytes(list.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(list_status, StatusCode::OK, "{}", String::from_utf8_lossy(&list_body));
+        let list_body = axum::body::to_bytes(list.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&list_body)
+        );
         let projects: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
         assert_eq!(projects.as_array().unwrap().len(), 1);
         assert_eq!(projects[0]["id"], project_a_id);
@@ -3585,7 +3986,9 @@ mod tests {
                     .uri(format!("/v1/projects/{project_a_id}/members"))
                     .header("Authorization", format!("Bearer {assigned_admin_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "user_id": member_id, "role": "member" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "user_id": member_id, "role": "member" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -3603,7 +4006,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
-        assert_eq!(count_hidden_denials(&store, &assigned_admin_id, &project_b_id), 1);
+        assert_eq!(
+            count_hidden_denials(&store, &assigned_admin_id, &project_b_id),
+            1
+        );
 
         let denied_mutation = project_admin_app(store.clone())
             .oneshot(
@@ -3612,13 +4018,18 @@ mod tests {
                     .uri(format!("/v1/projects/{project_b_id}/members"))
                     .header("Authorization", format!("Bearer {assigned_admin_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "user_id": member_id, "role": "member" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "user_id": member_id, "role": "member" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(denied_mutation.status(), StatusCode::NOT_FOUND);
-        assert_eq!(count_hidden_denials(&store, &assigned_admin_id, &project_b_id), 2);
+        assert_eq!(
+            count_hidden_denials(&store, &assigned_admin_id, &project_b_id),
+            2
+        );
 
         let db = store.conn();
         let conn = db.lock().unwrap();
@@ -3638,8 +4049,10 @@ mod tests {
         let creator_id = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT id FROM users LIMIT 1", [], |row| row.get::<_, String>(0))
-                .unwrap()
+            conn.query_row("SELECT id FROM users LIMIT 1", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
         };
 
         let response = project_admin_app(store.clone())
@@ -3649,13 +4062,17 @@ mod tests {
                     .uri("/v1/projects")
                     .header("Authorization", format!("Bearer {admin_key}"))
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::json!({ "name": "creator-only" }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "name": "creator-only" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let project: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         let db = store.conn();
@@ -3673,7 +4090,10 @@ mod tests {
     fn key_visibility_app(store: SqliteStore) -> Router {
         Router::new()
             .route("/v1/admin/keys", get(list_org_keys))
-            .route("/v1/admin/keys/:key_id", axum::routing::delete(revoke_org_key).get(get_org_key))
+            .route(
+                "/v1/admin/keys/:key_id",
+                axum::routing::delete(revoke_org_key).get(get_org_key),
+            )
             .layer(middleware::from_fn_with_state(store.conn(), auth_mw::auth))
             .layer(tower_cookies::CookieManagerLayer::new())
             .with_state(store)
@@ -3685,30 +4105,82 @@ mod tests {
         let (scoped_admin_key, hidden_key_id) = {
             let db = store.conn();
             let conn = db.lock().unwrap();
-            conn.execute("UPDATE users SET role = 'super_user' WHERE role = 'admin'", []).unwrap();
-            let org_id: String = conn.query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0)).unwrap();
-            let (scoped_admin, key) = q::invite_user(&conn, &org_id, "key-admin@acme.com", "Key Admin", "admin").unwrap();
-            let (hidden_user, _) = q::invite_user(&conn, &org_id, "key-hidden@acme.com", "Key Hidden", "member").unwrap();
+            conn.execute(
+                "UPDATE users SET role = 'super_user' WHERE role = 'admin'",
+                [],
+            )
+            .unwrap();
+            let org_id: String = conn
+                .query_row("SELECT id FROM organizations LIMIT 1", [], |row| row.get(0))
+                .unwrap();
+            let (scoped_admin, key) =
+                q::invite_user(&conn, &org_id, "key-admin@acme.com", "Key Admin", "admin").unwrap();
+            let (hidden_user, _) = q::invite_user(
+                &conn,
+                &org_id,
+                "key-hidden@acme.com",
+                "Key Hidden",
+                "member",
+            )
+            .unwrap();
             let visible = q::create_project(&conn, &org_id, "key-visible", None, None).unwrap();
             q::upsert_project_member(&conn, &visible.id, &scoped_admin.id, "admin").unwrap();
-            let key_id: String = conn.query_row("SELECT id FROM api_keys WHERE user_id = ?1", [&hidden_user.id], |row| row.get(0)).unwrap();
+            let key_id: String = conn
+                .query_row(
+                    "SELECT id FROM api_keys WHERE user_id = ?1",
+                    [&hidden_user.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
             (key, key_id)
         };
 
-        let listed = key_visibility_app(store.clone()).oneshot(
-            Request::builder().uri("/v1/admin/keys").header("Authorization", format!("Bearer {scoped_admin_key}")).body(Body::empty()).unwrap()
-        ).await.unwrap();
-        let keys: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
-        assert!(keys.as_array().unwrap().iter().all(|key| key["id"] != hidden_key_id));
+        let listed = key_visibility_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/admin/keys")
+                    .header("Authorization", format!("Bearer {scoped_admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let keys: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(listed.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(keys
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|key| key["id"] != hidden_key_id));
 
-        let denied = key_visibility_app(store.clone()).oneshot(
-            Request::builder().method("DELETE").uri(format!("/v1/admin/keys/{hidden_key_id}")).header("Authorization", format!("Bearer {scoped_admin_key}")).body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let denied = key_visibility_app(store.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/admin/keys/{hidden_key_id}"))
+                    .header("Authorization", format!("Bearer {scoped_admin_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 
-        let allowed = key_visibility_app(store).oneshot(
-            Request::builder().method("DELETE").uri(format!("/v1/admin/keys/{hidden_key_id}")).header("Authorization", format!("Bearer {super_user_key}")).body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let allowed = key_visibility_app(store)
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/admin/keys/{hidden_key_id}"))
+                    .header("Authorization", format!("Bearer {super_user_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
     }
 }
@@ -3740,8 +4212,9 @@ pub async fn create_collection_api(
     }
     let conn = store.conn();
     let conn = conn.lock().map_err(|_| lock_err())?;
-    let collection = queries::create_collection(&conn, &auth.org_id, &req.name, req.description.as_deref())
-        .map_err(db_err)?;
+    let collection =
+        queries::create_collection(&conn, &auth.org_id, &req.name, req.description.as_deref())
+            .map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(collection)))
 }
 
@@ -3968,9 +4441,7 @@ pub async fn update_memory_note(
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
 
-    match queries::update_memory_admin_note(&conn, &auth.org_id, &id, &body.note)
-        .map_err(db_err)?
-    {
+    match queries::update_memory_admin_note(&conn, &auth.org_id, &id, &body.note).map_err(db_err)? {
         Some(memory) => Ok(Json(memory)),
         None => Err((
             StatusCode::NOT_FOUND,
@@ -4014,8 +4485,7 @@ pub async fn update_org_logo(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    queries::update_org_logo(&conn, &auth.org_id, body.logo_url.as_deref())
-        .map_err(db_err)?;
+    queries::update_org_logo(&conn, &auth.org_id, body.logo_url.as_deref()).map_err(db_err)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -4032,17 +4502,21 @@ pub async fn schedule_memory_delete(
     }
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_err())?;
-    queries::schedule_memory_delete(&conn, &auth.org_id, &id, body.delete_at.as_deref())
-        .map_err(|e| {
+    queries::schedule_memory_delete(&conn, &auth.org_id, &id, body.delete_at.as_deref()).map_err(
+        |e| {
             if e.to_string() == "memory_not_found" {
                 (
                     StatusCode::NOT_FOUND,
-                    Json(ApiError { error: "Memory not found".to_string(), code: "not_found".to_string() }),
+                    Json(ApiError {
+                        error: "Memory not found".to_string(),
+                        code: "not_found".to_string(),
+                    }),
                 )
             } else {
                 db_err(e)
             }
-        })?;
+        },
+    )?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4079,8 +4553,8 @@ pub async fn update_user_note(
     require_visible_user(&conn, &auth, &user_id)?;
 
     let note_str = body.note.as_deref().filter(|s| !s.is_empty());
-    let found = queries::update_user_admin_note(&conn, &auth.org_id, &user_id, note_str)
-        .map_err(db_err)?;
+    let found =
+        queries::update_user_admin_note(&conn, &auth.org_id, &user_id, note_str).map_err(db_err)?;
 
     if !found {
         return Err((
