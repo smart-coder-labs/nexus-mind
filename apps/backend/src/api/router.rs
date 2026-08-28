@@ -644,6 +644,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             post(autonomous_agents::archive_all_findings),
         )
         .route(
+            "/v1/autonomous-agent-runs/:id/continue",
+            post(autonomous_agents::continue_run),
+        )
+        .route(
             "/v1/autonomous-agent-findings/:id",
             patch(autonomous_agents::patch_finding),
         )

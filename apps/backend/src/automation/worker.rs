@@ -2060,6 +2060,9 @@ async fn resolve_issue_worktree(
     max_turns: u64,
     wall_time: u64,
     base_sha: String,
+    // When resuming a prior run, the existing WIP branch to keep pushing to (its
+    // partial PR is updated in place); the success-publish step is skipped.
+    continue_branch: Option<String>,
 ) -> (i64, String, serde_json::Value) {
     if let Some(object) = claim.config.as_object_mut() {
         let trigger = object.entry("trigger").or_insert_with(|| json!({}));
@@ -2151,7 +2154,10 @@ async fn resolve_issue_worktree(
     };
     // Force-push a WIP snapshot every few minutes so partial work survives a crash
     // or a budget/time cutoff. Race-free (separate index) and only when we can push.
-    let wip_branch = resolver_wip_branch(&claim.run.id, number);
+    // When resuming, we keep pushing to the ORIGINAL run's branch so its PR updates.
+    let wip_branch = continue_branch
+        .clone()
+        .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
     let committer = token.clone().map(|checkpoint_token| {
         let workdir = workdir.clone();
         let branch = wip_branch.clone();
@@ -2191,7 +2197,18 @@ async fn resolve_issue_worktree(
     if let Some(handle) = committer {
         handle.abort();
     }
-    if outcome.0 == "succeeded" {
+    if continue_branch.is_some() {
+        // Resume mode: never open a new PR. Push the latest work onto the existing
+        // WIP branch so its partial draft PR is updated in place with the progress.
+        if let Some(ref checkpoint_token) = token {
+            let pushed = checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
+                .await
+                .unwrap_or(false);
+            outcome.1["continued_pushed"] = json!(pushed);
+        }
+        outcome.1["continued_branch"] = json!(wip_branch);
+        outcome.1["resumable"] = json!(outcome.0 != "succeeded");
+    } else if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
             Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
@@ -2233,6 +2250,44 @@ async fn resolve_issue_worktree(
 /// Manual issue-resolver orchestration: resolve every assigned eligible issue
 /// (capped) in ONE run, each in its own detached worktree from the pinned base,
 /// up to CONCURRENCY at a time. One draft PR per issue; failures are isolated.
+/// Discover the WIP branches a prior resolver run left behind
+/// (`nexusmind/wip-<prev12>-<issue>`) via `git ls-remote`, so a Continue run can
+/// resume each. Returns `(issue_number, branch, sha)` per branch.
+async fn discover_resumable_wip(
+    workdir: &Path,
+    token: Option<&str>,
+    prev_run_id: &str,
+) -> Vec<(i64, String, String)> {
+    let short = &prev_run_id[..prev_run_id.len().min(12)];
+    let pattern = format!("refs/heads/nexusmind/wip-{short}-*");
+    let mut cmd = match token {
+        Some(token) => authenticated_git(token),
+        None => Command::new("git"),
+    };
+    cmd.current_dir(workdir).args(["ls-remote", "origin", &pattern]);
+    let Ok(out) = cmd.output().await else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(sha), Some(reference)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .unwrap_or(reference)
+            .to_string();
+        if let Some(number) = branch.rsplit('-').next().and_then(|n| n.parse::<i64>().ok()) {
+            result.push((number, branch, sha.to_string()));
+        }
+    }
+    result
+}
+
 async fn execute_resolver_fanout(
     store: &SqliteStore,
     config: &Config,
@@ -2240,16 +2295,27 @@ async fn execute_resolver_fanout(
 ) -> (String, serde_json::Value) {
     const MAX_ISSUES: usize = 10;
     const CONCURRENCY: usize = 3;
-    let mut issues = match list_eligible_resolver_issues(store, claim).await {
-        Ok(list) => list,
-        Err(error) => {
-            return (
-                "blocked_runtime".into(),
-                json!({"code":"issue_listing_failed","detail":error.to_string()}),
-            )
+    // A Continue run resumes the WIP branches left by `continue_from_run_id`
+    // (discovered after cloning) instead of listing fresh eligible issues.
+    let continue_from = claim
+        .config
+        .get("continue_from_run_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let mut issues = if continue_from.is_some() {
+        Vec::new()
+    } else {
+        match list_eligible_resolver_issues(store, claim).await {
+            Ok(list) => list,
+            Err(error) => {
+                return (
+                    "blocked_runtime".into(),
+                    json!({"code":"issue_listing_failed","detail":error.to_string()}),
+                )
+            }
         }
     };
-    if issues.is_empty() {
+    if continue_from.is_none() && issues.is_empty() {
         return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
     }
     issues.truncate(MAX_ISSUES);
@@ -2300,36 +2366,77 @@ async fn execute_resolver_fanout(
         .and_then(|v| v.as_u64())
         .unwrap_or(3600)
         .clamp(30, 3600);
-    // One detached worktree per issue (sequential — git worktree add mutates shared
-    // .git state, so we don't race it).
-    let mut targets: Vec<(usize, String, i64, PathBuf)> = Vec::new();
-    for (index, (repository, number)) in issues.iter().enumerate() {
-        let worktree = sandbox.path().join(format!("issue-{number}"));
-        let mut add = match repo_token {
-            Some(ref token) => authenticated_git(token),
-            None => Command::new("git"),
-        };
-        add.current_dir(&base).args([
-            "worktree",
-            "add",
-            "--detach",
-            worktree.to_string_lossy().as_ref(),
-            &pinned_sha,
-        ]);
-        if command_ok(add).await.is_ok() {
-            targets.push((index, repository.clone(), *number, worktree));
+    // One detached worktree per unit of work (sequential — git worktree add mutates
+    // shared .git state, so we don't race it). Each carries its own base sha and,
+    // when resuming, the WIP branch to keep pushing to.
+    // targets: (index, repository, number, worktree, base_sha, continue_branch)
+    let mut targets: Vec<(usize, String, i64, PathBuf, String, Option<String>)> = Vec::new();
+    if let Some(ref prev) = continue_from {
+        let mut discovered = discover_resumable_wip(&base, repo_token.as_deref(), prev).await;
+        discovered.truncate(MAX_ISSUES);
+        let repository = claim
+            .config
+            .get("repository")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        for (index, (number, branch, sha)) in discovered.into_iter().enumerate() {
+            // Make the WIP commit available locally, then check a worktree out at it.
+            let mut fetch = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            fetch.current_dir(&base).args(["fetch", "origin", &branch]);
+            let _ = command_ok(fetch).await;
+            let worktree = sandbox.path().join(format!("issue-{number}"));
+            let mut add = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            add.current_dir(&base).args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                &sha,
+            ]);
+            if command_ok(add).await.is_ok() {
+                targets.push((index, repository.clone(), number, worktree, sha, Some(branch)));
+            }
         }
-    }
-    if targets.is_empty() {
-        return ("blocked_runtime".into(), json!({"code":"worktree_setup_failed"}));
+        if targets.is_empty() {
+            let _ = sandbox.into_path();
+            return ("blocked_policy".into(), json!({"code":"no_resumable_work"}));
+        }
+    } else {
+        for (index, (repository, number)) in issues.iter().enumerate() {
+            let worktree = sandbox.path().join(format!("issue-{number}"));
+            let mut add = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            add.current_dir(&base).args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                &pinned_sha,
+            ]);
+            if command_ok(add).await.is_ok() {
+                targets.push((index, repository.clone(), *number, worktree, pinned_sha.clone(), None));
+            }
+        }
+        if targets.is_empty() {
+            return ("blocked_runtime".into(), json!({"code":"worktree_setup_failed"}));
+        }
     }
     let mut set: tokio::task::JoinSet<(i64, String, serde_json::Value)> =
         tokio::task::JoinSet::new();
     let mut pending = targets.into_iter();
     let mut spawn_next =
         |set: &mut tokio::task::JoinSet<(i64, String, serde_json::Value)>,
-         item: (usize, String, i64, PathBuf)| {
-            let (index, repository, number, worktree) = item;
+         item: (usize, String, i64, PathBuf, String, Option<String>)| {
+            let (index, repository, number, worktree, base_sha, continue_branch) = item;
             set.spawn(resolve_issue_worktree(
                 store.clone(),
                 config.claude_code_bin.clone(),
@@ -2341,7 +2448,8 @@ async fn execute_resolver_fanout(
                 (index as i64) * 1_000_000,
                 max_turns,
                 wall_time,
-                pinned_sha.clone(),
+                base_sha,
+                continue_branch,
             ));
         };
     for _ in 0..CONCURRENCY {

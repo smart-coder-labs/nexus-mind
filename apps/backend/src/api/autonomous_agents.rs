@@ -589,6 +589,46 @@ pub async fn get_evidence(
     Redirect::temporary(&url).into_response()
 }
 
+/// Continue an incomplete run: enqueue a fresh run that resumes the prior run's
+/// pushed WIP work (the resolver fanout reads `continue_from_run_id` and picks up
+/// each `nexusmind/wip-<prev>-<issue>` branch).
+pub async fn continue_run(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run_id): Path<String>,
+) -> ApiResult<(StatusCode, Json<AutonomousAgentRun>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    let prev = queries::get_autonomous_agent_run(&conn, &auth.org_id, &run_id)
+        .map_err(store_error)?
+        .ok_or_else(not_found)?;
+    if !matches!(
+        prev.status.as_str(),
+        "budget_exhausted" | "partial" | "blocked_policy" | "failed" | "cancelled"
+    ) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "run_not_resumable",
+            "Only an incomplete run can be continued.",
+        ));
+    }
+    let occurrence = format!("continue:{run_id}:{}", uuid::Uuid::new_v4());
+    let input = serde_json::json!({ "continue_from_run_id": run_id });
+    let run = queries::enqueue_autonomous_agent_run(
+        &conn,
+        &auth.org_id,
+        &prev.definition_id,
+        "manual",
+        &occurrence,
+        None,
+        Some(&input),
+    )
+    .map_err(store_error)?
+    .ok_or_else(not_found)?;
+    Ok((StatusCode::ACCEPTED, Json(run)))
+}
+
 #[derive(Deserialize)]
 pub struct RunFilters {
     definition_id: Option<String>,

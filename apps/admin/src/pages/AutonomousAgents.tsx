@@ -229,7 +229,8 @@ function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: 
 }
 
 // The star of the redesign: turns run.finished's raw JSON into a readable story.
-function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void }) {
+function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
+  const canContinue = Boolean(onContinue) && ['budget_exhausted', 'partial', 'blocked_policy', 'failed', 'cancelled'].includes(run.status)
   const meta = runStatusMeta(run.status)
   const finished = events.find(e => e.kind === 'run.finished')
   const payload = asDict(finished?.payload) ?? {}
@@ -331,7 +332,10 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
             {run.snapshot_sha && <span>Snapshot <span className="font-mono">{run.snapshot_sha.slice(0, 7)}</span></span>}
           </div>
         </div>
-        <Badge variant={meta.variant} dot>{meta.label}{code ? ` · ${code}` : ''}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={meta.variant} dot>{meta.label}{code ? ` · ${code}` : ''}</Badge>
+          {canContinue && <Button size="sm" variant="secondary" leftIcon={<RefreshCw className="w-3.5 h-3.5" />} loading={continuing} onClick={() => onContinue?.(run.id)}>Continue</Button>}
+        </div>
       </div>
 
       {/* outcome sentence */}
@@ -519,6 +523,7 @@ export default function AutonomousAgents() {
   const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null) } })
   const [runJudge, setRunJudge] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const continueRun = useMutation({ mutationFn: (id: string) => client.continueAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
@@ -679,7 +684,7 @@ export default function AutonomousAgents() {
           </div>
           <aside className="rounded-[14px] border border-border-primary p-5">
             {selectedRun ? (
-              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} />
+              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>

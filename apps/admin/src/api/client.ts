@@ -1379,6 +1379,7 @@ export class NexusMindClient {
   putAutonomousAgentConnector(data:{kind:string;name:string;secret?:string;metadata:Record<string,unknown>;scopes:string[]}): Promise<AutonomousAgentConnector> { return this.request('/v1/autonomous-agent-connectors',{method:'PUT',body:JSON.stringify(data)}) }
   revokeAutonomousAgentConnector(id:string): Promise<void> { return this.request(`/v1/autonomous-agent-connectors/${encodeURIComponent(id)}`,{method:'DELETE'}) }
   cancelAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/cancel`,{method:'POST'}) }
+  continueAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/continue`,{method:'POST'}) }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
   // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
   // poll incrementally with the last sequence they hold so each poll only pulls
