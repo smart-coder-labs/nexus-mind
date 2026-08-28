@@ -406,6 +406,197 @@ fn target_environment(
     Ok(environment)
 }
 
+/// Resolve the judge's PR/issue targets to their live claim (title, body, changed
+/// files) via `gh`, so the agent can scope what it verifies to what each target
+/// actually touched. Best-effort per target: a target that cannot be fetched is
+/// recorded with an `error` field rather than aborting the whole run.
+async fn resolve_judge_targets(
+    repository: &str,
+    targets: &[serde_json::Value],
+    token: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let mut resolved = Vec::new();
+    for target in targets.iter().take(50) {
+        let kind = target.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let (subcommand, fields) = match kind {
+            "pr" => ("pr", "number,title,body,files,url,state"),
+            "issue" => ("issue", "number,title,body,labels,url,state"),
+            _ => continue,
+        };
+        let reference = format!("{} #{number}", if kind == "pr" { "PR" } else { "Issue" });
+        let mut command = Command::new("gh");
+        restrict_claude_environment(&mut command);
+        if let Some(token) = token {
+            command.env("GH_TOKEN", token);
+        }
+        let output = timeout(
+            Duration::from_secs(20),
+            command
+                .args([
+                    subcommand,
+                    "view",
+                    &number.to_string(),
+                    "--repo",
+                    repository,
+                    "--json",
+                    fields,
+                ])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        match output {
+            Ok(Ok(out)) if out.status.success() => {
+                match serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    Ok(mut value) => {
+                        if let Some(body) = value.get("body").and_then(|v| v.as_str()) {
+                            let trimmed: String = body.chars().take(30_000).collect();
+                            value["body"] = json!(trimmed);
+                        }
+                        if let Some(files) = value.get("files").and_then(|v| v.as_array()) {
+                            let paths = files
+                                .iter()
+                                .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+                                .take(300)
+                                .map(|p| json!(p))
+                                .collect::<Vec<_>>();
+                            value["changed_files"] = json!(paths);
+                        }
+                        value["ref"] = json!(reference);
+                        value["type"] = json!(kind);
+                        resolved.push(value);
+                    }
+                    Err(_) => resolved.push(
+                        json!({"ref":reference,"type":kind,"number":number,"error":"gh_parse_failed"}),
+                    ),
+                }
+            }
+            _ => resolved.push(
+                json!({"ref":reference,"type":kind,"number":number,"error":"gh_unavailable"}),
+            ),
+        }
+    }
+    resolved
+}
+
+/// Post the judge's verdict as a GitHub comment on each target, when the agent is
+/// configured with `publish: "comment"`. One `github_issue_comment` delivery per
+/// target (the issue-comment API serves PRs too), matched to the finding that
+/// references that target number. Best-effort and idempotent via the delivery
+/// ledger; a failure to comment on one target never discards the recorded verdict.
+async fn publish_judge_comments(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    result: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let repository = claim
+        .config
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("repository_missing"))?;
+    let token = github_access(store, claim)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("github_connector_required"))?;
+    let structured = structured_result(result);
+    let findings = structured
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let targets = claim
+        .config
+        .get("judge_targets")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut posted = Vec::new();
+    for target in targets.iter().take(50) {
+        let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let needle = format!("#{number}");
+        let verdict = findings
+            .iter()
+            .find(|f| {
+                f.get("title")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t.contains(&needle))
+            })
+            .and_then(|f| f.get("summary").and_then(|s| s.as_str()))
+            .unwrap_or("NexusMind judged this target but produced no verdict.")
+            .chars()
+            .take(8000)
+            .collect::<String>();
+        let body = format!(
+            "## NexusMind — Judge verdict\n\n{verdict}\n\n---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
+            claim.run.id
+        );
+        let delivery_key =
+            format!("judge-comment:{}:{repository}:{number}", claim.run.definition_id);
+        let delivery = {
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            queries::create_autonomous_agent_delivery(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+                None,
+                "github_issue_comment",
+                &delivery_key,
+            )?
+        };
+        if delivery.status == "delivered" {
+            posted.push(json!({"number":number,"reconciled":true,"url":delivery.external_url}));
+            continue;
+        }
+        require_publish_authority(store, claim)?;
+        match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
+            .await
+        {
+            Ok(comment) => {
+                let db = store.conn();
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                let external_id = comment.get("id").map(|v| v.to_string());
+                let url = comment.get("html_url").and_then(|v| v.as_str());
+                queries::complete_autonomous_agent_delivery(
+                    &conn,
+                    &claim.org_id,
+                    &delivery.id,
+                    external_id.as_deref(),
+                    url,
+                )?;
+                if let Some(external_id) = external_id.as_deref() {
+                    queries::create_autonomous_output_link(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                        "issue_comment",
+                        external_id,
+                        url,
+                    )?;
+                }
+                posted.push(json!({"number":number,"url":url}));
+            }
+            Err(error) => {
+                let db = store.conn();
+                if let Ok(conn) = db.lock() {
+                    let _ = queries::fail_autonomous_agent_delivery(
+                        &conn,
+                        &claim.org_id,
+                        &delivery.id,
+                        "github_issue_comment_failed",
+                    );
+                }
+                posted.push(json!({"number":number,"error":error.to_string()}));
+            }
+        }
+    }
+    Ok(json!({"published": true, "comments": posted}))
+}
+
 async fn github_access(
     _store: &SqliteStore,
     _claim: &queries::ClaimedAutonomousRun,
@@ -1268,7 +1459,7 @@ fn fixed_prompt(
     config: &serde_json::Value,
     max_turns: u64,
 ) -> anyhow::Result<String> {
-    let slack_delivery = template == "qa"
+    let slack_delivery = matches!(template, "qa" | "judge")
         && config
             .get("outputs")
             .and_then(|value| value.as_array())
@@ -1309,6 +1500,16 @@ fn fixed_prompt(
         "qa" => format!(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
         ),
+        "judge" => {
+            // Judge reuses the QA finding JSON shape, but its scope rule is the
+            // inverse of QA's: it must emit exactly one finding PER TARGET (never an
+            // empty array) — `info` when the claim is met — so contradicting QA's
+            // "empty array when correct" it defines its own contract.
+            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target reference, e.g. PR #123 or Issue #45>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<verdict: met | not met | partial — then what you tested, observed vs expected, and why>\",\"fingerprint\":\"<stable-kebab-case id built from the target and the claim, e.g. pr-123-login-fix>\",\"screenshot\":\"<evidence filename>.png\"}]}. Emit EXACTLY ONE finding per target in `judge_targets_resolved` — never an empty array — using severity \"info\" only when the claim is fully met, and \"low|medium|high|critical\" (scaled to impact) when it is not met or only partial. The finding \"title\" MUST contain the target's \"#<number>\" so the verdict can be mapped back to it. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            format!(
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out repository; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
+            )
+        }
         "github_issue_resolver" => {
             let has_context = config
                 .get("context_repos")
@@ -1414,7 +1615,7 @@ fn evaluate_structured_result(
     if !structured.is_object() {
         anyhow::bail!("result_not_object")
     }
-    if matches!(template, "qa" | "github_pr_reviewer") {
+    if matches!(template, "qa" | "github_pr_reviewer" | "judge") {
         if structured
             .get("summary")
             .and_then(|v| v.as_str())
@@ -2120,6 +2321,33 @@ async fn execute_claim(
             }
         }
     }
+    if claim.template_key == "judge" {
+        let repository = runtime_config
+            .get("repository")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let targets = runtime_config
+            .get("judge_targets")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if repository.is_empty() || targets.is_empty() {
+            let _ = tokio::fs::remove_dir_all(&workdir).await;
+            return ("blocked_policy".into(), json!({"code":"judge_targets_required"}));
+        }
+        let resolved = resolve_judge_targets(&repository, &targets, repo_token.as_deref()).await;
+        if resolved.iter().all(|target| target.get("error").is_some()) {
+            let _ = tokio::fs::remove_dir_all(&workdir).await;
+            return (
+                "blocked_runtime".into(),
+                json!({"code":"judge_targets_unavailable"}),
+            );
+        }
+        if let Some(object) = runtime_config.as_object_mut() {
+            object.insert("judge_targets_resolved".into(), json!(resolved));
+        }
+    }
     if claim.template_key == "qa" {
         let environment = match target_environment(store, claim) {
             Ok(environment) => environment,
@@ -2169,7 +2397,7 @@ async fn execute_claim(
         .unwrap_or(match claim.template_key.as_str() {
             // Resolving an issue means cloning context, reading code, editing and
             // verifying — 20 turns barely starts, so the run kept exhausting them.
-            "qa" => 250,
+            "qa" | "judge" => 250,
             "github_issue_resolver" => 150,
             "lead_generation" => 80,
             _ => 60,
@@ -2193,7 +2421,7 @@ async fn execute_claim(
             json!({"code":if preflight.status=="reauth_required"{"claude_auth_required"}else{"claude_runtime_unavailable"}}),
         );
     }
-    let slack_enabled = claim.template_key == "qa"
+    let slack_enabled = matches!(claim.template_key.as_str(), "qa" | "judge")
         && runtime_config
             .get("outputs")
             .and_then(|value| value.as_array())
@@ -2208,11 +2436,11 @@ async fn execute_claim(
                 "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
             )
         }
-        ("qa", true) => (
+        ("qa" | "judge", true) => (
             "default",
             "Read,Grep,Glob,Skill,Task,mcp__playwright__*,mcp__slack__*",
         ),
-        ("qa", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
+        ("qa" | "judge", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
         ("lead_generation", _) => (
             "default",
             "WebSearch,WebFetch,Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
@@ -2253,7 +2481,7 @@ async fn execute_claim(
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
-    if claim.template_key == "qa" {
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
@@ -2395,9 +2623,24 @@ async fn execute_claim(
             }
         }
     }
+    // Judge verdict comments are opt-in (`publish: "comment"`). Best-effort: a
+    // publish failure is recorded on the outcome but never discards the verdict.
+    if outcome.0 == "succeeded"
+        && claim.template_key == "judge"
+        && claim
+            .config
+            .get("publish")
+            .and_then(|value| value.as_str())
+            == Some("comment")
+    {
+        match publish_judge_comments(store, claim, &outcome.1).await {
+            Ok(published) => outcome.1["published"] = published,
+            Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+        }
+    }
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
-    if claim.template_key == "qa" {
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let sandbox_root = workdir
             .parent()
             .map(|p| p.to_path_buf())
@@ -2549,7 +2792,10 @@ async fn deliver_findings(
     claim: &queries::ClaimedAutonomousRun,
     result: &serde_json::Value,
 ) {
-    if !matches!(claim.template_key.as_str(), "qa" | "github_pr_reviewer") {
+    if !matches!(
+        claim.template_key.as_str(),
+        "qa" | "github_pr_reviewer" | "judge"
+    ) {
         return;
     }
     let structured = structured_result(result);
@@ -2558,7 +2804,10 @@ async fn deliver_findings(
     };
     // {filename: url} map of screenshots the worker uploaded to R2 for this run.
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
-    let outputs = if matches!(claim.template_key.as_str(), "qa" | "lead_generation") {
+    let outputs = if matches!(
+        claim.template_key.as_str(),
+        "qa" | "lead_generation" | "judge"
+    ) {
         claim
             .config
             .get("outputs")
@@ -3330,6 +3579,24 @@ mod tests {
             &json!({"result":{"summary":"ok","findings":[]},"context_manifest":{"version":1,"evidence":[]}})
         )
         .is_ok());
+    }
+
+    #[test]
+    fn judge_evaluator_enforces_the_qa_finding_contract() {
+        // Missing summary is rejected.
+        assert!(evaluate_structured_result("judge", &json!({"result":{"findings":[]}})).is_err());
+        // A well-formed per-target verdict passes.
+        assert!(evaluate_structured_result(
+            "judge",
+            &json!({"result":{"summary":"1 target judged","findings":[{"title":"PR #123","severity":"info","summary":"met: login works","fingerprint":"pr-123-login"}]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_ok());
+        // An invalid severity is rejected like QA.
+        assert!(evaluate_structured_result(
+            "judge",
+            &json!({"result":{"summary":"x","findings":[{"title":"PR #1","severity":"bogus","summary":"?"}]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_err());
     }
 
     #[test]

@@ -16123,6 +16123,14 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
             "github:draft_pr",
         ],
         "github_pr_reviewer" => vec!["repository:read", "tests:run", "github:review"],
+        "lead_generation" => vec!["web:search", "lead:write", "delivery:write"],
+        "judge" => vec![
+            "repository:read",
+            "tests:run",
+            "finding:write",
+            "delivery:write",
+            "github:review",
+        ],
         _ => anyhow::bail!("invalid_template"),
     };
     Ok(capabilities.into_iter().map(str::to_string).collect())
@@ -16380,6 +16388,98 @@ pub fn validate_autonomous_agent_definition(
                 Some(value)
                     if crate::automation::connectors::validate_repository(value).is_ok() => {}
                 _ => errors.push("valid_repository_required"),
+            }
+        }
+        "lead_generation" => {
+            for field in ["product", "icp"] {
+                if current
+                    .revision
+                    .config
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    errors.push("product_and_icp_required");
+                    break;
+                }
+            }
+            let outputs = current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array());
+            if outputs.is_none()
+                || outputs.is_some_and(|v| {
+                    v.is_empty()
+                        || v.iter()
+                            .any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack")))
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+        }
+        "judge" => {
+            // A repository is required so the judge can read each PR/issue and its
+            // diff via `gh` to scope what it verifies.
+            match current
+                .revision
+                .config
+                .get("repository")
+                .and_then(|v| v.as_str())
+            {
+                Some(value)
+                    if crate::automation::connectors::validate_repository(value).is_ok() => {}
+                _ => errors.push("valid_repository_required"),
+            }
+            // Explicit scope: at least one PR/issue target, each well-formed.
+            let targets = current
+                .revision
+                .config
+                .get("judge_targets")
+                .and_then(|v| v.as_array());
+            let targets_valid = targets.is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|item| {
+                        matches!(
+                            item.get("type").and_then(|v| v.as_str()),
+                            Some("pr" | "issue")
+                        ) && item
+                            .get("number")
+                            .and_then(|v| v.as_u64())
+                            .is_some_and(|n| n > 0)
+                    })
+            });
+            if !targets_valid {
+                errors.push("judge_targets_required")
+            }
+            // Findings delivery, same channels as QA.
+            let outputs = current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array());
+            if outputs.is_none()
+                || outputs.is_some_and(|v| {
+                    v.is_empty()
+                        || v.iter()
+                            .any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack")))
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+            // Publishing a verdict comment to GitHub is opt-in.
+            if !matches!(
+                current
+                    .revision
+                    .config
+                    .get("publish")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none"),
+                "none" | "comment"
+            ) {
+                errors.push("invalid_publish")
             }
         }
         _ => errors.push("unsupported_template"),
@@ -23192,6 +23292,30 @@ mod inheritance_tests {
             )
             .unwrap();
         assert_eq!(cid.as_deref(), Some("cli_a"));
+    }
+
+    /// Every advertised template MUST resolve a capability envelope — a template
+    /// present in the catalog but missing here fails agent creation with
+    /// `invalid_template` (the lead_generation regression). Judge is included.
+    #[test]
+    fn every_template_resolves_capabilities() {
+        for template in [
+            "qa",
+            "github_issue_resolver",
+            "github_pr_reviewer",
+            "lead_generation",
+            "judge",
+        ] {
+            assert!(
+                autonomous_agent_capabilities(template).is_ok(),
+                "template {template} must resolve capabilities"
+            );
+        }
+        assert_eq!(
+            autonomous_agent_capabilities("lead_generation").unwrap(),
+            vec!["web:search", "lead:write", "delivery:write"]
+        );
+        assert!(autonomous_agent_capabilities("does_not_exist").is_err());
     }
 
     /// Grafting a project onto another tenant's client must be refused.

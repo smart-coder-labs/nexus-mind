@@ -60,6 +60,9 @@ interface FormState {
   product: string
   icp: string
   leadCount: string
+  // judge
+  judgeTargets: string // e.g. "pr:123, issue:45"
+  publishComment: boolean
   // shared / repo templates
   repository: string
   baseBranch: string
@@ -82,7 +85,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     name: '',
     description: '',
     template,
-    targetKind: template === 'qa' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
+    targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
     outputSlack: false,
@@ -94,6 +97,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     product: '',
     icp: '',
     leadCount: '10',
+    judgeTargets: '',
+    publishComment: false,
     repository: '',
     baseBranch: 'main',
     contextRepos: '',
@@ -142,6 +147,17 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.outputSlack) outputs.push('slack')
     config = { outputs, product: state.product.trim(), icp: state.icp.trim(), count: Math.max(1, Math.min(25, Number(state.leadCount) || 10)) }
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+  } else if (state.template === 'judge') {
+    const outputs = ['nexusmind']
+    if (state.outputSlack) outputs.push('slack')
+    config = {
+      github_auth: 'server_gh_cli',
+      outputs,
+      judge_targets: parseJudgeTargets(state.judgeTargets),
+      publish: state.publishComment ? 'comment' : 'none',
+    }
+    if (state.repository.trim()) config.repository = state.repository.trim()
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -154,6 +170,22 @@ function buildConfig(state: FormState): Record<string, unknown> {
 /** Split a shell-like command string into argv (whitespace, no shell). */
 function csvArgv(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean)
+}
+
+/**
+ * Parse the judge's targets from a "pr:123, issue:45" style string into the
+ * [{type, number}] shape the backend validates. Bare numbers default to `pr`.
+ * Malformed tokens are dropped.
+ */
+function parseJudgeTargets(value: string): Array<{ type: 'pr' | 'issue'; number: number }> {
+  return csv(value)
+    .map(token => {
+      const [rawType, rawNumber] = token.includes(':') ? token.split(':') : ['pr', token]
+      const type = rawType.trim().toLowerCase() === 'issue' ? 'issue' : 'pr'
+      const number = Number(String(rawNumber).replace('#', '').trim())
+      return Number.isInteger(number) && number > 0 ? { type, number } : null
+    })
+    .filter((item): item is { type: 'pr' | 'issue'; number: number } => item !== null)
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
@@ -186,6 +218,12 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
+    judgeTargets: Array.isArray(config.judge_targets)
+      ? (config.judge_targets as Array<{ type?: string; number?: number }>)
+          .map(target => `${target.type === 'issue' ? 'issue' : 'pr'}:${target.number ?? ''}`)
+          .join(', ')
+      : '',
+    publishComment: config.publish === 'comment',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
@@ -350,6 +388,7 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'config':
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
+      if (state.template === 'judge') return state.repository.trim().length > 0 && parseJudgeTargets(state.judgeTargets).length > 0
       return true
     case 'schedule':
       if (state.scheduleKind === 'manual') return true
@@ -527,6 +566,30 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
             </div>
           </div>
+        </div>
+      )}
+
+      {template === 'judge' && (
+        <div className="space-y-4">
+          <Field label="Repository (owner/repo)" hint="Where the PRs/issues live. Read via the server gh CLI to scope what each claim touches.">
+            <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
+          </Field>
+          <Field label="PRs / issues to judge" hint="Comma-separated, e.g. pr:123, issue:45. A bare number is treated as a PR. Set the live app URL in the Target step.">
+            <Input inputSize="sm" value={state.judgeTargets} onChange={event => set('judgeTargets', event.target.value)} placeholder="pr:123, issue:45" />
+          </Field>
+          <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />
+          </Field>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Verdict delivery</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind always records findings with evidence. Publishing a verdict comment on each PR/issue is opt-in.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch checked={state.publishComment} onCheckedChange={value => set('publishComment', value)} size="sm" label="Comment the verdict on GitHub" />
+            </div>
+          </div>
+          <p className="text-[11px] text-text-tertiary">Verifies only what the PRs/issues touch against the live app — never approves, merges, or pushes.</p>
         </div>
       )}
 

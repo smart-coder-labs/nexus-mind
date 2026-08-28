@@ -183,6 +183,29 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "comment_or_request_changes".into(),
             ],
         },
+        AutonomousAgentTemplate {
+            key: "judge".into(),
+            version: 1,
+            name: "Judge".into(),
+            description: "Verifies whether the given PRs/issues actually delivered their claim, testing only what they touch against the live application, and records findings with evidence.".into(),
+            capabilities: vec![
+                "repository:read".into(),
+                "tests:run".into(),
+                "finding:write".into(),
+                "delivery:write".into(),
+                "github:review".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 12, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack"]},"repository":{"type":"owner/repo","required":true,"description":"Repo the PRs/issues live in — read via gh to scope what each claim touches"},"github_auth":{"const":"server_gh_cli"},"judge_targets":{"type":"array","required":true,"items":{"type":{"enum":["pr","issue"]},"number":{"type":"integer"}},"description":"The PRs/issues to judge this run"},"publish":{"enum":["none","comment"],"default":"none","description":"Whether to post the verdict as a GitHub comment on each target"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"custom_instructions":{"type":"string","description":"Optional guidance for what to prioritize; cannot expand scope"}}),
+            workflow: vec![
+                "select_pr_issue".into(),
+                "scope_to_diff".into(),
+                "drive_live_app".into(),
+                "evaluate".into(),
+                "record_findings".into(),
+                "deliver".into(),
+            ],
+        },
     ]
 }
 
