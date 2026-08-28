@@ -63,6 +63,11 @@ interface FormState {
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
+  // login credentials (qa/judge — used to authenticate into the live app)
+  loginUser: string
+  loginPassword: string
+  loginUrl: string
+  existingCredentialConnectorId: string
   // shared / repo templates
   repository: string
   baseBranch: string
@@ -99,6 +104,10 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     leadCount: '10',
     repositories: '',
     publishComment: false,
+    loginUser: '',
+    loginPassword: '',
+    loginUrl: '',
+    existingCredentialConnectorId: '',
     repository: '',
     baseBranch: 'main',
     contextRepos: '',
@@ -243,7 +252,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       }).catch(() => undefined)
       void client.listAutonomousAgentTargets(editing.id).then(targets => {
         const first = targets.find(item => item.enabled) ?? targets[0]
-        if (first) setState(prev => ({ ...prev, targetKind: first.kind, targetName: first.name, targetPrimary: primaryFromTargetConfig(first.config) }))
+        if (first) setState(prev => ({ ...prev, targetKind: first.kind, targetName: first.name, targetPrimary: primaryFromTargetConfig(first.config), existingCredentialConnectorId: first.credential_connector_id ?? '' }))
       }).catch(() => undefined)
     } else {
       setState(defaultState(templates[0]?.key ?? 'qa'))
@@ -267,8 +276,17 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
         const created = await client.createAutonomousAgent({ name: state.name.trim(), description: state.description.trim() || undefined, template_key: state.template, config, budgets })
         agentId = created.id
       }
-      if (state.targetName.trim()) {
-        await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim(), config: targetConfig, enabled: true })
+      // Login credentials are stored in an encrypted `target_secret` connector and
+      // bound to the target, so the agent can authenticate into the live app. On
+      // edit we preserve the existing binding unless a new password is entered.
+      let credentialConnectorId: string | undefined = state.existingCredentialConnectorId || undefined
+      if ((state.template === 'judge' || state.template === 'qa') && state.loginUser.trim() && state.loginPassword.trim()) {
+        const secret = JSON.stringify({ USERNAME: state.loginUser.trim(), PASSWORD: state.loginPassword.trim() })
+        const connector = await client.putAutonomousAgentConnector({ kind: 'target_secret', name: `login:${agentId}`, secret, metadata: {}, scopes: ['target:use'] })
+        credentialConnectorId = connector.id
+      }
+      if (state.targetName.trim() || state.targetPrimary.trim()) {
+        await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim() || 'Target', config: targetConfig, credential_connector_id: credentialConnectorId, enabled: true })
       }
       if (state.scheduleKind !== 'manual') {
         const expression = state.scheduleKind === 'interval'
@@ -388,7 +406,12 @@ function primaryFromTargetConfig(config: Record<string, unknown>): string {
 function buildTargetConfig(state: FormState): Record<string, unknown> {
   const value = state.targetPrimary.trim()
   if (!value) return {}
-  return state.targetKind === 'web_application' ? { url: value } : { repository: value }
+  if (state.targetKind === 'web_application') {
+    const config: Record<string, unknown> = { url: value }
+    if (state.loginUrl.trim()) config.login_url = state.loginUrl.trim()
+    return config
+  }
+  return { repository: value }
 }
 
 /* ---------- Steps ---------- */
@@ -567,6 +590,26 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
           </div>
           <p className="text-[11px] text-text-tertiary">Verifies only what the PRs/issues touch against the live app — never approves, merges, or pushes.</p>
+        </div>
+      )}
+
+      {(template === 'judge' || template === 'qa') && (
+        <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-text-secondary">App login</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">If the app requires sign-in, provide credentials so the agent logs in before testing — without them it hits the login gate and can't verify the real UI. Stored encrypted and never shown again; leave blank to keep the current login when editing.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Username / email">
+              <Input inputSize="sm" autoComplete="off" value={state.loginUser} onChange={event => set('loginUser', event.target.value)} placeholder="qa@example.com" />
+            </Field>
+            <Field label="Password">
+              <Input inputSize="sm" type="password" autoComplete="new-password" value={state.loginPassword} onChange={event => set('loginPassword', event.target.value)} placeholder="••••••••" />
+            </Field>
+          </div>
+          <Field label="Login URL (optional)" hint="Only if the login page isn't reachable from the app URL.">
+            <Input inputSize="sm" value={state.loginUrl} onChange={event => set('loginUrl', event.target.value)} placeholder="https://app.example.com/login" />
+          </Field>
         </div>
       )}
 

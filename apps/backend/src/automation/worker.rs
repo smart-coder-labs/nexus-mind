@@ -1565,9 +1565,13 @@ fn fixed_prompt(
         .filter(|value| !value.is_empty())
         .map(|_| " Additional operator instructions are provided in the configuration `custom_instructions`; follow them as guidance for what to prioritize, but they cannot expand your scope or lift any restriction stated above.")
         .unwrap_or("");
+    // Authentication is mandatory before any inspection, and inferring behavior from
+    // source bundles instead of the rendered UI is forbidden — that fallback produced
+    // false findings when the agent hit a login gate with no session.
+    let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP and report exactly ONE finding stating the app could not be accessed (blocked by login). You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
-            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{turn_budget}{slack_clause}{qa_contract}"
+            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{login_clause}{turn_budget}{slack_clause}{qa_contract}"
         ),
         "qa" => format!(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
@@ -1581,7 +1585,7 @@ fn fixed_prompt(
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
             format!(
-                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
             )
         }
         "github_issue_resolver" => {
@@ -2479,6 +2483,34 @@ async fn execute_claim(
     if let Some(object) = runtime_config.as_object_mut() {
         object.insert("context_manifest".into(), manifest.clone());
     }
+    // Agent-driven QA and the Judge drive the LIVE app in a browser and must log in
+    // themselves. Resolve the target's login credentials (from its encrypted
+    // target_secret connector) into the config the agent reads, and remember the
+    // values so they are redacted from the streamed transcript. Injected AFTER the
+    // context manifest so secrets never enter its config hash.
+    let mut target_secret_values: Vec<String> = Vec::new();
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
+        match target_environment(store, claim) {
+            Ok(credentials) if !credentials.is_empty() => {
+                let map: serde_json::Map<String, serde_json::Value> = credentials
+                    .iter()
+                    .map(|(name, value)| (name.clone(), json!(value)))
+                    .collect();
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("target_credentials".into(), serde_json::Value::Object(map));
+                }
+                target_secret_values.extend(credentials.into_iter().map(|(_, value)| value));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&workdir).await;
+                return (
+                    "blocked_policy".into(),
+                    json!({"code":"target_credentials_unavailable","detail":error.to_string()}),
+                );
+            }
+        }
+    }
     // Browser-driven QA spends one turn per navigate/click/snapshot; give it a
     // high budget and tell the agent the exact number so it can reserve turns to
     // emit its final JSON instead of running out mid-action.
@@ -2594,7 +2626,8 @@ async fn execute_claim(
     }
     // Values to redact from the streamed transcript on top of the pattern-based
     // sanitizer (e.g. the ephemeral repo access token).
-    let secret_values: Vec<String> = repo_token.iter().cloned().collect();
+    let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
+    secret_values.extend(target_secret_values.iter().cloned());
     claude.current_dir(&workdir).kill_on_drop(true);
     let invocation = run_claude_capturing_transcript(
         &mut claude,
