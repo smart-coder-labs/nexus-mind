@@ -1625,7 +1625,7 @@ fn fixed_prompt(
                 .unwrap_or(10)
                 .clamp(1, 25);
             format!(
-                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each, research briefly and draft a short, personalized cold outreach email. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Never invent a contact email: include one only if you actually find a public business address (e.g. sales@/contact@ on their site), otherwise leave it empty.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"contact_email\":\"<public email or empty>\",\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
+                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\"}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
             )
         }
         _ => anyhow::bail!("unsupported_template"),
@@ -4067,6 +4067,32 @@ mod tests {
         .unwrap();
         assert!(prompt.contains("untrusted data"));
         assert!(prompt.contains("Do not merge"));
+    }
+
+    #[test]
+    fn lead_generation_prompt_requires_verified_company_contacts_and_executives() {
+        let prompt = fixed_prompt(
+            "lead_generation",
+            &json!({"product":"NexusMind","icp":"software companies","count":3}),
+            20,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("public contact channels"));
+        assert!(prompt.contains("directors or senior decision-makers"));
+        assert!(prompt.contains("Never guess or derive an email address"));
+        for field in [
+            "description",
+            "industry",
+            "headquarters",
+            "company_linkedin",
+            "contact_phone",
+            "contact_page",
+            "executives",
+            "source_urls",
+        ] {
+            assert!(prompt.contains(&format!("\"{field}\"")));
+        }
     }
 
     #[test]
