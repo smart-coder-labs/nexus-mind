@@ -126,6 +126,10 @@ spec:
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # Absolute base the Judge template uses to embed durable evidence image
+            # URLs (the public /evidence re-signing endpoint) in GitHub comments.
+            - name: PUBLIC_API_BASE_URL
+              value: https://api.nexusmind.smartcoderlabs.com
           volumeMounts:
             - name: data
               mountPath: /data

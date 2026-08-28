@@ -16421,38 +16421,24 @@ pub fn validate_autonomous_agent_definition(
             }
         }
         "judge" => {
-            // A repository is required so the judge can read each PR/issue and its
-            // diff via `gh` to scope what it verifies.
-            match current
+            // One or more repositories are required so the judge can read each
+            // PR/issue and its diff via `gh` to scope what it verifies. The concrete
+            // PR/issue targets are chosen per run (not here), constrained to this list.
+            let repositories = current
                 .revision
                 .config
-                .get("repository")
-                .and_then(|v| v.as_str())
-            {
-                Some(value)
-                    if crate::automation::connectors::validate_repository(value).is_ok() => {}
-                _ => errors.push("valid_repository_required"),
-            }
-            // Explicit scope: at least one PR/issue target, each well-formed.
-            let targets = current
-                .revision
-                .config
-                .get("judge_targets")
+                .get("repositories")
                 .and_then(|v| v.as_array());
-            let targets_valid = targets.is_some_and(|items| {
+            let repositories_valid = repositories.is_some_and(|items| {
                 !items.is_empty()
                     && items.iter().all(|item| {
-                        matches!(
-                            item.get("type").and_then(|v| v.as_str()),
-                            Some("pr" | "issue")
-                        ) && item
-                            .get("number")
-                            .and_then(|v| v.as_u64())
-                            .is_some_and(|n| n > 0)
+                        item.as_str().is_some_and(|value| {
+                            crate::automation::connectors::validate_repository(value).is_ok()
+                        })
                     })
             });
-            if !targets_valid {
-                errors.push("judge_targets_required")
+            if !repositories_valid {
+                errors.push("repositories_required")
             }
             // Findings delivery, same channels as QA.
             let outputs = current
@@ -16651,6 +16637,7 @@ pub fn enqueue_autonomous_agent_run(
     trigger_kind: &str,
     occurrence_key: &str,
     scheduled_for: Option<&str>,
+    input: Option<&serde_json::Value>,
 ) -> Result<Option<AutonomousAgentRun>> {
     let Some(detail) = get_autonomous_agent_detail(conn, org_id, definition_id)? else {
         return Ok(None);
@@ -16663,6 +16650,7 @@ pub fn enqueue_autonomous_agent_run(
     }
     let automation_run_id = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
+    let input_json = input.map(serde_json::to_string).transpose()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
@@ -16670,9 +16658,9 @@ pub fn enqueue_autonomous_agent_run(
         rusqlite::params![automation_run_id,org_id,detail.definition.created_by,format!("{}-v{}",detail.definition.template_key,detail.definition.template_version),detail.revision.policy_generation],
     )?;
     tx.execute(
-        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?],
+        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json,input_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?,input_json],
     )?;
     tx.commit()?;
     get_autonomous_agent_run(conn, org_id, &run_id)
@@ -16874,6 +16862,7 @@ pub fn enqueue_due_autonomous_agent_runs(conn: &Connection) -> Result<usize> {
                 "schedule",
                 &occurrence,
                 Some(&scheduled_for),
+                None,
             ) {
                 Ok(Some(_)) => created += 1,
                 Err(error) if error.to_string().contains("UNIQUE constraint failed") => {}
@@ -17004,6 +16993,26 @@ pub fn claim_next_autonomous_agent_run(
         ).optional()?;
         if let Some((repository, kind, number, head_sha)) = work {
             object.insert("trigger".into(),serde_json::json!({"repository":repository,"kind":kind,"number":number,"head_sha":head_sha}));
+        }
+        // Per-run inputs chosen at trigger time (e.g. the Judge template's PR/issue
+        // targets) are merged over the config the worker sees for this run only.
+        let input_json: Option<String> = conn
+            .query_row(
+                "SELECT input_json FROM autonomous_agent_runs WHERE id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(input) = input_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        {
+            if let Some(input_obj) = input.as_object() {
+                for (key, value) in input_obj {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
         }
     }
     Ok(Some(ClaimedAutonomousRun {
@@ -17534,6 +17543,7 @@ pub fn enqueue_github_webhook_agents(
             &definition_id,
             "github_webhook",
             &occurrence,
+            None,
             None,
         ) {
             Ok(Some(run)) => run,

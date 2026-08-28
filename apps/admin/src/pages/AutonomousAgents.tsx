@@ -5,6 +5,7 @@ import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, Ex
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/Button'
+import { Input } from '../components/ui/Input'
 import { Badge } from '../components/ui/Badge'
 import { Switch } from '../components/ui/Switch'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
@@ -515,7 +516,8 @@ export default function AutonomousAgents() {
     onError: (value: unknown) => setActionError(value instanceof Error ? value.message : 'Validation failed'),
   })
   const clone = useMutation({ mutationFn: async (id: string) => { const source = await client.getAutonomousAgent(id); return client.createAutonomousAgent({ name: `${source.name} copy`, description: source.description ?? undefined, template_key: source.template_key, config: source.revision.config, budgets: source.revision.budgets }) }, onSuccess: () => invalidate('autonomous-agents') })
-  const runNow = useMutation({ mutationFn: (id: string) => client.runAutonomousAgent(id), onSuccess: () => invalidate('autonomous-runs') })
+  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null) } })
+  const [runJudge, setRunJudge] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
@@ -596,7 +598,7 @@ export default function AutonomousAgents() {
                     : <span className="text-xs text-text-tertiary px-1">Validate to enable</span>}
                 </>}
                 {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
-                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => runNow.mutate(agent.id)}>Run</Button>}
+                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
                 {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}
                 {can('autonomous_agent:create') && <Button size="sm" variant="ghost" leftIcon={<Copy className="w-3.5 h-3.5" />} onClick={() => clone.mutate(agent.id)}>Clone</Button>}
                 {can('autonomous_agent:update') && agent.status === 'disabled' && <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} onClick={() => archive.mutate(agent.id)}>Archive</Button>}
@@ -861,6 +863,84 @@ export default function AutonomousAgents() {
           </>
         )}
       </Modal>
+
+      {runJudge && (
+        <JudgeRunDialog
+          agent={runJudge}
+          pending={runNow.isPending}
+          onClose={() => setRunJudge(null)}
+          onRun={targets => runNow.mutate({ id: runJudge.id, targets })}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Run dialog for the Judge template: the PR/issue targets are chosen per run (not
+ * baked into the agent), each scoped to one of the agent's configured repositories.
+ */
+function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: AutonomousAgentDefinition; pending: boolean; onClose: () => void; onRun: (targets: Array<{ repository: string; type: 'pr' | 'issue'; number: number }>) => void }) {
+  const client = useMemo(() => createClient(), [])
+  const detail = useQuery({ queryKey: ['autonomous-agent-detail', agent.id], queryFn: () => client.getAutonomousAgent(agent.id) })
+  const repos = (Array.isArray(detail.data?.revision?.config?.repositories) ? detail.data?.revision?.config?.repositories : []) as string[]
+  const [repository, setRepository] = useState('')
+  const [type, setType] = useState<'pr' | 'issue'>('pr')
+  const [number, setNumber] = useState('')
+  const [targets, setTargets] = useState<Array<{ repository: string; type: 'pr' | 'issue'; number: number }>>([])
+  useEffect(() => { if (!repository && repos.length) setRepository(repos[0]) }, [repos, repository])
+
+  const add = () => {
+    const n = Number(String(number).replace('#', '').trim())
+    if (!repository || !Number.isInteger(n) || n <= 0) return
+    if (targets.some(t => t.repository === repository && t.type === type && t.number === n)) { setNumber(''); return }
+    setTargets(prev => [...prev, { repository, type, number: n }])
+    setNumber('')
+  }
+
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Run “{agent.name}”</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Choose the PRs / issues to judge this run. Each is verified against the live app, scoped to what it touches.</p>
+        {repos.length === 0 && !detail.isLoading && <p className="text-xs text-status-warning">This agent has no configured repositories. Edit it to add some first.</p>}
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-end">
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Repository</span>
+            <select value={repository} onChange={e => setRepository(e.target.value)} className="mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+              {repos.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Type</span>
+            <select value={type} onChange={e => setType(e.target.value as 'pr' | 'issue')} className="mt-1 block rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+              <option value="pr">PR</option>
+              <option value="issue">Issue</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Number</span>
+            <Input inputSize="sm" className="w-24" value={number} onChange={e => setNumber(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }} placeholder="123" />
+          </label>
+          <Button size="sm" variant="secondary" onClick={add} disabled={!repository || !number.trim()}>Add</Button>
+        </div>
+        {targets.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {targets.map((t, i) => (
+              <Badge key={`${t.repository}-${t.type}-${t.number}`} size="sm" variant="default">
+                {t.repository} {t.type === 'pr' ? 'PR' : 'Issue'} #{t.number}
+                <button type="button" className="ml-1.5 text-text-quaternary hover:text-text-primary" onClick={() => setTargets(prev => prev.filter((_, idx) => idx !== i))} aria-label="Remove target">×</button>
+              </Badge>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={targets.length === 0} onClick={() => onRun(targets)}>Run judge</Button>
+        </div>
+      </ModalContent>
+    </Modal>
   )
 }

@@ -61,7 +61,7 @@ interface FormState {
   icp: string
   leadCount: string
   // judge
-  judgeTargets: string // e.g. "pr:123, issue:45"
+  repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
   // shared / repo templates
   repository: string
@@ -97,7 +97,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     product: '',
     icp: '',
     leadCount: '10',
-    judgeTargets: '',
+    repositories: '',
     publishComment: false,
     repository: '',
     baseBranch: 'main',
@@ -153,10 +153,9 @@ function buildConfig(state: FormState): Record<string, unknown> {
     config = {
       github_auth: 'server_gh_cli',
       outputs,
-      judge_targets: parseJudgeTargets(state.judgeTargets),
+      repositories: csv(state.repositories),
       publish: state.publishComment ? 'comment' : 'none',
     }
-    if (state.repository.trim()) config.repository = state.repository.trim()
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
@@ -172,21 +171,6 @@ function csvArgv(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean)
 }
 
-/**
- * Parse the judge's targets from a "pr:123, issue:45" style string into the
- * [{type, number}] shape the backend validates. Bare numbers default to `pr`.
- * Malformed tokens are dropped.
- */
-function parseJudgeTargets(value: string): Array<{ type: 'pr' | 'issue'; number: number }> {
-  return csv(value)
-    .map(token => {
-      const [rawType, rawNumber] = token.includes(':') ? token.split(':') : ['pr', token]
-      const type = rawType.trim().toLowerCase() === 'issue' ? 'issue' : 'pr'
-      const number = Number(String(rawNumber).replace('#', '').trim())
-      return Number.isInteger(number) && number > 0 ? { type, number } : null
-    })
-    .filter((item): item is { type: 'pr' | 'issue'; number: number } => item !== null)
-}
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
   if (!raw.trim()) return null
@@ -218,11 +202,7 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
-    judgeTargets: Array.isArray(config.judge_targets)
-      ? (config.judge_targets as Array<{ type?: string; number?: number }>)
-          .map(target => `${target.type === 'issue' ? 'issue' : 'pr'}:${target.number ?? ''}`)
-          .join(', ')
-      : '',
+    repositories: Array.isArray(config.repositories) ? (config.repositories as string[]).join(', ') : '',
     publishComment: config.publish === 'comment',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
@@ -388,7 +368,7 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'config':
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
-      if (state.template === 'judge') return state.repository.trim().length > 0 && parseJudgeTargets(state.judgeTargets).length > 0
+      if (state.template === 'judge') return csv(state.repositories).length > 0
       return true
     case 'schedule':
       if (state.scheduleKind === 'manual') return true
@@ -571,11 +551,8 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
 
       {template === 'judge' && (
         <div className="space-y-4">
-          <Field label="Repository (owner/repo)" hint="Where the PRs/issues live. Read via the server gh CLI to scope what each claim touches.">
-            <Input inputSize="sm" value={state.repository} onChange={event => set('repository', event.target.value)} placeholder="acme/web" />
-          </Field>
-          <Field label="PRs / issues to judge" hint="Comma-separated, e.g. pr:123, issue:45. A bare number is treated as a PR. Set the live app URL in the Target step.">
-            <Input inputSize="sm" value={state.judgeTargets} onChange={event => set('judgeTargets', event.target.value)} placeholder="pr:123, issue:45" />
+          <Field label="Repositories (owner/repo, comma-separated)" hint="The repos this judge may target. The specific PRs/issues are chosen each time you run it. Set the live app URL in the Target step.">
+            <Input inputSize="sm" value={state.repositories} onChange={event => set('repositories', event.target.value)} placeholder="acme/web, acme/api" />
           </Field>
           <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />

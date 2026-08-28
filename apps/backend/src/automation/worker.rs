@@ -411,13 +411,15 @@ fn target_environment(
 /// actually touched. Best-effort per target: a target that cannot be fetched is
 /// recorded with an `error` field rather than aborting the whole run.
 async fn resolve_judge_targets(
-    repository: &str,
     targets: &[serde_json::Value],
     token: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let mut resolved = Vec::new();
     for target in targets.iter().take(50) {
         let kind = target.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
             continue;
         };
@@ -426,7 +428,10 @@ async fn resolve_judge_targets(
             "issue" => ("issue", "number,title,body,labels,url,state"),
             _ => continue,
         };
-        let reference = format!("{} #{number}", if kind == "pr" { "PR" } else { "Issue" });
+        let reference = format!(
+            "{} {repository}#{number}",
+            if kind == "pr" { "PR" } else { "Issue" }
+        );
         let mut command = Command::new("gh");
         restrict_claude_environment(&mut command);
         if let Some(token) = token {
@@ -467,15 +472,16 @@ async fn resolve_judge_targets(
                         }
                         value["ref"] = json!(reference);
                         value["type"] = json!(kind);
+                        value["repository"] = json!(repository);
                         resolved.push(value);
                     }
                     Err(_) => resolved.push(
-                        json!({"ref":reference,"type":kind,"number":number,"error":"gh_parse_failed"}),
+                        json!({"ref":reference,"type":kind,"repository":repository,"number":number,"error":"gh_parse_failed"}),
                     ),
                 }
             }
             _ => resolved.push(
-                json!({"ref":reference,"type":kind,"number":number,"error":"gh_unavailable"}),
+                json!({"ref":reference,"type":kind,"repository":repository,"number":number,"error":"gh_unavailable"}),
             ),
         }
     }
@@ -487,16 +493,53 @@ async fn resolve_judge_targets(
 /// target (the issue-comment API serves PRs too), matched to the finding that
 /// references that target number. Best-effort and idempotent via the delivery
 /// ledger; a failure to comment on one target never discards the recorded verdict.
+/// A judge finding is a "bug" when it is explicitly tagged so, or (for older
+/// contracts) when its severity is anything other than "info".
+fn judge_finding_is_bug(finding: &serde_json::Value) -> bool {
+    finding.get("kind").and_then(|v| v.as_str()) == Some("bug")
+        || finding
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .is_some_and(|severity| severity != "info")
+}
+
+/// Render one finding as a GitHub-markdown bullet, embedding its evidence
+/// screenshot via the durable re-signing endpoint when a public base is configured.
+fn render_judge_finding(
+    finding: &serde_json::Value,
+    run_id: &str,
+    evidence_base: Option<&str>,
+) -> String {
+    let title = finding
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(untitled)");
+    let severity = finding
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("info");
+    let summary: String = finding
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(4000)
+        .collect();
+    let image = finding
+        .get("screenshot")
+        .and_then(|v| v.as_str())
+        .filter(|name| !name.is_empty())
+        .zip(evidence_base)
+        .map(|(name, base)| format!("\n\n  ![evidence]({base}/evidence/{run_id}/{name})"))
+        .unwrap_or_default();
+    format!("- **{title}** _({severity})_\n\n  {summary}{image}")
+}
+
 async fn publish_judge_comments(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
     result: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let repository = claim
-        .config
-        .get("repository")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("repository_missing"))?;
     let token = github_access(store, claim)
         .await?
         .ok_or_else(|| anyhow::anyhow!("github_connector_required"))?;
@@ -512,28 +555,57 @@ async fn publish_judge_comments(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    // Absolute base for embedding evidence images that never expire (the public
+    // re-signing endpoint). Without it configured, comments omit the image.
+    let evidence_base = std::env::var("PUBLIC_API_BASE_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_string());
     let mut posted = Vec::new();
     for target in targets.iter().take(50) {
         let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
             continue;
         };
+        let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let needle = format!("#{number}");
-        let verdict = findings
+        let own: Vec<&serde_json::Value> = findings
             .iter()
-            .find(|f| {
+            .filter(|f| {
                 f.get("title")
                     .and_then(|t| t.as_str())
                     .is_some_and(|t| t.contains(&needle))
             })
-            .and_then(|f| f.get("summary").and_then(|s| s.as_str()))
-            .unwrap_or("NexusMind judged this target but produced no verdict.")
-            .chars()
-            .take(8000)
-            .collect::<String>();
-        let body = format!(
-            "## NexusMind — Judge verdict\n\n{verdict}\n\n---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
+            .collect();
+        let mut bugs = Vec::new();
+        let mut feedback = Vec::new();
+        for finding in own.iter().copied() {
+            let rendered =
+                render_judge_finding(finding, &claim.run.id, evidence_base.as_deref());
+            if judge_finding_is_bug(finding) {
+                bugs.push(rendered);
+            } else {
+                feedback.push(rendered);
+            }
+        }
+        let mut sections = String::new();
+        if !bugs.is_empty() {
+            sections.push_str(&format!("### Issues found\n\n{}\n\n", bugs.join("\n\n")));
+        }
+        if !feedback.is_empty() {
+            sections.push_str(&format!("### Feedback\n\n{}\n\n", feedback.join("\n\n")));
+        }
+        if sections.is_empty() {
+            sections.push_str("NexusMind judged this target but produced no findings.\n\n");
+        }
+        let body: String = format!(
+            "## NexusMind — Judge verdict\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
             claim.run.id
-        );
+        )
+        .chars()
+        .take(60_000)
+        .collect();
         let delivery_key =
             format!("judge-comment:{}:{repository}:{number}", claim.run.definition_id);
         let delivery = {
@@ -1501,13 +1573,15 @@ fn fixed_prompt(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
         ),
         "judge" => {
-            // Judge reuses the QA finding JSON shape, but its scope rule is the
-            // inverse of QA's: it must emit exactly one finding PER TARGET (never an
-            // empty array) — `info` when the claim is met — so contradicting QA's
-            // "empty array when correct" it defines its own contract.
-            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target reference, e.g. PR #123 or Issue #45>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<verdict: met | not met | partial — then what you tested, observed vs expected, and why>\",\"fingerprint\":\"<stable-kebab-case id built from the target and the claim, e.g. pr-123-login-fix>\",\"screenshot\":\"<evidence filename>.png\"}]}. Emit EXACTLY ONE finding per target in `judge_targets_resolved` — never an empty array — using severity \"info\" only when the claim is fully met, and \"low|medium|high|critical\" (scaled to impact) when it is not met or only partial. The finding \"title\" MUST contain the target's \"#<number>\" so the verdict can be mapped back to it. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            // The judge emits SPECIFIC findings, each tagged kind "bug" (a concrete
+            // problem) or "feedback" (something that works / a positive note), and
+            // maps them back to a target by putting its #number in the title.
+            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right (or, if the claim is fully met with nothing wrong, a single \"feedback\" finding stating it is met). Never return an empty findings array. Every finding \"title\" MUST contain the target's \"#<number>\" so it can be mapped back. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            // The browser starts from a fresh, in-memory profile each run, so any
+            // stale content is the app's own service worker / CDN, not the agent.
+            let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
             format!(
-                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out repository; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{turn_budget}{slack_clause}{custom_clause}{judge_contract}"
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
             )
         }
         "github_issue_resolver" => {
@@ -2322,21 +2396,40 @@ async fn execute_claim(
         }
     }
     if claim.template_key == "judge" {
-        let repository = runtime_config
-            .get("repository")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let targets = runtime_config
+        // Targets are chosen per run (merged into the config from the run input);
+        // each carries its own repository, constrained to the agent's allowlist.
+        let allowed: Vec<String> = runtime_config
+            .get("repositories")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let targets: Vec<serde_json::Value> = runtime_config
             .get("judge_targets")
             .and_then(|value| value.as_array())
-            .cloned()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|target| {
+                        target
+                            .get("repository")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|repo| allowed.iter().any(|allowed| allowed == repo))
+                    })
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
-        if repository.is_empty() || targets.is_empty() {
+        if targets.is_empty() {
             let _ = tokio::fs::remove_dir_all(&workdir).await;
             return ("blocked_policy".into(), json!({"code":"judge_targets_required"}));
         }
-        let resolved = resolve_judge_targets(&repository, &targets, repo_token.as_deref()).await;
+        let token = github_access(store, claim).await.ok().flatten();
+        let resolved = resolve_judge_targets(&targets, token.as_deref()).await;
         if resolved.iter().all(|target| target.get("error").is_some()) {
             let _ = tokio::fs::remove_dir_all(&workdir).await;
             return (

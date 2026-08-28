@@ -1369,7 +1369,7 @@ export class NexusMindClient {
   enableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/enable`,{method:'POST'}) }
   disableAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/disable`,{method:'POST'}) }
   archiveAutonomousAgent(id:string): Promise<AutonomousAgentDetail> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/archive`,{method:'POST'}) }
-  runAutonomousAgent(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/run`,{method:'POST'}) }
+  runAutonomousAgent(id:string, body?:{targets:Array<{repository:string;type:'pr'|'issue';number:number}>}): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/run`,{method:'POST', ...(body ? {body:JSON.stringify(body)} : {})}) }
   getAutonomousAgentSchedule(id:string): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`) }
   putAutonomousAgentSchedule(id:string,data:{kind:string;expression?:string;timezone:string;misfire_policy:string;enabled:boolean}): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`,{method:'PUT',body:JSON.stringify(data)}) }
   listAutonomousAgentRuns(definitionId?:string): Promise<AutonomousAgentRun[]> { return this.request(`/v1/autonomous-agent-runs${definitionId?`?definition_id=${encodeURIComponent(definitionId)}`:''}`) }
