@@ -2794,7 +2794,7 @@ async fn deliver_findings(
 ) {
     if !matches!(
         claim.template_key.as_str(),
-        "qa" | "github_pr_reviewer" | "judge"
+        "qa" | "github_pr_reviewer" | "judge" | "lead_generation"
     ) {
         return;
     }
