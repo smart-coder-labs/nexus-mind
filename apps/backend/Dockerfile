@@ -74,7 +74,7 @@ RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright",
 # tools surface as `mcp__plugin_nexusmind_nexusmind__*`, matching those templates'
 # allowedTools. NEXUSMIND_API_KEY + NEXUSMIND_MCP_TOOL_PROFILE are inherited from
 # the worker-set command env; the base URL is pinned here.
-RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmind-mcp","args":[],"env":{"NEXUSMIND_BASE_URL":"https://api.nexusmind.smartcoderlabs.com"}}}}' > /app/nexusmind-mcp.json
+RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmind-mcp","args":[],"env":{"NEXUSMIND_BASE_URL":"https://api.nexusmind.smartcoderlabs.com","NEXUSMIND_MCP_TOOL_PROFILE":"essential"}}}}' > /app/nexusmind-mcp.json
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker

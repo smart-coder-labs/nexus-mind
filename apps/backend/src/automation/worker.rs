@@ -1613,7 +1613,11 @@ fn fixed_prompt(
             // explicit no-op delivered to the maintainer as an issue comment.
             let issue_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences. If you implemented a bounded change, leave your edits in the working tree and return {\"title\":\"<concise pull request title>\",\"summary\":\"<what you changed and why>\"}. If the issue requires NO code change, make no edits and return {\"no_op\":true,\"comment\":\"<explain to the maintainer, in GitHub markdown, why no change is needed>\"}. Never leave the title empty; if you are unsure, still provide your best one-line title.";
             let progress_clause = " Keep a file named `PENDING.md` at the repository root up to date as you work: a short running list of what you have DONE and what is still LEFT to do. The worker checkpoints your work-in-progress periodically, and if you run out of time/budget it opens a partial pull request whose \"Pending\" section is taken from this file — so keeping it current is how unfinished work is handed off. Update it before you finish.";
-            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{progress_clause}{custom_clause}{issue_contract}")
+            // Hard rule: delegate heavy work to subagents so the orchestrator's own
+            // context window stays small and the run doesn't burn its session budget
+            // on bulk exploration.
+            let subagent_clause = " HARD RULE — WORK THROUGH SUBAGENTS: to keep your own context window small and the run cheap, you MUST delegate the heavy work to subagents with the Task tool rather than doing it all in your own context. First spawn a subagent to investigate the issue and the relevant code and return a SHORT summary (key files, root cause, a concrete plan); then spawn a subagent to implement the bounded change; use further subagents for any large file reading or verification. Do NOT read large files, list whole directories, or explore broadly in your OWN turns — consume only the concise summaries the subagents return and drop detail you no longer need. Reserve your own turns for orchestration, the PENDING.md update, and emitting the final JSON.";
+            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{subagent_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
             "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
@@ -2203,6 +2207,15 @@ async fn resolve_issue_worktree(
     };
     if let Some(handle) = committer {
         handle.abort();
+    }
+    // The deterministic evaluator requires the context manifest on the result;
+    // without it every fanout issue was rejected as `evaluator_context_missing`
+    // and no PR was ever opened. (The single-issue path already attaches it.)
+    if let Some(object) = outcome.1.as_object_mut() {
+        object.insert(
+            "context_manifest".into(),
+            context_manifest(&claim, &runtime_config),
+        );
     }
     if continue_branch.is_some() {
         // Resume mode: never open a new PR. Push the latest work onto the existing

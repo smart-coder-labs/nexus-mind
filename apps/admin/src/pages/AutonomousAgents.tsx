@@ -740,6 +740,52 @@ export default function AutonomousAgents() {
                   </div>
                   <p className="text-sm text-text-tertiary mt-2 leading-relaxed">{finding.summary}</p>
 
+                  {(() => {
+                    const lead = asDict(ev.lead)
+                    if (!lead) return null
+                    const execs = (asArr(lead.executives) ?? []).map(asDict).filter(Boolean) as Dict[]
+                    const sources = (asArr(lead.source_urls) ?? []).map(asStr).filter(Boolean) as string[]
+                    const link = (label: string, url?: string, text?: string) => url ? <a key={label} href={url} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">{text ?? label}</a> : null
+                    const contacts = [
+                      link('Website', asStr(lead.website)),
+                      asStr(lead.contact_email) ? <a key="email" href={`mailto:${asStr(lead.contact_email)}`} className="text-accent-blue hover:underline">{asStr(lead.contact_email)}</a> : null,
+                      asStr(lead.contact_phone) ? <span key="phone" className="text-text-secondary">{asStr(lead.contact_phone)}</span> : null,
+                      link('Contact page', asStr(lead.contact_page)),
+                      link('LinkedIn', asStr(lead.company_linkedin)),
+                    ].filter(Boolean)
+                    return (
+                      <div className="mt-3 rounded-[12px] border border-border-primary p-3 space-y-2.5 text-xs">
+                        {(asStr(lead.headquarters) || asStr(lead.industry)) && (
+                          <p className="text-text-tertiary">{[asStr(lead.industry), asStr(lead.headquarters)].filter(Boolean).join(' · ')}</p>
+                        )}
+                        {contacts.length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{contacts}</div>}
+                        {execs.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary mb-1.5">Decision-makers</p>
+                            <div className="space-y-1">
+                              {execs.map((e, i) => (
+                                <div key={i} className="flex flex-wrap items-baseline gap-x-2">
+                                  <span className="text-text-primary font-medium">{asStr(e.name) ?? '—'}</span>
+                                  {asStr(e.title) && <span className="text-text-tertiary">{asStr(e.title)}</span>}
+                                  {asStr(e.linkedin) && <a href={asStr(e.linkedin)} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">LinkedIn</a>}
+                                  {asStr(e.public_email) && <a href={`mailto:${asStr(e.public_email)}`} className="text-accent-blue hover:underline">{asStr(e.public_email)}</a>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {(asStr(lead.email_subject) || asStr(lead.email_body)) && (
+                          <details>
+                            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Drafted email</summary>
+                            {asStr(lead.email_subject) && <p className="mt-1.5 text-text-secondary"><span className="text-text-tertiary">Subject:</span> {asStr(lead.email_subject)}</p>}
+                            {asStr(lead.email_body) && <pre className="mt-1 whitespace-pre-wrap text-text-secondary font-sans">{asStr(lead.email_body)}</pre>}
+                          </details>
+                        )}
+                        {sources.length > 0 && <div className="flex flex-wrap gap-x-3 gap-y-1 text-text-quaternary">{sources.slice(0, 6).map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer" className="hover:text-text-secondary truncate max-w-[220px]">{u.replace(/^https?:\/\//, '')}</a>)}</div>}
+                      </div>
+                    )
+                  })()}
+
                   {hasStructured && (
                     <div className="mt-3 grid gap-4 sm:grid-cols-[200px_1fr]">
                       {shot && (
