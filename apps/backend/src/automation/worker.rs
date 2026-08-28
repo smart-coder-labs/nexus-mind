@@ -1612,7 +1612,8 @@ fn fixed_prompt(
             // prose, no markdown fences). Two shapes: an implemented change, or an
             // explicit no-op delivered to the maintainer as an issue comment.
             let issue_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences. If you implemented a bounded change, leave your edits in the working tree and return {\"title\":\"<concise pull request title>\",\"summary\":\"<what you changed and why>\"}. If the issue requires NO code change, make no edits and return {\"no_op\":true,\"comment\":\"<explain to the maintainer, in GitHub markdown, why no change is needed>\"}. Never leave the title empty; if you are unsure, still provide your best one-line title.";
-            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{custom_clause}{issue_contract}")
+            let progress_clause = " Keep a file named `PENDING.md` at the repository root up to date as you work: a short running list of what you have DONE and what is still LEFT to do. The worker checkpoints your work-in-progress periodically, and if you run out of time/budget it opens a partial pull request whose \"Pending\" section is taken from this file — so keeping it current is how unfinished work is handed off. Update it before you finish.";
+            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
             "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
@@ -1856,6 +1857,192 @@ async fn list_eligible_resolver_issues(
     Ok(eligible)
 }
 
+/// Stable per-issue WIP branch: the resolver force-pushes snapshots of the
+/// in-progress work here so nothing is lost if the run dies or exhausts its budget.
+fn resolver_wip_branch(run_id: &str, number: i64) -> String {
+    format!("nexusmind/wip-{}-{number}", &run_id[..run_id.len().min(12)])
+}
+
+/// Force-push a snapshot of the worktree to the WIP branch WITHOUT touching the
+/// run's real index, working tree or HEAD — it stages into a separate index
+/// (GIT_INDEX_FILE) and writes the commit with plumbing, so the running agent and
+/// the success publish path (which diffs the working tree) are completely
+/// unaffected and there is no race. Returns Ok(false) when the tree equals base
+/// (nothing to snapshot yet), Ok(true) when a snapshot was pushed.
+async fn checkpoint_wip_push(
+    workdir: &Path,
+    token: &str,
+    branch: &str,
+    base_sha: &str,
+) -> anyhow::Result<bool> {
+    // Alternate index kept OUTSIDE the worktree so `add -A` never stages it.
+    let alt_index = workdir
+        .parent()
+        .unwrap_or(workdir)
+        .join(format!(".wip-index-{}", branch.replace('/', "_")));
+    let _ = tokio::fs::remove_file(&alt_index).await;
+    {
+        let mut add = Command::new("git");
+        add.current_dir(workdir)
+            .env("GIT_INDEX_FILE", &alt_index)
+            .args(["add", "-A"]);
+        command_ok(add).await?;
+    }
+    let tree = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .env("GIT_INDEX_FILE", &alt_index)
+            .args(["write-tree"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!("write_tree_failed");
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let base_tree = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .args(["rev-parse", &format!("{base_sha}^{{tree}}")])
+            .output()
+            .await?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let _ = tokio::fs::remove_file(&alt_index).await;
+    if tree.is_empty() || tree == base_tree {
+        return Ok(false);
+    }
+    let commit = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .env("GIT_AUTHOR_NAME", "NexusMind Agent")
+            .env("GIT_AUTHOR_EMAIL", "agents@nexusmind.local")
+            .env("GIT_COMMITTER_NAME", "NexusMind Agent")
+            .env("GIT_COMMITTER_EMAIL", "agents@nexusmind.local")
+            .args(["commit-tree", &tree, "-p", base_sha, "-m", "NexusMind: work-in-progress checkpoint"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!("commit_tree_failed");
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    {
+        let mut push = authenticated_git(token);
+        push.current_dir(workdir).args([
+            "push",
+            "--force",
+            "origin",
+            &format!("{commit}:refs/heads/{branch}"),
+        ]);
+        command_ok(push).await?;
+    }
+    Ok(true)
+}
+
+/// Open (or reconcile) a DRAFT pull request from an already-pushed WIP branch when
+/// a resolver attempt could not finish (budget/time). The partial work is durable
+/// on the branch; this surfaces it for review and points at the Continue action.
+async fn open_partial_pr(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    token: &str,
+    repository: &str,
+    number: i64,
+    branch: &str,
+) -> anyhow::Result<serde_json::Value> {
+    ensure_diff_has_no_secrets(workdir).await?;
+    let base = claim
+        .config
+        .get("base_branch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let pending = tokio::fs::read_to_string(workdir.join("PENDING.md"))
+        .await
+        .ok()
+        .map(|body| body.chars().take(8000).collect::<String>())
+        .filter(|body| !body.trim().is_empty())
+        .unwrap_or_else(|| {
+            "The agent ran out of its time/cost budget before finishing. Review the diff and use the run's Continue action to resume.".to_string()
+        });
+    let title = super::connectors::get_github_issue(token, repository, number)
+        .await
+        .ok()
+        .and_then(|issue| {
+            issue
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|t| format!("NexusMind (partial): {t}"))
+        })
+        .unwrap_or_else(|| format!("NexusMind (partial): resolve issue #{number}"));
+    let body = format!(
+        "Refs #{number}\n\n⚠️ **Work in progress — opened automatically because the run hit its time/cost budget before finishing.** The branch holds the work done so far; nothing was lost. Use the run's Continue action to resume and finish it.\n\n## Pending\n\n{pending}\n\n## Limitations\n\nDraft only — NexusMind never merges or deploys; requires human review.\n\n- Run: `{}`",
+        claim.run.id
+    );
+    let delivery_key = format!(
+        "resolver-partial:{}:{repository}:{number}",
+        claim.run.definition_id
+    );
+    let delivery = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        queries::create_autonomous_agent_delivery(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            None,
+            "github_pr",
+            &delivery_key,
+        )?
+    };
+    if delivery.status == "delivered" {
+        return Ok(json!({"partial_pull_request":{"reconciled":true,"url":delivery.external_url}}));
+    }
+    require_publish_authority(store, claim)?;
+    let pr = match super::connectors::create_draft_pr(token, repository, &title, branch, base, &body)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            let db = store.conn();
+            if let Ok(conn) = db.lock() {
+                let _ = queries::fail_autonomous_agent_delivery(
+                    &conn,
+                    &claim.org_id,
+                    &delivery.id,
+                    "github_pr_failed",
+                );
+            }
+            return Err(error);
+        }
+    };
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let external_id = pr.get("number").map(|v| v.to_string());
+        let url = pr.get("html_url").and_then(|v| v.as_str());
+        queries::complete_autonomous_agent_delivery(
+            &conn,
+            &claim.org_id,
+            &delivery.id,
+            external_id.as_deref(),
+            url,
+        )?;
+        if let Some(external_id) = external_id.as_deref() {
+            queries::create_autonomous_output_link(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+                "draft_pr",
+                external_id,
+                url,
+            )?;
+        }
+    }
+    Ok(json!({"partial_pull_request":pr}))
+}
+
 /// Resolve ONE assigned issue inside its own git worktree: inject the target,
 /// run the bounded resolver agent, then publish through the same gates
 /// (secret-scan, diff limits, publish-authority) and open a draft PR. Returns
@@ -1872,6 +2059,7 @@ async fn resolve_issue_worktree(
     seq_base: i64,
     max_turns: u64,
     wall_time: u64,
+    base_sha: String,
 ) -> (i64, String, serde_json::Value) {
     if let Some(object) = claim.config.as_object_mut() {
         let trigger = object.entry("trigger").or_insert_with(|| json!({}));
@@ -1961,6 +2149,20 @@ async fn resolve_issue_worktree(
             }
         }
     };
+    // Force-push a WIP snapshot every few minutes so partial work survives a crash
+    // or a budget/time cutoff. Race-free (separate index) and only when we can push.
+    let wip_branch = resolver_wip_branch(&claim.run.id, number);
+    let committer = token.clone().map(|checkpoint_token| {
+        let workdir = workdir.clone();
+        let branch = wip_branch.clone();
+        let base = base_sha.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(180)).await;
+                let _ = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await;
+            }
+        })
+    });
     let invocation = run_claude_capturing_transcript(
         &mut claude,
         &store,
@@ -1986,6 +2188,9 @@ async fn resolve_issue_worktree(
             },
         }
     };
+    if let Some(handle) = committer {
+        handle.abort();
+    }
     if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
@@ -1995,6 +2200,30 @@ async fn resolve_issue_worktree(
             match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
                 Ok(published) => outcome.1["published"] = published,
                 Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            }
+        }
+    } else if let Some(ref checkpoint_token) = token {
+        // The attempt didn't finish. Snapshot the latest work; if there is any,
+        // surface it as a resumable partial draft PR instead of discarding it.
+        if checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
+            .await
+            .unwrap_or(false)
+        {
+            outcome.1["resumable"] = json!(true);
+            outcome.1["wip_branch"] = json!(wip_branch);
+            match open_partial_pr(
+                &store,
+                &claim,
+                &workdir,
+                checkpoint_token,
+                &repository,
+                number,
+                &wip_branch,
+            )
+            .await
+            {
+                Ok(published) => outcome.1["published"] = published,
+                Err(error) => outcome.1["partial_pr_error"] = json!(error.to_string()),
             }
         }
     }
@@ -2112,6 +2341,7 @@ async fn execute_resolver_fanout(
                 (index as i64) * 1_000_000,
                 max_turns,
                 wall_time,
+                pinned_sha.clone(),
             ));
         };
     for _ in 0..CONCURRENCY {
@@ -2159,6 +2389,13 @@ async fn execute_resolver_fanout(
     } else {
         "blocked_policy"
     };
+    // Keep the sandbox on any non-clean outcome so the work can be inspected/resumed
+    // locally; only fully-successful runs are torn down. `gc_stale_sandboxes` reaps
+    // leaked ones later so disk doesn't grow unbounded. (The durable copy is the
+    // pushed WIP branch; this is a convenience for same-pod resume.)
+    if status != "succeeded" {
+        let _ = sandbox.into_path();
+    }
     (
         status.into(),
         json!({
@@ -2170,6 +2407,33 @@ async fn execute_resolver_fanout(
             "context_manifest":manifest,
         }),
     )
+}
+
+/// Reap leaked resolver sandboxes (kept on non-successful runs) older than the
+/// cutoff so preserved-on-failure directories don't accumulate on disk.
+async fn gc_stale_sandboxes(max_age_hours: u64) {
+    let dir = std::env::temp_dir();
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return;
+    };
+    let cutoff = std::time::Duration::from_secs(max_age_hours * 3600);
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("nexusmind-agent-") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > cutoff);
+        if stale {
+            let _ = tokio::fs::remove_dir_all(entry.path()).await;
+        }
+    }
 }
 
 async fn execute_claim(
@@ -3529,6 +3793,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                         tracing::warn!("Autonomous retention cleanup failed: {error:#}");
                     }
                 };
+                // Reap resolver sandboxes preserved on failed runs after a day.
+                gc_stale_sandboxes(24).await;
             }
             // Authentication is checked immediately before every lease. A
             // stale successful probe can therefore never authorize a run.
