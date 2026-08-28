@@ -367,14 +367,21 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
             <div className="flex items-center gap-2 mb-3 text-[13px] font-semibold text-text-primary"><Camera className="w-4 h-4 text-accent-blue" />{findings?.length ?? 0} finding{(findings?.length ?? 0) === 1 ? '' : 's'}{screenshots ? ` · ${Object.keys(screenshots).length} screenshot${Object.keys(screenshots).length === 1 ? '' : 's'}` : ''}</div>
             {screenshots && (
               <div className="flex gap-2.5 flex-wrap">
-                {Object.entries(screenshots).slice(0, 6).map(([name, url]) => (
-                  <a key={name} href={typeof url === 'string' ? url : undefined} target="_blank" rel="noreferrer" className="w-28">
-                    {typeof url === 'string'
-                      ? <img src={url} alt={name} className="h-[70px] w-full object-cover rounded-lg border border-border-primary" />
+                {Object.entries(screenshots).slice(0, 6).map(([name, url]) => {
+                  // Prefer the stable re-signing endpoint (durable) over the raw
+                  // presigned URL baked into the result, which expires after 7 days.
+                  const src = run.id
+                    ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
+                    : (typeof url === 'string' ? url : undefined)
+                  return (
+                  <a key={name} href={src} target="_blank" rel="noreferrer" className="w-28">
+                    {src
+                      ? <img src={src} alt={name} className="h-[70px] w-full object-cover rounded-lg border border-border-primary" />
                       : <div className="h-[70px] rounded-lg border border-border-primary bg-white/[0.03]" />}
                     <div className="text-[10.5px] text-text-tertiary mt-1 text-center truncate">{name}</div>
                   </a>
-                ))}
+                  )
+                })}
               </div>
             )}
             {onOpenFindings && <button type="button" onClick={onOpenFindings} className="mt-3 text-xs text-accent-blue">View in Findings →</button>}
@@ -676,7 +683,13 @@ export default function AutonomousAgents() {
         <div className="space-y-3">
           {findings.data?.map(finding => {
             const ev = (finding.evidence ?? {}) as Dict
-            const shot = asStr(ev.screenshot_url) ?? asStr(ev.screenshot)
+            // Build the screenshot src from the stable re-signing endpoint using the
+            // run id + the stored filename, so old evidence (whose baked-in presigned
+            // URL has since expired) still renders. Fall back to the stored URL.
+            const shotName = asStr(ev.screenshot)
+            const shot = finding.run_id && shotName
+              ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(finding.run_id)}/${encodeURIComponent(shotName)}`
+              : (asStr(ev.screenshot_url) ?? shotName)
             const location = ev.location
             const locDict = asDict(location)
             const locStr = asStr(location)

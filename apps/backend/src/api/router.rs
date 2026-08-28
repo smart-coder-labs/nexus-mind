@@ -782,6 +782,13 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/autonomous-agents/github/webhook",
             post(autonomous_webhooks::github_webhook),
         )
+        // Public evidence redirect: re-signs R2 screenshot URLs on every request so
+        // finding images (and GitHub-embedded evidence) never expire. Unauthenticated
+        // by necessity — <img>/GitHub camo cannot send auth headers.
+        .route(
+            "/evidence/:run_id/:name",
+            get(autonomous_agents::get_evidence),
+        )
         .route("/v1/invites/:token", get(admin::get_invite_link))
         .route("/v1/invites/:token/redeem", post(admin::redeem_invite))
         .merge(protected)

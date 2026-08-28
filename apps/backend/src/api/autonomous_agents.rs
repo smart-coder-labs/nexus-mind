@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
     Extension, Json,
 };
 use serde::Deserialize;
@@ -476,6 +477,44 @@ pub async fn run_now(
     .map_err(store_error)?
     .ok_or_else(not_found)?;
     Ok((StatusCode::ACCEPTED, Json(run)))
+}
+
+/// Public, unauthenticated evidence redirect: `/evidence/{run_id}/{name}` 302s to a
+/// freshly presigned R2 GET URL for that run's screenshot. Stored finding URLs were
+/// time-limited presigned links that expired after 7 days (SigV4's hard limit), so
+/// old evidence images broke; this stable path re-signs on every request, so the
+/// admin and GitHub-embedded images never rot. `run_id`+`name` are opaque, and the
+/// object key is derived server-side from the run's org, so it cannot be used to
+/// read arbitrary objects.
+pub async fn get_evidence(
+    State(store): State<SqliteStore>,
+    Path((run_id, name)): Path<(String, String)>,
+) -> Response {
+    // Reject anything that could escape the run's evidence prefix.
+    if name.is_empty() || name.len() > 256 || name.contains('/') || name.contains("..") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(cfg) = crate::automation::r2::R2Config::from_env() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let org_id: Option<String> = {
+        let db = store.conn();
+        let Ok(conn) = db.lock() else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        conn.query_row(
+            "SELECT org_id FROM autonomous_agent_runs WHERE id=?1",
+            [&run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    };
+    let Some(org_id) = org_id else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let key = format!("qa-evidence/{org_id}/{run_id}/{name}");
+    let url = crate::automation::r2::object_url(&cfg, &key, 3600);
+    Redirect::temporary(&url).into_response()
 }
 
 #[derive(Deserialize)]
