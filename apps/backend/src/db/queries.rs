@@ -17690,6 +17690,17 @@ pub fn patch_autonomous_agent_finding(
     conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
 }
 
+/// Archive every finding that is not already archived (status `ignored`), returning
+/// how many were archived. Archiving is reversible — a finding can be restored to
+/// `open` — and survives re-detection (upsert never resets status).
+pub fn archive_all_autonomous_agent_findings(conn: &Connection, org_id: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE autonomous_agent_findings SET status='ignored',updated_at=datetime('now') WHERE org_id=?1 AND status!='ignored'",
+        rusqlite::params![org_id],
+    )
+    .map_err(Into::into)
+}
+
 /// Mark every OPEN finding that was delivered as the given GitHub issue (matched
 /// by the issue's html_url on its `github_issue` delivery) as resolved, so a
 /// finding the resolver has just addressed with a PR no longer lingers. Returns

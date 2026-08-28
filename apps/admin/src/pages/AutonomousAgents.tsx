@@ -524,6 +524,10 @@ export default function AutonomousAgents() {
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
   const retryDelivery = useMutation({ mutationFn: (id: string) => client.retryAutonomousAgentDelivery(id), onSuccess: () => invalidate('autonomous-deliveries') })
   const resolveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'resolved'), onSuccess: () => invalidate('autonomous-findings') })
+  const archiveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'ignored'), onSuccess: () => invalidate('autonomous-findings') })
+  const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
+  const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
+  const [showArchivedFindings, setShowArchivedFindings] = useState(false)
 
   const openEdit = async (agent: AutonomousAgentDefinition) => {
     const detail = await client.getAutonomousAgent(agent.id)
@@ -681,9 +685,24 @@ export default function AutonomousAgents() {
         </div>
       )}
 
-      {tab === 'findings' && (
+      {tab === 'findings' && (() => {
+        const allFindings = findings.data ?? []
+        const archivedFindingsCount = allFindings.filter(f => f.status === 'ignored').length
+        const activeCount = allFindings.length - archivedFindingsCount
+        const visibleFindings = showArchivedFindings ? allFindings : allFindings.filter(f => f.status !== 'ignored')
+        return (
         <div className="space-y-3">
-          {findings.data?.map(finding => {
+          {allFindings.length > 0 && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                {archivedFindingsCount > 0 && <Switch size="sm" checked={showArchivedFindings} onCheckedChange={setShowArchivedFindings} label={`Show archived (${archivedFindingsCount})`} />}
+              </div>
+              {can('autonomous_agent:update') && activeCount > 0 && (
+                <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} loading={archiveAllFindings.isPending} onClick={() => { if (window.confirm(`Archive all ${activeCount} finding${activeCount === 1 ? '' : 's'}? You can restore them from “Show archived”.`)) archiveAllFindings.mutate() }}>Archive all</Button>
+              )}
+            </div>
+          )}
+          {visibleFindings.map(finding => {
             const ev = (finding.evidence ?? {}) as Dict
             // Build the screenshot src from the stable re-signing endpoint using the
             // run id + the stored filename, so old evidence (whose baked-in presigned
@@ -706,9 +725,12 @@ export default function AutonomousAgents() {
                   <div className="flex justify-between gap-3 items-start flex-wrap">
                     <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
                     <div className="flex items-center gap-2">
+                      {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
-                      <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : 'default'}>{finding.status}</Badge>
+                      <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
                       {can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Resolve</button>}
+                      {can('autonomous_agent:update') && finding.status !== 'ignored' && <button type="button" onClick={() => archiveFinding.mutate(finding.id)} className="text-xs text-text-tertiary hover:text-text-primary font-medium">Archive</button>}
+                      {can('autonomous_agent:update') && finding.status === 'ignored' && <button type="button" onClick={() => restoreFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Restore</button>}
                     </div>
                   </div>
                   <p className="text-sm text-text-tertiary mt-2 leading-relaxed">{finding.summary}</p>
@@ -777,9 +799,11 @@ export default function AutonomousAgents() {
               </article>
             )
           })}
-          {findings.data?.length === 0 && <EmptyState title="No findings yet" description="Confirmed findings from QA and review agents will land here — with the screenshot, the reproduction, and where they were delivered." />}
+          {allFindings.length === 0 && <EmptyState title="No findings yet" description="Confirmed findings from QA and review agents will land here — with the screenshot, the reproduction, and where they were delivered." />}
+          {allFindings.length > 0 && visibleFindings.length === 0 && <EmptyState title="All findings archived" description="Toggle “Show archived” to see them." />}
         </div>
-      )}
+        )
+      })()}
 
       {tab === 'runtime' && (
         <div className="grid gap-4 md:grid-cols-2">

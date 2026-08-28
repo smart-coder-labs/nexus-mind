@@ -1396,6 +1396,7 @@ export class NexusMindClient {
   }
   listAutonomousAgentFindings(): Promise<AutonomousAgentFinding[]> { return this.request('/v1/autonomous-agent-findings') }
   patchAutonomousAgentFinding(id:string,status:'open'|'resolved'|'ignored'): Promise<AutonomousAgentFinding> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status})}) }
+  archiveAllAutonomousAgentFindings(): Promise<{archived:number}> { return this.request('/v1/autonomous-agent-findings/archive-all',{method:'POST'}) }
   listAutonomousAgentDeliveries(): Promise<AutonomousAgentDelivery[]> { return this.request('/v1/autonomous-agent-deliveries') }
   retryAutonomousAgentDelivery(id:string): Promise<AutonomousAgentDelivery> { return this.request(`/v1/autonomous-agent-deliveries/${encodeURIComponent(id)}/retry`,{method:'POST'}) }
   listAutonomousAgentTargets(id:string): Promise<AutonomousAgentTarget[]> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/targets`) }

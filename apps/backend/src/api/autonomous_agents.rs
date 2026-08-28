@@ -724,6 +724,18 @@ pub async fn patch_finding(
     ))
 }
 
+pub async fn archive_all_findings(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    let archived = queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id)
+        .map_err(store_error)?;
+    Ok(Json(serde_json::json!({ "archived": archived })))
+}
+
 pub async fn list_deliveries(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
