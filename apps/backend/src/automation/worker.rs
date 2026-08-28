@@ -2313,7 +2313,10 @@ async fn execute_resolver_fanout(
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
-    const MAX_ISSUES: usize = 10;
+    // One issue per run: keeps each run small and cheap (avoids blowing the Claude
+    // session budget) and gives a clean 1 PR ↔ 1 run mapping. Subsequent runs pick
+    // the next eligible issue (ones with an open resolver PR are already excluded).
+    const MAX_ISSUES: usize = 1;
     const CONCURRENCY: usize = 3;
     // A Continue run resumes the WIP branches left by `continue_from_run_id`
     // (discovered after cloning) instead of listing fresh eligible issues.
@@ -4007,6 +4010,13 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                         status = "partial".into();
                     }
                 };
+            } else if status == "budget_exhausted" {
+                // The run hit its time/cost budget but may have already produced
+                // findings before stopping — persist them so they still show up in
+                // the Findings tab (and configured outputs), keeping the
+                // budget_exhausted status. deliver_findings no-ops when the outcome
+                // carries no result/findings (e.g. a bare wall-time timeout).
+                deliver_findings(&store, &config, &claim, &result).await;
             }
             if status == "blocked_runtime"
                 && matches!(
