@@ -2119,6 +2119,13 @@ async fn resolve_issue_worktree(
         "--allowedTools",
         "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
     ]);
+    // Register the NexusMind MCP so the resolver can actually load the tools its
+    // allowedTools/prompt reference (without this the server is never spawned).
+    let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
+        .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
+    if std::path::Path::new(&nexusmind_mcp).exists() {
+        claude.args(["--mcp-config", &nexusmind_mcp]);
+    }
     let secret_values: Vec<String> = token.iter().cloned().collect();
     claude.current_dir(&workdir).kill_on_drop(true);
     let cancelled = async {
@@ -2971,6 +2978,18 @@ async fn execute_claim(
     // above. Without --add-dir, Claude Code refuses reads outside the cwd tree.
     if let Some(ref dir) = context_dir_arg {
         claude.args(["--add-dir", dir.as_str()]);
+    }
+    // Register the NexusMind MCP for the templates whose allowedTools reference it
+    // (issue-resolver, lead-generation) so its tools actually load.
+    if matches!(
+        claim.template_key.as_str(),
+        "github_issue_resolver" | "lead_generation"
+    ) {
+        let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
+            .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
+        if std::path::Path::new(&nexusmind_mcp).exists() {
+            claude.args(["--mcp-config", &nexusmind_mcp]);
+        }
     }
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
     // a per-run directory the worker reads back afterwards for evidence upload.

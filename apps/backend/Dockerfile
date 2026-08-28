@@ -40,7 +40,7 @@ ENV HOME=/claude-home \
 
 # Playwright CLI + browsers (so the QA template's `npx playwright test` runs) and
 # the Playwright MCP (so QA agents can drive a browser via mcp__playwright__*).
-RUN npm install -g playwright@latest @playwright/mcp@latest \
+RUN npm install -g playwright@latest @playwright/mcp@latest @smart-coder-labs/nexusmind-mcp@0.15.0 \
     && playwright install --with-deps chromium \
     # @playwright/mcp's real bin name isn't `mcp-server-playwright`; resolve the
     # actual entry from its package.json and expose it under a stable name so the
@@ -50,6 +50,13 @@ RUN npm install -g playwright@latest @playwright/mcp@latest \
     && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
     && ln -sf "${PKG}/${BIN}" /usr/local/bin/mcp-server-playwright \
     && chmod +x "${PKG}/${BIN}" \
+    # Same for the NexusMind MCP so agents (issue-resolver, lead-generation) can
+    # load project context without an npx network fetch at spawn time.
+    && PKGN="$(npm root -g)/@smart-coder-labs/nexusmind-mcp" \
+    && BINN="$(node -e "const b=require('${PKGN}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
+    && test -n "${BINN}" && test -f "${PKGN}/${BINN}" \
+    && ln -sf "${PKGN}/${BINN}" /usr/local/bin/nexusmind-mcp \
+    && chmod +x "${PKGN}/${BINN}" \
     # Let @playwright/mcp install exactly the browser build it will look for at
     # runtime (its own pinned chrome-for-testing revision), into
     # PLAYWRIGHT_BROWSERS_PATH; OS libs already came from the --with-deps step.
@@ -61,6 +68,13 @@ RUN npm install -g playwright@latest @playwright/mcp@latest \
 # MCP config wired into QA runs via `claude --mcp-config`. --no-sandbox is
 # required because chromium runs as root inside the container.
 RUN printf '%s' '{"mcpServers":{"playwright":{"command":"mcp-server-playwright","args":["--headless","--isolated","--no-sandbox","--browser","chromium"]}}}' > /app/qa-mcp.json
+
+# MCP config wired into the issue-resolver / lead-generation runs via
+# `claude --mcp-config`. The server is named `plugin_nexusmind_nexusmind` so its
+# tools surface as `mcp__plugin_nexusmind_nexusmind__*`, matching those templates'
+# allowedTools. NEXUSMIND_API_KEY + NEXUSMIND_MCP_TOOL_PROFILE are inherited from
+# the worker-set command env; the base URL is pinned here.
+RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmind-mcp","args":[],"env":{"NEXUSMIND_BASE_URL":"https://api.nexusmind.smartcoderlabs.com"}}}}' > /app/nexusmind-mcp.json
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
