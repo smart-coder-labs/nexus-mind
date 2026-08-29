@@ -17493,6 +17493,90 @@ pub fn put_autonomous_agent_connector(
     ).map_err(Into::into)
 }
 
+/// Store (or refresh) a LinkedIn OAuth connection as an encrypted `linkedin`
+/// connector, keyed by destination ("personal"|"organization"). The secret holds
+/// the token bundle JSON ({access_token, refresh_token, expires_at}); metadata
+/// holds the non-secret author URN + display name so callers can decide where to
+/// post without decrypting.
+pub fn upsert_linkedin_connector(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    destination: &str,
+    author_urn: &str,
+    display_name: &str,
+    token_bundle_json: &str,
+) -> Result<()> {
+    let ciphertext = crate::crypto::encrypt(token_bundle_json)
+        .ok_or_else(|| anyhow::anyhow!("encryption_required"))?;
+    let metadata = serde_json::json!({
+        "destination": destination,
+        "author_urn": author_urn,
+        "display_name": display_name,
+    });
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by)
+         VALUES (?1,?2,'linkedin',?3,?4,?5,'[]','ready',?6)
+         ON CONFLICT(org_id,kind,name) DO UPDATE SET
+           secret_ciphertext=excluded.secret_ciphertext,metadata_json=excluded.metadata_json,
+           health='ready',revocation_generation=autonomous_agent_connectors.revocation_generation+1,updated_at=datetime('now')",
+        rusqlite::params![id,org_id,destination,ciphertext,serde_json::to_string(&metadata)?,user_id],
+    )?;
+    Ok(())
+}
+
+/// Fetch a LinkedIn connection's metadata + decrypted token bundle for a
+/// destination, or None if not connected.
+pub fn get_linkedin_connector(
+    conn: &Connection,
+    org_id: &str,
+    destination: &str,
+) -> Result<Option<(serde_json::Value, serde_json::Value)>> {
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT metadata_json, secret_ciphertext FROM autonomous_agent_connectors
+             WHERE org_id=?1 AND kind='linkedin' AND name=?2 AND health!='revoked'",
+            rusqlite::params![org_id, destination],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((metadata_json, ciphertext)) = row else {
+        return Ok(None);
+    };
+    let Some(ciphertext) = ciphertext else {
+        return Ok(None);
+    };
+    let metadata: serde_json::Value =
+        serde_json::from_str(&metadata_json).unwrap_or(serde_json::Value::Null);
+    let plaintext =
+        crate::crypto::decrypt(&ciphertext).ok_or_else(|| anyhow::anyhow!("decryption_failed"))?;
+    let bundle: serde_json::Value =
+        serde_json::from_str(&plaintext).unwrap_or(serde_json::Value::Null);
+    Ok(Some((metadata, bundle)))
+}
+
+/// List connected LinkedIn destinations (non-secret) so the admin can show
+/// connection state.
+pub fn list_linkedin_connectors(conn: &Connection, org_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, metadata_json, updated_at FROM autonomous_agent_connectors
+         WHERE org_id=?1 AND kind='linkedin' AND health!='revoked' ORDER BY name",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        let name: String = row.get(0)?;
+        let metadata: String = row.get(1)?;
+        let updated: String = row.get(2)?;
+        Ok(serde_json::json!({
+            "destination": name,
+            "metadata": serde_json::from_str::<serde_json::Value>(&metadata).unwrap_or(serde_json::Value::Null),
+            "connected_at": updated,
+        }))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 pub fn revoke_autonomous_agent_connector(
     conn: &Connection,
     org_id: &str,

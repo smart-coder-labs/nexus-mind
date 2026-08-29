@@ -668,6 +668,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             post(autonomous_agents::create_finding_issue),
         )
         .route(
+            "/v1/autonomous-agent-findings/:id/publish-linkedin",
+            post(autonomous_agents::publish_finding_linkedin),
+        )
+        .route(
+            "/v1/autonomous-agents/linkedin/authorize",
+            get(autonomous_agents::linkedin_authorize),
+        )
+        .route(
+            "/v1/autonomous-agent-linkedin-connections",
+            get(autonomous_agents::linkedin_connections),
+        )
+        .route(
             "/v1/autonomous-agent-deliveries",
             get(autonomous_agents::list_deliveries),
         )
@@ -805,6 +817,12 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route(
             "/v1/autonomous-agents/github/webhook",
             post(autonomous_webhooks::github_webhook),
+        )
+        // Public LinkedIn OAuth redirect target — LinkedIn calls it directly, so it
+        // cannot carry a session; the signed `state` carries org/user/destination.
+        .route(
+            "/v1/autonomous-agents/linkedin/callback",
+            get(autonomous_agents::linkedin_callback),
         )
         // Public evidence redirect: re-signs R2 screenshot URLs on every request so
         // finding images (and GitHub-embedded evidence) never expire. Unauthenticated

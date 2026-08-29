@@ -973,6 +973,319 @@ pub async fn archive_all_findings(
     Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
+// ── LinkedIn (AI Content Manager) ────────────────────────────────────────────
+
+fn normalize_destination(value: Option<&str>) -> String {
+    match value.map(str::trim) {
+        Some("organization") => "organization".to_string(),
+        _ => "personal".to_string(),
+    }
+}
+
+fn linkedin_error(err: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+    let message = err.to_string();
+    if message.contains("linkedin_not_configured")
+        || message.contains("public_api_base_url_missing")
+    {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "linkedin_not_configured",
+            "LinkedIn is not configured on this server (LINKEDIN_CLIENT_ID/SECRET + PUBLIC_API_BASE_URL).",
+        )
+    } else if message.contains("finding_not_found") {
+        not_found()
+    } else {
+        error(StatusCode::BAD_GATEWAY, "linkedin_error", &message)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LinkedinAuthorizeQuery {
+    #[serde(default)]
+    destination: Option<String>,
+}
+
+/// Start the LinkedIn OAuth flow: returns the authorization URL the admin opens
+/// in a new tab. The signed `state` carries the org/user/destination so the
+/// unauthenticated callback can complete without a session.
+pub async fn linkedin_authorize(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Query(query): Query<LinkedinAuthorizeQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    }
+    let destination = normalize_destination(query.destination.as_deref());
+    let app = crate::automation::linkedin::app_from_env().map_err(linkedin_error)?;
+    let state_payload = serde_json::json!({
+        "org_id": auth.org_id,
+        "user_id": auth.user_id,
+        "destination": destination,
+    })
+    .to_string();
+    let state = crate::crypto::encrypt(&state_payload).ok_or_else(|| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "encryption_required",
+            "Encryption key not configured.",
+        )
+    })?;
+    let url = crate::automation::linkedin::authorize_url(
+        &app,
+        crate::automation::linkedin::scopes_for(&destination),
+        &state,
+    )
+    .map_err(linkedin_error)?;
+    Ok(Json(serde_json::json!({ "url": url })))
+}
+
+#[derive(Deserialize)]
+pub struct LinkedinCallbackQuery {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+/// OAuth redirect target (unauthenticated — LinkedIn calls it directly). Verifies
+/// the signed state, exchanges the code, resolves the author URN, and stores the
+/// encrypted token. Renders a small self-close page.
+pub async fn linkedin_callback(
+    State(store): State<SqliteStore>,
+    Query(query): Query<LinkedinCallbackQuery>,
+) -> axum::response::Html<String> {
+    fn page(ok: bool, message: &str) -> axum::response::Html<String> {
+        axum::response::Html(format!(
+            "<!doctype html><meta charset=utf-8><title>LinkedIn</title><body style=\"font-family:system-ui;background:#0b0b0d;color:#e6e6e6;display:grid;place-items:center;height:100vh;margin:0\"><div style=\"text-align:center;max-width:30rem;padding:2rem\"><h2 style=\"margin:0 0 .5rem\">{}</h2><p style=\"color:#9aa0a6\">{}</p><p style=\"color:#6b7178;font-size:.85rem;margin-top:1rem\">You can close this tab.</p></div></body>",
+            if ok { "✅ LinkedIn connected" } else { "⚠️ Connection failed" },
+            message
+        ))
+    }
+    if let Some(err) = query.error {
+        return page(
+            false,
+            &format!("{err}: {}", query.error_description.unwrap_or_default()),
+        );
+    }
+    let (Some(code), Some(state)) = (query.code, query.state) else {
+        return page(false, "Missing authorization code.");
+    };
+    let Some(plain) = crate::crypto::decrypt(&state) else {
+        return page(false, "Invalid or tampered state.");
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&plain) else {
+        return page(false, "Invalid state payload.");
+    };
+    let org_id = payload.get("org_id").and_then(|v| v.as_str()).unwrap_or("");
+    let user_id = payload.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+    let destination = payload
+        .get("destination")
+        .and_then(|v| v.as_str())
+        .unwrap_or("personal");
+    if org_id.is_empty() || user_id.is_empty() {
+        return page(false, "Invalid state.");
+    }
+    let app = match crate::automation::linkedin::app_from_env() {
+        Ok(app) => app,
+        Err(err) => return page(false, &err.to_string()),
+    };
+    let token = match crate::automation::linkedin::exchange_code(&app, &code).await {
+        Ok(token) => token,
+        Err(err) => return page(false, &err.to_string()),
+    };
+    // Personal → the member's URN; organization → the first company page the
+    // member administers (single-org v1).
+    let (author_urn, display_name) = if destination == "organization" {
+        match crate::automation::linkedin::admin_organizations(&token.access_token).await {
+            Ok(orgs) if !orgs.is_empty() => orgs[0].clone(),
+            Ok(_) => return page(false, "No company page found that you administer."),
+            Err(err) => return page(false, &err.to_string()),
+        }
+    } else {
+        match crate::automation::linkedin::member_identity(&token.access_token).await {
+            Ok(member) => member,
+            Err(err) => return page(false, &err.to_string()),
+        }
+    };
+    let expires_at = chrono::Utc::now().timestamp() + token.expires_in.unwrap_or(0).max(0);
+    let bundle = serde_json::json!({
+        "access_token": token.access_token,
+        "refresh_token": token.refresh_token,
+        "expires_at": expires_at,
+    })
+    .to_string();
+    let db = store.conn();
+    let stored = match db.lock() {
+        Ok(conn) => queries::upsert_linkedin_connector(
+            &conn,
+            org_id,
+            user_id,
+            destination,
+            &author_urn,
+            &display_name,
+            &bundle,
+        )
+        .is_ok(),
+        Err(_) => false,
+    };
+    drop(db);
+    if !stored {
+        return page(false, "Could not store the connection.");
+    }
+    page(
+        true,
+        &format!("Connected as {display_name} ({destination}). Approved posts can now be published."),
+    )
+}
+
+pub async fn linkedin_connections(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    Ok(Json(
+        queries::list_linkedin_connectors(&conn, &auth.org_id).map_err(store_error)?,
+    ))
+}
+
+#[derive(Deserialize, Default)]
+pub struct PublishLinkedinRequest {
+    #[serde(default)]
+    destination: Option<String>,
+    /// Optional edited text; defaults to the draft's post body.
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Approve & publish a generated post draft to LinkedIn, then mark it resolved.
+pub async fn publish_finding_linkedin(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    body: Option<Json<PublishLinkedinRequest>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    }
+    let body = body.map(|Json(value)| value).unwrap_or_default();
+    let destination = normalize_destination(body.destination.as_deref());
+    let (finding, metadata, mut bundle) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        let finding = queries::get_autonomous_agent_finding(&conn, &auth.org_id, &id)
+            .map_err(store_error)?
+            .ok_or_else(not_found)?;
+        let (metadata, bundle) = queries::get_linkedin_connector(&conn, &auth.org_id, &destination)
+            .map_err(store_error)?
+            .ok_or_else(|| {
+                error(
+                    StatusCode::BAD_REQUEST,
+                    "linkedin_not_connected",
+                    "This LinkedIn destination is not connected yet.",
+                )
+            })?;
+        (finding, metadata, bundle)
+    };
+    let text = body
+        .text
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            finding
+                .evidence
+                .pointer("/post/body")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| finding.summary.clone());
+    let author_urn = metadata
+        .get("author_urn")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if author_urn.is_empty() {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "linkedin_not_connected",
+            "Missing author URN; reconnect LinkedIn.",
+        ));
+    }
+    let app = crate::automation::linkedin::app_from_env().map_err(linkedin_error)?;
+    // Refresh the token when it is expired (or within 5 minutes of expiring).
+    let mut access_token = bundle
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let expires_at = bundle.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
+    if expires_at > 0 && chrono::Utc::now().timestamp() > expires_at - 300 {
+        if let Some(refresh_token) = bundle
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
+            if let Ok(fresh) = crate::automation::linkedin::refresh(&app, &refresh_token).await {
+                access_token = fresh.access_token.clone();
+                let new_expires =
+                    chrono::Utc::now().timestamp() + fresh.expires_in.unwrap_or(0).max(0);
+                bundle = serde_json::json!({
+                    "access_token": fresh.access_token,
+                    "refresh_token": fresh.refresh_token.unwrap_or(refresh_token),
+                    "expires_at": new_expires,
+                });
+                let display_name = metadata
+                    .get("display_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("LinkedIn member")
+                    .to_string();
+                let bundle_json = bundle.to_string();
+                let db = store.conn();
+                if let Ok(conn) = db.lock() {
+                    let _ = queries::upsert_linkedin_connector(
+                        &conn,
+                        &auth.org_id,
+                        &auth.user_id,
+                        &destination,
+                        &author_urn,
+                        &display_name,
+                        &bundle_json,
+                    );
+                }
+                drop(db);
+            }
+        }
+    }
+    let (urn, url) =
+        crate::automation::linkedin::create_text_post(&access_token, &author_urn, &text)
+            .await
+            .map_err(linkedin_error)?;
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        let _ = queries::create_autonomous_output_link(
+            &conn,
+            &auth.org_id,
+            &finding.run_id,
+            "linkedin_post",
+            &urn,
+            Some(&url),
+        );
+        let _ = queries::patch_autonomous_agent_finding(&conn, &auth.org_id, &finding.id, "resolved");
+    }
+    Ok(Json(serde_json::json!({ "url": url, "urn": urn })))
+}
+
 pub async fn list_deliveries(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

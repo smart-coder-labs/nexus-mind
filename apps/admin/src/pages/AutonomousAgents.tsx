@@ -498,6 +498,7 @@ export default function AutonomousAgents() {
   const metrics = useQuery({ queryKey: ['autonomous-metrics'], queryFn: () => client.getAutonomousAgentMetrics(), enabled: can('autonomous_agent:read') && tab === 'runtime', refetchInterval: 30_000 })
   const findings = useQuery({ queryKey: ['autonomous-findings'], queryFn: () => client.listAutonomousAgentFindings(), enabled: can('autonomous_agent:read') && tab === 'findings' })
   const deliveries = useQuery({ queryKey: ['autonomous-deliveries'], queryFn: () => client.listAutonomousAgentDeliveries(), enabled: can('autonomous_agent:read') && tab === 'findings' })
+  const linkedinConnections = useQuery({ queryKey: ['linkedin-connections'], queryFn: () => client.listLinkedinConnections(), enabled: can('autonomous_agent:read') && tab === 'findings' })
 
   const invalidate = (...keys: string[]) => Promise.all(keys.map(key => queryClient.invalidateQueries({ queryKey: [key] })))
   const friendly = (message: string) => message === 'validation_required' ? 'Validate the agent before enabling it.' : message
@@ -537,6 +538,17 @@ export default function AutonomousAgents() {
   const resolveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'resolved'), onSuccess: () => invalidate('autonomous-findings') })
   const archiveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'ignored'), onSuccess: () => invalidate('autonomous-findings') })
   const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
+  // Approve & publish a generated post draft to LinkedIn.
+  const publishPost = useMutation({
+    mutationFn: (vars: { id: string; destination: 'personal' | 'organization' }) => client.publishFindingLinkedin(vars.id, { destination: vars.destination }),
+    onSuccess: result => { invalidate('autonomous-findings'); if (result.url) window.open(result.url, '_blank') },
+    onError: (err: unknown) => window.alert(`Could not publish: ${(err as { message?: string })?.message ?? 'unknown error'}`),
+  })
+  const connectLinkedin = useMutation({
+    mutationFn: (destination: 'personal' | 'organization') => client.linkedinAuthorize(destination),
+    onSuccess: result => { if (result.url) window.open(result.url, '_blank', 'width=600,height=760') },
+    onError: (err: unknown) => window.alert(`LinkedIn is not configured: ${(err as { message?: string })?.message ?? 'unknown error'}`),
+  })
   const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
   // "Create issue" for a finding the agent did not file. Retries with an explicit
   // repository when the agent has none configured.
@@ -769,6 +781,25 @@ export default function AutonomousAgents() {
               )}
             </div>
           )}
+          {(() => {
+            const hasPosts = allFindings.some(f => asStr((f.evidence as Dict)?.kind) === 'post')
+            if (!hasPosts) return null
+            const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
+            return (
+              <div className="rounded-[12px] border border-border-primary bg-white/[0.02] px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                <div className="text-[13px] text-text-secondary">
+                  <span className="font-medium text-text-primary">LinkedIn</span> — {connected.size ? `connected: ${[...connected].join(', ')}` : 'not connected. Connect an account to publish approved posts.'}
+                </div>
+                {can('autonomous_agent:update') && (
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant={connected.has('personal') ? 'ghost' : 'secondary'} loading={connectLinkedin.isPending} onClick={() => connectLinkedin.mutate('personal')}>{connected.has('personal') ? 'Reconnect personal' : 'Connect personal'}</Button>
+                    <Button size="sm" variant={connected.has('organization') ? 'ghost' : 'secondary'} loading={connectLinkedin.isPending} onClick={() => connectLinkedin.mutate('organization')}>{connected.has('organization') ? 'Reconnect company' : 'Connect company'}</Button>
+                    <button type="button" onClick={() => linkedinConnections.refetch()} className="text-xs text-accent-blue">Refresh</button>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           {visibleFindings.map(finding => {
             const ev = (finding.evidence ?? {}) as Dict
             // Build the screenshot src from the stable re-signing endpoint using the
@@ -798,6 +829,13 @@ export default function AutonomousAgents() {
                       {asStr(ev.kind) === 'post' && <Badge size="sm" variant="info">post</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) === 'post' && (() => {
+                        const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
+                        const postDest = asStr(asDict(ev.post)?.destination)
+                        const dest = (postDest === 'organization' || postDest === 'personal') && connected.has(postDest) ? postDest : connected.has('personal') ? 'personal' : connected.has('organization') ? 'organization' : null
+                        if (!dest) return null
+                        return <button type="button" disabled={publishPost.isPending} onClick={() => { if (window.confirm(`Publish this post to LinkedIn (${dest})?`)) publishPost.mutate({ id: finding.id, destination: dest as 'personal' | 'organization' }) }} className="text-xs text-accent-blue font-medium disabled:opacity-50">Publish to LinkedIn</button>
+                      })()}
                       {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && asStr(ev.kind) !== 'post' && !linkedIssue && (
                         <button type="button" disabled={createFindingIssue.isPending} onClick={() => createFindingIssue.mutate({ findingId: finding.id })} className="text-xs text-accent-blue font-medium disabled:opacity-50">Create issue</button>
                       )}
