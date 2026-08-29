@@ -402,11 +402,30 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
 }
 
 /// Best-effort: ensure a label exists (needs push/triage). Ignored on failure.
+/// Color for a label following the QA taxonomy (mirrors the kasymir-create-issues
+/// skill so autonomously-filed issues look identical to hand-filed ones).
+fn label_color(label: &str) -> &'static str {
+    match label {
+        "severity:critical" | "security" => "b60205",
+        "severity:high" => "d93f0b",
+        "severity:medium" => "fbca04",
+        "severity:low" => "0e8a16",
+        "bug" => "d73a4a",
+        "qa" => "1d76db",
+        "i18n" => "c5def5",
+        "a11y" => "bfdadc",
+        "design" => "d4c5f9",
+        "ux" => "fef2c0",
+        _ if label.starts_with("module:") => "5319e7",
+        _ => "ededed",
+    }
+}
+
 async fn ensure_github_label(token: &str, owner: &str, repo: &str, label: &str) {
     let _ = github_post(
         token,
         &format!("/repos/{owner}/{repo}/labels"),
-        json!({"name": label, "color": "5319e7", "description": "NexusMind autonomous QA"}),
+        json!({"name": label, "color": label_color(label), "description": "NexusMind autonomous QA"}),
     )
     .await;
 }
@@ -416,16 +435,19 @@ pub async fn create_github_issue(
     repository: &str,
     title: &str,
     body: &str,
+    labels: &[String],
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
-    // Applying labels needs push/triage access. Try to label (ensuring it exists
-    // first); if the token lacks the permission the labelled create 403s, so fall
-    // back to an unlabelled create rather than failing the whole delivery.
-    ensure_github_label(token, owner, repo, "nexusmind-qa").await;
+    // Applying labels needs push/triage access. Ensure each exists (free/idempotent)
+    // then create labelled; if the token lacks the permission the labelled create
+    // 403s, so fall back to an unlabelled create rather than failing the delivery.
+    for label in labels {
+        ensure_github_label(token, owner, repo, label).await;
+    }
     let labeled = github_post(
         token,
         &format!("/repos/{owner}/{repo}/issues"),
-        json!({"title":title,"body":body,"labels":["nexusmind-qa"]}),
+        json!({"title":title,"body":body,"labels":labels}),
     )
     .await;
     match labeled {

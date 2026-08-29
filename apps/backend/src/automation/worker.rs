@@ -1578,7 +1578,7 @@ fn fixed_prompt(
     // `-p` returns the model's final message verbatim, so it must be ONLY this
     // JSON object (no prose, no markdown fences) or evaluation fails
     // (result_summary_missing / invalid_finding).
-    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\",\"fingerprint\":\"<stable-kebab-case-id>\",\"screenshot\":\"<optional evidence filename>.png\"}]}. The \"fingerprint\" MUST be a STABLE identifier of the specific defect built from the screen/route and the concrete problem (e.g. \"pos-success-toast-shows-uuid\" or \"users-birthdate-allows-future\") — it is used to avoid filing duplicate issues, so re-running QA on the same bug MUST produce the SAME fingerprint. Never include run-specific, timestamped or random content in it. Return an empty findings array when the target behaves correctly.";
+    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"[<Module>] <one specific symptom, scannable>\",\"severity\":\"info|low|medium|high|critical\",\"module\":\"<owning module, e.g. Users>\",\"type\":\"functional|security|i18n|a11y|design|ux\",\"location\":\"<component / route / field>\",\"steps\":[\"<step 1 from a clean state>\",\"<step 2>\"],\"expected\":\"<one line>\",\"actual\":\"<one line>\",\"summary\":\"<extra detail only if not captured by expected/actual>\",\"fingerprint\":\"<stable-kebab-case-id>\",\"screenshot\":\"<evidence filename>.png\"}]}. Follow GitHub issue best practices: the \"title\" is ONE specific symptom prefixed with its [Module] (e.g. \"[Users] Archive user is a no-op — no status sent\"), never vague like \"bug in users\". ONE finding = ONE problem (never bundle unrelated defects). Make \"steps\" reproducible from a clean state with exact inputs, and state \"expected\" vs \"actual\" explicitly and separately. Never put secrets, tokens or real customer PII in any field. The \"fingerprint\" MUST be a STABLE identifier of the specific defect built from the screen/route and the concrete problem (e.g. \"pos-success-toast-shows-uuid\" or \"users-birthdate-allows-future\") — it avoids duplicate issues, so re-running QA on the same bug MUST produce the SAME fingerprint; never include run-specific, timestamped or random content in it. Return an empty findings array when the target behaves correctly.";
     // Give the agent its exact turn budget so it can stop exploring in time to
     // emit the JSON; running out mid-action (error_max_turns) discards everything.
     let stop_by = max_turns.saturating_sub(20).max(1);
@@ -3346,6 +3346,71 @@ fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
         .flatten()
 }
 
+/// Build a QA GitHub-issue body (kasymir issue structure: Severity/Type/Module/
+/// Location header, Steps, Expected, Actual, Evidence, footer) and its label set
+/// from a finding's structured fields, degrading gracefully when fields are absent.
+fn qa_issue_markup(
+    finding: &crate::models::types::AutonomousAgentFinding,
+    run_id: &str,
+    evidence_md: &str,
+) -> (String, Vec<String>) {
+    let ev = &finding.evidence;
+    let field = |key: &str| {
+        ev.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let module = field("module");
+    let ftype = field("type");
+    let location = field("location");
+    let expected = field("expected");
+    let actual = field("actual");
+    let mut header = format!("**Severity:** {}", finding.severity);
+    if let Some(value) = ftype {
+        header.push_str(&format!(" · **Type:** {value}"));
+    }
+    if let Some(value) = module {
+        header.push_str(&format!("\n**Module:** {value}"));
+    }
+    if let Some(value) = location {
+        header.push_str(&format!("\n**Location:** {value}"));
+    }
+    let mut steps_md = String::new();
+    if let Some(steps) = ev
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .filter(|s| !s.is_empty())
+    {
+        steps_md.push_str("\n\n## Steps to reproduce\n");
+        for (index, step) in steps.iter().filter_map(|s| s.as_str()).enumerate() {
+            steps_md.push_str(&format!("{}. {step}\n", index + 1));
+        }
+    }
+    let ea_md = match (expected, actual) {
+        (Some(e), Some(a)) => format!("\n\n## Expected\n{e}\n\n## Actual\n{a}"),
+        _ => format!("\n\n{}", finding.summary),
+    };
+    let body = format!(
+        "{header}{steps_md}{ea_md}{evidence_md}\n\n---\n_Filed by NexusMind QA. Run: `{run_id}`._\n<!-- nexusmind-fingerprint:{} -->",
+        finding.fingerprint
+    );
+    let mut labels = vec![
+        "bug".to_string(),
+        "qa".to_string(),
+        format!("severity:{}", finding.severity),
+    ];
+    if let Some(value) = module {
+        labels.push(format!("module:{}", value.to_lowercase().replace(' ', "-")));
+    }
+    if let Some(value) = ftype {
+        if matches!(value, "security" | "i18n" | "a11y" | "design" | "ux") {
+            labels.push(value.to_string());
+        }
+    }
+    (body, labels)
+}
+
 async fn deliver_findings(
     store: &SqliteStore,
     config: &Config,
@@ -3574,7 +3639,10 @@ async fn deliver_findings(
                         Ok(token) => match require_publish_authority(store, claim) {
                             Err(error) => Err(error),
                             Ok(()) => {
-                                let issue_title = format!("[NexusMind QA] {title}");
+                                // The agent already prefixes the title with its
+                                // [Module]; keep that (best-practice) and only add a
+                                // module prefix as a fallback when it didn't.
+                                let issue_title = title.to_string();
                                 // Host the screenshot on the repo's evidence
                                 // branch so it renders permanently inside the
                                 // private issue; fall back to the R2 URL.
@@ -3601,10 +3669,8 @@ async fn deliver_findings(
                                     .as_deref()
                                     .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                                     .unwrap_or_default();
-                                let issue_body = format!(
-                                    "{}{}\n\nNexusMind run: `{}`\n<!-- nexusmind-fingerprint:{} -->",
-                                    summary, evidence_md, claim.run.id, finding.fingerprint
-                                );
+                                let (issue_body, labels) =
+                                    qa_issue_markup(&finding, &claim.run.id, &evidence_md);
                                 if delivery.status == "delivered" {
                                     match delivery
                                         .external_id
@@ -3645,6 +3711,7 @@ async fn deliver_findings(
                                                 repository,
                                                 &issue_title,
                                                 &issue_body,
+                                                &labels,
                                             )
                                             .await
                                         }
@@ -3788,10 +3855,8 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                             .as_deref()
                             .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                             .unwrap_or_default();
-                        let body = format!(
-                            "{}{}\n<!-- nexusmind-fingerprint:{} -->",
-                            item.finding.summary, evidence_md, item.finding.fingerprint
-                        );
+                        let (body, labels) =
+                            qa_issue_markup(&item.finding, &item.finding.run_id, &evidence_md);
                         let response = if let Some(number) = item
                             .delivery
                             .external_id
@@ -3815,7 +3880,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                                 Some(existing) => existing,
                                 None => {
                                     super::connectors::create_github_issue(
-                                        &token, repository, &title, &body,
+                                        &token, repository, &title, &body, &labels,
                                     )
                                     .await?
                                 }
