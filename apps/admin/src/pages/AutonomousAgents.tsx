@@ -533,6 +533,14 @@ export default function AutonomousAgents() {
   const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
   const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
   const [showArchivedFindings, setShowArchivedFindings] = useState(false)
+  // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
+  // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
+  const [resolveWith, setResolveWith] = useState<{ findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } } | null>(null)
+  const resolveWithAgent = useMutation({
+    mutationFn: (vars: { agentId: string; finding: Dict; issue?: { repository: string; number: number } }) =>
+      client.runAutonomousAgent(vars.agentId, { finding: vars.finding, ...(vars.issue ? { issue: vars.issue } : {}) }),
+    onSuccess: () => { invalidate('autonomous-runs'); setResolveWith(null); setTab('runs') },
+  })
 
   const openEdit = async (agent: AutonomousAgentDefinition) => {
     const detail = await client.getAutonomousAgent(agent.id)
@@ -733,6 +741,14 @@ export default function AutonomousAgents() {
                       {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && (() => {
+                        // Link the GitHub issue this finding was filed as (if any), so
+                        // the resolver both fixes the finding and closes the issue.
+                        const issueDelivery = findingDeliveries.find(d => d.channel === 'github_issue' && d.external_url)
+                        const parsed = issueDelivery?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)
+                        const issue = parsed ? { repository: parsed[1], number: Number(parsed[2]) } : undefined
+                        return <button type="button" onClick={() => setResolveWith({ findingId: finding.id, title: finding.title, finding: { title: finding.title, summary: finding.summary, severity: finding.severity, evidence: ev }, issue })} className="text-xs text-accent-blue font-medium">Resolve with agent</button>
+                      })()}
                       {can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Resolve</button>}
                       {can('autonomous_agent:update') && finding.status !== 'ignored' && <button type="button" onClick={() => archiveFinding.mutate(finding.id)} className="text-xs text-text-tertiary hover:text-text-primary font-medium">Archive</button>}
                       {can('autonomous_agent:update') && finding.status === 'ignored' && <button type="button" onClick={() => restoreFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Restore</button>}
@@ -947,7 +963,55 @@ export default function AutonomousAgents() {
           onRun={targets => runNow.mutate({ id: runJudge.id, targets })}
         />
       )}
+
+      {resolveWith && (
+        <ResolveWithAgentDialog
+          target={resolveWith}
+          resolvers={allAgents.filter(a => a.template_key === 'github_issue_resolver' && a.status === 'enabled')}
+          pending={resolveWithAgent.isPending}
+          onClose={() => setResolveWith(null)}
+          onRun={agentId => resolveWithAgent.mutate({ agentId, finding: resolveWith.finding, issue: resolveWith.issue })}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * "Resolve with agent": pick ONE enabled issue-resolver to fix a single finding.
+ * The finding content (and the GitHub issue it was filed as, when present) are
+ * handed to that resolver, which resolves ONLY this — nothing else in the repo.
+ */
+function ResolveWithAgentDialog({ target, resolvers, pending, onClose, onRun }: { target: { title: string; issue?: { repository: string; number: number } }; resolvers: AutonomousAgentDefinition[]; pending: boolean; onClose: () => void; onRun: (agentId: string) => void }) {
+  const [agentId, setAgentId] = useState('')
+  useEffect(() => { if (!agentId && resolvers.length) setAgentId(resolvers[0].id) }, [resolvers, agentId])
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Resolve with agent</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Hand this finding to an issue-resolver. It will fix <span className="text-text-primary">only</span> this — nothing else in the repository.</p>
+        <div className="rounded-lg border border-border-primary bg-white/[0.02] px-3 py-2 text-[13px] text-text-primary">{target.title}</div>
+        {target.issue
+          ? <p className="text-xs text-text-tertiary">Linked issue <span className="font-mono text-text-secondary">{target.issue.repository}#{target.issue.number}</span> — the pull request will close it.</p>
+          : <p className="text-xs text-text-tertiary">No GitHub issue is linked; the finding itself is handed over as the task.</p>}
+        {resolvers.length === 0
+          ? <p className="text-xs text-status-warning">No enabled issue-resolver agent exists. Create and enable one first.</p>
+          : (
+            <label className="block">
+              <span className="text-xs font-medium text-text-secondary">Resolver agent</span>
+              <select value={agentId} onChange={e => setAgentId(e.target.value)} className="mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+                {resolvers.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </label>
+          )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={!agentId || resolvers.length === 0} onClick={() => agentId && onRun(agentId)}>Resolve</Button>
+        </div>
+      </ModalContent>
+    </Modal>
   )
 }
 

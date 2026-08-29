@@ -1048,11 +1048,12 @@ async fn publish_template_output(
                 .pointer("/limits/max_changed_lines")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(800);
+            // A content-only "Resolve with agent" run has no GitHub issue to close,
+            // so the number is optional; a fanout/webhook run always carries one.
             let number = claim
                 .config
                 .pointer("/trigger/number")
-                .and_then(|v| v.as_i64())
-                .ok_or_else(|| anyhow::anyhow!("issue_number_missing"))?;
+                .and_then(|v| v.as_i64());
             // "No changes needed" is a legitimate outcome, not a failure: either the
             // agent explicitly declared it (no_op) or produced an empty diff. Instead
             // of blocking and discarding the run, explain it to the maintainer as an
@@ -1079,6 +1080,11 @@ async fn publish_template_output(
                     } else {
                         "NexusMind analyzed this issue but did not produce a code change."
                     });
+                // A finding-only run has no GitHub issue to comment on: record the
+                // no-op outcome and finish without a delivery.
+                let Some(number) = number else {
+                    return Ok(json!({"no_op": true, "reason": reason}));
+                };
                 let body = format!(
                     "## NexusMind — no code change required\n\n{reason}\n\n---\n- Run: `{}`\n\n_This issue was analyzed autonomously; no pull request was opened._",
                     claim.run.id
@@ -1154,6 +1160,14 @@ async fn publish_template_output(
             if files > max_files || lines > max_lines {
                 anyhow::bail!("change_limit_exceeded")
             }
+            // Content-only runs open a PR without an issue to close; issue-linked
+            // runs reference #N in the branch, commit, PR body, and delivery key.
+            let number_suffix = number
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "finding".into());
+            let closes_line = number
+                .map(|value| format!("Closes #{value}\n\n"))
+                .unwrap_or_default();
             let base = claim
                 .config
                 .get("base_branch")
@@ -1176,7 +1190,7 @@ async fn publish_template_output(
             // Per-ISSUE branch: one resolver run may open a PR per assigned issue
             // (each in its own worktree), so the run id alone would collide.
             let branch = format!(
-                "nexusmind/run-{}-{number}",
+                "nexusmind/run-{}-{number_suffix}",
                 &claim.run.id[..claim.run.id.len().min(12)]
             );
             let mut checkout = Command::new("git");
@@ -1197,14 +1211,10 @@ async fn publish_template_output(
                 .args([
                     "commit",
                     "-m",
-                    &format!(
-                        "NexusMind: resolve issue #{}",
-                        claim
-                            .config
-                            .pointer("/trigger/number")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0)
-                    ),
+                    &match number {
+                        Some(value) => format!("NexusMind: resolve issue #{value}"),
+                        None => "NexusMind: resolve QA finding".to_string(),
+                    },
                 ]);
             command_ok(commit).await?;
             let mut push = authenticated_git(&token);
@@ -1225,18 +1235,35 @@ async fn publish_template_output(
                 .filter(|v| !v.is_empty())
             {
                 Some(title) => title.to_string(),
-                None => super::connectors::get_github_issue(&token, repository, number)
-                    .await
-                    .ok()
-                    .and_then(|issue| {
-                        issue
-                            .get("title")
+                None => {
+                    // Fall back to the linked issue's title, or the handed-over
+                    // finding's title, before a static default.
+                    let live_title = match number {
+                        Some(number) => {
+                            super::connectors::get_github_issue(&token, repository, number)
+                                .await
+                                .ok()
+                                .and_then(|issue| {
+                                    issue
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::trim)
+                                        .filter(|v| !v.is_empty())
+                                        .map(str::to_string)
+                                })
+                        }
+                        None => claim
+                            .config
+                            .pointer("/issue/title")
                             .and_then(|v| v.as_str())
                             .map(str::trim)
                             .filter(|v| !v.is_empty())
-                            .map(|title| format!("NexusMind: resolve \"{title}\""))
-                    })
-                    .unwrap_or_else(|| "NexusMind autonomous issue resolution".to_string()),
+                            .map(str::to_string),
+                    };
+                    live_title
+                        .map(|title| format!("NexusMind: resolve \"{title}\""))
+                        .unwrap_or_else(|| "NexusMind autonomous issue resolution".to_string())
+                }
             };
             let verification_summary = verification
                 .iter()
@@ -1276,13 +1303,13 @@ async fn publish_template_output(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 format!(
-                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number} -->"
+                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number_suffix} -->"
                 )
             } else {
                 String::new()
             };
             let body = format!(
-                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
+                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
                     "- No verification command was configured.".to_string()
@@ -1290,8 +1317,10 @@ async fn publish_template_output(
                     verification_summary
                 }
             );
-            let delivery_key =
-                format!("resolver:{}:{repository}:{number}", claim.run.definition_id);
+            let delivery_key = format!(
+                "resolver:{}:{repository}:{number_suffix}",
+                claim.run.definition_id
+            );
             let delivery = {
                 let db = store.conn();
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
@@ -1777,10 +1806,10 @@ fn evaluate_structured_result(
     }))
 }
 
-/// Issue numbers already covered by an OPEN resolver pull request (branch
-/// `nexusmind/run-*`), parsed from `Closes/Fixes/Resolves #N` in the PR body.
-/// Used to skip issues that are already being resolved so fan-out and re-runs
-/// don't produce duplicate PRs.
+/// Issue numbers already covered by an OPEN pull request — NexusMind's own or a
+/// human's — parsed from `Closes/Fixes/Resolves #N` in the PR body or title. An
+/// issue with a linked open PR is already being resolved, so fan-out and re-runs
+/// skip it to avoid duplicate/competing work.
 async fn resolver_open_pr_issue_numbers(
     token: &str,
     repository: &str,
@@ -1793,15 +1822,18 @@ async fn resolver_open_pr_issue_numbers(
         return covered;
     };
     for pull in pulls.as_array().into_iter().flatten() {
-        let head = pull
-            .pointer("/head/ref")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if !head.starts_with("nexusmind/run-") {
+        // Only OPEN PRs count as "in progress". A merged PR that closed its issue
+        // already flipped the issue to closed (filtered elsewhere); a closed-unmerged
+        // PR abandoned the work and must not permanently block the issue.
+        if pull.get("state").and_then(|v| v.as_str()) != Some("open") {
             continue;
         }
         let body = pull.get("body").and_then(|v| v.as_str()).unwrap_or_default();
-        for caps in re.captures_iter(body) {
+        let title = pull.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+        for caps in re
+            .captures_iter(body)
+            .chain(re.captures_iter(title))
+        {
             if let Ok(number) = caps[1].parse::<i64>() {
                 covered.insert(number);
             }
@@ -2609,11 +2641,25 @@ async fn execute_claim(
             .pointer("/trigger/number")
             .and_then(|v| v.as_i64())
             .is_none()
+        && claim
+            .config
+            .pointer("/trigger/explicit")
+            .and_then(|v| v.as_bool())
+            != Some(true)
     {
         return execute_resolver_fanout(store, config, claim).await;
     }
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
+        // An explicit "Resolve with agent" request (from a finding) deliberately
+        // targets ONE thing chosen by the operator, so it skips the autonomous
+        // scoping gates (assignee, label eligibility). The safety gates that run
+        // later — diff limits, secret scan, publish authority — still apply.
+        let explicit = runtime_config
+            .pointer("/trigger/explicit")
+            .and_then(|v| v.as_bool())
+            == Some(true);
+        let finding = runtime_config.pointer("/trigger/finding").cloned();
         let repository = runtime_config
             .get("repository")
             .and_then(|v| v.as_str())
@@ -2621,11 +2667,12 @@ async fn execute_claim(
                 runtime_config
                     .pointer("/trigger/repository")
                     .and_then(|v| v.as_str())
-            });
+            })
+            .map(str::to_string);
         let number = runtime_config
             .pointer("/trigger/number")
             .and_then(|v| v.as_i64());
-        if let (Some(repository), Some(number)) = (repository, number) {
+        if let (Some(repository), Some(number)) = (repository.as_deref(), number) {
             if let Ok(Some(token)) = github_access(store, claim).await {
                 if let Ok(issue) =
                     super::connectors::get_github_issue(&token, repository, number).await
@@ -2638,33 +2685,35 @@ async fn execute_claim(
                             json!({"code":"issue_not_open_or_is_pull_request"}),
                         );
                     }
-                    // Never resolve an issue that isn't ASSIGNED to the logged-in gh
-                    // account (the bot). Guards the webhook path and reassignments;
-                    // a failed identity lookup blocks rather than proceeds.
-                    match super::connectors::github_authenticated_login(&token).await {
-                        Ok(login) => {
-                            let assigned = issue
-                                .get("assignees")
-                                .and_then(|value| value.as_array())
-                                .map(|list| {
-                                    list.iter().any(|a| {
-                                        a.get("login").and_then(|l| l.as_str())
-                                            == Some(login.as_str())
+                    if !explicit {
+                        // Never resolve an issue that isn't ASSIGNED to the logged-in gh
+                        // account (the bot). Guards the webhook path and reassignments;
+                        // a failed identity lookup blocks rather than proceeds.
+                        match super::connectors::github_authenticated_login(&token).await {
+                            Ok(login) => {
+                                let assigned = issue
+                                    .get("assignees")
+                                    .and_then(|value| value.as_array())
+                                    .map(|list| {
+                                        list.iter().any(|a| {
+                                            a.get("login").and_then(|l| l.as_str())
+                                                == Some(login.as_str())
+                                        })
                                     })
-                                })
-                                .unwrap_or(false);
-                            if !assigned {
+                                    .unwrap_or(false);
+                                if !assigned {
+                                    return (
+                                        "blocked_policy".into(),
+                                        json!({"code":"issue_not_assigned"}),
+                                    );
+                                }
+                            }
+                            Err(error) => {
                                 return (
-                                    "blocked_policy".into(),
-                                    json!({"code":"issue_not_assigned"}),
+                                    "blocked_runtime".into(),
+                                    json!({"code":"assignee_check_failed","detail":error.to_string()}),
                                 );
                             }
-                        }
-                        Err(error) => {
-                            return (
-                                "blocked_runtime".into(),
-                                json!({"code":"assignee_check_failed","detail":error.to_string()}),
-                            );
                         }
                     }
                     let labels = issue
@@ -2677,39 +2726,64 @@ async fn execute_claim(
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    let required = runtime_config
-                        .get("labels")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    if required
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .any(|label| !labels.contains(&label))
-                    {
-                        return (
-                            "blocked_policy".into(),
-                            json!({"code":"issue_labels_ineligible"}),
-                        );
+                    if !explicit {
+                        let required = runtime_config
+                            .get("labels")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        if required
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .any(|label| !labels.contains(&label))
+                        {
+                            return (
+                                "blocked_policy".into(),
+                                json!({"code":"issue_labels_ineligible"}),
+                            );
+                        }
+                        let excluded = runtime_config
+                            .get("excluded_labels")
+                            .and_then(|value| value.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        if excluded
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .any(|label| labels.contains(&label))
+                        {
+                            return (
+                                "blocked_policy".into(),
+                                json!({"code":"issue_label_excluded"}),
+                            );
+                        }
                     }
-                    let excluded = runtime_config
-                        .get("excluded_labels")
-                        .and_then(|value| value.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    if excluded
-                        .iter()
-                        .filter_map(|value| value.as_str())
-                        .any(|label| labels.contains(&label))
-                    {
-                        return (
-                            "blocked_policy".into(),
-                            json!({"code":"issue_label_excluded"}),
-                        );
+                    let mut body = issue
+                        .get("body")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .chars()
+                        .take(30_000)
+                        .collect::<String>();
+                    // When a QA finding was handed over alongside a real issue, append
+                    // its structured detail so the agent fixes exactly what was found.
+                    if let Some(finding) = finding.as_ref() {
+                        let (_, detail) = finding_issue_markup(finding);
+                        body.push_str("\n\n## QA finding (handed over)\n");
+                        body.push_str(&detail);
                     }
                     if let Some(object) = runtime_config.as_object_mut() {
-                        object.insert("issue".into(),json!({"number":number,"title":issue.get("title"),"body":issue.get("body").and_then(|v|v.as_str()).unwrap_or("").chars().take(30_000).collect::<String>(),"labels":labels}));
+                        object.insert("issue".into(),json!({"number":number,"title":issue.get("title"),"body":body,"labels":labels}));
                     }
+                }
+            }
+        } else if explicit {
+            // Content-only resolve: there is no GitHub issue to link, so the QA
+            // finding itself IS the task the agent must fix.
+            if let Some(finding) = finding.as_ref() {
+                let (title, body) = finding_issue_markup(finding);
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("issue".into(), json!({"title":title,"body":body,"labels":[]}));
                 }
             }
         }
@@ -3409,6 +3483,57 @@ fn qa_issue_markup(
         }
     }
     (body, labels)
+}
+
+/// Render a QA finding (as handed over by "Resolve with agent") into an
+/// (title, body) pair the resolver treats as the task to fix. Reads structured
+/// fields from the finding and its nested `evidence`, degrading gracefully.
+fn finding_issue_markup(finding: &serde_json::Value) -> (String, String) {
+    let ev = finding.get("evidence");
+    let get = |key: &str| {
+        finding
+            .get(key)
+            .or_else(|| ev.and_then(|e| e.get(key)))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let title = get("title").unwrap_or("QA finding").to_string();
+    let mut body = String::from("_Handed over from a NexusMind QA finding to fix._\n\n");
+    if let Some(value) = get("severity") {
+        body.push_str(&format!("**Severity:** {value}\n"));
+    }
+    if let Some(value) = get("type") {
+        body.push_str(&format!("**Type:** {value}\n"));
+    }
+    if let Some(value) = get("module") {
+        body.push_str(&format!("**Module:** {value}\n"));
+    }
+    if let Some(value) = get("location") {
+        body.push_str(&format!("**Location:** {value}\n"));
+    }
+    if let Some(steps) = finding
+        .get("steps")
+        .or_else(|| ev.and_then(|e| e.get("steps")))
+        .and_then(|v| v.as_array())
+        .filter(|s| !s.is_empty())
+    {
+        body.push_str("\n## Steps to reproduce\n");
+        for (index, step) in steps.iter().filter_map(|s| s.as_str()).enumerate() {
+            body.push_str(&format!("{}. {step}\n", index + 1));
+        }
+    }
+    match (get("expected"), get("actual")) {
+        (Some(expected), Some(actual)) => {
+            body.push_str(&format!("\n## Expected\n{expected}\n\n## Actual\n{actual}\n"))
+        }
+        _ => {
+            if let Some(summary) = get("summary") {
+                body.push_str(&format!("\n{summary}\n"));
+            }
+        }
+    }
+    (title, body)
 }
 
 async fn deliver_findings(

@@ -465,6 +465,12 @@ pub struct RunTargetInput {
     number: u64,
 }
 
+#[derive(Deserialize)]
+pub struct ResolverIssueInput {
+    repository: String,
+    number: u64,
+}
+
 #[derive(Deserialize, Default)]
 pub struct RunNowRequest {
     #[serde(default)]
@@ -474,6 +480,13 @@ pub struct RunNowRequest {
     /// still come from the configured target connector.
     #[serde(default)]
     app_base_url: Option<String>,
+    /// Issue-resolver only: resolve ONE specific thing this run (from a
+    /// "Resolve with agent" action). `finding` carries the QA finding content;
+    /// `issue` (optional) links the existing GitHub issue to close.
+    #[serde(default)]
+    finding: Option<serde_json::Value>,
+    #[serde(default)]
+    issue: Option<ResolverIssueInput>,
 }
 
 pub async fn run_now(
@@ -549,6 +562,44 @@ pub async fn run_now(
             input_obj.insert("app_base_url".into(), serde_json::json!(url));
         }
         Some(serde_json::Value::Object(input_obj))
+    } else if definition.template_key == "github_issue_resolver"
+        && (body.as_ref().and_then(|b| b.finding.as_ref()).is_some()
+            || body.as_ref().and_then(|b| b.issue.as_ref()).is_some())
+    {
+        // "Resolve with agent" from a finding: resolve exactly ONE thing this run
+        // (explicit → single-issue path, bypassing the assignee/label gates the
+        // autonomous fanout uses). Links the GitHub issue when one exists.
+        let issue = body.as_ref().and_then(|b| b.issue.as_ref());
+        let revision =
+            queries::get_autonomous_agent_revision(&conn, &id, definition.current_revision)
+                .map_err(store_error)?
+                .ok_or_else(not_found)?;
+        let repository = issue.map(|value| value.repository.clone()).or_else(|| {
+            revision
+                .config
+                .get("repository")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+        let Some(repository) = repository else {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "repository_required",
+                "No repository is set on this resolver and none was provided.",
+            ));
+        };
+        let mut trigger = serde_json::json!({
+            "explicit": true,
+            "kind": "github_issue",
+            "repository": repository,
+        });
+        if let Some(issue) = issue {
+            trigger["number"] = serde_json::json!(issue.number);
+        }
+        if let Some(finding) = body.as_ref().and_then(|b| b.finding.clone()) {
+            trigger["finding"] = finding;
+        }
+        Some(serde_json::json!({ "trigger": trigger }))
     } else {
         None
     };
