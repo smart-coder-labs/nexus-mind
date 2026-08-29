@@ -494,6 +494,24 @@ pub async fn create_issue_comment(
     .await
 }
 
+/// Assign an issue to the given accounts (added to any existing assignees).
+/// Used by "Resolve with agent" to claim the issue for the logged-in bot before
+/// work starts, so it reflects that the issue is being resolved.
+pub async fn add_issue_assignees(
+    token: &str,
+    repository: &str,
+    number: i64,
+    assignees: &[String],
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}/assignees"),
+        json!({ "assignees": assignees }),
+    )
+    .await
+}
+
 pub async fn create_draft_pr(
     token: &str,
     repository: &str,

@@ -2685,6 +2685,29 @@ async fn execute_claim(
                             json!({"code":"issue_not_open_or_is_pull_request"}),
                         );
                     }
+                    if explicit {
+                        // "Resolve with agent" skips the assignee GATE, but still
+                        // CLAIMS the issue for the logged-in account before starting
+                        // so it reflects that the bot is now resolving it. Best-effort:
+                        // a failed assignment (e.g. missing permission) must not block.
+                        match super::connectors::github_authenticated_login(&token).await {
+                            Ok(login) => {
+                                if let Err(error) = super::connectors::add_issue_assignees(
+                                    &token,
+                                    repository,
+                                    number,
+                                    &[login],
+                                )
+                                .await
+                                {
+                                    tracing::warn!(run_id = %claim.run.id, %error, "resolve-with-agent: could not assign issue to bot");
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(run_id = %claim.run.id, %error, "resolve-with-agent: could not resolve bot login to assign issue");
+                            }
+                        }
+                    }
                     if !explicit {
                         // Never resolve an issue that isn't ASSIGNED to the logged-in gh
                         // account (the bot). Guards the webhook path and reassignments;
