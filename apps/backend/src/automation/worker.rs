@@ -1860,7 +1860,7 @@ fn fixed_prompt(
             format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{subagent_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
-            "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
+            "Review the pinned pull request in the configuration: `pull_request_diff` is the unified diff, and you may also read the checked-out repository (your working directory) for surrounding context. Identify real defects, risks, and concrete improvement opportunities. Never approve, merge, push, or publish.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<concise human-readable review listing the concrete findings; this exact text is posted as the PR review>\",\"findings\":[{{\"title\":\"<short non-empty title>\",\"severity\":\"<one of: info, low, medium, high, critical>\",\"summary\":\"<what is wrong, where (file:line), and how to fix it>\"}}]}}. HARD OUTPUT RULES: (1) top-level `summary` is REQUIRED and non-empty; (2) every finding MUST have a non-empty `title`; (3) `severity` MUST be EXACTLY one of info, low, medium, high, or critical — never any other word (no \"warning\", \"nit\", \"major\", \"minor\", \"suggestion\"); (4) use high or critical ONLY for issues that must block the PR; (5) if the PR has no issues, return an EMPTY `findings` array (never invent findings) with a `summary` that says it looks good; (6) return at most 100 findings."
         ),
         "lead_generation" => {
             let count = config
@@ -1998,6 +1998,21 @@ fn evaluate_structured_result(
         "result_hash":hex::encode(Sha256::digest(&serialized)),
         "context_manifest_hash":hex::encode(Sha256::digest(&context_bytes))
     }))
+}
+
+/// Output-validator errors that are the model's fault and safe to fix by
+/// re-prompting (a malformed final JSON shape), as opposed to policy/security/
+/// infrastructure errors (`secret_canary_detected`, `evaluator_context_missing`)
+/// which must never trigger a re-run.
+fn is_retryable_agent_output_error(code: &str) -> bool {
+    matches!(
+        code,
+        "result_not_object"
+            | "result_summary_missing"
+            | "result_findings_missing"
+            | "invalid_finding"
+            | "too_many_findings"
+    )
 }
 
 /// Issue numbers already covered by an OPEN pull request — NexusMind's own or a
@@ -3297,6 +3312,28 @@ async fn execute_claim(
         .and_then(|v| v.as_u64())
         .unwrap_or(3600)
         .clamp(30, 3600);
+    // Bounded output-format retry: the github_pr_reviewer agent's final JSON is
+    // validated deterministically; when the model returns a malformed finding
+    // (bad/missing severity, missing title, non-object result, >100 findings) we
+    // re-run it with the validation error fed back, up to `max_output_retries`
+    // (default 1, cap 3). The reviewer is read-only so re-running is side-effect
+    // free; every other template runs exactly once (breaks on the first pass).
+    let mut prompt = prompt;
+    let max_output_retries: u32 = claim
+        .run
+        .budget
+        .get("max_output_retries")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1)
+        .min(3) as u32;
+    let mut output_retry: u32 = 0;
+    // Per-run screenshot dir for QA/judge Playwright evidence; it is read back
+    // after the run loop, so it must be declared outside the loop scope.
+    let qa_screenshots_dir = workdir
+        .parent()
+        .unwrap_or(workdir.as_path())
+        .join("screenshots");
+    let mut outcome = loop {
     let mut claude = Command::new(&config.claude_code_bin);
     restrict_claude_environment(&mut claude);
     claude.args([
@@ -3330,11 +3367,8 @@ async fn execute_claim(
         }
     }
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
-    // a per-run directory the worker reads back afterwards for evidence upload.
-    let qa_screenshots_dir = workdir
-        .parent()
-        .unwrap_or(workdir.as_path())
-        .join("screenshots");
+    // the per-run directory (declared before the loop) the worker reads back
+    // afterwards for evidence upload.
     if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
@@ -3364,7 +3398,7 @@ async fn execute_claim(
         &claim.org_id,
         &claim.run.id,
         &secret_values,
-        0,
+        (output_retry as i64) * 100_000,
     );
     let cancelled = async {
         loop {
@@ -3408,7 +3442,7 @@ async fn execute_claim(
                 Err(error)=>return ("blocked_runtime".into(),json!({"code":error.to_string()})),
             };
             let max_cost=claim.run.budget.get("max_cost_usd").and_then(|v|v.as_f64()).unwrap_or(25.0);
-            if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest}))}
+            if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest.clone()}))}
         }
         Ok(Ok(output)) => {
             // A non-zero exit (typically hitting max-turns) can still carry a
@@ -3417,7 +3451,7 @@ async fn execute_claim(
             match parse_claude_event_stream(&output.stdout) {
                 Ok((value, stream)) => (
                     "succeeded".into(),
-                    json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest}),
+                    json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest.clone()}),
                 ),
                 Err(_) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
@@ -3440,23 +3474,60 @@ async fn execute_claim(
         }
         }
     };
+        // Evaluate the structured output inside the run loop so a malformed
+        // reviewer response can be retried. Resolver and reviewer share the
+        // evaluator, but only the (read-only) reviewer re-runs; re-running a
+        // code-writing resolver could compound its edits, so it stays single-shot.
+        if outcome.0 == "succeeded"
+            && matches!(
+                claim.template_key.as_str(),
+                "github_issue_resolver" | "github_pr_reviewer"
+            )
+        {
+            match evaluate_structured_result(&claim.template_key, &outcome.1) {
+                Ok(value) => {
+                    outcome.1["evaluation"] = value;
+                    break outcome;
+                }
+                Err(error) => {
+                    let code = error.to_string();
+                    if claim.template_key == "github_pr_reviewer"
+                        && output_retry < max_output_retries
+                        && is_retryable_agent_output_error(&code)
+                    {
+                        output_retry += 1;
+                        tracing::info!(
+                            run_id = %claim.run.id,
+                            attempt = output_retry,
+                            code = %code,
+                            "reviewer output rejected by validator; retrying with correction"
+                        );
+                        let preview = outcome
+                            .1
+                            .get("result")
+                            .map(|value| value.to_string())
+                            .unwrap_or_default();
+                        let preview = sanitize_output(preview.as_bytes(), 800);
+                        prompt = format!(
+                            "{prompt}\n\nYOUR PREVIOUS RESPONSE WAS REJECTED by the output validator with error `{code}`. Respond AGAIN with ONLY the single strict JSON object described above: a non-empty top-level `summary`, and a `findings` array where EVERY finding has a non-empty `title` and a `severity` that is EXACTLY one of info, low, medium, high, or critical (no other words). Your previous, rejected output (truncated): {preview}"
+                        );
+                        continue;
+                    }
+                    break ("blocked_policy".to_string(), json!({ "code": code }));
+                }
+            }
+        }
+        break outcome;
+    };
     if outcome.0 == "succeeded"
         && matches!(
             claim.template_key.as_str(),
             "github_issue_resolver" | "github_pr_reviewer"
         )
     {
-        match evaluate_structured_result(&claim.template_key, &outcome.1) {
-            Ok(value) => outcome.1["evaluation"] = value,
+        match publish_template_output(store, claim, &workdir, &outcome.1).await {
+            Ok(published) => outcome.1["published"] = published,
             Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
-        }
-        if outcome.0 == "succeeded" {
-            match publish_template_output(store, claim, &workdir, &outcome.1).await {
-                Ok(published) => outcome.1["published"] = published,
-                Err(error) => {
-                    outcome = ("blocked_policy".into(), json!({"code":error.to_string()}))
-                }
-            }
         }
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result(&claim.template_key, &outcome.1) {
