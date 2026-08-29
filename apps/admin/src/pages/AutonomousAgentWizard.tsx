@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Bot, Target, SlidersHorizontal, CalendarClock, ClipboardCheck } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -75,6 +75,9 @@ interface FormState {
   labels: string
   excludedPaths: string
   includeDrafts: boolean
+  // issue-resolver preview-review handoff
+  reviewAfterDeploy: boolean
+  judgeAgentId: string
   // advanced
   extraConfig: string
   budgets: string
@@ -114,6 +117,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     labels: '',
     excludedPaths: '',
     includeDrafts: false,
+    reviewAfterDeploy: false,
+    judgeAgentId: '',
     extraConfig: '',
     budgets: '',
     scheduleKind: 'manual',
@@ -151,6 +156,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (csv(state.labels).length) config.labels = csv(state.labels)
     if (csv(state.excludedPaths).length) config.excluded_paths = csv(state.excludedPaths)
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.reviewAfterDeploy) { config.review_after_deploy = true; config.judge_agent_id = state.judgeAgentId }
   } else if (state.template === 'lead_generation') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
@@ -219,6 +225,8 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
     excludedPaths: Array.isArray(config.excluded_paths) ? (config.excluded_paths as string[]).join(', ') : '',
     includeDrafts: config.include_drafts === true,
+    reviewAfterDeploy: config.review_after_deploy === true,
+    judgeAgentId: typeof config.judge_agent_id === 'string' ? config.judge_agent_id : '',
     budgets: JSON.stringify(agent.revision.budgets ?? {}, null, 2),
   }
 }
@@ -387,6 +395,7 @@ function validateStep(id: StepId, state: FormState): boolean {
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
+      if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy) return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
       if (state.scheduleKind === 'manual') return true
@@ -485,6 +494,9 @@ function StepTarget({ state, set }: { state: FormState; set: <K extends keyof Fo
 }
 
 function StepConfig({ state, set, template, extraError, config }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown> }) {
+  const client = useMemo(() => createClient(), [])
+  const judgesQuery = useQuery({ queryKey: ['wizard-judges'], queryFn: () => client.listAutonomousAgents(), enabled: template === 'github_issue_resolver' })
+  const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
   return (
     <div className="space-y-5">
       {template === 'qa' && (
@@ -531,6 +543,18 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits.">
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test." />
           </Field>
+          <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+            <Switch checked={state.reviewAfterDeploy} onCheckedChange={value => set('reviewAfterDeploy', value)} size="sm" label="Review the PR with a Judge after deploy" />
+            <p className="text-[11px] text-text-tertiary">When on, each opened PR is marked (label + body marker) so your deploy workflow can deploy that branch to a preview and then call the Judge to verify the running app and post visual evidence on the PR. The Judge produces the visual evidence; the resolver already includes its own verification output.</p>
+            {state.reviewAfterDeploy && (
+              <Field label="Judge agent" hint="Reviews the deployed preview. Create a Judge agent first if the list is empty.">
+                <NativeSelect value={state.judgeAgentId} onChange={value => set('judgeAgentId', value)}>
+                  <option value="">Select a Judge…</option>
+                  {judges.map(judge => <option key={judge.id} value={judge.id}>{judge.name}</option>)}
+                </NativeSelect>
+              </Field>
+            )}
+          </div>
         </div>
       )}
 

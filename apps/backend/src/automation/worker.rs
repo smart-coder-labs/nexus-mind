@@ -1254,8 +1254,29 @@ async fn publish_template_output(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // Opt-in preview-review handoff: a machine-readable marker your deploy
+            // workflow detects to deploy this PR's branch and then trigger the
+            // configured Judge (POST /autonomous-agents/<judge>/run with the PR as a
+            // target + the preview app_base_url), which posts the visual evidence.
+            let review_marker = if claim
+                .config
+                .get("review_after_deploy")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+            {
+                let judge = claim
+                    .config
+                    .get("judge_agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                format!(
+                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number} -->"
+                )
+            } else {
+                String::new()
+            };
             let body = format!(
-                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.",
+                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
                     "- No verification command was configured.".to_string()
@@ -1585,7 +1606,7 @@ fn fixed_prompt(
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
             format!(
-                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
             )
         }
         "github_issue_resolver" => {

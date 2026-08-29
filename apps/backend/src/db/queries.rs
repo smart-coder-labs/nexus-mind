@@ -16389,6 +16389,25 @@ pub fn validate_autonomous_agent_definition(
                     if crate::automation::connectors::validate_repository(value).is_ok() => {}
                 _ => errors.push("valid_repository_required"),
             }
+            // The preview-review handoff needs a Judge agent to route to.
+            if current.definition.template_key == "github_issue_resolver"
+                && current
+                    .revision
+                    .config
+                    .get("review_after_deploy")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                && current
+                    .revision
+                    .config
+                    .get("judge_agent_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
+                errors.push("judge_agent_id_required")
+            }
         }
         "lead_generation" => {
             for field in ["product", "icp"] {

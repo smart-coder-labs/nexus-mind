@@ -153,7 +153,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:draft_pr".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 3600, "max_attempts": 2, "max_cost_usd": 20, "max_changed_files": 20, "max_changed_lines": 800, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
             workflow: vec![
                 "eligible_issue".into(),
                 "pinned_checkout".into(),
@@ -469,6 +469,11 @@ pub struct RunTargetInput {
 pub struct RunNowRequest {
     #[serde(default)]
     targets: Vec<RunTargetInput>,
+    /// Judge only: the live app URL to verify against for THIS run (e.g. a PR
+    /// preview deployment). Overrides the agent's fixed target URL; credentials
+    /// still come from the configured target connector.
+    #[serde(default)]
+    app_base_url: Option<String>,
 }
 
 pub async fn run_now(
@@ -486,8 +491,9 @@ pub async fn run_now(
     // The Judge template picks its PR/issue targets at run time (not at creation),
     // scoped to the repositories configured on the agent. Other templates ignore
     // run inputs and behave exactly as before.
+    let body = body.map(|Json(value)| value);
     let input = if definition.template_key == "judge" {
-        let targets = body.map(|Json(value)| value.targets).unwrap_or_default();
+        let targets: &[RunTargetInput] = body.as_ref().map(|b| b.targets.as_slice()).unwrap_or(&[]);
         if targets.is_empty() {
             return Err(error(
                 StatusCode::BAD_REQUEST,
@@ -511,7 +517,7 @@ pub async fn run_now(
             })
             .unwrap_or_default();
         let mut resolved = Vec::new();
-        for target in &targets {
+        for target in targets {
             if !allowed.iter().any(|repo| repo == &target.repository) {
                 return Err(error(
                     StatusCode::BAD_REQUEST,
@@ -532,7 +538,17 @@ pub async fn run_now(
                 "number": target.number,
             }));
         }
-        Some(serde_json::json!({ "judge_targets": resolved }))
+        let mut input_obj = serde_json::Map::new();
+        input_obj.insert("judge_targets".into(), serde_json::json!(resolved));
+        if let Some(url) = body
+            .as_ref()
+            .and_then(|b| b.app_base_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            input_obj.insert("app_base_url".into(), serde_json::json!(url));
+        }
+        Some(serde_json::Value::Object(input_obj))
     } else {
         None
     };
