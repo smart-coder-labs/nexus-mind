@@ -9,8 +9,17 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
 
-/// LinkedIn API version pinned via the `LinkedIn-Version` header (YYYYMM).
-const LINKEDIN_VERSION: &str = "202405";
+/// LinkedIn API version sent via the `LinkedIn-Version` header (format YYYYMM).
+/// LinkedIn retires each monthly version ~12 months after release, so it is
+/// overridable via `LINKEDIN_API_VERSION` to bump it without a redeploy when the
+/// default is retired (a stale value returns HTTP 426 NONEXISTENT_VERSION).
+fn api_version() -> String {
+    std::env::var("LINKEDIN_API_VERSION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.len() == 6 && value.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or_else(|| "202606".to_string())
+}
 
 /// OAuth scopes per destination. Personal profile posting needs `w_member_social`;
 /// company-page posting needs `w_organization_social` plus admin read to resolve
@@ -153,7 +162,7 @@ pub async fn admin_organizations(access_token: &str) -> Result<Vec<(String, Stri
     let acls: serde_json::Value = reqwest::Client::new()
         .get("https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED")
         .bearer_auth(access_token)
-        .header("LinkedIn-Version", LINKEDIN_VERSION)
+        .header("LinkedIn-Version", api_version())
         .header("X-Restli-Protocol-Version", "2.0.0")
         .send()
         .await?
@@ -193,7 +202,7 @@ pub async fn create_text_post(
     let response = reqwest::Client::new()
         .post("https://api.linkedin.com/rest/posts")
         .bearer_auth(access_token)
-        .header("LinkedIn-Version", LINKEDIN_VERSION)
+        .header("LinkedIn-Version", api_version())
         .header("X-Restli-Protocol-Version", "2.0.0")
         .header("Content-Type", "application/json")
         .json(&body)
