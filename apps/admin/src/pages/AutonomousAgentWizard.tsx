@@ -547,6 +547,16 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   const client = useMemo(() => createClient(), [])
   const judgesQuery = useQuery({ queryKey: ['wizard-judges'], queryFn: () => client.listAutonomousAgents(), enabled: template === 'github_issue_resolver' })
   const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
+  const linkedinQuery = useQuery({ queryKey: ['wizard-linkedin'], queryFn: () => client.listLinkedinConnections(), enabled: template === 'ai_content_manager' })
+  const linkedinConnected = new Set((linkedinQuery.data ?? []).map(connection => connection.destination))
+  const connectLinkedin = async (destination: 'personal' | 'organization') => {
+    try {
+      const { url } = await client.linkedinAuthorize(destination)
+      if (url) window.open(url, '_blank', 'width=600,height=760')
+    } catch (err) {
+      window.alert(`LinkedIn is not configured on the server yet: ${(err as { message?: string })?.message ?? 'error'}`)
+    }
+  }
   return (
     <div className="space-y-5">
       {template === 'qa' && (
@@ -689,11 +699,23 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           </Field>
           <div className="rounded-[12px] border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Intended destinations</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for. Publishing comes later — for now posts are generated as drafts for your review.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for. Nothing is published automatically — you approve each post before it goes out.</p>
             <div className="mt-3 space-y-2.5">
               <Switch checked={state.destPersonal} onCheckedChange={value => set('destPersonal', value)} size="sm" label="Personal profile" />
               <Switch checked={state.destOrganization} onCheckedChange={value => set('destOrganization', value)} size="sm" label="Company page" />
             </div>
+          </div>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-text-secondary">Connect LinkedIn</p>
+              <button type="button" onClick={() => linkedinQuery.refetch()} className="text-[11px] text-accent-blue">Refresh</button>
+            </div>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Connect the account(s) once (shared by all content agents). A window opens to authorize on LinkedIn; approved posts publish from the Findings tab.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" variant={linkedinConnected.has('personal') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('personal')}>{linkedinConnected.has('personal') ? '✓ Personal connected — reconnect' : 'Connect personal'}</Button>
+              <Button size="sm" variant={linkedinConnected.has('organization') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('organization')}>{linkedinConnected.has('organization') ? '✓ Company connected — reconnect' : 'Connect company page'}</Button>
+            </div>
+            <p className="mt-2 text-[11px] text-text-tertiary">Requires the server's LinkedIn app to be configured (LINKEDIN_CLIENT_ID/SECRET + redirect URL).</p>
           </div>
           <div className="rounded-[12px] border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
