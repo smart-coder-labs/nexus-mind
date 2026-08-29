@@ -1035,34 +1035,56 @@ async fn clone_context_repos(
     cloned
 }
 
-async fn bounded_review_diff(workdir: &Path, config: &serde_json::Value) -> anyhow::Result<String> {
+/// The pull-request diff the reviewer agent reasons over. Fetched from GitHub's
+/// compare API (three-dot, server-rendered) rather than computed locally: the
+/// working tree is a `--depth 1` checkout with no ancestry, so a local
+/// `git diff origin/base...HEAD` cannot find a merge base and fails for EVERY PR
+/// (and additionally for any conflicting PR, whose `merge_commit_sha` is null).
+///
+/// The diff is pinned to the exact commit the run checked out (`git rev-parse
+/// HEAD` in the workdir, i.e. the fetched `pull/N/head`), so it always matches the
+/// code the agent reads — and it works whether or not the trigger carried a
+/// `head_sha` (manual runs do not). `base` mirrors the previous local behavior:
+/// the configured `base_branch`, defaulting to `main`.
+async fn bounded_review_diff(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    config: &serde_json::Value,
+) -> anyhow::Result<String> {
+    let repository = config
+        .pointer("/trigger/repository")
+        .or_else(|| config.get("repository"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
     let base = config
         .get("base_branch")
         .and_then(|value| value.as_str())
         .unwrap_or("main");
-    let output = Command::new("git")
+    let head = Command::new("git")
         .current_dir(workdir)
-        .args([
-            "diff",
-            "--no-ext-diff",
-            "--unified=3",
-            &format!("origin/{base}...HEAD"),
-            "--",
-        ])
+        .args(["rev-parse", "HEAD"])
         .output()
         .await?;
-    if !output.status.success() {
+    if !head.status.success() {
         anyhow::bail!("review_diff_unavailable")
     }
+    let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let token = github_access(store, claim)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
+    let diff = super::connectors::get_github_pull_diff(&token, repository, base, &head_sha)
+        .await
+        .map_err(|_| anyhow::anyhow!("review_diff_unavailable"))?;
     let max_bytes = config
         .pointer("/limits/max_diff_bytes")
         .and_then(|value| value.as_u64())
         .unwrap_or(500_000)
         .min(1_000_000) as usize;
-    if output.stdout.len() > max_bytes {
+    if diff.len() > max_bytes {
         anyhow::bail!("review_diff_too_large")
     }
-    Ok(sanitize_output(&output.stdout, max_bytes))
+    Ok(sanitize_output(diff.as_bytes(), max_bytes))
 }
 
 async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
@@ -3078,7 +3100,7 @@ async fn execute_claim(
                 }
             }
         }
-        match bounded_review_diff(&workdir, &runtime_config).await {
+        match bounded_review_diff(store, claim, &workdir, &runtime_config).await {
             Ok(diff) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("pull_request_diff".into(), json!(diff));
