@@ -479,6 +479,36 @@ pub async fn update_github_issue(
     .await
 }
 
+/// Close an issue (used by the Judge when it verifies the claim held and no
+/// problem remains). Idempotent — closing an already-closed issue is a no-op.
+pub async fn close_github_issue(token: &str, repository: &str, number: i64) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_patch(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}"),
+        json!({ "state": "closed" }),
+    )
+    .await
+}
+
+/// Link an existing issue as a sub-issue of `parent_number` via GitHub's
+/// sub-issues REST API. `sub_issue_id` is the child issue's database `id`
+/// (NOT its number — that field comes back on the create response).
+pub async fn add_sub_issue(
+    token: &str,
+    repository: &str,
+    parent_number: i64,
+    sub_issue_id: i64,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{parent_number}/sub_issues"),
+        json!({ "sub_issue_id": sub_issue_id }),
+    )
+    .await
+}
+
 pub async fn create_issue_comment(
     token: &str,
     repository: &str,

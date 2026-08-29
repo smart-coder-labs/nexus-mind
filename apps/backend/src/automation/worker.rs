@@ -567,6 +567,14 @@ async fn publish_judge_comments(
         .ok()
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string());
+    // Sub-issue creation for problems is opt-in via `outputs: ["github_issue"]`;
+    // verdict comments + closing/resolving verified targets run whenever the Judge
+    // is in GitHub-write mode (this function only runs then).
+    let issue_enabled = claim
+        .config
+        .get("outputs")
+        .and_then(|v| v.as_array())
+        .is_some_and(|outputs| outputs.iter().any(|o| o.as_str() == Some("github_issue")));
     let mut posted = Vec::new();
     for target in targets.iter().take(50) {
         let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
@@ -575,26 +583,37 @@ async fn publish_judge_comments(
         let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
             continue;
         };
+        let is_issue = target.get("type").and_then(|v| v.as_str()) == Some("issue");
+        // A finding belongs to this target when it carries the explicit target
+        // number (preferred) or, for older contracts, its title mentions #<number>.
         let needle = format!("#{number}");
         let own: Vec<&serde_json::Value> = findings
             .iter()
             .filter(|f| {
-                f.get("title")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|t| t.contains(&needle))
+                f.get("target_number").and_then(|t| t.as_u64()) == Some(number)
+                    || f.get("title")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.contains(&needle))
             })
             .collect();
-        let mut bugs = Vec::new();
-        let mut feedback = Vec::new();
-        for finding in own.iter().copied() {
-            let rendered =
-                render_judge_finding(finding, &claim.run.id, evidence_base.as_deref());
-            if judge_finding_is_bug(finding) {
-                bugs.push(rendered);
-            } else {
-                feedback.push(rendered);
-            }
-        }
+        let bug_findings: Vec<&serde_json::Value> = own
+            .iter()
+            .copied()
+            .filter(|f| judge_finding_is_bug(f))
+            .collect();
+        let feedback: Vec<String> = own
+            .iter()
+            .copied()
+            .filter(|f| !judge_finding_is_bug(f))
+            .map(|f| render_judge_finding(f, &claim.run.id, evidence_base.as_deref()))
+            .collect();
+        let bugs: Vec<String> = bug_findings
+            .iter()
+            .map(|f| render_judge_finding(f, &claim.run.id, evidence_base.as_deref()))
+            .collect();
+        let verified = bug_findings.is_empty();
+
+        // 1) Verdict comment (idempotent via the per-target delivery ledger).
         let mut sections = String::new();
         if !bugs.is_empty() {
             sections.push_str(&format!("### Issues found\n\n{}\n\n", bugs.join("\n\n")));
@@ -605,8 +624,13 @@ async fn publish_judge_comments(
         if sections.is_empty() {
             sections.push_str("NexusMind judged this target but produced no findings.\n\n");
         }
+        let verdict = if verified {
+            "✅ Verified — the claim holds against the live application."
+        } else {
+            "⚠️ Not verified — problems remain (see below)."
+        };
         let body: String = format!(
-            "## NexusMind — Judge verdict\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
+            "## NexusMind — Judge verdict\n\n{verdict}\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
             claim.run.id
         )
         .chars()
@@ -626,53 +650,170 @@ async fn publish_judge_comments(
                 &delivery_key,
             )?
         };
-        if delivery.status == "delivered" {
-            posted.push(json!({"number":number,"reconciled":true,"url":delivery.external_url}));
-            continue;
-        }
-        require_publish_authority(store, claim)?;
-        match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
-            .await
-        {
-            Ok(comment) => {
-                let db = store.conn();
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-                let external_id = comment.get("id").map(|v| v.to_string());
-                let url = comment.get("html_url").and_then(|v| v.as_str());
-                queries::complete_autonomous_agent_delivery(
-                    &conn,
-                    &claim.org_id,
-                    &delivery.id,
-                    external_id.as_deref(),
-                    url,
-                )?;
-                if let Some(external_id) = external_id.as_deref() {
-                    queries::create_autonomous_output_link(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                        "issue_comment",
-                        external_id,
-                        url,
-                    )?;
-                }
-                posted.push(json!({"number":number,"url":url}));
-            }
-            Err(error) => {
-                let db = store.conn();
-                if let Ok(conn) = db.lock() {
-                    let _ = queries::fail_autonomous_agent_delivery(
+        if delivery.status != "delivered" {
+            require_publish_authority(store, claim)?;
+            match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
+                .await
+            {
+                Ok(comment) => {
+                    let db = store.conn();
+                    let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                    let external_id = comment.get("id").map(|v| v.to_string());
+                    let url = comment.get("html_url").and_then(|v| v.as_str());
+                    queries::complete_autonomous_agent_delivery(
                         &conn,
                         &claim.org_id,
                         &delivery.id,
-                        "github_issue_comment_failed",
-                    );
+                        external_id.as_deref(),
+                        url,
+                    )?;
+                    if let Some(external_id) = external_id.as_deref() {
+                        queries::create_autonomous_output_link(
+                            &conn,
+                            &claim.org_id,
+                            &claim.run.id,
+                            "issue_comment",
+                            external_id,
+                            url,
+                        )?;
+                    }
+                    posted.push(json!({"number":number,"verified":verified,"url":url}));
                 }
-                posted.push(json!({"number":number,"error":error.to_string()}));
+                Err(error) => {
+                    let db = store.conn();
+                    if let Ok(conn) = db.lock() {
+                        let _ = queries::fail_autonomous_agent_delivery(
+                            &conn,
+                            &claim.org_id,
+                            &delivery.id,
+                            "github_issue_comment_failed",
+                        );
+                    }
+                    posted.push(json!({"number":number,"error":error.to_string()}));
+                }
+            }
+        }
+
+        // 2) Verified issue: resolve the linked NexusMind findings and close it.
+        if verified && is_issue {
+            let issue_url = format!("https://github.com/{repository}/issues/{number}");
+            if let Ok(conn) = store.conn().lock() {
+                if let Ok(resolved) =
+                    queries::resolve_open_findings_for_issue(&conn, &claim.org_id, &issue_url)
+                {
+                    if resolved > 0 {
+                        tracing::info!(run_id = %claim.run.id, resolved, %issue_url, "judge resolved verified findings");
+                    }
+                }
+            }
+            if require_publish_authority(store, claim).is_ok() {
+                if let Err(error) =
+                    super::connectors::close_github_issue(&token, repository, number as i64).await
+                {
+                    tracing::warn!(run_id = %claim.run.id, %error, number, "judge: could not close verified issue");
+                }
+            }
+        }
+
+        // 3) Failed target: file each problem as an issue, linked as a sub-issue of
+        //    the judged issue (opt-in via outputs). PR targets / a failed link fall
+        //    back to an independent issue referencing the target.
+        if !verified && issue_enabled {
+            for finding in &bug_findings {
+                let fingerprint = finding
+                    .get("fingerprint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("finding");
+                let sub_key = format!(
+                    "judge-subissue:{}:{repository}:{number}:{fingerprint}",
+                    claim.run.definition_id
+                );
+                let delivery = {
+                    let db = store.conn();
+                    let Ok(conn) = db.lock() else { continue };
+                    queries::create_autonomous_agent_delivery(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                        None,
+                        "github_issue",
+                        &sub_key,
+                    )
+                    .ok()
+                };
+                let Some(delivery) = delivery else { continue };
+                if delivery.status == "delivered" {
+                    continue;
+                }
+                if require_publish_authority(store, claim).is_err() {
+                    continue;
+                }
+                let ftitle = finding
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Judge finding");
+                let severity = finding
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("medium");
+                let sub_body = format!(
+                    "_Filed by NexusMind Judge while verifying #{number}._\n\n{}",
+                    render_judge_finding(finding, &claim.run.id, evidence_base.as_deref())
+                );
+                let labels = vec![
+                    "qa".to_string(),
+                    "bug".to_string(),
+                    format!("severity:{severity}"),
+                ];
+                match super::connectors::create_github_issue(
+                    &token, repository, ftitle, &sub_body, &labels,
+                )
+                .await
+                {
+                    Ok(created) => {
+                        let child_url = created.get("html_url").and_then(|v| v.as_str());
+                        let external_id = created.get("number").map(|v| v.to_string());
+                        if is_issue {
+                            if let Some(child_id) = created.get("id").and_then(|v| v.as_i64()) {
+                                if let Err(error) = super::connectors::add_sub_issue(
+                                    &token,
+                                    repository,
+                                    number as i64,
+                                    child_id,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(run_id = %claim.run.id, %error, parent = number, "judge: sub-issue link failed; left as independent issue");
+                                }
+                            }
+                        }
+                        if let Ok(conn) = store.conn().lock() {
+                            let _ = queries::complete_autonomous_agent_delivery(
+                                &conn,
+                                &claim.org_id,
+                                &delivery.id,
+                                external_id.as_deref(),
+                                child_url,
+                            );
+                        }
+                        posted.push(json!({"sub_issue":child_url,"parent":number}));
+                    }
+                    Err(error) => {
+                        if let Ok(conn) = store.conn().lock() {
+                            let _ = queries::fail_autonomous_agent_delivery(
+                                &conn,
+                                &claim.org_id,
+                                &delivery.id,
+                                "judge_sub_issue_failed",
+                            );
+                        }
+                        posted.push(json!({"number":number,"error":error.to_string()}));
+                    }
+                }
             }
         }
     }
-    Ok(json!({"published": true, "comments": posted}))
+    Ok(json!({"published": true, "results": posted}))
 }
 
 async fn github_access(
@@ -996,6 +1137,10 @@ async fn publish_template_output(
     let structured = structured_result(result);
     match claim.template_key.as_str() {
         "github_issue_resolver" => {
+            // PENDING.md is the run's WIP progress scratchpad (used for checkpoints
+            // and the budget-exhausted partial PR). It must never land in a finished
+            // PR, so drop it from the working tree before we diff and commit.
+            let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
             let verification =
                 run_allowlisted_commands(workdir, claim.config.get("verification_commands"))
                     .await?;
@@ -1428,6 +1573,23 @@ async fn publish_template_output(
                         }
                     }
                 }
+                // "Resolve with agent" hands over a specific finding id: mark it
+                // resolved directly, covering the content-only case (no linked
+                // GitHub issue, so the delivery-based sweep above cannot match it).
+                if let Some(finding_id) = claim
+                    .config
+                    .pointer("/trigger/finding_id")
+                    .and_then(|value| value.as_str())
+                {
+                    if let Ok(Some(_)) = queries::patch_autonomous_agent_finding(
+                        &conn,
+                        &claim.org_id,
+                        finding_id,
+                        "resolved",
+                    ) {
+                        tracing::info!(run_id = %claim.run.id, finding_id, "resolved handed-over finding");
+                    }
+                }
             }
             Ok(
                 json!({"draft_pull_request":pr,"files_changed":files,"lines_changed":lines,"verification":verification}),
@@ -1636,7 +1798,7 @@ fn fixed_prompt(
             // The judge emits SPECIFIC findings, each tagged kind "bug" (a concrete
             // problem) or "feedback" (something that works / a positive note), and
             // maps them back to a target by putting its #number in the title.
-            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right (or, if the claim is fully met with nothing wrong, a single \"feedback\" finding stating it is met). Never return an empty findings array. Every finding \"title\" MUST contain the target's \"#<number>\" so it can be mapped back. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"target_number\":<the PR/issue number this finding is about>,\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). Every finding MUST set \"target_number\" to the exact number of the PR/issue it refers to, and its \"title\" MUST also contain that \"#<number>\". For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right. If the claim is fully met with nothing wrong, emit ONLY a single \"feedback\" finding for that target stating it is met and NO \"bug\" finding (a target with zero \"bug\" findings is treated as VERIFIED). Never return an empty findings array. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
             // The browser starts from a fresh, in-memory profile each run, so any
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
@@ -3280,19 +3442,26 @@ async fn execute_claim(
             }
         }
     }
-    // Judge verdict comments are opt-in (`publish: "comment"`). Best-effort: a
-    // publish failure is recorded on the outcome but never discards the verdict.
-    if outcome.0 == "succeeded"
-        && claim.template_key == "judge"
-        && claim
+    // Judge GitHub write-back runs when the agent opts in via `publish: "comment"`
+    // (verdict comments + close/resolve verified targets) or `outputs: ["github_issue"]`
+    // (also file sub-issues for problems). Best-effort: a failure is recorded on the
+    // outcome but never discards the verdict.
+    if outcome.0 == "succeeded" && claim.template_key == "judge" {
+        let comment_mode = claim
             .config
             .get("publish")
             .and_then(|value| value.as_str())
-            == Some("comment")
-    {
-        match publish_judge_comments(store, claim, &outcome.1).await {
-            Ok(published) => outcome.1["published"] = published,
-            Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+            == Some("comment");
+        let issue_mode = claim
+            .config
+            .get("outputs")
+            .and_then(|value| value.as_array())
+            .is_some_and(|outputs| outputs.iter().any(|o| o.as_str() == Some("github_issue")));
+        if comment_mode || issue_mode {
+            match publish_judge_comments(store, claim, &outcome.1).await {
+                Ok(published) => outcome.1["published"] = published,
+                Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+            }
         }
     }
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
@@ -3764,6 +3933,12 @@ async fn deliver_findings(
                     };
                 }
                 Some("github_issue") => {
+                    // The Judge files its problems as sub-issues of the judged issue
+                    // (handled in publish_judge_comments), so skip the flat per-finding
+                    // creation here to avoid duplicates.
+                    if claim.template_key == "judge" {
+                        continue;
+                    }
                     let Some(repository) = claim.config.get("repository").and_then(|v| v.as_str())
                     else {
                         continue;

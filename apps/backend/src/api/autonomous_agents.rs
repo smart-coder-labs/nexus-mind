@@ -485,6 +485,10 @@ pub struct RunNowRequest {
     /// `issue` (optional) links the existing GitHub issue to close.
     #[serde(default)]
     finding: Option<serde_json::Value>,
+    /// The NexusMind finding id being resolved, so a successful run marks it
+    /// `resolved` (covers the content-only case with no linked GitHub issue).
+    #[serde(default)]
+    finding_id: Option<String>,
     #[serde(default)]
     issue: Option<ResolverIssueInput>,
 }
@@ -598,6 +602,9 @@ pub async fn run_now(
         }
         if let Some(finding) = body.as_ref().and_then(|b| b.finding.clone()) {
             trigger["finding"] = finding;
+        }
+        if let Some(finding_id) = body.as_ref().and_then(|b| b.finding_id.clone()) {
+            trigger["finding_id"] = serde_json::json!(finding_id);
         }
         Some(serde_json::json!({ "trigger": trigger }))
     } else {

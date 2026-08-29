@@ -537,8 +537,8 @@ export default function AutonomousAgents() {
   // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
   const [resolveWith, setResolveWith] = useState<{ findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } } | null>(null)
   const resolveWithAgent = useMutation({
-    mutationFn: (vars: { agentId: string; finding: Dict; issue?: { repository: string; number: number } }) =>
-      client.runAutonomousAgent(vars.agentId, { finding: vars.finding, ...(vars.issue ? { issue: vars.issue } : {}) }),
+    mutationFn: (vars: { agentId: string; findingId: string; finding: Dict; issue?: { repository: string; number: number } }) =>
+      client.runAutonomousAgent(vars.agentId, { finding: vars.finding, finding_id: vars.findingId, ...(vars.issue ? { issue: vars.issue } : {}) }),
     onSuccess: () => { invalidate('autonomous-runs'); setResolveWith(null); setTab('runs') },
   })
 
@@ -970,7 +970,7 @@ export default function AutonomousAgents() {
           resolvers={allAgents.filter(a => a.template_key === 'github_issue_resolver' && a.status === 'enabled')}
           pending={resolveWithAgent.isPending}
           onClose={() => setResolveWith(null)}
-          onRun={agentId => resolveWithAgent.mutate({ agentId, finding: resolveWith.finding, issue: resolveWith.issue })}
+          onRun={agentId => resolveWithAgent.mutate({ agentId, findingId: resolveWith.findingId, finding: resolveWith.finding, issue: resolveWith.issue })}
         />
       )}
     </div>
