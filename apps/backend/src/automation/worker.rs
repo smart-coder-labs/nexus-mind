@@ -360,6 +360,11 @@ fn target_environment(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
 ) -> anyhow::Result<Vec<(String, String)>> {
+    // Dedupe connector ids: the same credential connector is often bound to more
+    // than one target (e.g. duplicate targets created on repeated saves), and
+    // processing it twice would surface its USERNAME/PASSWORD twice and wrongly
+    // trip target_secret_name_collision.
+    let mut seen = std::collections::HashSet::new();
     let connector_ids = claim
         .config
         .get("targets")
@@ -372,6 +377,7 @@ fn target_environment(
                 .get("credential_connector_id")
                 .and_then(|value| value.as_str())
         })
+        .filter(|connector_id| seen.insert(*connector_id))
         .collect::<Vec<_>>();
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;

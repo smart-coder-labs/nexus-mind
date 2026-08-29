@@ -17831,6 +17831,14 @@ pub fn put_autonomous_agent_target(
             anyhow::bail!("invalid_target_connector")
         }
     }
+    // Upsert by (definition, name): re-saving an agent replaces its same-named
+    // target instead of piling up duplicates (multiple distinct-named targets are
+    // still supported). Duplicates sharing one credential connector previously
+    // tripped target_secret_name_collision.
+    conn.execute(
+        "DELETE FROM autonomous_agent_targets WHERE org_id=?1 AND definition_id=?2 AND name=?3",
+        rusqlite::params![org_id, definition_id, req.name.trim()],
+    )?;
     let id = Uuid::new_v4().to_string();
     conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
     conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
