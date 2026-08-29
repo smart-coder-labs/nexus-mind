@@ -208,6 +208,32 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "deliver".into(),
             ],
         },
+        AutonomousAgentTemplate {
+            key: "ai_content_manager".into(),
+            version: 1,
+            name: "AI Content Manager".into(),
+            description: "Writes LinkedIn posts about the topics you set — tuned to your voice and audience — to capture leads and grow your presence. Posts are generated as drafts for your review before publishing.".into(),
+            capabilities: vec!["content:write".into(), "delivery:write".into()],
+            default_budgets: serde_json::json!({"wall_time_seconds": 600, "max_attempts": 1, "max_cost_usd": 4, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({
+                "topics":{"type":"array","required":true,"items":{"type":"string"},"description":"Themes/areas to post about"},
+                "audience":{"type":"string","required":true,"description":"Target audience / ICP the content should speak to and capture as leads"},
+                "language":{"type":"string","default":"English","description":"Language to write in"},
+                "tone":{"type":"string","description":"Brand voice / tone (e.g. practical, bold, friendly-expert)"},
+                "cta":{"type":"string","description":"Call to action / lead magnet URL to weave in"},
+                "hashtags":{"type":"array","items":{"type":"string"},"description":"Preferred hashtags (the agent may add relevant ones)"},
+                "posts_per_run":{"type":"number","default":3,"description":"How many post drafts to generate per run (1-10)"},
+                "destinations":{"type":"array","items":["personal","organization"],"description":"Intended LinkedIn destinations (publishing is a later step; drafts are reviewed first)"},
+                "outputs":{"type":"array","items":["nexusmind","slack"]},
+                "custom_instructions":{"type":"string","description":"Optional extra guidance; cannot expand scope"}
+            }),
+            workflow: vec![
+                "plan_topics".into(),
+                "draft_posts".into(),
+                "record_drafts".into(),
+                "deliver".into(),
+            ],
+        },
     ]
 }
 

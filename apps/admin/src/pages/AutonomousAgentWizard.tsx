@@ -60,6 +60,16 @@ interface FormState {
   product: string
   icp: string
   leadCount: string
+  // ai content manager (LinkedIn)
+  topics: string // comma-separated
+  audience: string
+  contentLanguage: string
+  tone: string
+  cta: string
+  hashtags: string // comma-separated
+  postsPerRun: string
+  destPersonal: boolean
+  destOrganization: boolean
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
@@ -93,7 +103,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     name: '',
     description: '',
     template,
-    targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
+    targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' || template === 'ai_content_manager' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
     outputSlack: false,
@@ -105,6 +115,15 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     product: '',
     icp: '',
     leadCount: '10',
+    topics: '',
+    audience: '',
+    contentLanguage: 'English',
+    tone: '',
+    cta: '',
+    hashtags: '',
+    postsPerRun: '3',
+    destPersonal: true,
+    destOrganization: false,
     repositories: '',
     publishComment: false,
     loginUser: '',
@@ -172,6 +191,24 @@ function buildConfig(state: FormState): Record<string, unknown> {
       publish: state.publishComment ? 'comment' : 'none',
     }
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+  } else if (state.template === 'ai_content_manager') {
+    const outputs = ['nexusmind']
+    if (state.outputSlack) outputs.push('slack')
+    const destinations: string[] = []
+    if (state.destPersonal) destinations.push('personal')
+    if (state.destOrganization) destinations.push('organization')
+    config = {
+      outputs,
+      topics: csv(state.topics),
+      audience: state.audience.trim(),
+      language: state.contentLanguage.trim() || 'English',
+      posts_per_run: Math.max(1, Math.min(10, Number(state.postsPerRun) || 3)),
+      destinations,
+    }
+    if (state.tone.trim()) config.tone = state.tone.trim()
+    if (state.cta.trim()) config.cta = state.cta.trim()
+    if (csv(state.hashtags).length) config.hashtags = csv(state.hashtags)
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -227,6 +264,15 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     includeDrafts: config.include_drafts === true,
     reviewAfterDeploy: config.review_after_deploy === true,
     judgeAgentId: typeof config.judge_agent_id === 'string' ? config.judge_agent_id : '',
+    topics: Array.isArray(config.topics) ? (config.topics as string[]).join(', ') : '',
+    audience: typeof config.audience === 'string' ? config.audience : '',
+    contentLanguage: typeof config.language === 'string' ? config.language : 'English',
+    tone: typeof config.tone === 'string' ? config.tone : '',
+    cta: typeof config.cta === 'string' ? config.cta : '',
+    hashtags: Array.isArray(config.hashtags) ? (config.hashtags as string[]).join(', ') : '',
+    postsPerRun: typeof config.posts_per_run === 'number' ? String(config.posts_per_run) : '3',
+    destPersonal: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('personal') : true,
+    destOrganization: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('organization') : false,
     budgets: JSON.stringify(agent.revision.budgets ?? {}, null, 2),
   }
 }
@@ -395,6 +441,7 @@ function validateStep(id: StepId, state: FormState): boolean {
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
+      if (state.template === 'ai_content_manager') return csv(state.topics).length > 0 && state.audience.trim().length > 0
       if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy) return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
@@ -470,6 +517,9 @@ function StepTarget({ state, set }: { state: FormState; set: <K extends keyof Fo
   const isWeb = state.targetKind === 'web_application'
   if (state.template === 'lead_generation') {
     return <p className="text-[13px] text-text-secondary">This agent has no fixed target — it discovers companies from the web based on the product and ICP you set in the next step. Nothing to configure here.</p>
+  }
+  if (state.template === 'ai_content_manager') {
+    return <p className="text-[13px] text-text-secondary">This agent has no fixed target — it writes LinkedIn posts from the topics and audience you set in the next step. Nothing to configure here.</p>
   }
   return (
     <div className="space-y-4">
@@ -614,6 +664,45 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             </div>
           </div>
           <p className="text-[11px] text-text-tertiary">Verifies only what the PRs/issues touch against the live app — never approves, merges, or pushes.</p>
+        </div>
+      )}
+
+      {template === 'ai_content_manager' && (
+        <div className="space-y-4">
+          <Field label="Topics (comma-separated)" hint="The themes/areas the agent writes about.">
+            <Textarea className="text-sm" rows={2} value={state.topics} onChange={event => set('topics', event.target.value)} placeholder="AI coding agents, developer productivity, persistent memory for LLMs, team knowledge" />
+          </Field>
+          <Field label="Target audience / ICP" hint="Who the content should speak to and capture as leads.">
+            <Textarea className="text-sm" rows={2} value={state.audience} onChange={event => set('audience', event.target.value)} placeholder="CTOs and lead engineers at software consultancies and dev-tool startups adopting AI agents." />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Language"><Input inputSize="sm" value={state.contentLanguage} onChange={event => set('contentLanguage', event.target.value)} placeholder="English" /></Field>
+            <Field label="Posts per run" hint="1–10."><Input inputSize="sm" type="number" min={1} max={10} value={state.postsPerRun} onChange={event => set('postsPerRun', event.target.value)} placeholder="3" /></Field>
+          </div>
+          <Field label="Brand tone / voice (optional)"><Input inputSize="sm" value={state.tone} onChange={event => set('tone', event.target.value)} placeholder="practical, bold, friendly-expert" /></Field>
+          <Field label="Call to action / lead magnet (optional)" hint="Woven in naturally at the end of posts.">
+            <Input inputSize="sm" value={state.cta} onChange={event => set('cta', event.target.value)} placeholder="Try NexusMind free → nexusmind.smartcoderlabs.com" />
+          </Field>
+          <Field label="Preferred hashtags (optional, comma-separated)"><Input inputSize="sm" value={state.hashtags} onChange={event => set('hashtags', event.target.value)} placeholder="#AI, #DevTools, #Startups" /></Field>
+          <Field label="Custom instructions (optional)" hint="Anything else to emphasize or avoid.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer short posts; open with a contrarian take; no emojis." />
+          </Field>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Intended destinations</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for. Publishing comes later — for now posts are generated as drafts for your review.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked={state.destPersonal} onCheckedChange={value => set('destPersonal', value)} size="sm" label="Personal profile" />
+              <Switch checked={state.destOrganization} onCheckedChange={value => set('destOrganization', value)} size="sm" label="Company page" />
+            </div>
+          </div>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Outputs</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Generated post drafts are stored in NexusMind for your review. This agent never posts to LinkedIn on its own.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+            </div>
+          </div>
         </div>
       )}
 

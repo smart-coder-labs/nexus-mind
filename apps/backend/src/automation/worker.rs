@@ -1850,6 +1850,16 @@ fn fixed_prompt(
                 "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\"}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
             )
         }
+        "ai_content_manager" => {
+            let count = config
+                .get("posts_per_run")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(3)
+                .clamp(1, 10);
+            format!(
+                "You are a LinkedIn content strategist and copywriter for the account owner. Read the configuration: `topics` to write about, the target `audience` (ICP) to attract and convert into leads, the `language` to write in, the brand `tone`, the optional `cta`/lead magnet to drive toward, and any preferred `hashtags`. Write {count} distinct, ready-to-publish LinkedIn posts (TEXT ONLY) that give the audience genuine value, establish the author's authority, and naturally move the reader toward the CTA so the account captures leads and grows. Rules: each post is original and specific (never generic filler); open with a strong first-line hook that stops the scroll; use short lines and line breaks for skimmability; sound authentic and human, never spammy or clickbait; do NOT fabricate statistics, testimonials, client names, results, or credentials — if you would cite data you cannot verify, speak generally instead; weave in the CTA naturally at most once (near the end) only when one is configured; add 3-6 relevant hashtags. Write from expertise. You MAY consult the `nexusmind` MCP (get_context, search_memories, list_conventions) for the brand's voice, prior posts and conventions before writing; do not use any other tools.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<the themes you covered this run>\",\"findings\":[{{\"title\":\"<short internal label / the hook line>\",\"severity\":\"info\",\"summary\":\"<the FULL post text, ready to publish>\",\"fingerprint\":\"<stable-kebab-case id from topic + angle>\",\"kind\":\"post\",\"post\":{{\"body\":\"<the full post text, ready to publish>\",\"hashtags\":[\"#Example\"],\"cta\":\"<the exact CTA used, or empty>\",\"topic\":\"<which configured topic this addresses>\",\"destination\":\"<personal|organization, or empty>\"}}}}]}}. Never return an empty findings array."
+            )
+        }
         _ => anyhow::bail!("unsupported_template"),
     };
     Ok(format!(
@@ -3251,6 +3261,10 @@ async fn execute_claim(
             "default",
             "WebSearch,WebFetch,Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
         ),
+        ("ai_content_manager", _) => (
+            "default",
+            "Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
+        ),
         _ => ("plan", "Read,Grep,Glob"),
     };
     let max_turns = max_turns_num.to_string();
@@ -3852,7 +3866,7 @@ async fn deliver_findings(
 ) {
     if !matches!(
         claim.template_key.as_str(),
-        "qa" | "github_pr_reviewer" | "judge" | "lead_generation"
+        "qa" | "github_pr_reviewer" | "judge" | "lead_generation" | "ai_content_manager"
     ) {
         return;
     }
@@ -3864,7 +3878,7 @@ async fn deliver_findings(
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
     let outputs = if matches!(
         claim.template_key.as_str(),
-        "qa" | "lead_generation" | "judge"
+        "qa" | "lead_generation" | "judge" | "ai_content_manager"
     ) {
         claim
             .config

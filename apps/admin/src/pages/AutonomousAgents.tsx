@@ -795,12 +795,13 @@ export default function AutonomousAgents() {
                     <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
                     <div className="flex items-center gap-2">
                       {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
+                      {asStr(ev.kind) === 'post' && <Badge size="sm" variant="info">post</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && !linkedIssue && (
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && asStr(ev.kind) !== 'post' && !linkedIssue && (
                         <button type="button" disabled={createFindingIssue.isPending} onClick={() => createFindingIssue.mutate({ findingId: finding.id })} className="text-xs text-accent-blue font-medium disabled:opacity-50">Create issue</button>
                       )}
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && (() => {
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) !== 'post' && !asDict(ev.lead) && (() => {
                         // Link the GitHub issue this finding was filed as (if any), so
                         // the resolver both fixes the finding and closes the issue.
                         const parsed = linkedIssue?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)

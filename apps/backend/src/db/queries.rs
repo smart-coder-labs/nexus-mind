@@ -16131,6 +16131,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
             "delivery:write",
             "github:review",
         ],
+        "ai_content_manager" => vec!["content:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
     };
     Ok(capabilities.into_iter().map(str::to_string).collect())
@@ -16485,6 +16486,38 @@ pub fn validate_autonomous_agent_definition(
                 "none" | "comment"
             ) {
                 errors.push("invalid_publish")
+            }
+        }
+        "ai_content_manager" => {
+            // At least one topic to write about is required.
+            let topics = current.revision.config.get("topics").and_then(|v| v.as_array());
+            let topics_valid = topics.is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().any(|item| {
+                        item.as_str().map(str::trim).is_some_and(|value| !value.is_empty())
+                    })
+            });
+            if !topics_valid {
+                errors.push("topics_required")
+            }
+            // A target audience anchors the content to a lead-capture goal.
+            if current
+                .revision
+                .config
+                .get("audience")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                errors.push("audience_required")
+            }
+            // posts_per_run, when set, must be a sane 1..=10.
+            if let Some(count) = current.revision.config.get("posts_per_run").and_then(|v| v.as_i64())
+            {
+                if !(1..=10).contains(&count) {
+                    errors.push("invalid_posts_per_run")
+                }
             }
         }
         _ => errors.push("unsupported_template"),
