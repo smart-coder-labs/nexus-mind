@@ -1758,11 +1758,100 @@ async fn publish_template_output(
                     )?;
                 }
             }
+            // Opt-in auto-merge: squash-merge (keeping the branch) only when the
+            // review found nothing blocking AND every required check on the PR head
+            // is green. Best-effort — a skipped/failed merge never fails the review.
+            let mut auto_merge = json!(null);
+            if claim.config.get("auto_merge").and_then(|v| v.as_bool()) == Some(true) {
+                let has_blocking = findings.iter().any(|v| {
+                    matches!(
+                        v.get("severity").and_then(|s| s.as_str()),
+                        Some("medium" | "high" | "critical")
+                    )
+                });
+                auto_merge = if has_blocking {
+                    json!({"merged": false, "reason": "review_found_issues"})
+                } else {
+                    match auto_merge_pull(store, claim, &token, repository, number).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            json!({"merged": false, "reason": "merge_check_failed", "error": error.to_string()})
+                        }
+                    }
+                };
+            }
             Ok(
-                json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"}}),
+                json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"},"auto_merge":auto_merge}),
             )
         }
         _ => Ok(json!({})),
+    }
+}
+
+/// Decide whether a reviewed PR may be auto-merged and, if so, squash-merge it
+/// (keeping the branch). Merges only when every required check on the PR head is
+/// green; with no checks to verify it declines rather than merges blindly.
+async fn auto_merge_pull(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    token: &str,
+    repository: &str,
+    number: i64,
+) -> anyhow::Result<serde_json::Value> {
+    let required: Vec<String> = claim
+        .config
+        .get("required_checks")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let pull = super::connectors::get_github_pull(token, repository, number).await?;
+    if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(json!({"merged": true, "reason": "already_merged"}));
+    }
+    let head_sha = pull
+        .pointer("/head/sha")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("head_sha_missing"))?;
+    let checks = super::connectors::get_github_check_runs(token, repository, head_sha).await?;
+    let runs = checks
+        .get("check_runs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let relevant: Vec<&serde_json::Value> = runs
+        .iter()
+        .filter(|run| {
+            required.is_empty()
+                || required
+                    .iter()
+                    .any(|name| Some(name.as_str()) == run.get("name").and_then(|n| n.as_str()))
+        })
+        .collect();
+    // Guardrail: no checks means we cannot confirm green — decline the merge.
+    if relevant.is_empty() {
+        return Ok(json!({"merged": false, "reason": "no_checks_to_verify"}));
+    }
+    let all_green = relevant.iter().all(|run| {
+        run.get("status").and_then(|s| s.as_str()) == Some("completed")
+            && matches!(
+                run.get("conclusion").and_then(|c| c.as_str()),
+                Some("success" | "neutral" | "skipped")
+            )
+    });
+    if !all_green {
+        return Ok(json!({"merged": false, "reason": "checks_not_green"}));
+    }
+    require_publish_authority(store, claim)?;
+    match super::connectors::merge_github_pull(token, repository, number, "squash").await {
+        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Err(error) => {
+            Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
+        }
     }
 }
 
@@ -4268,6 +4357,10 @@ async fn deliver_findings(
                         },
                         Err(error) => Err(error),
                     };
+                    let created_number = response
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| value.get("number").and_then(|n| n.as_i64()));
                     let db = store.conn();
                     if let Ok(conn) = db.lock() {
                         match response {
@@ -4297,7 +4390,37 @@ async fn deliver_findings(
                                 );
                             }
                         }
-                    };
+                    }
+                    drop(db);
+                    // QA "assign to me": put the created/updated issue on the gh
+                    // account the server is logged in with (opt-in), so it lands in
+                    // the bot's queue. Best-effort; never blocks the delivery.
+                    if claim.template_key == "qa"
+                        && claim
+                            .config
+                            .get("assign_issues_to_self")
+                            .and_then(|v| v.as_bool())
+                            == Some(true)
+                    {
+                        if let Some(number) = created_number {
+                            if let Ok(token) = server_gh_token().await {
+                                if let Ok(login) =
+                                    super::connectors::github_authenticated_login(&token).await
+                                {
+                                    if let Err(error) = super::connectors::add_issue_assignees(
+                                        &token,
+                                        repository,
+                                        number,
+                                        &[login],
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(run_id = %claim.run.id, %error, number, "qa: could not assign created issue to self");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -4711,8 +4834,137 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     );
                 }
             };
+            // Agent-to-agent chaining: on a successful run, optionally enqueue the
+            // next agent on the same PR (Resolver → Reviewer → Judge).
+            if matches!(status.as_str(), "succeeded" | "partial") {
+                maybe_trigger_next_agent(&store, &claim, &result).await;
+            }
         }
     })
+}
+
+/// If the finished run's agent has an `on_success_trigger_agent_id`, enqueue that
+/// agent on the SAME pull request — the Resolver→Reviewer→Judge chain. The PR is
+/// derived per source template, and the input is shaped for the TARGET template
+/// (Judge wants `judge_targets`, the Reviewer wants `trigger`). An optional
+/// `on_success_trigger_delay_seconds` lets a post-merge Judge wait for the deploy.
+async fn maybe_trigger_next_agent(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    result: &serde_json::Value,
+) {
+    let Some(target_id) = claim
+        .config
+        .get("on_success_trigger_agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let repository = claim
+        .config
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            claim
+                .config
+                .pointer("/trigger/repository")
+                .and_then(|v| v.as_str())
+        });
+    let (repository, number) = match claim.template_key.as_str() {
+        "github_issue_resolver" => {
+            let number = result
+                .pointer("/draft_pull_request/number")
+                .and_then(|v| v.as_i64());
+            match (repository, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        "github_pr_reviewer" => {
+            // Chain onward only after an actual merge (so the Judge verifies the
+            // change once it is in production).
+            if result.pointer("/auto_merge/merged").and_then(|v| v.as_bool()) != Some(true) {
+                return;
+            }
+            let number = claim
+                .config
+                .pointer("/trigger/number")
+                .and_then(|v| v.as_i64());
+            match (repository, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        "judge" => {
+            let target = claim
+                .config
+                .get("judge_targets")
+                .and_then(|v| v.as_array())
+                .and_then(|list| list.first());
+            let repo = target
+                .and_then(|value| value.get("repository"))
+                .and_then(|v| v.as_str());
+            let number = target
+                .and_then(|value| value.get("number"))
+                .and_then(|v| v.as_i64());
+            match (repo, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    let delay = claim
+        .config
+        .get("on_success_trigger_delay_seconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .clamp(0, 86_400);
+    let scheduled_for = if delay > 0 {
+        Some(
+            (chrono::Utc::now() + chrono::Duration::seconds(delay))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let db = store.conn();
+    let Ok(conn) = db.lock() else {
+        return;
+    };
+    let target_template = queries::get_autonomous_agent_detail(&conn, &claim.org_id, &target_id)
+        .ok()
+        .flatten()
+        .map(|detail| detail.definition.template_key);
+    let input = match target_template.as_deref() {
+        Some("judge") => {
+            json!({"judge_targets":[{"type":"pr","repository":repository,"number":number}]})
+        }
+        Some(_) => json!({"trigger":{"kind":"github_pr","repository":repository,"number":number}}),
+        None => return,
+    };
+    let occurrence_key = format!("chain:{}:{}", claim.run.id, target_id);
+    match queries::enqueue_autonomous_agent_run(
+        &conn,
+        &claim.org_id,
+        &target_id,
+        "reconcile",
+        &occurrence_key,
+        scheduled_for.as_deref(),
+        Some(&input),
+    ) {
+        Ok(Some(run)) => {
+            tracing::info!(source_run = %claim.run.id, target = %target_id, next_run = %run.id, "chained next agent")
+        }
+        Ok(None) => tracing::warn!(target = %target_id, "chain target agent not found"),
+        Err(error) => {
+            tracing::warn!(target = %target_id, %error, "chain enqueue failed (agent disabled?)")
+        }
+    }
 }
 
 #[cfg(test)]

@@ -268,6 +268,24 @@ pub async fn get_github_pull(token: &str, repository: &str, number: i64) -> Resu
     github_get(token, &format!("/repos/{owner}/{repo}/pulls/{number}")).await
 }
 
+/// Merge a pull request with the given method ("squash" | "merge" | "rebase"),
+/// keeping the branch. Used by the PR reviewer's opt-in auto-merge; a failed
+/// merge (e.g. not mergeable, protected branch) surfaces GitHub's message.
+pub async fn merge_github_pull(
+    token: &str,
+    repository: &str,
+    number: i64,
+    method: &str,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_put(
+        token,
+        &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
+        json!({ "merge_method": method }),
+    )
+    .await
+}
+
 /// Three-dot diff (`merge-base(base, head)…head`) for a pull request, pinned to a
 /// specific `head_sha` so it matches exactly the snapshot the run checked out.
 ///

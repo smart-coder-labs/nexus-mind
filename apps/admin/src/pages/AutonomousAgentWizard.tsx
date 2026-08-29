@@ -52,6 +52,12 @@ interface FormState {
   // qa config
   outputSlack: boolean
   outputGithubIssue: boolean
+  assignIssuesToSelf: boolean
+  // pr reviewer auto-merge
+  autoMerge: boolean
+  // agent-to-agent chaining
+  onSuccessTriggerAgentId: string
+  onSuccessTriggerDelaySeconds: string
   testAdapter: 'playwright' | 'allowlisted_command'
   testCommand: string
   qaInstructions: string
@@ -108,6 +114,10 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     targetPrimary: '',
     outputSlack: false,
     outputGithubIssue: false,
+    assignIssuesToSelf: false,
+    autoMerge: false,
+    onSuccessTriggerAgentId: '',
+    onSuccessTriggerDelaySeconds: '',
     testAdapter: 'playwright',
     testCommand: '',
     qaInstructions: '',
@@ -168,6 +178,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
       config.qa_instructions = state.qaInstructions.trim()
     }
     if (state.repository.trim()) config.repository = state.repository.trim()
+    if (state.assignIssuesToSelf) config.assign_issues_to_self = true
   } else if (state.template === 'github_issue_resolver') {
     config = { github_auth: 'server_gh_cli', base_branch: state.baseBranch.trim() || 'main' }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -213,6 +224,12 @@ function buildConfig(state: FormState): Record<string, unknown> {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.autoMerge) config.auto_merge = true
+  }
+  // Agent-to-agent chaining: enqueue the next agent on the same PR on success.
+  if (['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(state.template) && state.onSuccessTriggerAgentId.trim()) {
+    config.on_success_trigger_agent_id = state.onSuccessTriggerAgentId.trim()
+    if (state.onSuccessTriggerDelaySeconds.trim()) config.on_success_trigger_delay_seconds = Math.max(0, Number(state.onSuccessTriggerDelaySeconds) || 0)
   }
   const extra = parseJsonObject(state.extraConfig)
   return extra ? { ...config, ...extra } : config
@@ -264,6 +281,10 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     includeDrafts: config.include_drafts === true,
     reviewAfterDeploy: config.review_after_deploy === true,
     judgeAgentId: typeof config.judge_agent_id === 'string' ? config.judge_agent_id : '',
+    assignIssuesToSelf: config.assign_issues_to_self === true,
+    autoMerge: config.auto_merge === true,
+    onSuccessTriggerAgentId: typeof config.on_success_trigger_agent_id === 'string' ? config.on_success_trigger_agent_id : '',
+    onSuccessTriggerDelaySeconds: typeof config.on_success_trigger_delay_seconds === 'number' ? String(config.on_success_trigger_delay_seconds) : '',
     topics: Array.isArray(config.topics) ? (config.topics as string[]).join(', ') : '',
     audience: typeof config.audience === 'string' ? config.audience : '',
     contentLanguage: typeof config.language === 'string' ? config.language : 'English',
@@ -545,8 +566,9 @@ function StepTarget({ state, set }: { state: FormState; set: <K extends keyof Fo
 
 function StepConfig({ state, set, template, extraError, config }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown> }) {
   const client = useMemo(() => createClient(), [])
-  const judgesQuery = useQuery({ queryKey: ['wizard-judges'], queryFn: () => client.listAutonomousAgents(), enabled: template === 'github_issue_resolver' })
+  const judgesQuery = useQuery({ queryKey: ['wizard-agents'], queryFn: () => client.listAutonomousAgents(), enabled: ['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) })
   const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
+  const chainAgents = (judgesQuery.data ?? []).filter(agent => agent.status === 'enabled')
   const linkedinQuery = useQuery({ queryKey: ['wizard-linkedin'], queryFn: () => client.listLinkedinConnections(), enabled: template === 'ai_content_manager' })
   const linkedinConnected = new Set((linkedinQuery.data ?? []).map(connection => connection.destination))
   const connectLinkedin = async (destination: 'personal' | 'organization') => {
@@ -586,6 +608,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
               <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
               <Switch checked={state.outputGithubIssue} onCheckedChange={value => set('outputGithubIssue', value)} size="sm" label="GitHub issue" />
+              {state.outputGithubIssue && <Switch checked={state.assignIssuesToSelf} onCheckedChange={value => set('assignIssuesToSelf', value)} size="sm" label="Assign created issues to the logged-in gh account" />}
             </div>
           </div>
         </>
@@ -625,7 +648,10 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Guidance for what the review should focus on — areas, standards, risks. Cannot approve, merge, push, or publish.">
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
           </Field>
-          <p className="text-[11px] text-text-tertiary">Publishes COMMENT or REQUEST_CHANGES only — never approves, merges, or pushes.</p>
+          <div className="rounded-[12px] border border-border-primary p-3 space-y-2">
+            <Switch checked={state.autoMerge} onCheckedChange={value => set('autoMerge', value)} size="sm" label="Auto-merge if the review is clean" />
+            <p className="text-[11px] text-text-tertiary">When on, squash-merges the PR (keeping the branch) ONLY if the review found no blocking issues AND every required GitHub check is green. If there are no checks to verify, it does not merge.</p>
+          </div>
         </div>
       )}
 
@@ -725,6 +751,24 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
             </div>
           </div>
+        </div>
+      )}
+
+      {['github_issue_resolver', 'github_pr_reviewer', 'judge'].includes(template) && (
+        <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+          <p className="text-xs font-medium text-text-secondary">Chain — run another agent on success</p>
+          <p className="text-[11px] text-text-tertiary">When this agent finishes successfully on a PR, enqueue the chosen agent on the SAME PR. E.g. Resolver → PR Reviewer → Judge, so the agents hand off to each other.</p>
+          <Field label="Next agent (optional)">
+            <NativeSelect value={state.onSuccessTriggerAgentId} onChange={value => set('onSuccessTriggerAgentId', value)}>
+              <option value="">None</option>
+              {chainAgents.map(agent => <option key={agent.id} value={agent.id}>{agent.name} ({agent.template_key})</option>)}
+            </NativeSelect>
+          </Field>
+          {state.onSuccessTriggerAgentId && (
+            <Field label="Delay before the next run (seconds, optional)" hint="Useful when the next agent (e.g. a Judge) must wait for your deploy to reach production after a merge.">
+              <Input inputSize="sm" type="number" min={0} value={state.onSuccessTriggerDelaySeconds} onChange={event => set('onSuccessTriggerDelaySeconds', event.target.value)} placeholder="0" />
+            </Field>
+          )}
         </div>
       )}
 
