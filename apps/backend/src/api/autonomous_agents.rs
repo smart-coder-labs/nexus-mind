@@ -607,6 +607,19 @@ pub async fn run_now(
             trigger["finding_id"] = serde_json::json!(finding_id);
         }
         Some(serde_json::json!({ "trigger": trigger }))
+    } else if definition.template_key == "github_pr_reviewer" {
+        // The PR to review is chosen per run (not baked into the agent).
+        body.as_ref()
+            .and_then(|b| b.targets.first())
+            .map(|target| {
+                serde_json::json!({
+                    "trigger": {
+                        "kind": "github_pr",
+                        "repository": target.repository,
+                        "number": target.number,
+                    }
+                })
+            })
     } else {
         None
     };
@@ -836,6 +849,47 @@ pub async fn patch_finding(
             .map_err(store_error)?
             .ok_or_else(not_found)?,
     ))
+}
+
+#[derive(Deserialize, Default)]
+pub struct CreateFindingIssueRequest {
+    /// Optional override; defaults to the owning agent's configured repository.
+    #[serde(default)]
+    repository: Option<String>,
+}
+
+/// "Create issue" action: file a GitHub issue for a finding the agent did not
+/// file itself. The target repository defaults to the agent's config.
+pub async fn create_finding_issue(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    body: Option<Json<CreateFindingIssueRequest>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    }
+    let repository = body.and_then(|Json(value)| value.repository);
+    let issue =
+        crate::automation::worker::create_issue_for_finding(&store, &auth.org_id, &id, repository)
+            .await
+            .map_err(|err| {
+                let message = err.to_string();
+                if message.contains("finding_not_found") {
+                    not_found()
+                } else if message.contains("repository_required") {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "repository_required",
+                        "This agent has no repository configured; provide one to file the issue.",
+                    )
+                } else {
+                    error(StatusCode::BAD_GATEWAY, "github_issue_failed", &message)
+                }
+            })?;
+    Ok(Json(issue))
 }
 
 pub async fn archive_all_findings(

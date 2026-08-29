@@ -652,6 +652,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             patch(autonomous_agents::patch_finding),
         )
         .route(
+            "/v1/autonomous-agent-findings/:id/github-issue",
+            post(autonomous_agents::create_finding_issue),
+        )
+        .route(
             "/v1/autonomous-agent-deliveries",
             get(autonomous_agents::list_deliveries),
         )

@@ -17709,6 +17709,20 @@ pub fn patch_autonomous_agent_finding(
     conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
 }
 
+pub fn get_autonomous_agent_finding(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentFinding>> {
+    conn.query_row(
+        "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id, id],
+        finding_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Archive every finding that is not already archived (status `ignored`), returning
 /// how many were archived. Archiving is reversible — a finding can be restored to
 /// `open` — and survives re-detection (upsert never resets status).

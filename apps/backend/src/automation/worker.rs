@@ -3615,6 +3615,122 @@ fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
 /// Build a QA GitHub-issue body (kasymir issue structure: Severity/Type/Module/
 /// Location header, Steps, Expected, Actual, Evidence, footer) and its label set
 /// from a finding's structured fields, degrading gracefully when fields are absent.
+/// File a GitHub issue for an existing finding on demand — the "Create issue"
+/// action for findings the agent did not file itself. Reuses the QA issue
+/// structure + fingerprint dedup, records a `github_issue` delivery on the
+/// finding (so the UI links it), and returns the created/existing issue JSON.
+pub async fn create_issue_for_finding(
+    store: &SqliteStore,
+    org_id: &str,
+    finding_id: &str,
+    repository: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    let (finding, derived_repo) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let finding = queries::get_autonomous_agent_finding(&conn, org_id, finding_id)?
+            .ok_or_else(|| anyhow::anyhow!("finding_not_found"))?;
+        // Fall back to the owning agent's configured repository (singular, else the
+        // first of `repositories`) when the caller did not name one.
+        let derived = queries::get_autonomous_agent_detail(&conn, org_id, &finding.definition_id)
+            .ok()
+            .flatten()
+            .and_then(|detail| {
+                let config = &detail.revision.config;
+                config
+                    .get("repository")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        config
+                            .get("repositories")
+                            .and_then(|v| v.as_array())
+                            .and_then(|list| list.first())
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+            });
+        (finding, derived)
+    };
+    let Some(repository) = repository
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(derived_repo)
+    else {
+        anyhow::bail!("repository_required")
+    };
+    // Embed the stored evidence screenshot via the durable re-signing endpoint
+    // (when a public base is configured), else the stored URL.
+    let evidence_md = {
+        let ev = &finding.evidence;
+        let name = ev
+            .get("screenshot")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let base = std::env::var("PUBLIC_API_BASE_URL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.trim_end_matches('/').to_string());
+        let url = match (name, &base) {
+            (Some(name), Some(base)) => Some(format!("{base}/evidence/{}/{name}", finding.run_id)),
+            _ => ev
+                .get("screenshot_url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        url.map(|u| format!("\n\n## Evidence\n\n![evidence]({u})"))
+            .unwrap_or_default()
+    };
+    let (body, labels) = qa_issue_markup(&finding, &finding.run_id, &evidence_md);
+    let token = server_gh_token().await?;
+    // Reuse an existing issue with the same fingerprint/title before creating one.
+    let marker = format!("<!-- nexusmind-fingerprint:{} -->", finding.fingerprint);
+    let issue = match super::connectors::find_github_issue_by_marker(
+        &token,
+        &repository,
+        &marker,
+        &finding.title,
+    )
+    .await
+    {
+        Ok(Some(existing)) => existing,
+        _ => {
+            super::connectors::create_github_issue(
+                &token,
+                &repository,
+                &finding.title,
+                &body,
+                &labels,
+            )
+            .await?
+        }
+    };
+    let key = format!("manual-issue:{}:{repository}", finding.id);
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        if let Ok(delivery) = queries::create_autonomous_agent_delivery(
+            &conn,
+            org_id,
+            &finding.run_id,
+            Some(&finding.id),
+            "github_issue",
+            &key,
+        ) {
+            let external_id = issue.get("number").map(|v| v.to_string());
+            let url = issue.get("html_url").and_then(|v| v.as_str());
+            let _ = queries::complete_autonomous_agent_delivery(
+                &conn,
+                org_id,
+                &delivery.id,
+                external_id.as_deref(),
+                url,
+            );
+        }
+    }
+    Ok(issue)
+}
+
 fn qa_issue_markup(
     finding: &crate::models::types::AutonomousAgentFinding,
     run_id: &str,

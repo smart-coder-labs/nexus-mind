@@ -520,8 +520,9 @@ export default function AutonomousAgents() {
     onError: (value: unknown) => setActionError(value instanceof Error ? value.message : 'Validation failed'),
   })
   const clone = useMutation({ mutationFn: async (id: string) => { const source = await client.getAutonomousAgent(id); return client.createAutonomousAgent({ name: `${source.name} copy`, description: source.description ?? undefined, template_key: source.template_key, config: source.revision.config, budgets: source.revision.budgets }) }, onSuccess: () => invalidate('autonomous-agents') })
-  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null) } })
+  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null); setRunReviewer(null) } })
   const [runJudge, setRunJudge] = useState<AutonomousAgentDefinition | null>(null)
+  const [runReviewer, setRunReviewer] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const continueRun = useMutation({ mutationFn: (id: string) => client.continueAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
@@ -532,6 +533,19 @@ export default function AutonomousAgents() {
   const archiveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'ignored'), onSuccess: () => invalidate('autonomous-findings') })
   const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
   const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
+  // "Create issue" for a finding the agent did not file. Retries with an explicit
+  // repository when the agent has none configured.
+  const createFindingIssue = useMutation({
+    mutationFn: (vars: { findingId: string; repository?: string }) => client.createFindingIssue(vars.findingId, vars.repository),
+    onSuccess: () => invalidate('autonomous-findings', 'autonomous-deliveries'),
+    onError: (err: unknown, vars) => {
+      const code = (err as { code?: string })?.code
+      if (code === 'repository_required' && !vars.repository) {
+        const repository = window.prompt('Repository for this issue (owner/repo):')?.trim()
+        if (repository) createFindingIssue.mutate({ findingId: vars.findingId, repository })
+      }
+    },
+  })
   const [showArchivedFindings, setShowArchivedFindings] = useState(false)
   // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
   // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
@@ -615,7 +629,7 @@ export default function AutonomousAgents() {
                     : <span className="text-xs text-text-tertiary px-1">Validate to enable</span>}
                 </>}
                 {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
-                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
+                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : agent.template_key === 'github_pr_reviewer' ? setRunReviewer(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
                 {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}
                 {can('autonomous_agent:create') && <Button size="sm" variant="ghost" leftIcon={<Copy className="w-3.5 h-3.5" />} onClick={() => clone.mutate(agent.id)}>Clone</Button>}
                 {can('autonomous_agent:update') && agent.status === 'disabled' && <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} onClick={() => archive.mutate(agent.id)}>Archive</Button>}
@@ -730,6 +744,8 @@ export default function AutonomousAgents() {
             const steps = asArr(ev.steps)
             const repro = asStr(ev.repro) ?? asStr(ev.excerpt) ?? asStr(ev.code)
             const findingDeliveries = deliveries.data?.filter(item => item.finding_id === finding.id) ?? []
+            // The GitHub issue this finding was already filed as (if any).
+            const linkedIssue = findingDeliveries.find(d => d.channel === 'github_issue' && d.external_url)
             const hasStructured = shot || locDict || locStr || (steps && steps.length) || repro
             return (
               <article key={finding.id} className="rounded-[14px] border border-border-primary bg-white/[0.02] overflow-hidden grid grid-cols-[4px_1fr]">
@@ -741,11 +757,13 @@ export default function AutonomousAgents() {
                       {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && !linkedIssue && (
+                        <button type="button" disabled={createFindingIssue.isPending} onClick={() => createFindingIssue.mutate({ findingId: finding.id })} className="text-xs text-accent-blue font-medium disabled:opacity-50">Create issue</button>
+                      )}
                       {can('autonomous_agent:run') && finding.status !== 'ignored' && (() => {
                         // Link the GitHub issue this finding was filed as (if any), so
                         // the resolver both fixes the finding and closes the issue.
-                        const issueDelivery = findingDeliveries.find(d => d.channel === 'github_issue' && d.external_url)
-                        const parsed = issueDelivery?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)
+                        const parsed = linkedIssue?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)
                         const issue = parsed ? { repository: parsed[1], number: Number(parsed[2]) } : undefined
                         return <button type="button" onClick={() => setResolveWith({ findingId: finding.id, title: finding.title, finding: { title: finding.title, summary: finding.summary, severity: finding.severity, evidence: ev }, issue })} className="text-xs text-accent-blue font-medium">Resolve with agent</button>
                       })()}
@@ -964,6 +982,15 @@ export default function AutonomousAgents() {
         />
       )}
 
+      {runReviewer && (
+        <ReviewerRunDialog
+          agent={runReviewer}
+          pending={runNow.isPending}
+          onClose={() => setRunReviewer(null)}
+          onRun={target => runNow.mutate({ id: runReviewer.id, targets: [target] })}
+        />
+      )}
+
       {resolveWith && (
         <ResolveWithAgentDialog
           target={resolveWith}
@@ -1009,6 +1036,43 @@ function ResolveWithAgentDialog({ target, resolvers, pending, onClose, onRun }: 
         <div className="flex justify-end gap-2 pt-2">
           <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
           <Button size="sm" variant="primary" loading={pending} disabled={!agentId || resolvers.length === 0} onClick={() => agentId && onRun(agentId)}>Resolve</Button>
+        </div>
+      </ModalContent>
+    </Modal>
+  )
+}
+
+/**
+ * Run dialog for the PR reviewer: the PR to review is chosen per run. Repository
+ * defaults to the agent's configured `repository` (editable for multi-repo setups).
+ */
+function ReviewerRunDialog({ agent, pending, onClose, onRun }: { agent: AutonomousAgentDefinition; pending: boolean; onClose: () => void; onRun: (target: { repository: string; type: 'pr'; number: number }) => void }) {
+  const client = useMemo(() => createClient(), [])
+  const detail = useQuery({ queryKey: ['autonomous-agent-detail', agent.id], queryFn: () => client.getAutonomousAgent(agent.id) })
+  const configRepo = (typeof detail.data?.revision?.config?.repository === 'string' ? detail.data?.revision?.config?.repository : '') as string
+  const [repository, setRepository] = useState('')
+  const [number, setNumber] = useState('')
+  useEffect(() => { if (!repository && configRepo) setRepository(configRepo) }, [configRepo, repository])
+  const parsed = Number(String(number).replace('#', '').trim())
+  const valid = repository.trim().length > 0 && Number.isInteger(parsed) && parsed > 0
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Run “{agent.name}”</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Choose the pull request to review this run. Only this PR is reviewed; nothing is merged.</p>
+        <label className="block">
+          <span className="text-xs font-medium text-text-secondary">Repository</span>
+          <Input inputSize="sm" className="mt-1 w-full" value={repository} onChange={e => setRepository(e.target.value)} placeholder="owner/repo" />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-text-secondary">Pull request number</span>
+          <Input inputSize="sm" className="mt-1 w-40" value={number} onChange={e => setNumber(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && valid) { e.preventDefault(); onRun({ repository: repository.trim(), type: 'pr', number: parsed }) } }} placeholder="123" />
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={!valid} onClick={() => onRun({ repository: repository.trim(), type: 'pr', number: parsed })}>Review PR</Button>
         </div>
       </ModalContent>
     </Modal>
