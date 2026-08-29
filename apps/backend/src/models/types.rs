@@ -1886,6 +1886,7 @@ pub struct AutonomousAgentRun {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

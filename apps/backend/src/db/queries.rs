@@ -16646,6 +16646,7 @@ fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autonomo
         started_at: row.get(9)?,
         finished_at: row.get(10)?,
         created_at: row.get(11)?,
+        archived_at: row.get(12)?,
     })
 }
 
@@ -16691,7 +16692,7 @@ pub fn get_autonomous_agent_run(
     id: &str,
 ) -> Result<Option<AutonomousAgentRun>> {
     conn.query_row(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
          FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         rusqlite::params![org_id,id], autonomous_run_from_row,
     ).optional().map_err(Into::into)
@@ -16764,7 +16765,7 @@ pub fn list_autonomous_agent_runs(
     definition_id: Option<&str>,
 ) -> Result<Vec<AutonomousAgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
          FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(
@@ -16800,6 +16801,46 @@ pub fn cancel_autonomous_agent_run(
         append_autonomous_agent_event(conn, org_id, id, "run.cancelled", &serde_json::json!({}))?;
     }
     get_autonomous_agent_run(conn, org_id, id)
+}
+
+/// Archive (or restore) a run so it can be hidden from the default list without
+/// deleting it. Only a finished run may be archived — an active run must be
+/// cancelled first — while restoring is always allowed.
+pub fn set_autonomous_agent_run_archived(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    archived: bool,
+) -> Result<Option<AutonomousAgentRun>> {
+    if archived {
+        let changed = conn.execute(
+            "UPDATE autonomous_agent_runs SET archived_at=datetime('now')
+             WHERE id=?1 AND org_id=?2 AND status NOT IN ('queued','leased','running')",
+            rusqlite::params![id, org_id],
+        )?;
+        if changed == 0 {
+            // Either the run does not exist or it is still active.
+            if get_autonomous_agent_run(conn, org_id, id)?.is_some() {
+                anyhow::bail!("run_still_active");
+            }
+            return Ok(None);
+        }
+    } else {
+        conn.execute(
+            "UPDATE autonomous_agent_runs SET archived_at=NULL WHERE id=?1 AND org_id=?2",
+            rusqlite::params![id, org_id],
+        )?;
+    }
+    get_autonomous_agent_run(conn, org_id, id)
+}
+
+pub fn archive_all_finished_autonomous_agent_runs(conn: &Connection, org_id: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE autonomous_agent_runs SET archived_at=datetime('now')
+         WHERE org_id=?1 AND archived_at IS NULL AND status NOT IN ('queued','leased','running')",
+        rusqlite::params![org_id],
+    )
+    .map_err(Into::into)
 }
 
 pub fn list_autonomous_agent_events(

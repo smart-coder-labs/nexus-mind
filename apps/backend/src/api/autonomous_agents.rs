@@ -73,7 +73,8 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "agent_archived"
         | "agent_not_enabled"
         | "agent_must_be_disabled"
-        | "agent_has_active_runs" => (StatusCode::CONFLICT, message.as_str()),
+        | "agent_has_active_runs"
+        | "run_still_active" => (StatusCode::CONFLICT, message.as_str()),
         _ if message.contains("UNIQUE constraint failed") => {
             (StatusCode::CONFLICT, "agent_name_exists")
         }
@@ -763,6 +764,48 @@ pub async fn cancel_run(
             .map_err(store_error)?
             .ok_or_else(not_found)?,
     ))
+}
+
+pub async fn archive_run(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AutonomousAgentRun>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    Ok(Json(
+        queries::set_autonomous_agent_run_archived(&conn, &auth.org_id, &id, true)
+            .map_err(store_error)?
+            .ok_or_else(not_found)?,
+    ))
+}
+
+pub async fn unarchive_run(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AutonomousAgentRun>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    Ok(Json(
+        queries::set_autonomous_agent_run_archived(&conn, &auth.org_id, &id, false)
+            .map_err(store_error)?
+            .ok_or_else(not_found)?,
+    ))
+}
+
+pub async fn archive_all_runs(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    let archived = queries::archive_all_finished_autonomous_agent_runs(&conn, &auth.org_id)
+        .map_err(store_error)?;
+    Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
 pub async fn list_run_events(

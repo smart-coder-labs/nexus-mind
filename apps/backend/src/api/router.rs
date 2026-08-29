@@ -628,6 +628,18 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             post(autonomous_agents::cancel_run),
         )
         .route(
+            "/v1/autonomous-agent-runs/:id/archive",
+            post(autonomous_agents::archive_run),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/:id/unarchive",
+            post(autonomous_agents::unarchive_run),
+        )
+        .route(
+            "/v1/autonomous-agent-runs/archive-all",
+            post(autonomous_agents::archive_all_runs),
+        )
+        .route(
             "/v1/autonomous-agent-runs/:id/events",
             get(autonomous_agents::list_run_events),
         )

@@ -525,6 +525,11 @@ export default function AutonomousAgents() {
   const [runReviewer, setRunReviewer] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const continueRun = useMutation({ mutationFn: (id: string) => client.continueAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const archiveRun = useMutation({ mutationFn: (id: string) => client.archiveAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const unarchiveRun = useMutation({ mutationFn: (id: string) => client.unarchiveAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const archiveAllRuns = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentRuns(), onSuccess: () => invalidate('autonomous-runs') })
+  const [runStatusFilter, setRunStatusFilter] = useState<'all' | 'active' | 'succeeded' | 'failed' | 'blocked' | 'cancelled'>('all')
+  const [showArchivedRuns, setShowArchivedRuns] = useState(false)
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
@@ -673,19 +678,49 @@ export default function AutonomousAgents() {
         </div>
       )}
 
-      {tab === 'runs' && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(280px,340px)_1fr]">
-          <div className="rounded-[14px] border border-border-primary overflow-hidden self-start">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border-primary">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Recent runs</span>
-              <span className="text-xs text-text-tertiary">{runs.data?.length ?? 0}</span>
+      {tab === 'runs' && (() => {
+        const allRuns = runs.data ?? []
+        // Collapse the many raw statuses into the filter's coarse buckets.
+        const group = (s: string): typeof runStatusFilter => s.startsWith('blocked') ? 'blocked' : ['queued', 'leased', 'running'].includes(s) ? 'active' : (s === 'succeeded' || s === 'failed' || s === 'cancelled') ? s : 'all'
+        const archivedCount = allRuns.filter(r => r.archived_at).length
+        const visibleRuns = allRuns
+          .filter(r => showArchivedRuns || !r.archived_at)
+          .filter(r => runStatusFilter === 'all' || group(r.status) === runStatusFilter)
+        const archivableCount = allRuns.filter(r => !r.archived_at && !['queued', 'leased', 'running'].includes(r.status)).length
+        const FILTERS: Array<{ value: typeof runStatusFilter; label: string }> = [
+          { value: 'all', label: 'All' }, { value: 'active', label: 'Active' }, { value: 'succeeded', label: 'Succeeded' }, { value: 'failed', label: 'Failed' }, { value: 'blocked', label: 'Blocked' }, { value: 'cancelled', label: 'Cancelled' },
+        ]
+        return (
+        // Fixed-height board: the list and the run detail each scroll on their own;
+        // the page itself stays put.
+        <div className="grid gap-4 lg:grid-cols-[minmax(280px,340px)_1fr] h-[calc(100vh-15rem)] min-h-[520px]">
+          <div className="rounded-[14px] border border-border-primary overflow-hidden flex flex-col min-h-0">
+            <div className="px-4 py-3 border-b border-border-primary space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Recent runs</span>
+                <span className="text-xs text-text-tertiary">{visibleRuns.length}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {FILTERS.map(f => (
+                  <button key={f.value} type="button" onClick={() => setRunStatusFilter(f.value)} className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${runStatusFilter === f.value ? 'bg-accent-blue/20 text-accent-blue' : 'text-text-tertiary hover:text-text-primary'}`}>{f.label}</button>
+                ))}
+              </div>
+              {(archivedCount > 0 || archivableCount > 0) && (
+                <div className="flex items-center justify-between gap-2">
+                  {archivedCount > 0 ? <Switch size="sm" checked={showArchivedRuns} onCheckedChange={setShowArchivedRuns} label={`Archived (${archivedCount})`} /> : <span />}
+                  {can('autonomous_agent:update') && archivableCount > 0 && (
+                    <button type="button" onClick={() => { if (window.confirm(`Archive all ${archivableCount} finished run${archivableCount === 1 ? '' : 's'}?`)) archiveAllRuns.mutate() }} className="text-[11px] text-text-tertiary hover:text-text-primary font-medium">Archive all</button>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="divide-y divide-border-secondary">
-              {runs.data?.map(run => {
+            <div className="divide-y divide-border-secondary overflow-y-auto min-h-0 flex-1">
+              {visibleRuns.map(run => {
                 const meta = runStatusMeta(run.status)
                 const active = selectedRun?.id === run.id
+                const isRunning = ['queued', 'leased', 'running'].includes(run.status)
                 return (
-                  <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className={`w-full px-4 py-3 flex flex-col gap-1.5 text-left transition-colors ${active ? 'bg-accent-blue/[0.10] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.02]'}`}>
+                  <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className={`w-full px-4 py-3 flex flex-col gap-1.5 text-left transition-colors ${active ? 'bg-accent-blue/[0.10] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.02]'} ${run.archived_at ? 'opacity-60' : ''}`}>
                     <div className="flex justify-between gap-2 items-center">
                       <span className="text-[13px] font-semibold text-text-primary truncate">{allAgents.find(a => a.id === run.definition_id)?.name ?? `${titleCase(run.trigger_kind)} run`}</span>
                       <Badge size="sm" variant={meta.variant} dot={run.status !== 'running'}>{run.status === 'running' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}{meta.label}</Badge>
@@ -694,23 +729,28 @@ export default function AutonomousAgents() {
                       <span>{titleCase(run.trigger_kind)}</span>
                       <span>·</span>
                       <span>{new Date(`${run.created_at}Z`).toLocaleString()}</span>
-                      {can('autonomous_agent:cancel') && ['queued', 'leased', 'running'].includes(run.status) && (
+                      {can('autonomous_agent:cancel') && isRunning && (
                         <span onClick={event => { event.stopPropagation(); cancelRun.mutate(run.id) }} className="ml-auto text-status-error font-semibold">Cancel</span>
+                      )}
+                      {can('autonomous_agent:update') && !isRunning && (run.archived_at
+                        ? <span onClick={event => { event.stopPropagation(); unarchiveRun.mutate(run.id) }} className="ml-auto text-accent-blue font-semibold">Restore</span>
+                        : <span onClick={event => { event.stopPropagation(); archiveRun.mutate(run.id) }} className="ml-auto text-text-tertiary hover:text-text-primary font-semibold">Archive</span>
                       )}
                     </div>
                   </button>
                 )
               })}
-              {runs.data?.length === 0 && <div className="p-4"><EmptyState title="No runs yet" description="Runs appear here once an enabled agent is triggered." /></div>}
+              {visibleRuns.length === 0 && <div className="p-4"><EmptyState title="No runs" description={allRuns.length ? 'No runs match this filter.' : 'Runs appear here once an enabled agent is triggered.'} /></div>}
             </div>
           </div>
-          <aside className="rounded-[14px] border border-border-primary p-5">
+          <aside className="rounded-[14px] border border-border-primary p-5 overflow-y-auto min-h-0">
             {selectedRun ? (
               <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>
-      )}
+        )
+      })()}
 
       {tab === 'findings' && (() => {
         const allFindings = findings.data ?? []
