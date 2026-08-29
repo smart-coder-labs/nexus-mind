@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
     Extension, Json,
 };
 use serde::Deserialize;
@@ -152,7 +153,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "github:draft_pr".into(),
             ],
             default_budgets: serde_json::json!({"wall_time_seconds": 3600, "max_attempts": 2, "max_cost_usd": 20, "max_changed_files": 20, "max_changed_lines": 800, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
-            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"}}),
+            config_schema: serde_json::json!({"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"base_branch":{"type":"string","default":"main"},"context_repos":{"type":"array","items":{"type":"owner/repo"},"description":"Additional repos of the same project cloned read-only for cross-repo context"},"custom_instructions":{"type":"string","description":"Optional free-text guidance for how to approach the issue; cannot expand scope"},"labels":{"type":"array"},"excluded_paths":{"type":"array"},"limits":{"type":"object"},"review_after_deploy":{"type":"boolean","default":false,"description":"Mark opened PRs so your deploy workflow can deploy the branch and trigger the Judge to review the running preview"},"judge_agent_id":{"type":"string","description":"The Judge agent that reviews the deployed PR (required when review_after_deploy is on)"}}),
             workflow: vec![
                 "eligible_issue".into(),
                 "pinned_checkout".into(),
@@ -181,6 +182,29 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "evaluate".into(),
                 "head_recheck".into(),
                 "comment_or_request_changes".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
+            key: "judge".into(),
+            version: 1,
+            name: "Judge".into(),
+            description: "Verifies whether the given PRs/issues actually delivered their claim, testing only what they touch against the live application, and records findings with evidence.".into(),
+            capabilities: vec![
+                "repository:read".into(),
+                "tests:run".into(),
+                "finding:write".into(),
+                "delivery:write".into(),
+                "github:review".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 12, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack"]},"repositories":{"type":"array","required":true,"items":{"type":"owner/repo"},"description":"Repos the PRs/issues may live in — read via gh to scope what each claim touches. The concrete PRs/issues are chosen per run."},"github_auth":{"const":"server_gh_cli"},"publish":{"enum":["none","comment"],"default":"none","description":"Whether to post the verdict as a GitHub comment on each target"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"custom_instructions":{"type":"string","description":"Optional guidance for what to prioritize; cannot expand scope"}}),
+            workflow: vec![
+                "select_pr_issue".into(),
+                "scope_to_diff".into(),
+                "drive_live_app".into(),
+                "evaluate".into(),
+                "record_findings".into(),
+                "deliver".into(),
             ],
         },
     ]
@@ -433,14 +457,101 @@ pub async fn put_schedule(
     ))
 }
 
+#[derive(Deserialize)]
+pub struct RunTargetInput {
+    repository: String,
+    #[serde(rename = "type")]
+    kind: String,
+    number: u64,
+}
+
+#[derive(Deserialize, Default)]
+pub struct RunNowRequest {
+    #[serde(default)]
+    targets: Vec<RunTargetInput>,
+    /// Judge only: the live app URL to verify against for THIS run (e.g. a PR
+    /// preview deployment). Overrides the agent's fixed target URL; credentials
+    /// still come from the configured target connector.
+    #[serde(default)]
+    app_base_url: Option<String>,
+}
+
 pub async fn run_now(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
+    body: Option<Json<RunNowRequest>>,
 ) -> ApiResult<(StatusCode, Json<AutonomousAgentRun>)> {
     let db = store.conn();
     let conn = db.lock().map_err(|_| lock_error())?;
     require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    let definition = queries::get_autonomous_agent_definition(&conn, &auth.org_id, &id)
+        .map_err(store_error)?
+        .ok_or_else(not_found)?;
+    // The Judge template picks its PR/issue targets at run time (not at creation),
+    // scoped to the repositories configured on the agent. Other templates ignore
+    // run inputs and behave exactly as before.
+    let body = body.map(|Json(value)| value);
+    let input = if definition.template_key == "judge" {
+        let targets: &[RunTargetInput] = body.as_ref().map(|b| b.targets.as_slice()).unwrap_or(&[]);
+        if targets.is_empty() {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                "judge_targets_required",
+                "Provide at least one PR or issue to judge.",
+            ));
+        }
+        let revision =
+            queries::get_autonomous_agent_revision(&conn, &id, definition.current_revision)
+                .map_err(store_error)?
+                .ok_or_else(not_found)?;
+        let allowed: Vec<String> = revision
+            .config
+            .get("repositories")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut resolved = Vec::new();
+        for target in targets {
+            if !allowed.iter().any(|repo| repo == &target.repository) {
+                return Err(error(
+                    StatusCode::BAD_REQUEST,
+                    "repository_not_allowed",
+                    "A target repository is not in the agent's configured repositories.",
+                ));
+            }
+            if !matches!(target.kind.as_str(), "pr" | "issue") || target.number == 0 {
+                return Err(error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_target",
+                    "Each target needs type pr|issue and a positive number.",
+                ));
+            }
+            resolved.push(serde_json::json!({
+                "repository": target.repository,
+                "type": target.kind,
+                "number": target.number,
+            }));
+        }
+        let mut input_obj = serde_json::Map::new();
+        input_obj.insert("judge_targets".into(), serde_json::json!(resolved));
+        if let Some(url) = body
+            .as_ref()
+            .and_then(|b| b.app_base_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            input_obj.insert("app_base_url".into(), serde_json::json!(url));
+        }
+        Some(serde_json::Value::Object(input_obj))
+    } else {
+        None
+    };
     let occurrence = format!("manual:{}", uuid::Uuid::new_v4());
     let run = queries::enqueue_autonomous_agent_run(
         &conn,
@@ -449,6 +560,85 @@ pub async fn run_now(
         "manual",
         &occurrence,
         None,
+        input.as_ref(),
+    )
+    .map_err(store_error)?
+    .ok_or_else(not_found)?;
+    Ok((StatusCode::ACCEPTED, Json(run)))
+}
+
+/// Public, unauthenticated evidence redirect: `/evidence/{run_id}/{name}` 302s to a
+/// freshly presigned R2 GET URL for that run's screenshot. Stored finding URLs were
+/// time-limited presigned links that expired after 7 days (SigV4's hard limit), so
+/// old evidence images broke; this stable path re-signs on every request, so the
+/// admin and GitHub-embedded images never rot. `run_id`+`name` are opaque, and the
+/// object key is derived server-side from the run's org, so it cannot be used to
+/// read arbitrary objects.
+pub async fn get_evidence(
+    State(store): State<SqliteStore>,
+    Path((run_id, name)): Path<(String, String)>,
+) -> Response {
+    // Reject anything that could escape the run's evidence prefix.
+    if name.is_empty() || name.len() > 256 || name.contains('/') || name.contains("..") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(cfg) = crate::automation::r2::R2Config::from_env() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let org_id: Option<String> = {
+        let db = store.conn();
+        let Ok(conn) = db.lock() else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        conn.query_row(
+            "SELECT org_id FROM autonomous_agent_runs WHERE id=?1",
+            [&run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    };
+    let Some(org_id) = org_id else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let key = format!("qa-evidence/{org_id}/{run_id}/{name}");
+    let url = crate::automation::r2::object_url(&cfg, &key, 3600);
+    Redirect::temporary(&url).into_response()
+}
+
+/// Continue an incomplete run: enqueue a fresh run that resumes the prior run's
+/// pushed WIP work (the resolver fanout reads `continue_from_run_id` and picks up
+/// each `nexusmind/wip-<prev>-<issue>` branch).
+pub async fn continue_run(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run_id): Path<String>,
+) -> ApiResult<(StatusCode, Json<AutonomousAgentRun>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
+    let prev = queries::get_autonomous_agent_run(&conn, &auth.org_id, &run_id)
+        .map_err(store_error)?
+        .ok_or_else(not_found)?;
+    if !matches!(
+        prev.status.as_str(),
+        "budget_exhausted" | "partial" | "blocked_policy" | "failed" | "cancelled"
+    ) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "run_not_resumable",
+            "Only an incomplete run can be continued.",
+        ));
+    }
+    let occurrence = format!("continue:{run_id}:{}", uuid::Uuid::new_v4());
+    let input = serde_json::json!({ "continue_from_run_id": run_id });
+    let run = queries::enqueue_autonomous_agent_run(
+        &conn,
+        &auth.org_id,
+        &prev.definition_id,
+        "manual",
+        &occurrence,
+        None,
+        Some(&input),
     )
     .map_err(store_error)?
     .ok_or_else(not_found)?;
@@ -588,6 +778,18 @@ pub async fn patch_finding(
             .map_err(store_error)?
             .ok_or_else(not_found)?,
     ))
+}
+
+pub async fn archive_all_findings(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:update")?;
+    let archived = queries::archive_all_autonomous_agent_findings(&conn, &auth.org_id)
+        .map_err(store_error)?;
+    Ok(Json(serde_json::json!({ "archived": archived })))
 }
 
 pub async fn list_deliveries(
@@ -815,6 +1017,7 @@ mod tests {
             "manual",
             "same-occurrence",
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -824,6 +1027,7 @@ mod tests {
             &created.definition.id,
             "manual",
             "same-occurrence",
+            None,
             None
         )
         .is_err());
@@ -1005,6 +1209,7 @@ mod tests {
             &created.definition.id,
             "manual",
             "lease-test",
+            None,
             None,
         )
         .unwrap();
@@ -1198,6 +1403,7 @@ mod tests {
             "manual",
             "auth-pause",
             None,
+            None,
         )
         .unwrap();
         for status in ["reauth_required", "unavailable"] {
@@ -1264,6 +1470,7 @@ mod tests {
             "manual",
             "reclaim",
             None,
+            None,
         )
         .unwrap();
         queries::save_autonomous_runtime_health(
@@ -1329,7 +1536,7 @@ mod tests {
             (&other_definition, "repo-3"),
         ] {
             queries::enqueue_autonomous_agent_run(
-                &conn, &org_id, definition, "manual", occurrence, None,
+                &conn, &org_id, definition, "manual", occurrence, None, None,
             )
             .unwrap();
         }
@@ -1392,6 +1599,7 @@ mod tests {
             &created.definition.id,
             "manual",
             "kill",
+            None,
             None,
         )
         .unwrap();
@@ -1502,6 +1710,7 @@ mod tests {
             &created.definition.id,
             "manual",
             "retention",
+            None,
             None,
         )
         .unwrap()

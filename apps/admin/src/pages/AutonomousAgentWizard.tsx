@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Bot, Target, SlidersHorizontal, CalendarClock, ClipboardCheck } from 'lucide-react'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -60,6 +60,14 @@ interface FormState {
   product: string
   icp: string
   leadCount: string
+  // judge
+  repositories: string // comma-separated owner/repo the judge may target
+  publishComment: boolean
+  // login credentials (qa/judge — used to authenticate into the live app)
+  loginUser: string
+  loginPassword: string
+  loginUrl: string
+  existingCredentialConnectorId: string
   // shared / repo templates
   repository: string
   baseBranch: string
@@ -67,6 +75,9 @@ interface FormState {
   labels: string
   excludedPaths: string
   includeDrafts: boolean
+  // issue-resolver preview-review handoff
+  reviewAfterDeploy: boolean
+  judgeAgentId: string
   // advanced
   extraConfig: string
   budgets: string
@@ -82,7 +93,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     name: '',
     description: '',
     template,
-    targetKind: template === 'qa' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
+    targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
     outputSlack: false,
@@ -94,12 +105,20 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     product: '',
     icp: '',
     leadCount: '10',
+    repositories: '',
+    publishComment: false,
+    loginUser: '',
+    loginPassword: '',
+    loginUrl: '',
+    existingCredentialConnectorId: '',
     repository: '',
     baseBranch: 'main',
     contextRepos: '',
     labels: '',
     excludedPaths: '',
     includeDrafts: false,
+    reviewAfterDeploy: false,
+    judgeAgentId: '',
     extraConfig: '',
     budgets: '',
     scheduleKind: 'manual',
@@ -137,10 +156,21 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (csv(state.labels).length) config.labels = csv(state.labels)
     if (csv(state.excludedPaths).length) config.excluded_paths = csv(state.excludedPaths)
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    if (state.reviewAfterDeploy) { config.review_after_deploy = true; config.judge_agent_id = state.judgeAgentId }
   } else if (state.template === 'lead_generation') {
     const outputs = ['nexusmind']
     if (state.outputSlack) outputs.push('slack')
     config = { outputs, product: state.product.trim(), icp: state.icp.trim(), count: Math.max(1, Math.min(25, Number(state.leadCount) || 10)) }
+    if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+  } else if (state.template === 'judge') {
+    const outputs = ['nexusmind']
+    if (state.outputSlack) outputs.push('slack')
+    config = {
+      github_auth: 'server_gh_cli',
+      outputs,
+      repositories: csv(state.repositories),
+      publish: state.publishComment ? 'comment' : 'none',
+    }
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
@@ -155,6 +185,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
 function csvArgv(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean)
 }
+
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
   if (!raw.trim()) return null
@@ -186,12 +217,16 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     product: typeof config.product === 'string' ? config.product : '',
     icp: typeof config.icp === 'string' ? config.icp : '',
     leadCount: typeof config.count === 'number' ? String(config.count) : '10',
+    repositories: Array.isArray(config.repositories) ? (config.repositories as string[]).join(', ') : '',
+    publishComment: config.publish === 'comment',
     repository: typeof config.repository === 'string' ? config.repository : '',
     baseBranch: typeof config.base_branch === 'string' ? config.base_branch : 'main',
     contextRepos: Array.isArray(config.context_repos) ? (config.context_repos as string[]).join(', ') : '',
     labels: Array.isArray(config.labels) ? (config.labels as string[]).join(', ') : '',
     excludedPaths: Array.isArray(config.excluded_paths) ? (config.excluded_paths as string[]).join(', ') : '',
     includeDrafts: config.include_drafts === true,
+    reviewAfterDeploy: config.review_after_deploy === true,
+    judgeAgentId: typeof config.judge_agent_id === 'string' ? config.judge_agent_id : '',
     budgets: JSON.stringify(agent.revision.budgets ?? {}, null, 2),
   }
 }
@@ -225,7 +260,7 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
       }).catch(() => undefined)
       void client.listAutonomousAgentTargets(editing.id).then(targets => {
         const first = targets.find(item => item.enabled) ?? targets[0]
-        if (first) setState(prev => ({ ...prev, targetKind: first.kind, targetName: first.name, targetPrimary: primaryFromTargetConfig(first.config) }))
+        if (first) setState(prev => ({ ...prev, targetKind: first.kind, targetName: first.name, targetPrimary: primaryFromTargetConfig(first.config), existingCredentialConnectorId: first.credential_connector_id ?? '' }))
       }).catch(() => undefined)
     } else {
       setState(defaultState(templates[0]?.key ?? 'qa'))
@@ -249,8 +284,17 @@ export default function AutonomousAgentWizard({ open, onClose, templates, editin
         const created = await client.createAutonomousAgent({ name: state.name.trim(), description: state.description.trim() || undefined, template_key: state.template, config, budgets })
         agentId = created.id
       }
-      if (state.targetName.trim()) {
-        await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim(), config: targetConfig, enabled: true })
+      // Login credentials are stored in an encrypted `target_secret` connector and
+      // bound to the target, so the agent can authenticate into the live app. On
+      // edit we preserve the existing binding unless a new password is entered.
+      let credentialConnectorId: string | undefined = state.existingCredentialConnectorId || undefined
+      if ((state.template === 'judge' || state.template === 'qa') && state.loginUser.trim() && state.loginPassword.trim()) {
+        const secret = JSON.stringify({ USERNAME: state.loginUser.trim(), PASSWORD: state.loginPassword.trim() })
+        const connector = await client.putAutonomousAgentConnector({ kind: 'target_secret', name: `login:${agentId}`, secret, metadata: {}, scopes: ['target:use'] })
+        credentialConnectorId = connector.id
+      }
+      if (state.targetName.trim() || state.targetPrimary.trim()) {
+        await client.putAutonomousAgentTarget(agentId, { kind: state.targetKind, name: state.targetName.trim() || 'Target', config: targetConfig, credential_connector_id: credentialConnectorId, enabled: true })
       }
       if (state.scheduleKind !== 'manual') {
         const expression = state.scheduleKind === 'interval'
@@ -350,6 +394,8 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'config':
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
+      if (state.template === 'judge') return csv(state.repositories).length > 0
+      if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy) return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
       if (state.scheduleKind === 'manual') return true
@@ -369,7 +415,12 @@ function primaryFromTargetConfig(config: Record<string, unknown>): string {
 function buildTargetConfig(state: FormState): Record<string, unknown> {
   const value = state.targetPrimary.trim()
   if (!value) return {}
-  return state.targetKind === 'web_application' ? { url: value } : { repository: value }
+  if (state.targetKind === 'web_application') {
+    const config: Record<string, unknown> = { url: value }
+    if (state.loginUrl.trim()) config.login_url = state.loginUrl.trim()
+    return config
+  }
+  return { repository: value }
 }
 
 /* ---------- Steps ---------- */
@@ -443,6 +494,9 @@ function StepTarget({ state, set }: { state: FormState; set: <K extends keyof Fo
 }
 
 function StepConfig({ state, set, template, extraError, config }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey; extraError: boolean; config: Record<string, unknown> }) {
+  const client = useMemo(() => createClient(), [])
+  const judgesQuery = useQuery({ queryKey: ['wizard-judges'], queryFn: () => client.listAutonomousAgents(), enabled: template === 'github_issue_resolver' })
+  const judges = (judgesQuery.data ?? []).filter(agent => agent.template_key === 'judge')
   return (
     <div className="space-y-5">
       {template === 'qa' && (
@@ -489,6 +543,18 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <Field label="Custom instructions (optional)" hint="Guidance for how the agent should approach the issue — priorities, conventions, gotchas. Cannot expand its scope or lift safety limits.">
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer the existing repository pattern in api/; keep the change minimal and add a test." />
           </Field>
+          <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+            <Switch checked={state.reviewAfterDeploy} onCheckedChange={value => set('reviewAfterDeploy', value)} size="sm" label="Review the PR with a Judge after deploy" />
+            <p className="text-[11px] text-text-tertiary">When on, each opened PR is marked (label + body marker) so your deploy workflow can deploy that branch to a preview and then call the Judge to verify the running app and post visual evidence on the PR. The Judge produces the visual evidence; the resolver already includes its own verification output.</p>
+            {state.reviewAfterDeploy && (
+              <Field label="Judge agent" hint="Reviews the deployed preview. Create a Judge agent first if the list is empty.">
+                <NativeSelect value={state.judgeAgentId} onChange={value => set('judgeAgentId', value)}>
+                  <option value="">Select a Judge…</option>
+                  {judges.map(judge => <option key={judge.id} value={judge.id}>{judge.name}</option>)}
+                </NativeSelect>
+              </Field>
+            )}
+          </div>
         </div>
       )}
 
@@ -527,6 +593,47 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
             </div>
           </div>
+        </div>
+      )}
+
+      {template === 'judge' && (
+        <div className="space-y-4">
+          <Field label="Repositories (owner/repo, comma-separated)" hint="The repos this judge may target. The specific PRs/issues are chosen each time you run it. Set the live app URL in the Target step.">
+            <Input inputSize="sm" value={state.repositories} onChange={event => set('repositories', event.target.value)} placeholder="acme/web, acme/api" />
+          </Field>
+          <Field label="Custom instructions (optional)" hint="What to prioritize while verifying. Cannot expand scope beyond what the PRs/issues touch.">
+            <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Pay special attention to the checkout totals and the empty-cart state." />
+          </Field>
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Verdict delivery</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">NexusMind always records findings with evidence. Publishing a verdict comment on each PR/issue is opt-in.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked disabled size="sm" label="NexusMind (canonical)" />
+              <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />
+              <Switch checked={state.publishComment} onCheckedChange={value => set('publishComment', value)} size="sm" label="Comment the verdict on GitHub" />
+            </div>
+          </div>
+          <p className="text-[11px] text-text-tertiary">Verifies only what the PRs/issues touch against the live app — never approves, merges, or pushes.</p>
+        </div>
+      )}
+
+      {(template === 'judge' || template === 'qa') && (
+        <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-text-secondary">App login</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">If the app requires sign-in, provide credentials so the agent logs in before testing — without them it hits the login gate and can't verify the real UI. Stored encrypted and never shown again; leave blank to keep the current login when editing.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Username / email">
+              <Input inputSize="sm" autoComplete="off" value={state.loginUser} onChange={event => set('loginUser', event.target.value)} placeholder="qa@example.com" />
+            </Field>
+            <Field label="Password">
+              <Input inputSize="sm" type="password" autoComplete="new-password" value={state.loginPassword} onChange={event => set('loginPassword', event.target.value)} placeholder="••••••••" />
+            </Field>
+          </div>
+          <Field label="Login URL (optional)" hint="Only if the login page isn't reachable from the app URL.">
+            <Input inputSize="sm" value={state.loginUrl} onChange={event => set('loginUrl', event.target.value)} placeholder="https://app.example.com/login" />
+          </Field>
         </div>
       )}
 

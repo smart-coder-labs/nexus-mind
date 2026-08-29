@@ -63,7 +63,7 @@ export interface AuthSession {
   user: User
 }
 
-export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation'
+export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation' | 'judge'
 export interface AutonomousAgentTemplate { key: AutonomousAgentTemplateKey; version: number; name: string; description: string; capabilities: string[]; default_budgets: Record<string, unknown>; config_schema:Record<string,unknown>; workflow:string[] }
 export interface AutonomousAgentDefinition { id:string; org_id:string; name:string; description:string|null; template_key:AutonomousAgentTemplateKey; template_version:number; status:'disabled'|'enabled'|'archived'; current_revision:number; created_by:string; created_at:string; updated_at:string; validation_status:'pending'|'valid'|'invalid' }
 export interface AutonomousAgentRevision { id:string; definition_id:string; revision:number; config:Record<string,unknown>; config_hash:string; capabilities:string[]; budgets:Record<string,unknown>; policy_generation:number; validation_status:'pending'|'valid'|'invalid'; validation:Record<string,unknown>|null; validated_at:string|null; created_by:string; created_at:string }

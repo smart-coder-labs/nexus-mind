@@ -16123,6 +16123,14 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
             "github:draft_pr",
         ],
         "github_pr_reviewer" => vec!["repository:read", "tests:run", "github:review"],
+        "lead_generation" => vec!["web:search", "lead:write", "delivery:write"],
+        "judge" => vec![
+            "repository:read",
+            "tests:run",
+            "finding:write",
+            "delivery:write",
+            "github:review",
+        ],
         _ => anyhow::bail!("invalid_template"),
     };
     Ok(capabilities.into_iter().map(str::to_string).collect())
@@ -16381,6 +16389,103 @@ pub fn validate_autonomous_agent_definition(
                     if crate::automation::connectors::validate_repository(value).is_ok() => {}
                 _ => errors.push("valid_repository_required"),
             }
+            // The preview-review handoff needs a Judge agent to route to.
+            if current.definition.template_key == "github_issue_resolver"
+                && current
+                    .revision
+                    .config
+                    .get("review_after_deploy")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                && current
+                    .revision
+                    .config
+                    .get("judge_agent_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
+                errors.push("judge_agent_id_required")
+            }
+        }
+        "lead_generation" => {
+            for field in ["product", "icp"] {
+                if current
+                    .revision
+                    .config
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    errors.push("product_and_icp_required");
+                    break;
+                }
+            }
+            let outputs = current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array());
+            if outputs.is_none()
+                || outputs.is_some_and(|v| {
+                    v.is_empty()
+                        || v.iter()
+                            .any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack")))
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+        }
+        "judge" => {
+            // One or more repositories are required so the judge can read each
+            // PR/issue and its diff via `gh` to scope what it verifies. The concrete
+            // PR/issue targets are chosen per run (not here), constrained to this list.
+            let repositories = current
+                .revision
+                .config
+                .get("repositories")
+                .and_then(|v| v.as_array());
+            let repositories_valid = repositories.is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|item| {
+                        item.as_str().is_some_and(|value| {
+                            crate::automation::connectors::validate_repository(value).is_ok()
+                        })
+                    })
+            });
+            if !repositories_valid {
+                errors.push("repositories_required")
+            }
+            // Findings delivery, same channels as QA.
+            let outputs = current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array());
+            if outputs.is_none()
+                || outputs.is_some_and(|v| {
+                    v.is_empty()
+                        || v.iter()
+                            .any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack")))
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+            // Publishing a verdict comment to GitHub is opt-in.
+            if !matches!(
+                current
+                    .revision
+                    .config
+                    .get("publish")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none"),
+                "none" | "comment"
+            ) {
+                errors.push("invalid_publish")
+            }
         }
         _ => errors.push("unsupported_template"),
     }
@@ -16551,6 +16656,7 @@ pub fn enqueue_autonomous_agent_run(
     trigger_kind: &str,
     occurrence_key: &str,
     scheduled_for: Option<&str>,
+    input: Option<&serde_json::Value>,
 ) -> Result<Option<AutonomousAgentRun>> {
     let Some(detail) = get_autonomous_agent_detail(conn, org_id, definition_id)? else {
         return Ok(None);
@@ -16563,6 +16669,7 @@ pub fn enqueue_autonomous_agent_run(
     }
     let automation_run_id = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
+    let input_json = input.map(serde_json::to_string).transpose()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO automation_runs (id,org_id,project_id,created_by,profile_version_ref,policy_generation)
@@ -16570,9 +16677,9 @@ pub fn enqueue_autonomous_agent_run(
         rusqlite::params![automation_run_id,org_id,detail.definition.created_by,format!("{}-v{}",detail.definition.template_key,detail.definition.template_version),detail.revision.policy_generation],
     )?;
     tx.execute(
-        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?],
+        "INSERT INTO autonomous_agent_runs (id,org_id,definition_id,revision_id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,budget_json,input_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![run_id,org_id,definition_id,detail.revision.id,automation_run_id,trigger_kind,occurrence_key,scheduled_for,serde_json::to_string(&detail.revision.budgets)?,input_json],
     )?;
     tx.commit()?;
     get_autonomous_agent_run(conn, org_id, &run_id)
@@ -16774,6 +16881,7 @@ pub fn enqueue_due_autonomous_agent_runs(conn: &Connection) -> Result<usize> {
                 "schedule",
                 &occurrence,
                 Some(&scheduled_for),
+                None,
             ) {
                 Ok(Some(_)) => created += 1,
                 Err(error) if error.to_string().contains("UNIQUE constraint failed") => {}
@@ -16904,6 +17012,26 @@ pub fn claim_next_autonomous_agent_run(
         ).optional()?;
         if let Some((repository, kind, number, head_sha)) = work {
             object.insert("trigger".into(),serde_json::json!({"repository":repository,"kind":kind,"number":number,"head_sha":head_sha}));
+        }
+        // Per-run inputs chosen at trigger time (e.g. the Judge template's PR/issue
+        // targets) are merged over the config the worker sees for this run only.
+        let input_json: Option<String> = conn
+            .query_row(
+                "SELECT input_json FROM autonomous_agent_runs WHERE id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(input) = input_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        {
+            if let Some(input_obj) = input.as_object() {
+                for (key, value) in input_obj {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
         }
     }
     Ok(Some(ClaimedAutonomousRun {
@@ -17435,6 +17563,7 @@ pub fn enqueue_github_webhook_agents(
             "github_webhook",
             &occurrence,
             None,
+            None,
         ) {
             Ok(Some(run)) => run,
             Err(error) if error.to_string().contains("UNIQUE constraint failed") => continue,
@@ -17580,6 +17709,17 @@ pub fn patch_autonomous_agent_finding(
     conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
 }
 
+/// Archive every finding that is not already archived (status `ignored`), returning
+/// how many were archived. Archiving is reversible — a finding can be restored to
+/// `open` — and survives re-detection (upsert never resets status).
+pub fn archive_all_autonomous_agent_findings(conn: &Connection, org_id: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE autonomous_agent_findings SET status='ignored',updated_at=datetime('now') WHERE org_id=?1 AND status!='ignored'",
+        rusqlite::params![org_id],
+    )
+    .map_err(Into::into)
+}
+
 /// Mark every OPEN finding that was delivered as the given GitHub issue (matched
 /// by the issue's html_url on its `github_issue` delivery) as resolved, so a
 /// finding the resolver has just addressed with a PR no longer lingers. Returns
@@ -17691,6 +17831,14 @@ pub fn put_autonomous_agent_target(
             anyhow::bail!("invalid_target_connector")
         }
     }
+    // Upsert by (definition, name): re-saving an agent replaces its same-named
+    // target instead of piling up duplicates (multiple distinct-named targets are
+    // still supported). Duplicates sharing one credential connector previously
+    // tripped target_secret_name_collision.
+    conn.execute(
+        "DELETE FROM autonomous_agent_targets WHERE org_id=?1 AND definition_id=?2 AND name=?3",
+        rusqlite::params![org_id, definition_id, req.name.trim()],
+    )?;
     let id = Uuid::new_v4().to_string();
     conn.execute("INSERT INTO autonomous_agent_targets(id,org_id,definition_id,kind,name,config_json,credential_connector_id,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![id,org_id,definition_id,req.kind,req.name.trim(),serde_json::to_string(&req.config)?,req.credential_connector_id,req.enabled as i64])?;
     conn.query_row("SELECT id,definition_id,kind,name,config_json,credential_connector_id,enabled,created_at,updated_at FROM autonomous_agent_targets WHERE id=?1 AND org_id=?2",rusqlite::params![id,org_id],autonomous_target_from_row).optional().map_err(Into::into)
@@ -23192,6 +23340,30 @@ mod inheritance_tests {
             )
             .unwrap();
         assert_eq!(cid.as_deref(), Some("cli_a"));
+    }
+
+    /// Every advertised template MUST resolve a capability envelope — a template
+    /// present in the catalog but missing here fails agent creation with
+    /// `invalid_template` (the lead_generation regression). Judge is included.
+    #[test]
+    fn every_template_resolves_capabilities() {
+        for template in [
+            "qa",
+            "github_issue_resolver",
+            "github_pr_reviewer",
+            "lead_generation",
+            "judge",
+        ] {
+            assert!(
+                autonomous_agent_capabilities(template).is_ok(),
+                "template {template} must resolve capabilities"
+            );
+        }
+        assert_eq!(
+            autonomous_agent_capabilities("lead_generation").unwrap(),
+            vec!["web:search", "lead:write", "delivery:write"]
+        );
+        assert!(autonomous_agent_capabilities("does_not_exist").is_err());
     }
 
     /// Grafting a project onto another tenant's client must be refused.

@@ -5,6 +5,7 @@ import { AlertTriangle, Archive, Ban, Bot, Camera, CheckCircle2, Clock, Copy, Ex
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/Button'
+import { Input } from '../components/ui/Input'
 import { Badge } from '../components/ui/Badge'
 import { Switch } from '../components/ui/Switch'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
@@ -228,7 +229,8 @@ function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: 
 }
 
 // The star of the redesign: turns run.finished's raw JSON into a readable story.
-function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void }) {
+function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
+  const canContinue = Boolean(onContinue) && ['budget_exhausted', 'partial', 'blocked_policy', 'failed', 'cancelled'].includes(run.status)
   const meta = runStatusMeta(run.status)
   const finished = events.find(e => e.kind === 'run.finished')
   const payload = asDict(finished?.payload) ?? {}
@@ -330,7 +332,10 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
             {run.snapshot_sha && <span>Snapshot <span className="font-mono">{run.snapshot_sha.slice(0, 7)}</span></span>}
           </div>
         </div>
-        <Badge variant={meta.variant} dot>{meta.label}{code ? ` · ${code}` : ''}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={meta.variant} dot>{meta.label}{code ? ` · ${code}` : ''}</Badge>
+          {canContinue && <Button size="sm" variant="secondary" leftIcon={<RefreshCw className="w-3.5 h-3.5" />} loading={continuing} onClick={() => onContinue?.(run.id)}>Continue</Button>}
+        </div>
       </div>
 
       {/* outcome sentence */}
@@ -367,14 +372,21 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
             <div className="flex items-center gap-2 mb-3 text-[13px] font-semibold text-text-primary"><Camera className="w-4 h-4 text-accent-blue" />{findings?.length ?? 0} finding{(findings?.length ?? 0) === 1 ? '' : 's'}{screenshots ? ` · ${Object.keys(screenshots).length} screenshot${Object.keys(screenshots).length === 1 ? '' : 's'}` : ''}</div>
             {screenshots && (
               <div className="flex gap-2.5 flex-wrap">
-                {Object.entries(screenshots).slice(0, 6).map(([name, url]) => (
-                  <a key={name} href={typeof url === 'string' ? url : undefined} target="_blank" rel="noreferrer" className="w-28">
-                    {typeof url === 'string'
-                      ? <img src={url} alt={name} className="h-[70px] w-full object-cover rounded-lg border border-border-primary" />
+                {Object.entries(screenshots).slice(0, 6).map(([name, url]) => {
+                  // Prefer the stable re-signing endpoint (durable) over the raw
+                  // presigned URL baked into the result, which expires after 7 days.
+                  const src = run.id
+                    ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(run.id)}/${encodeURIComponent(name)}`
+                    : (typeof url === 'string' ? url : undefined)
+                  return (
+                  <a key={name} href={src} target="_blank" rel="noreferrer" className="w-28">
+                    {src
+                      ? <img src={src} alt={name} className="h-[70px] w-full object-cover rounded-lg border border-border-primary" />
                       : <div className="h-[70px] rounded-lg border border-border-primary bg-white/[0.03]" />}
                     <div className="text-[10.5px] text-text-tertiary mt-1 text-center truncate">{name}</div>
                   </a>
-                ))}
+                  )
+                })}
               </div>
             )}
             {onOpenFindings && <button type="button" onClick={onOpenFindings} className="mt-3 text-xs text-accent-blue">View in Findings →</button>}
@@ -508,13 +520,19 @@ export default function AutonomousAgents() {
     onError: (value: unknown) => setActionError(value instanceof Error ? value.message : 'Validation failed'),
   })
   const clone = useMutation({ mutationFn: async (id: string) => { const source = await client.getAutonomousAgent(id); return client.createAutonomousAgent({ name: `${source.name} copy`, description: source.description ?? undefined, template_key: source.template_key, config: source.revision.config, budgets: source.revision.budgets }) }, onSuccess: () => invalidate('autonomous-agents') })
-  const runNow = useMutation({ mutationFn: (id: string) => client.runAutonomousAgent(id), onSuccess: () => invalidate('autonomous-runs') })
+  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null) } })
+  const [runJudge, setRunJudge] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const continueRun = useMutation({ mutationFn: (id: string) => client.continueAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
   const retryDelivery = useMutation({ mutationFn: (id: string) => client.retryAutonomousAgentDelivery(id), onSuccess: () => invalidate('autonomous-deliveries') })
   const resolveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'resolved'), onSuccess: () => invalidate('autonomous-findings') })
+  const archiveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'ignored'), onSuccess: () => invalidate('autonomous-findings') })
+  const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
+  const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
+  const [showArchivedFindings, setShowArchivedFindings] = useState(false)
 
   const openEdit = async (agent: AutonomousAgentDefinition) => {
     const detail = await client.getAutonomousAgent(agent.id)
@@ -589,7 +607,7 @@ export default function AutonomousAgents() {
                     : <span className="text-xs text-text-tertiary px-1">Validate to enable</span>}
                 </>}
                 {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
-                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => runNow.mutate(agent.id)}>Run</Button>}
+                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
                 {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}
                 {can('autonomous_agent:create') && <Button size="sm" variant="ghost" leftIcon={<Copy className="w-3.5 h-3.5" />} onClick={() => clone.mutate(agent.id)}>Clone</Button>}
                 {can('autonomous_agent:update') && agent.status === 'disabled' && <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} onClick={() => archive.mutate(agent.id)}>Archive</Button>}
@@ -666,17 +684,38 @@ export default function AutonomousAgents() {
           </div>
           <aside className="rounded-[14px] border border-border-primary p-5">
             {selectedRun ? (
-              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} />
+              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>
       )}
 
-      {tab === 'findings' && (
+      {tab === 'findings' && (() => {
+        const allFindings = findings.data ?? []
+        const archivedFindingsCount = allFindings.filter(f => f.status === 'ignored').length
+        const activeCount = allFindings.length - archivedFindingsCount
+        const visibleFindings = showArchivedFindings ? allFindings : allFindings.filter(f => f.status !== 'ignored')
+        return (
         <div className="space-y-3">
-          {findings.data?.map(finding => {
+          {allFindings.length > 0 && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                {archivedFindingsCount > 0 && <Switch size="sm" checked={showArchivedFindings} onCheckedChange={setShowArchivedFindings} label={`Show archived (${archivedFindingsCount})`} />}
+              </div>
+              {can('autonomous_agent:update') && activeCount > 0 && (
+                <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} loading={archiveAllFindings.isPending} onClick={() => { if (window.confirm(`Archive all ${activeCount} finding${activeCount === 1 ? '' : 's'}? You can restore them from “Show archived”.`)) archiveAllFindings.mutate() }}>Archive all</Button>
+              )}
+            </div>
+          )}
+          {visibleFindings.map(finding => {
             const ev = (finding.evidence ?? {}) as Dict
-            const shot = asStr(ev.screenshot_url) ?? asStr(ev.screenshot)
+            // Build the screenshot src from the stable re-signing endpoint using the
+            // run id + the stored filename, so old evidence (whose baked-in presigned
+            // URL has since expired) still renders. Fall back to the stored URL.
+            const shotName = asStr(ev.screenshot)
+            const shot = finding.run_id && shotName
+              ? `${import.meta.env.VITE_API_URL ?? ''}/evidence/${encodeURIComponent(finding.run_id)}/${encodeURIComponent(shotName)}`
+              : (asStr(ev.screenshot_url) ?? shotName)
             const location = ev.location
             const locDict = asDict(location)
             const locStr = asStr(location)
@@ -691,12 +730,61 @@ export default function AutonomousAgents() {
                   <div className="flex justify-between gap-3 items-start flex-wrap">
                     <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
                     <div className="flex items-center gap-2">
+                      {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
-                      <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : 'default'}>{finding.status}</Badge>
+                      <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
                       {can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Resolve</button>}
+                      {can('autonomous_agent:update') && finding.status !== 'ignored' && <button type="button" onClick={() => archiveFinding.mutate(finding.id)} className="text-xs text-text-tertiary hover:text-text-primary font-medium">Archive</button>}
+                      {can('autonomous_agent:update') && finding.status === 'ignored' && <button type="button" onClick={() => restoreFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Restore</button>}
                     </div>
                   </div>
                   <p className="text-sm text-text-tertiary mt-2 leading-relaxed">{finding.summary}</p>
+
+                  {(() => {
+                    const lead = asDict(ev.lead)
+                    if (!lead) return null
+                    const execs = (asArr(lead.executives) ?? []).map(asDict).filter(Boolean) as Dict[]
+                    const sources = (asArr(lead.source_urls) ?? []).map(asStr).filter(Boolean) as string[]
+                    const link = (label: string, url?: string, text?: string) => url ? <a key={label} href={url} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">{text ?? label}</a> : null
+                    const contacts = [
+                      link('Website', asStr(lead.website)),
+                      asStr(lead.contact_email) ? <a key="email" href={`mailto:${asStr(lead.contact_email)}`} className="text-accent-blue hover:underline">{asStr(lead.contact_email)}</a> : null,
+                      asStr(lead.contact_phone) ? <span key="phone" className="text-text-secondary">{asStr(lead.contact_phone)}</span> : null,
+                      link('Contact page', asStr(lead.contact_page)),
+                      link('LinkedIn', asStr(lead.company_linkedin)),
+                    ].filter(Boolean)
+                    return (
+                      <div className="mt-3 rounded-[12px] border border-border-primary p-3 space-y-2.5 text-xs">
+                        {(asStr(lead.headquarters) || asStr(lead.industry)) && (
+                          <p className="text-text-tertiary">{[asStr(lead.industry), asStr(lead.headquarters)].filter(Boolean).join(' · ')}</p>
+                        )}
+                        {contacts.length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{contacts}</div>}
+                        {execs.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary mb-1.5">Decision-makers</p>
+                            <div className="space-y-1">
+                              {execs.map((e, i) => (
+                                <div key={i} className="flex flex-wrap items-baseline gap-x-2">
+                                  <span className="text-text-primary font-medium">{asStr(e.name) ?? '—'}</span>
+                                  {asStr(e.title) && <span className="text-text-tertiary">{asStr(e.title)}</span>}
+                                  {asStr(e.linkedin) && <a href={asStr(e.linkedin)} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">LinkedIn</a>}
+                                  {asStr(e.public_email) && <a href={`mailto:${asStr(e.public_email)}`} className="text-accent-blue hover:underline">{asStr(e.public_email)}</a>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {(asStr(lead.email_subject) || asStr(lead.email_body)) && (
+                          <details>
+                            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Drafted email</summary>
+                            {asStr(lead.email_subject) && <p className="mt-1.5 text-text-secondary"><span className="text-text-tertiary">Subject:</span> {asStr(lead.email_subject)}</p>}
+                            {asStr(lead.email_body) && <pre className="mt-1 whitespace-pre-wrap text-text-secondary font-sans">{asStr(lead.email_body)}</pre>}
+                          </details>
+                        )}
+                        {sources.length > 0 && <div className="flex flex-wrap gap-x-3 gap-y-1 text-text-quaternary">{sources.slice(0, 6).map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer" className="hover:text-text-secondary truncate max-w-[220px]">{u.replace(/^https?:\/\//, '')}</a>)}</div>}
+                      </div>
+                    )
+                  })()}
 
                   {hasStructured && (
                     <div className="mt-3 grid gap-4 sm:grid-cols-[200px_1fr]">
@@ -762,9 +850,11 @@ export default function AutonomousAgents() {
               </article>
             )
           })}
-          {findings.data?.length === 0 && <EmptyState title="No findings yet" description="Confirmed findings from QA and review agents will land here — with the screenshot, the reproduction, and where they were delivered." />}
+          {allFindings.length === 0 && <EmptyState title="No findings yet" description="Confirmed findings from QA and review agents will land here — with the screenshot, the reproduction, and where they were delivered." />}
+          {allFindings.length > 0 && visibleFindings.length === 0 && <EmptyState title="All findings archived" description="Toggle “Show archived” to see them." />}
         </div>
-      )}
+        )
+      })()}
 
       {tab === 'runtime' && (
         <div className="grid gap-4 md:grid-cols-2">
@@ -848,6 +938,84 @@ export default function AutonomousAgents() {
           </>
         )}
       </Modal>
+
+      {runJudge && (
+        <JudgeRunDialog
+          agent={runJudge}
+          pending={runNow.isPending}
+          onClose={() => setRunJudge(null)}
+          onRun={targets => runNow.mutate({ id: runJudge.id, targets })}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Run dialog for the Judge template: the PR/issue targets are chosen per run (not
+ * baked into the agent), each scoped to one of the agent's configured repositories.
+ */
+function JudgeRunDialog({ agent, pending, onClose, onRun }: { agent: AutonomousAgentDefinition; pending: boolean; onClose: () => void; onRun: (targets: Array<{ repository: string; type: 'pr' | 'issue'; number: number }>) => void }) {
+  const client = useMemo(() => createClient(), [])
+  const detail = useQuery({ queryKey: ['autonomous-agent-detail', agent.id], queryFn: () => client.getAutonomousAgent(agent.id) })
+  const repos = (Array.isArray(detail.data?.revision?.config?.repositories) ? detail.data?.revision?.config?.repositories : []) as string[]
+  const [repository, setRepository] = useState('')
+  const [type, setType] = useState<'pr' | 'issue'>('pr')
+  const [number, setNumber] = useState('')
+  const [targets, setTargets] = useState<Array<{ repository: string; type: 'pr' | 'issue'; number: number }>>([])
+  useEffect(() => { if (!repository && repos.length) setRepository(repos[0]) }, [repos, repository])
+
+  const add = () => {
+    const n = Number(String(number).replace('#', '').trim())
+    if (!repository || !Number.isInteger(n) || n <= 0) return
+    if (targets.some(t => t.repository === repository && t.type === type && t.number === n)) { setNumber(''); return }
+    setTargets(prev => [...prev, { repository, type, number: n }])
+    setNumber('')
+  }
+
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Run “{agent.name}”</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Choose the PRs / issues to judge this run. Each is verified against the live app, scoped to what it touches.</p>
+        {repos.length === 0 && !detail.isLoading && <p className="text-xs text-status-warning">This agent has no configured repositories. Edit it to add some first.</p>}
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-end">
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Repository</span>
+            <select value={repository} onChange={e => setRepository(e.target.value)} className="mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+              {repos.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Type</span>
+            <select value={type} onChange={e => setType(e.target.value as 'pr' | 'issue')} className="mt-1 block rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+              <option value="pr">PR</option>
+              <option value="issue">Issue</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary">Number</span>
+            <Input inputSize="sm" className="w-24" value={number} onChange={e => setNumber(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }} placeholder="123" />
+          </label>
+          <Button size="sm" variant="secondary" onClick={add} disabled={!repository || !number.trim()}>Add</Button>
+        </div>
+        {targets.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {targets.map((t, i) => (
+              <Badge key={`${t.repository}-${t.type}-${t.number}`} size="sm" variant="default">
+                {t.repository} {t.type === 'pr' ? 'PR' : 'Issue'} #{t.number}
+                <button type="button" className="ml-1.5 text-text-quaternary hover:text-text-primary" onClick={() => setTargets(prev => prev.filter((_, idx) => idx !== i))} aria-label="Remove target">×</button>
+              </Badge>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={targets.length === 0} onClick={() => onRun(targets)}>Run judge</Button>
+        </div>
+      </ModalContent>
+    </Modal>
   )
 }

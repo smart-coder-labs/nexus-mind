@@ -360,6 +360,11 @@ fn target_environment(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
 ) -> anyhow::Result<Vec<(String, String)>> {
+    // Dedupe connector ids: the same credential connector is often bound to more
+    // than one target (e.g. duplicate targets created on repeated saves), and
+    // processing it twice would surface its USERNAME/PASSWORD twice and wrongly
+    // trip target_secret_name_collision.
+    let mut seen = std::collections::HashSet::new();
     let connector_ids = claim
         .config
         .get("targets")
@@ -372,6 +377,7 @@ fn target_environment(
                 .get("credential_connector_id")
                 .and_then(|value| value.as_str())
         })
+        .filter(|connector_id| seen.insert(*connector_id))
         .collect::<Vec<_>>();
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
@@ -404,6 +410,269 @@ fn target_environment(
         }
     }
     Ok(environment)
+}
+
+/// Resolve the judge's PR/issue targets to their live claim (title, body, changed
+/// files) via `gh`, so the agent can scope what it verifies to what each target
+/// actually touched. Best-effort per target: a target that cannot be fetched is
+/// recorded with an `error` field rather than aborting the whole run.
+async fn resolve_judge_targets(
+    targets: &[serde_json::Value],
+    token: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let mut resolved = Vec::new();
+    for target in targets.iter().take(50) {
+        let kind = target.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let (subcommand, fields) = match kind {
+            "pr" => ("pr", "number,title,body,files,url,state"),
+            "issue" => ("issue", "number,title,body,labels,url,state"),
+            _ => continue,
+        };
+        let reference = format!(
+            "{} {repository}#{number}",
+            if kind == "pr" { "PR" } else { "Issue" }
+        );
+        let mut command = Command::new("gh");
+        restrict_claude_environment(&mut command);
+        if let Some(token) = token {
+            command.env("GH_TOKEN", token);
+        }
+        let output = timeout(
+            Duration::from_secs(20),
+            command
+                .args([
+                    subcommand,
+                    "view",
+                    &number.to_string(),
+                    "--repo",
+                    repository,
+                    "--json",
+                    fields,
+                ])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        match output {
+            Ok(Ok(out)) if out.status.success() => {
+                match serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    Ok(mut value) => {
+                        if let Some(body) = value.get("body").and_then(|v| v.as_str()) {
+                            let trimmed: String = body.chars().take(30_000).collect();
+                            value["body"] = json!(trimmed);
+                        }
+                        if let Some(files) = value.get("files").and_then(|v| v.as_array()) {
+                            let paths = files
+                                .iter()
+                                .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+                                .take(300)
+                                .map(|p| json!(p))
+                                .collect::<Vec<_>>();
+                            value["changed_files"] = json!(paths);
+                        }
+                        value["ref"] = json!(reference);
+                        value["type"] = json!(kind);
+                        value["repository"] = json!(repository);
+                        resolved.push(value);
+                    }
+                    Err(_) => resolved.push(
+                        json!({"ref":reference,"type":kind,"repository":repository,"number":number,"error":"gh_parse_failed"}),
+                    ),
+                }
+            }
+            _ => resolved.push(
+                json!({"ref":reference,"type":kind,"repository":repository,"number":number,"error":"gh_unavailable"}),
+            ),
+        }
+    }
+    resolved
+}
+
+/// Post the judge's verdict as a GitHub comment on each target, when the agent is
+/// configured with `publish: "comment"`. One `github_issue_comment` delivery per
+/// target (the issue-comment API serves PRs too), matched to the finding that
+/// references that target number. Best-effort and idempotent via the delivery
+/// ledger; a failure to comment on one target never discards the recorded verdict.
+/// A judge finding is a "bug" when it is explicitly tagged so, or (for older
+/// contracts) when its severity is anything other than "info".
+fn judge_finding_is_bug(finding: &serde_json::Value) -> bool {
+    finding.get("kind").and_then(|v| v.as_str()) == Some("bug")
+        || finding
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .is_some_and(|severity| severity != "info")
+}
+
+/// Render one finding as a GitHub-markdown bullet, embedding its evidence
+/// screenshot via the durable re-signing endpoint when a public base is configured.
+fn render_judge_finding(
+    finding: &serde_json::Value,
+    run_id: &str,
+    evidence_base: Option<&str>,
+) -> String {
+    let title = finding
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(untitled)");
+    let severity = finding
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("info");
+    let summary: String = finding
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(4000)
+        .collect();
+    let image = finding
+        .get("screenshot")
+        .and_then(|v| v.as_str())
+        .filter(|name| !name.is_empty())
+        .zip(evidence_base)
+        .map(|(name, base)| format!("\n\n  ![evidence]({base}/evidence/{run_id}/{name})"))
+        .unwrap_or_default();
+    format!("- **{title}** _({severity})_\n\n  {summary}{image}")
+}
+
+async fn publish_judge_comments(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    result: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let token = github_access(store, claim)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("github_connector_required"))?;
+    let structured = structured_result(result);
+    let findings = structured
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let targets = claim
+        .config
+        .get("judge_targets")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    // Absolute base for embedding evidence images that never expire (the public
+    // re-signing endpoint). Without it configured, comments omit the image.
+    let evidence_base = std::env::var("PUBLIC_API_BASE_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_string());
+    let mut posted = Vec::new();
+    for target in targets.iter().take(50) {
+        let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let needle = format!("#{number}");
+        let own: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| {
+                f.get("title")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t.contains(&needle))
+            })
+            .collect();
+        let mut bugs = Vec::new();
+        let mut feedback = Vec::new();
+        for finding in own.iter().copied() {
+            let rendered =
+                render_judge_finding(finding, &claim.run.id, evidence_base.as_deref());
+            if judge_finding_is_bug(finding) {
+                bugs.push(rendered);
+            } else {
+                feedback.push(rendered);
+            }
+        }
+        let mut sections = String::new();
+        if !bugs.is_empty() {
+            sections.push_str(&format!("### Issues found\n\n{}\n\n", bugs.join("\n\n")));
+        }
+        if !feedback.is_empty() {
+            sections.push_str(&format!("### Feedback\n\n{}\n\n", feedback.join("\n\n")));
+        }
+        if sections.is_empty() {
+            sections.push_str("NexusMind judged this target but produced no findings.\n\n");
+        }
+        let body: String = format!(
+            "## NexusMind — Judge verdict\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
+            claim.run.id
+        )
+        .chars()
+        .take(60_000)
+        .collect();
+        let delivery_key =
+            format!("judge-comment:{}:{repository}:{number}", claim.run.definition_id);
+        let delivery = {
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            queries::create_autonomous_agent_delivery(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+                None,
+                "github_issue_comment",
+                &delivery_key,
+            )?
+        };
+        if delivery.status == "delivered" {
+            posted.push(json!({"number":number,"reconciled":true,"url":delivery.external_url}));
+            continue;
+        }
+        require_publish_authority(store, claim)?;
+        match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
+            .await
+        {
+            Ok(comment) => {
+                let db = store.conn();
+                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                let external_id = comment.get("id").map(|v| v.to_string());
+                let url = comment.get("html_url").and_then(|v| v.as_str());
+                queries::complete_autonomous_agent_delivery(
+                    &conn,
+                    &claim.org_id,
+                    &delivery.id,
+                    external_id.as_deref(),
+                    url,
+                )?;
+                if let Some(external_id) = external_id.as_deref() {
+                    queries::create_autonomous_output_link(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                        "issue_comment",
+                        external_id,
+                        url,
+                    )?;
+                }
+                posted.push(json!({"number":number,"url":url}));
+            }
+            Err(error) => {
+                let db = store.conn();
+                if let Ok(conn) = db.lock() {
+                    let _ = queries::fail_autonomous_agent_delivery(
+                        &conn,
+                        &claim.org_id,
+                        &delivery.id,
+                        "github_issue_comment_failed",
+                    );
+                }
+                posted.push(json!({"number":number,"error":error.to_string()}));
+            }
+        }
+    }
+    Ok(json!({"published": true, "comments": posted}))
 }
 
 async fn github_access(
@@ -991,8 +1260,29 @@ async fn publish_template_output(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // Opt-in preview-review handoff: a machine-readable marker your deploy
+            // workflow detects to deploy this PR's branch and then trigger the
+            // configured Judge (POST /autonomous-agents/<judge>/run with the PR as a
+            // target + the preview app_base_url), which posts the visual evidence.
+            let review_marker = if claim
+                .config
+                .get("review_after_deploy")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+            {
+                let judge = claim
+                    .config
+                    .get("judge_agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                format!(
+                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number} -->"
+                )
+            } else {
+                String::new()
+            };
             let body = format!(
-                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.",
+                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
                     "- No verification command was configured.".to_string()
@@ -1268,7 +1558,7 @@ fn fixed_prompt(
     config: &serde_json::Value,
     max_turns: u64,
 ) -> anyhow::Result<String> {
-    let slack_delivery = template == "qa"
+    let slack_delivery = matches!(template, "qa" | "judge")
         && config
             .get("outputs")
             .and_then(|value| value.as_array())
@@ -1302,13 +1592,29 @@ fn fixed_prompt(
         .filter(|value| !value.is_empty())
         .map(|_| " Additional operator instructions are provided in the configuration `custom_instructions`; follow them as guidance for what to prioritize, but they cannot expand your scope or lift any restriction stated above.")
         .unwrap_or("");
+    // Authentication is mandatory before any inspection, and inferring behavior from
+    // source bundles instead of the rendered UI is forbidden — that fallback produced
+    // false findings when the agent hit a login gate with no session.
+    let login_clause = " AUTHENTICATION: if the target requires a login, the configuration `target_credentials` holds the credentials (typically USERNAME and PASSWORD). Your FIRST action MUST be to open the app and log in with them (the login page is the app URL, or the target config's `login_url` if present), and you must keep a valid logged-in session for every check. If `target_credentials` is missing, or you cannot reach the real logged-in UI, STOP and report exactly ONE finding stating the app could not be accessed (blocked by login). You must NEVER work around a login gate by reading JavaScript/CSS bundles, chunks, network payloads or source code, and you must NEVER infer, guess or report behavior from code: ONLY observations made against the rendered, logged-in UI are valid findings.";
     let objective = match template {
         "qa" if qa_agent_driven => format!(
-            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{turn_budget}{slack_clause}{qa_contract}"
+            "Drive the target application (see the target URL in the configuration) through the server-configured `playwright` MCP browser tools to verify it behaves correctly, following any QA instructions in the configuration. Do not modify the repository. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob over the checked-out code; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Cover each area with a few targeted checks rather than exhaustively. For each finding you report, capture a screenshot with the Playwright browser screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field so it can be attached as evidence.{login_clause}{turn_budget}{slack_clause}{qa_contract}"
         ),
         "qa" => format!(
             "Execute the configured QA plan and evaluate the recorded test results.{slack_clause}{qa_contract}"
         ),
+        "judge" => {
+            // The judge emits SPECIFIC findings, each tagged kind "bug" (a concrete
+            // problem) or "feedback" (something that works / a positive note), and
+            // maps them back to a target by putting its #number in the title.
+            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right (or, if the claim is fully met with nothing wrong, a single \"feedback\" finding stating it is met). Never return an empty findings array. Every finding \"title\" MUST contain the target's \"#<number>\" so it can be mapped back. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            // The browser starts from a fresh, in-memory profile each run, so any
+            // stale content is the app's own service worker / CDN, not the agent.
+            let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
+            format!(
+                "You are judging whether the pull requests / issues listed in the configuration `judge_targets_resolved` actually delivered what they claimed, verified against the LIVE target application (its URL is in the configuration — use `app_base_url` when present, e.g. a PR preview deployment, otherwise the configured target's url). For each target: read its title, body and the list of changed files, derive the concrete claim (a bug that must now be gone, a feature that must now work, or a design change that must be visible), then drive the target application through the server-configured `playwright` MCP browser tools to check ONLY that claim plus an immediate regression check of the adjacent flow. Do NOT test unrelated areas of the app, and do NOT modify anything. You have ONLY the Playwright browser tools (mcp__playwright__*) plus Read/Grep/Glob; Bash, shell commands and WebFetch are unavailable, so never attempt them (they waste your limited turn budget). Capture a screenshot as evidence for every finding with the Playwright screenshot tool using a short unique filename ending in .png, and put that exact filename in that finding's \"screenshot\" field.{login_clause}{turn_budget}{cache_clause}{slack_clause}{custom_clause}{judge_contract}"
+            )
+        }
         "github_issue_resolver" => {
             let has_context = config
                 .get("context_repos")
@@ -1333,7 +1639,12 @@ fn fixed_prompt(
             // prose, no markdown fences). Two shapes: an implemented change, or an
             // explicit no-op delivered to the maintainer as an issue comment.
             let issue_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences. If you implemented a bounded change, leave your edits in the working tree and return {\"title\":\"<concise pull request title>\",\"summary\":\"<what you changed and why>\"}. If the issue requires NO code change, make no edits and return {\"no_op\":true,\"comment\":\"<explain to the maintainer, in GitHub markdown, why no change is needed>\"}. Never leave the title empty; if you are unsure, still provide your best one-line title.";
-            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{custom_clause}{issue_contract}")
+            let progress_clause = " Keep a file named `PENDING.md` at the repository root up to date as you work: a short running list of what you have DONE and what is still LEFT to do. The worker checkpoints your work-in-progress periodically, and if you run out of time/budget it opens a partial pull request whose \"Pending\" section is taken from this file — so keeping it current is how unfinished work is handed off. Update it before you finish.";
+            // Hard rule: delegate heavy work to subagents so the orchestrator's own
+            // context window stays small and the run doesn't burn its session budget
+            // on bulk exploration.
+            let subagent_clause = " HARD RULE — WORK THROUGH SUBAGENTS: to keep your own context window small and the run cheap, you MUST delegate the heavy work to subagents with the Task tool rather than doing it all in your own context. First spawn a subagent to investigate the issue and the relevant code and return a SHORT summary (key files, root cause, a concrete plan); then spawn a subagent to implement the bounded change; use further subagents for any large file reading or verification. Do NOT read large files, list whole directories, or explore broadly in your OWN turns — consume only the concise summaries the subagents return and drop detail you no longer need. Reserve your own turns for orchestration, the PENDING.md update, and emitting the final JSON.";
+            format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{subagent_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
             "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
@@ -1345,7 +1656,7 @@ fn fixed_prompt(
                 .unwrap_or(10)
                 .clamp(1, 25);
             format!(
-                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each, research briefly and draft a short, personalized cold outreach email. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Never invent a contact email: include one only if you actually find a public business address (e.g. sales@/contact@ on their site), otherwise leave it empty.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"contact_email\":\"<public email or empty>\",\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
+                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\"}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
             )
         }
         _ => anyhow::bail!("unsupported_template"),
@@ -1414,7 +1725,7 @@ fn evaluate_structured_result(
     if !structured.is_object() {
         anyhow::bail!("result_not_object")
     }
-    if matches!(template, "qa" | "github_pr_reviewer") {
+    if matches!(template, "qa" | "github_pr_reviewer" | "judge") {
         if structured
             .get("summary")
             .and_then(|v| v.as_str())
@@ -1577,6 +1888,192 @@ async fn list_eligible_resolver_issues(
     Ok(eligible)
 }
 
+/// Stable per-issue WIP branch: the resolver force-pushes snapshots of the
+/// in-progress work here so nothing is lost if the run dies or exhausts its budget.
+fn resolver_wip_branch(run_id: &str, number: i64) -> String {
+    format!("nexusmind/wip-{}-{number}", &run_id[..run_id.len().min(12)])
+}
+
+/// Force-push a snapshot of the worktree to the WIP branch WITHOUT touching the
+/// run's real index, working tree or HEAD — it stages into a separate index
+/// (GIT_INDEX_FILE) and writes the commit with plumbing, so the running agent and
+/// the success publish path (which diffs the working tree) are completely
+/// unaffected and there is no race. Returns Ok(false) when the tree equals base
+/// (nothing to snapshot yet), Ok(true) when a snapshot was pushed.
+async fn checkpoint_wip_push(
+    workdir: &Path,
+    token: &str,
+    branch: &str,
+    base_sha: &str,
+) -> anyhow::Result<bool> {
+    // Alternate index kept OUTSIDE the worktree so `add -A` never stages it.
+    let alt_index = workdir
+        .parent()
+        .unwrap_or(workdir)
+        .join(format!(".wip-index-{}", branch.replace('/', "_")));
+    let _ = tokio::fs::remove_file(&alt_index).await;
+    {
+        let mut add = Command::new("git");
+        add.current_dir(workdir)
+            .env("GIT_INDEX_FILE", &alt_index)
+            .args(["add", "-A"]);
+        command_ok(add).await?;
+    }
+    let tree = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .env("GIT_INDEX_FILE", &alt_index)
+            .args(["write-tree"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!("write_tree_failed");
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let base_tree = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .args(["rev-parse", &format!("{base_sha}^{{tree}}")])
+            .output()
+            .await?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let _ = tokio::fs::remove_file(&alt_index).await;
+    if tree.is_empty() || tree == base_tree {
+        return Ok(false);
+    }
+    let commit = {
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .env("GIT_AUTHOR_NAME", "NexusMind Agent")
+            .env("GIT_AUTHOR_EMAIL", "agents@nexusmind.local")
+            .env("GIT_COMMITTER_NAME", "NexusMind Agent")
+            .env("GIT_COMMITTER_EMAIL", "agents@nexusmind.local")
+            .args(["commit-tree", &tree, "-p", base_sha, "-m", "NexusMind: work-in-progress checkpoint"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!("commit_tree_failed");
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    {
+        let mut push = authenticated_git(token);
+        push.current_dir(workdir).args([
+            "push",
+            "--force",
+            "origin",
+            &format!("{commit}:refs/heads/{branch}"),
+        ]);
+        command_ok(push).await?;
+    }
+    Ok(true)
+}
+
+/// Open (or reconcile) a DRAFT pull request from an already-pushed WIP branch when
+/// a resolver attempt could not finish (budget/time). The partial work is durable
+/// on the branch; this surfaces it for review and points at the Continue action.
+async fn open_partial_pr(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    token: &str,
+    repository: &str,
+    number: i64,
+    branch: &str,
+) -> anyhow::Result<serde_json::Value> {
+    ensure_diff_has_no_secrets(workdir).await?;
+    let base = claim
+        .config
+        .get("base_branch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let pending = tokio::fs::read_to_string(workdir.join("PENDING.md"))
+        .await
+        .ok()
+        .map(|body| body.chars().take(8000).collect::<String>())
+        .filter(|body| !body.trim().is_empty())
+        .unwrap_or_else(|| {
+            "The agent ran out of its time/cost budget before finishing. Review the diff and use the run's Continue action to resume.".to_string()
+        });
+    let title = super::connectors::get_github_issue(token, repository, number)
+        .await
+        .ok()
+        .and_then(|issue| {
+            issue
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|t| format!("NexusMind (partial): {t}"))
+        })
+        .unwrap_or_else(|| format!("NexusMind (partial): resolve issue #{number}"));
+    let body = format!(
+        "Refs #{number}\n\n⚠️ **Work in progress — opened automatically because the run hit its time/cost budget before finishing.** The branch holds the work done so far; nothing was lost. Use the run's Continue action to resume and finish it.\n\n## Pending\n\n{pending}\n\n## Limitations\n\nDraft only — NexusMind never merges or deploys; requires human review.\n\n- Run: `{}`",
+        claim.run.id
+    );
+    let delivery_key = format!(
+        "resolver-partial:{}:{repository}:{number}",
+        claim.run.definition_id
+    );
+    let delivery = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        queries::create_autonomous_agent_delivery(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            None,
+            "github_pr",
+            &delivery_key,
+        )?
+    };
+    if delivery.status == "delivered" {
+        return Ok(json!({"partial_pull_request":{"reconciled":true,"url":delivery.external_url}}));
+    }
+    require_publish_authority(store, claim)?;
+    let pr = match super::connectors::create_draft_pr(token, repository, &title, branch, base, &body)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            let db = store.conn();
+            if let Ok(conn) = db.lock() {
+                let _ = queries::fail_autonomous_agent_delivery(
+                    &conn,
+                    &claim.org_id,
+                    &delivery.id,
+                    "github_pr_failed",
+                );
+            }
+            return Err(error);
+        }
+    };
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let external_id = pr.get("number").map(|v| v.to_string());
+        let url = pr.get("html_url").and_then(|v| v.as_str());
+        queries::complete_autonomous_agent_delivery(
+            &conn,
+            &claim.org_id,
+            &delivery.id,
+            external_id.as_deref(),
+            url,
+        )?;
+        if let Some(external_id) = external_id.as_deref() {
+            queries::create_autonomous_output_link(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+                "draft_pr",
+                external_id,
+                url,
+            )?;
+        }
+    }
+    Ok(json!({"partial_pull_request":pr}))
+}
+
 /// Resolve ONE assigned issue inside its own git worktree: inject the target,
 /// run the bounded resolver agent, then publish through the same gates
 /// (secret-scan, diff limits, publish-authority) and open a draft PR. Returns
@@ -1593,6 +2090,10 @@ async fn resolve_issue_worktree(
     seq_base: i64,
     max_turns: u64,
     wall_time: u64,
+    base_sha: String,
+    // When resuming a prior run, the existing WIP branch to keep pushing to (its
+    // partial PR is updated in place); the success-publish step is skipped.
+    continue_branch: Option<String>,
 ) -> (i64, String, serde_json::Value) {
     if let Some(object) = claim.config.as_object_mut() {
         let trigger = object.entry("trigger").or_insert_with(|| json!({}));
@@ -1649,6 +2150,13 @@ async fn resolve_issue_worktree(
         "--allowedTools",
         "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
     ]);
+    // Register the NexusMind MCP so the resolver can actually load the tools its
+    // allowedTools/prompt reference (without this the server is never spawned).
+    let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
+        .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
+    if std::path::Path::new(&nexusmind_mcp).exists() {
+        claude.args(["--mcp-config", &nexusmind_mcp]);
+    }
     let secret_values: Vec<String> = token.iter().cloned().collect();
     claude.current_dir(&workdir).kill_on_drop(true);
     let cancelled = async {
@@ -1682,6 +2190,23 @@ async fn resolve_issue_worktree(
             }
         }
     };
+    // Force-push a WIP snapshot every few minutes so partial work survives a crash
+    // or a budget/time cutoff. Race-free (separate index) and only when we can push.
+    // When resuming, we keep pushing to the ORIGINAL run's branch so its PR updates.
+    let wip_branch = continue_branch
+        .clone()
+        .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
+    let committer = token.clone().map(|checkpoint_token| {
+        let workdir = workdir.clone();
+        let branch = wip_branch.clone();
+        let base = base_sha.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(180)).await;
+                let _ = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await;
+            }
+        })
+    });
     let invocation = run_claude_capturing_transcript(
         &mut claude,
         &store,
@@ -1707,7 +2232,30 @@ async fn resolve_issue_worktree(
             },
         }
     };
-    if outcome.0 == "succeeded" {
+    if let Some(handle) = committer {
+        handle.abort();
+    }
+    // The deterministic evaluator requires the context manifest on the result;
+    // without it every fanout issue was rejected as `evaluator_context_missing`
+    // and no PR was ever opened. (The single-issue path already attaches it.)
+    if let Some(object) = outcome.1.as_object_mut() {
+        object.insert(
+            "context_manifest".into(),
+            context_manifest(&claim, &runtime_config),
+        );
+    }
+    if continue_branch.is_some() {
+        // Resume mode: never open a new PR. Push the latest work onto the existing
+        // WIP branch so its partial draft PR is updated in place with the progress.
+        if let Some(ref checkpoint_token) = token {
+            let pushed = checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
+                .await
+                .unwrap_or(false);
+            outcome.1["continued_pushed"] = json!(pushed);
+        }
+        outcome.1["continued_branch"] = json!(wip_branch);
+        outcome.1["resumable"] = json!(outcome.0 != "succeeded");
+    } else if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
             Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
@@ -1718,6 +2266,30 @@ async fn resolve_issue_worktree(
                 Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
             }
         }
+    } else if let Some(ref checkpoint_token) = token {
+        // The attempt didn't finish. Snapshot the latest work; if there is any,
+        // surface it as a resumable partial draft PR instead of discarding it.
+        if checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
+            .await
+            .unwrap_or(false)
+        {
+            outcome.1["resumable"] = json!(true);
+            outcome.1["wip_branch"] = json!(wip_branch);
+            match open_partial_pr(
+                &store,
+                &claim,
+                &workdir,
+                checkpoint_token,
+                &repository,
+                number,
+                &wip_branch,
+            )
+            .await
+            {
+                Ok(published) => outcome.1["published"] = published,
+                Err(error) => outcome.1["partial_pr_error"] = json!(error.to_string()),
+            }
+        }
     }
     (number, outcome.0, outcome.1)
 }
@@ -1725,23 +2297,75 @@ async fn resolve_issue_worktree(
 /// Manual issue-resolver orchestration: resolve every assigned eligible issue
 /// (capped) in ONE run, each in its own detached worktree from the pinned base,
 /// up to CONCURRENCY at a time. One draft PR per issue; failures are isolated.
+/// Discover the WIP branches a prior resolver run left behind
+/// (`nexusmind/wip-<prev12>-<issue>`) via `git ls-remote`, so a Continue run can
+/// resume each. Returns `(issue_number, branch, sha)` per branch.
+async fn discover_resumable_wip(
+    workdir: &Path,
+    token: Option<&str>,
+    prev_run_id: &str,
+) -> Vec<(i64, String, String)> {
+    let short = &prev_run_id[..prev_run_id.len().min(12)];
+    let pattern = format!("refs/heads/nexusmind/wip-{short}-*");
+    let mut cmd = match token {
+        Some(token) => authenticated_git(token),
+        None => Command::new("git"),
+    };
+    cmd.current_dir(workdir).args(["ls-remote", "origin", &pattern]);
+    let Ok(out) = cmd.output().await else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(sha), Some(reference)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .unwrap_or(reference)
+            .to_string();
+        if let Some(number) = branch.rsplit('-').next().and_then(|n| n.parse::<i64>().ok()) {
+            result.push((number, branch, sha.to_string()));
+        }
+    }
+    result
+}
+
 async fn execute_resolver_fanout(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
-    const MAX_ISSUES: usize = 10;
+    // One issue per run: keeps each run small and cheap (avoids blowing the Claude
+    // session budget) and gives a clean 1 PR ↔ 1 run mapping. Subsequent runs pick
+    // the next eligible issue (ones with an open resolver PR are already excluded).
+    const MAX_ISSUES: usize = 1;
     const CONCURRENCY: usize = 3;
-    let mut issues = match list_eligible_resolver_issues(store, claim).await {
-        Ok(list) => list,
-        Err(error) => {
-            return (
-                "blocked_runtime".into(),
-                json!({"code":"issue_listing_failed","detail":error.to_string()}),
-            )
+    // A Continue run resumes the WIP branches left by `continue_from_run_id`
+    // (discovered after cloning) instead of listing fresh eligible issues.
+    let continue_from = claim
+        .config
+        .get("continue_from_run_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let mut issues = if continue_from.is_some() {
+        Vec::new()
+    } else {
+        match list_eligible_resolver_issues(store, claim).await {
+            Ok(list) => list,
+            Err(error) => {
+                return (
+                    "blocked_runtime".into(),
+                    json!({"code":"issue_listing_failed","detail":error.to_string()}),
+                )
+            }
         }
     };
-    if issues.is_empty() {
+    if continue_from.is_none() && issues.is_empty() {
         return ("blocked_policy".into(), json!({"code":"no_eligible_issue"}));
     }
     issues.truncate(MAX_ISSUES);
@@ -1792,36 +2416,77 @@ async fn execute_resolver_fanout(
         .and_then(|v| v.as_u64())
         .unwrap_or(3600)
         .clamp(30, 3600);
-    // One detached worktree per issue (sequential — git worktree add mutates shared
-    // .git state, so we don't race it).
-    let mut targets: Vec<(usize, String, i64, PathBuf)> = Vec::new();
-    for (index, (repository, number)) in issues.iter().enumerate() {
-        let worktree = sandbox.path().join(format!("issue-{number}"));
-        let mut add = match repo_token {
-            Some(ref token) => authenticated_git(token),
-            None => Command::new("git"),
-        };
-        add.current_dir(&base).args([
-            "worktree",
-            "add",
-            "--detach",
-            worktree.to_string_lossy().as_ref(),
-            &pinned_sha,
-        ]);
-        if command_ok(add).await.is_ok() {
-            targets.push((index, repository.clone(), *number, worktree));
+    // One detached worktree per unit of work (sequential — git worktree add mutates
+    // shared .git state, so we don't race it). Each carries its own base sha and,
+    // when resuming, the WIP branch to keep pushing to.
+    // targets: (index, repository, number, worktree, base_sha, continue_branch)
+    let mut targets: Vec<(usize, String, i64, PathBuf, String, Option<String>)> = Vec::new();
+    if let Some(ref prev) = continue_from {
+        let mut discovered = discover_resumable_wip(&base, repo_token.as_deref(), prev).await;
+        discovered.truncate(MAX_ISSUES);
+        let repository = claim
+            .config
+            .get("repository")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        for (index, (number, branch, sha)) in discovered.into_iter().enumerate() {
+            // Make the WIP commit available locally, then check a worktree out at it.
+            let mut fetch = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            fetch.current_dir(&base).args(["fetch", "origin", &branch]);
+            let _ = command_ok(fetch).await;
+            let worktree = sandbox.path().join(format!("issue-{number}"));
+            let mut add = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            add.current_dir(&base).args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                &sha,
+            ]);
+            if command_ok(add).await.is_ok() {
+                targets.push((index, repository.clone(), number, worktree, sha, Some(branch)));
+            }
         }
-    }
-    if targets.is_empty() {
-        return ("blocked_runtime".into(), json!({"code":"worktree_setup_failed"}));
+        if targets.is_empty() {
+            let _ = sandbox.into_path();
+            return ("blocked_policy".into(), json!({"code":"no_resumable_work"}));
+        }
+    } else {
+        for (index, (repository, number)) in issues.iter().enumerate() {
+            let worktree = sandbox.path().join(format!("issue-{number}"));
+            let mut add = match repo_token {
+                Some(ref token) => authenticated_git(token),
+                None => Command::new("git"),
+            };
+            add.current_dir(&base).args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                &pinned_sha,
+            ]);
+            if command_ok(add).await.is_ok() {
+                targets.push((index, repository.clone(), *number, worktree, pinned_sha.clone(), None));
+            }
+        }
+        if targets.is_empty() {
+            return ("blocked_runtime".into(), json!({"code":"worktree_setup_failed"}));
+        }
     }
     let mut set: tokio::task::JoinSet<(i64, String, serde_json::Value)> =
         tokio::task::JoinSet::new();
     let mut pending = targets.into_iter();
     let mut spawn_next =
         |set: &mut tokio::task::JoinSet<(i64, String, serde_json::Value)>,
-         item: (usize, String, i64, PathBuf)| {
-            let (index, repository, number, worktree) = item;
+         item: (usize, String, i64, PathBuf, String, Option<String>)| {
+            let (index, repository, number, worktree, base_sha, continue_branch) = item;
             set.spawn(resolve_issue_worktree(
                 store.clone(),
                 config.claude_code_bin.clone(),
@@ -1833,6 +2498,8 @@ async fn execute_resolver_fanout(
                 (index as i64) * 1_000_000,
                 max_turns,
                 wall_time,
+                base_sha,
+                continue_branch,
             ));
         };
     for _ in 0..CONCURRENCY {
@@ -1880,6 +2547,13 @@ async fn execute_resolver_fanout(
     } else {
         "blocked_policy"
     };
+    // Keep the sandbox on any non-clean outcome so the work can be inspected/resumed
+    // locally; only fully-successful runs are torn down. `gc_stale_sandboxes` reaps
+    // leaked ones later so disk doesn't grow unbounded. (The durable copy is the
+    // pushed WIP branch; this is a convenience for same-pod resume.)
+    if status != "succeeded" {
+        let _ = sandbox.into_path();
+    }
     (
         status.into(),
         json!({
@@ -1891,6 +2565,33 @@ async fn execute_resolver_fanout(
             "context_manifest":manifest,
         }),
     )
+}
+
+/// Reap leaked resolver sandboxes (kept on non-successful runs) older than the
+/// cutoff so preserved-on-failure directories don't accumulate on disk.
+async fn gc_stale_sandboxes(max_age_hours: u64) {
+    let dir = std::env::temp_dir();
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return;
+    };
+    let cutoff = std::time::Duration::from_secs(max_age_hours * 3600);
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("nexusmind-agent-") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > cutoff);
+        if stale {
+            let _ = tokio::fs::remove_dir_all(entry.path()).await;
+        }
+    }
 }
 
 async fn execute_claim(
@@ -2120,6 +2821,52 @@ async fn execute_claim(
             }
         }
     }
+    if claim.template_key == "judge" {
+        // Targets are chosen per run (merged into the config from the run input);
+        // each carries its own repository, constrained to the agent's allowlist.
+        let allowed: Vec<String> = runtime_config
+            .get("repositories")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let targets: Vec<serde_json::Value> = runtime_config
+            .get("judge_targets")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|target| {
+                        target
+                            .get("repository")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|repo| allowed.iter().any(|allowed| allowed == repo))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if targets.is_empty() {
+            let _ = tokio::fs::remove_dir_all(&workdir).await;
+            return ("blocked_policy".into(), json!({"code":"judge_targets_required"}));
+        }
+        let token = github_access(store, claim).await.ok().flatten();
+        let resolved = resolve_judge_targets(&targets, token.as_deref()).await;
+        if resolved.iter().all(|target| target.get("error").is_some()) {
+            let _ = tokio::fs::remove_dir_all(&workdir).await;
+            return (
+                "blocked_runtime".into(),
+                json!({"code":"judge_targets_unavailable"}),
+            );
+        }
+        if let Some(object) = runtime_config.as_object_mut() {
+            object.insert("judge_targets_resolved".into(), json!(resolved));
+        }
+    }
     if claim.template_key == "qa" {
         let environment = match target_environment(store, claim) {
             Ok(environment) => environment,
@@ -2158,6 +2905,34 @@ async fn execute_claim(
     if let Some(object) = runtime_config.as_object_mut() {
         object.insert("context_manifest".into(), manifest.clone());
     }
+    // Agent-driven QA and the Judge drive the LIVE app in a browser and must log in
+    // themselves. Resolve the target's login credentials (from its encrypted
+    // target_secret connector) into the config the agent reads, and remember the
+    // values so they are redacted from the streamed transcript. Injected AFTER the
+    // context manifest so secrets never enter its config hash.
+    let mut target_secret_values: Vec<String> = Vec::new();
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
+        match target_environment(store, claim) {
+            Ok(credentials) if !credentials.is_empty() => {
+                let map: serde_json::Map<String, serde_json::Value> = credentials
+                    .iter()
+                    .map(|(name, value)| (name.clone(), json!(value)))
+                    .collect();
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("target_credentials".into(), serde_json::Value::Object(map));
+                }
+                target_secret_values.extend(credentials.into_iter().map(|(_, value)| value));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&workdir).await;
+                return (
+                    "blocked_policy".into(),
+                    json!({"code":"target_credentials_unavailable","detail":error.to_string()}),
+                );
+            }
+        }
+    }
     // Browser-driven QA spends one turn per navigate/click/snapshot; give it a
     // high budget and tell the agent the exact number so it can reserve turns to
     // emit its final JSON instead of running out mid-action.
@@ -2169,7 +2944,7 @@ async fn execute_claim(
         .unwrap_or(match claim.template_key.as_str() {
             // Resolving an issue means cloning context, reading code, editing and
             // verifying — 20 turns barely starts, so the run kept exhausting them.
-            "qa" => 250,
+            "qa" | "judge" => 250,
             "github_issue_resolver" => 150,
             "lead_generation" => 80,
             _ => 60,
@@ -2193,7 +2968,7 @@ async fn execute_claim(
             json!({"code":if preflight.status=="reauth_required"{"claude_auth_required"}else{"claude_runtime_unavailable"}}),
         );
     }
-    let slack_enabled = claim.template_key == "qa"
+    let slack_enabled = matches!(claim.template_key.as_str(), "qa" | "judge")
         && runtime_config
             .get("outputs")
             .and_then(|value| value.as_array())
@@ -2208,11 +2983,11 @@ async fn execute_claim(
                 "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
             )
         }
-        ("qa", true) => (
+        ("qa" | "judge", true) => (
             "default",
             "Read,Grep,Glob,Skill,Task,mcp__playwright__*,mcp__slack__*",
         ),
-        ("qa", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
+        ("qa" | "judge", false) => ("default", "Read,Grep,Glob,Skill,Task,mcp__playwright__*"),
         ("lead_generation", _) => (
             "default",
             "WebSearch,WebFetch,Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
@@ -2247,13 +3022,25 @@ async fn execute_claim(
     if let Some(ref dir) = context_dir_arg {
         claude.args(["--add-dir", dir.as_str()]);
     }
+    // Register the NexusMind MCP for the templates whose allowedTools reference it
+    // (issue-resolver, lead-generation) so its tools actually load.
+    if matches!(
+        claim.template_key.as_str(),
+        "github_issue_resolver" | "lead_generation"
+    ) {
+        let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
+            .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
+        if std::path::Path::new(&nexusmind_mcp).exists() {
+            claude.args(["--mcp-config", &nexusmind_mcp]);
+        }
+    }
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
     // a per-run directory the worker reads back afterwards for evidence upload.
     let qa_screenshots_dir = workdir
         .parent()
         .unwrap_or(workdir.as_path())
         .join("screenshots");
-    if claim.template_key == "qa" {
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
@@ -2273,7 +3060,8 @@ async fn execute_claim(
     }
     // Values to redact from the streamed transcript on top of the pattern-based
     // sanitizer (e.g. the ephemeral repo access token).
-    let secret_values: Vec<String> = repo_token.iter().cloned().collect();
+    let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
+    secret_values.extend(target_secret_values.iter().cloned());
     claude.current_dir(&workdir).kill_on_drop(true);
     let invocation = run_claude_capturing_transcript(
         &mut claude,
@@ -2395,9 +3183,24 @@ async fn execute_claim(
             }
         }
     }
+    // Judge verdict comments are opt-in (`publish: "comment"`). Best-effort: a
+    // publish failure is recorded on the outcome but never discards the verdict.
+    if outcome.0 == "succeeded"
+        && claim.template_key == "judge"
+        && claim
+            .config
+            .get("publish")
+            .and_then(|value| value.as_str())
+            == Some("comment")
+    {
+        match publish_judge_comments(store, claim, &outcome.1).await {
+            Ok(published) => outcome.1["published"] = published,
+            Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+        }
+    }
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
     // attach the {filename: url} map so delivery can reference each finding's shot.
-    if claim.template_key == "qa" {
+    if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let sandbox_root = workdir
             .parent()
             .map(|p| p.to_path_buf())
@@ -2549,7 +3352,10 @@ async fn deliver_findings(
     claim: &queries::ClaimedAutonomousRun,
     result: &serde_json::Value,
 ) {
-    if !matches!(claim.template_key.as_str(), "qa" | "github_pr_reviewer") {
+    if !matches!(
+        claim.template_key.as_str(),
+        "qa" | "github_pr_reviewer" | "judge" | "lead_generation"
+    ) {
         return;
     }
     let structured = structured_result(result);
@@ -2558,7 +3364,10 @@ async fn deliver_findings(
     };
     // {filename: url} map of screenshots the worker uploaded to R2 for this run.
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
-    let outputs = if matches!(claim.template_key.as_str(), "qa" | "lead_generation") {
+    let outputs = if matches!(
+        claim.template_key.as_str(),
+        "qa" | "lead_generation" | "judge"
+    ) {
         claim
             .config
             .get("outputs")
@@ -3154,6 +3963,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                         tracing::warn!("Autonomous retention cleanup failed: {error:#}");
                     }
                 };
+                // Reap resolver sandboxes preserved on failed runs after a day.
+                gc_stale_sandboxes(24).await;
             }
             // Authentication is checked immediately before every lease. A
             // stale successful probe can therefore never authorize a run.
@@ -3226,6 +4037,13 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                         status = "partial".into();
                     }
                 };
+            } else if status == "budget_exhausted" {
+                // The run hit its time/cost budget but may have already produced
+                // findings before stopping — persist them so they still show up in
+                // the Findings tab (and configured outputs), keeping the
+                // budget_exhausted status. deliver_findings no-ops when the outcome
+                // carries no result/findings (e.g. a bare wall-time timeout).
+                deliver_findings(&store, &config, &claim, &result).await;
             }
             if status == "blocked_runtime"
                 && matches!(
@@ -3302,6 +4120,32 @@ mod tests {
     }
 
     #[test]
+    fn lead_generation_prompt_requires_verified_company_contacts_and_executives() {
+        let prompt = fixed_prompt(
+            "lead_generation",
+            &json!({"product":"NexusMind","icp":"software companies","count":3}),
+            20,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("public contact channels"));
+        assert!(prompt.contains("directors or senior decision-makers"));
+        assert!(prompt.contains("Never guess or derive an email address"));
+        for field in [
+            "description",
+            "industry",
+            "headquarters",
+            "company_linkedin",
+            "contact_phone",
+            "contact_page",
+            "executives",
+            "source_urls",
+        ] {
+            assert!(prompt.contains(&format!("\"{field}\"")));
+        }
+    }
+
+    #[test]
     fn sanitizer_removes_provider_and_assignment_secrets() {
         let text=sanitize_output(b"token=supersecretvalue ghp_abcdefghijklmnopqrstuvwxyz https://hooks.slack.com/services/A/B/C",4096);
         assert!(!text.contains("supersecretvalue"));
@@ -3330,6 +4174,24 @@ mod tests {
             &json!({"result":{"summary":"ok","findings":[]},"context_manifest":{"version":1,"evidence":[]}})
         )
         .is_ok());
+    }
+
+    #[test]
+    fn judge_evaluator_enforces_the_qa_finding_contract() {
+        // Missing summary is rejected.
+        assert!(evaluate_structured_result("judge", &json!({"result":{"findings":[]}})).is_err());
+        // A well-formed per-target verdict passes.
+        assert!(evaluate_structured_result(
+            "judge",
+            &json!({"result":{"summary":"1 target judged","findings":[{"title":"PR #123","severity":"info","summary":"met: login works","fingerprint":"pr-123-login"}]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_ok());
+        // An invalid severity is rejected like QA.
+        assert!(evaluate_structured_result(
+            "judge",
+            &json!({"result":{"summary":"x","findings":[{"title":"PR #1","severity":"bogus","summary":"?"}]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_err());
     }
 
     #[test]

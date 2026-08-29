@@ -21,7 +21,12 @@ pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
         let accept_str = accept.to_str().unwrap_or("");
         let is_acceptable = accept_str.split(',').any(|media_range| {
             let media_type = media_range.split(';').next().unwrap_or("").trim();
-            matches!(media_type, "*/*" | "application/*" | "application/json")
+            // `image/*` is allowed so the public /evidence redirect works for
+            // <img> tags and GitHub's camo image proxy (which sends `Accept: image/*`).
+            matches!(
+                media_type,
+                "*/*" | "application/*" | "application/json" | "image/*" | "image/png"
+            )
         });
         if !is_acceptable {
             return (
