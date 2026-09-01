@@ -4305,7 +4305,12 @@ async fn deliver_findings(
 ) {
     if !matches!(
         claim.template_key.as_str(),
-        "qa" | "github_pr_reviewer" | "judge" | "lead_generation" | "ai_content_manager"
+        "qa" | "github_pr_reviewer"
+            | "judge"
+            | "lead_generation"
+            | "ai_content_manager"
+            | "security_scan"
+            | "security_dast"
     ) {
         return;
     }
@@ -4317,7 +4322,11 @@ async fn deliver_findings(
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
     let outputs = if matches!(
         claim.template_key.as_str(),
-        "qa" | "lead_generation" | "judge" | "ai_content_manager"
+        "qa" | "lead_generation"
+            | "judge"
+            | "ai_content_manager"
+            | "security_scan"
+            | "security_dast"
     ) {
         claim
             .config

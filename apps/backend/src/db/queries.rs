@@ -16522,6 +16522,58 @@ pub fn validate_autonomous_agent_definition(
                 }
             }
         }
+        "security_scan" => {
+            // SAST/SCA runs over a repository checkout, so a valid repo is required.
+            match current
+                .revision
+                .config
+                .get("repository")
+                .and_then(|v| v.as_str())
+            {
+                Some(value)
+                    if crate::automation::connectors::validate_repository(value).is_ok() => {}
+                _ => errors.push("valid_repository_required"),
+            }
+            if current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array())
+                .is_some_and(|v| {
+                    v.iter().any(|item| {
+                        !matches!(item.as_str(), Some("nexusmind" | "slack" | "github_issue"))
+                    })
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+        }
+        "security_dast" => {
+            if current
+                .revision
+                .config
+                .get("outputs")
+                .and_then(|v| v.as_array())
+                .is_some_and(|v| {
+                    v.iter()
+                        .any(|item| !matches!(item.as_str(), Some("nexusmind" | "slack")))
+                })
+            {
+                errors.push("invalid_outputs")
+            }
+            // Active DAST only ever scans a registered, enabled web_application target,
+            // so at least one must exist before the agent can be validated/enabled.
+            let has_web_target = list_autonomous_agent_targets(conn, org_id, id)
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .any(|t| t.kind == "web_application" && t.enabled)
+                })
+                .unwrap_or(false);
+            if !has_web_target {
+                errors.push("web_application_target_required")
+            }
+        }
         _ => errors.push("unsupported_template"),
     }
     let valid = errors.is_empty();
