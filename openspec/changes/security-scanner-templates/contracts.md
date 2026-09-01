@@ -100,7 +100,8 @@ semgrep --json --quiet --timeout <PER_RULE_TIMEOUT> --config <RULESET> <SCAN_ROO
 ```
 
 - `<RULESET>` ∈ { `auto`, `p/ci`, `p/owasp-top-ten` } OR a repo-relative path under the checkout matching
-  `^[A-Za-z0-9._/-]+\.ya?ml$` (validated; no `..`, no absolute paths).
+  `^[A-Za-z0-9._/-]+\.ya?ml$` (validated; no `..`, no absolute paths). **Default `p/ci`** (not `auto`, which
+  emits registry telemetry).
 - `<SCAN_ROOT>` is always the checkout workdir root (`.`; host-controlled, never from config).
 - `<PER_RULE_TIMEOUT>` is a fixed integer (default 30).
 - The JSON report is read from **stdout**.

@@ -44,9 +44,14 @@ merge — not one large PR. Phase 2 (`security_dast`) is a separate change and i
 - [x] 1.3 RED: mapper tests — Semgrep `results[]` and osv JSON → canonical finding shape, stable
   fingerprints, normalized severity; malformed input degrades to zero findings, never a panic.
 - [x] 1.4 GREEN: pure mappers (`map_semgrep_json`, `map_osv_json`) in `automation/security_scan.rs`.
-- [ ] 1.5 Adversarial-review gate (arch-review / judgment-day) on the security-surface diff before merge.
-  **User-triggered** — not runnable by the agent. Run `/code-review ultra` or the `arch-review` skill on the
-  branch before merging.
+- [x] 1.5 Adversarial security review run on commit `17ff6ac` (branch `agent/security-scanner-templates`):
+  **no high-confidence vulnerabilities**. Verified: no shell (argv-only spawn), allowlist not bypassable,
+  `validate_semgrep_ruleset` blocks absolute/`..`/URL configs, semgrep/osv run with no code-executing flags,
+  and — confirmed below the prompt — `security_scan` falls to the default tool grant `plan` / `Read,Grep,Glob`
+  with **no MCP/Bash/Edit/Write**, so the read-only invariant is enforced by the grant, not just the prompt.
+  Secret-canary still gates output. Two optional hardening notes (non-blocking): default Semgrep ruleset
+  `auto` contacts the registry+telemetry (consider `p/ci` default); document that a configured ruleset path is
+  trusted against repo-controlled symlinks.
 
 ## Phase 2 — Template + worker wiring (PR 2)
 

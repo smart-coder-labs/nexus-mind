@@ -30,6 +30,16 @@ Semgrep's bundled rulesets (`auto`, `p/ci`, `p/owasp-top-ten`) resolve against t
 require network egress on first use; a fully offline runtime should pin a checkout-relative rules file via
 `sast.ruleset` instead (validated by `validate_semgrep_ruleset`).
 
+**Ruleset default:** `sast.ruleset` defaults to `p/ci`, NOT `auto`. `auto` contacts the Semgrep registry and
+emits pseudonymous telemetry; `p/ci` is a curated offline-capable ruleset, which is the safer default for a
+security tool. Admins may still select `auto` explicitly.
+
+**Symlink trust:** a configured checkout-relative ruleset path is trusted. Because the checkout contents are
+attacker-influenced (whoever controls the scanned repo), a repo-controlled symlink at that path could point
+semgrep at an out-of-tree file. The blast radius is limited — the target must still be valid Semgrep rules
+YAML or semgrep errors out, and any leaked content trips the output secret-canary — but operators pinning a
+repo path should treat it as trusted input.
+
 ## Verifying the install
 
 ```

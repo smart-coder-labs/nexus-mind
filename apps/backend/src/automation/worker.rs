@@ -356,10 +356,14 @@ async fn run_security_scanners(
     let mut invocations = 0usize;
 
     // SAST — always.
+    // Default to `p/ci` rather than `auto`: `auto` contacts the Semgrep registry
+    // and emits pseudonymous telemetry, which is inappropriate as the default for a
+    // security tool. `p/ci` is a curated offline-capable ruleset; the admin can
+    // still opt into `auto` explicitly.
     let ruleset = config
         .pointer("/sast/ruleset")
         .and_then(|value| value.as_str())
-        .unwrap_or("auto");
+        .unwrap_or("p/ci");
     let semgrep_argv = super::security_scan::build_semgrep_argv(ruleset, ".", 30)?;
     invocations += 1;
     let semgrep_out =
