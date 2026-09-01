@@ -2542,6 +2542,7 @@ async fn open_partial_pr(
 /// (secret-scan, diff limits, publish-authority) and open a draft PR. Returns
 /// `(issue_number, status, payload)`. Owns all inputs so it can run as a spawned
 /// task under a JoinSet. `seq_base` keeps parallel transcripts from colliding.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_issue_worktree(
     store: SqliteStore,
     claude_bin: String,

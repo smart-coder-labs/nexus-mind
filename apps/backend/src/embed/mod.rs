@@ -84,6 +84,7 @@ pub fn serialize(v: &[f32]) -> Vec<u8> {
 }
 
 /// Deserialize little-endian bytes back to a float vector.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn deserialize(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
