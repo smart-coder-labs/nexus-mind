@@ -2918,7 +2918,7 @@ async fn execute_resolver_fanout(
             }
         }
         if targets.is_empty() {
-            let _ = sandbox.into_path();
+            let _ = sandbox.keep();
             return ("blocked_policy".into(), json!({"code":"no_resumable_work"}));
         }
     } else {
@@ -2946,7 +2946,7 @@ async fn execute_resolver_fanout(
     let mut set: tokio::task::JoinSet<(i64, String, serde_json::Value)> =
         tokio::task::JoinSet::new();
     let mut pending = targets.into_iter();
-    let mut spawn_next =
+    let spawn_next =
         |set: &mut tokio::task::JoinSet<(i64, String, serde_json::Value)>,
          item: (usize, String, i64, PathBuf, String, Option<String>)| {
             let (index, repository, number, worktree, base_sha, continue_branch) = item;
@@ -3015,7 +3015,7 @@ async fn execute_resolver_fanout(
     // leaked ones later so disk doesn't grow unbounded. (The durable copy is the
     // pushed WIP branch; this is a convenience for same-pod resume.)
     if status != "succeeded" {
-        let _ = sandbox.into_path();
+        let _ = sandbox.keep();
     }
     (
         status.into(),
