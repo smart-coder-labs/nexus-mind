@@ -63,13 +63,13 @@ export interface AuthSession {
   user: User
 }
 
-export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation' | 'judge'
+export type AutonomousAgentTemplateKey = 'qa' | 'github_issue_resolver' | 'github_pr_reviewer' | 'lead_generation' | 'judge' | 'ai_content_manager'
 export interface AutonomousAgentTemplate { key: AutonomousAgentTemplateKey; version: number; name: string; description: string; capabilities: string[]; default_budgets: Record<string, unknown>; config_schema:Record<string,unknown>; workflow:string[] }
 export interface AutonomousAgentDefinition { id:string; org_id:string; name:string; description:string|null; template_key:AutonomousAgentTemplateKey; template_version:number; status:'disabled'|'enabled'|'archived'; current_revision:number; created_by:string; created_at:string; updated_at:string; validation_status:'pending'|'valid'|'invalid' }
 export interface AutonomousAgentRevision { id:string; definition_id:string; revision:number; config:Record<string,unknown>; config_hash:string; capabilities:string[]; budgets:Record<string,unknown>; policy_generation:number; validation_status:'pending'|'valid'|'invalid'; validation:Record<string,unknown>|null; validated_at:string|null; created_by:string; created_at:string }
 export interface AutonomousAgentDetail extends AutonomousAgentDefinition { revision: AutonomousAgentRevision }
 export interface AutonomousAgentSchedule { id:string; definition_id:string; kind:'manual'|'daily'|'interval'; expression:string|null; timezone:string; misfire_policy:'run_once'|'skip'; next_run_at:string|null; enabled:boolean; created_at:string; updated_at:string }
-export interface AutonomousAgentRun { id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string }
+export interface AutonomousAgentRun { id:string; definition_id:string; revision_id:string; trigger_kind:string; occurrence_key:string; scheduled_for:string|null; snapshot_sha:string|null; status:string; budget:Record<string,unknown>; started_at:string|null; finished_at:string|null; created_at:string; archived_at:string|null }
 export interface AutonomousRuntimeHealth { status:'ready'|'degraded'|'reauth_required'|'unavailable'; reason_code:string|null; claude_version:string|null; checked_at:string|null; last_success_at:string|null; last_failure_at:string|null }
 export interface AutonomousAgentConnector { id:string; kind:'github_app'|'slack'|'target_secret'; name:string; metadata:Record<string,unknown>; scopes:string[]; health:string; revocation_generation:number; secret_configured:boolean; created_at:string; updated_at:string }
 export interface AutonomousAgentFinding { id:string;definition_id:string;run_id:string;fingerprint:string;title:string;severity:string;status:string;summary:string;evidence:Record<string,unknown>;occurrence_count:number;created_at:string;updated_at:string }

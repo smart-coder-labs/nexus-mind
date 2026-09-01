@@ -16131,6 +16131,7 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
             "delivery:write",
             "github:review",
         ],
+        "ai_content_manager" => vec!["content:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
     };
     Ok(capabilities.into_iter().map(str::to_string).collect())
@@ -16487,6 +16488,38 @@ pub fn validate_autonomous_agent_definition(
                 errors.push("invalid_publish")
             }
         }
+        "ai_content_manager" => {
+            // At least one topic to write about is required.
+            let topics = current.revision.config.get("topics").and_then(|v| v.as_array());
+            let topics_valid = topics.is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().any(|item| {
+                        item.as_str().map(str::trim).is_some_and(|value| !value.is_empty())
+                    })
+            });
+            if !topics_valid {
+                errors.push("topics_required")
+            }
+            // A target audience anchors the content to a lead-capture goal.
+            if current
+                .revision
+                .config
+                .get("audience")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                errors.push("audience_required")
+            }
+            // posts_per_run, when set, must be a sane 1..=10.
+            if let Some(count) = current.revision.config.get("posts_per_run").and_then(|v| v.as_i64())
+            {
+                if !(1..=10).contains(&count) {
+                    errors.push("invalid_posts_per_run")
+                }
+            }
+        }
         _ => errors.push("unsupported_template"),
     }
     let valid = errors.is_empty();
@@ -16646,6 +16679,7 @@ fn autonomous_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autonomo
         started_at: row.get(9)?,
         finished_at: row.get(10)?,
         created_at: row.get(11)?,
+        archived_at: row.get(12)?,
     })
 }
 
@@ -16691,7 +16725,7 @@ pub fn get_autonomous_agent_run(
     id: &str,
 ) -> Result<Option<AutonomousAgentRun>> {
     conn.query_row(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
          FROM autonomous_agent_runs WHERE org_id=?1 AND id=?2",
         rusqlite::params![org_id,id], autonomous_run_from_row,
     ).optional().map_err(Into::into)
@@ -16764,7 +16798,7 @@ pub fn list_autonomous_agent_runs(
     definition_id: Option<&str>,
 ) -> Result<Vec<AutonomousAgentRun>> {
     let mut stmt = conn.prepare(
-        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at
+        "SELECT id,definition_id,revision_id,trigger_kind,occurrence_key,scheduled_for,snapshot_sha,status,budget_json,started_at,finished_at,created_at,archived_at
          FROM autonomous_agent_runs WHERE org_id=?1 AND (?2 IS NULL OR definition_id=?2) ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(
@@ -16800,6 +16834,46 @@ pub fn cancel_autonomous_agent_run(
         append_autonomous_agent_event(conn, org_id, id, "run.cancelled", &serde_json::json!({}))?;
     }
     get_autonomous_agent_run(conn, org_id, id)
+}
+
+/// Archive (or restore) a run so it can be hidden from the default list without
+/// deleting it. Only a finished run may be archived — an active run must be
+/// cancelled first — while restoring is always allowed.
+pub fn set_autonomous_agent_run_archived(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    archived: bool,
+) -> Result<Option<AutonomousAgentRun>> {
+    if archived {
+        let changed = conn.execute(
+            "UPDATE autonomous_agent_runs SET archived_at=datetime('now')
+             WHERE id=?1 AND org_id=?2 AND status NOT IN ('queued','leased','running')",
+            rusqlite::params![id, org_id],
+        )?;
+        if changed == 0 {
+            // Either the run does not exist or it is still active.
+            if get_autonomous_agent_run(conn, org_id, id)?.is_some() {
+                anyhow::bail!("run_still_active");
+            }
+            return Ok(None);
+        }
+    } else {
+        conn.execute(
+            "UPDATE autonomous_agent_runs SET archived_at=NULL WHERE id=?1 AND org_id=?2",
+            rusqlite::params![id, org_id],
+        )?;
+    }
+    get_autonomous_agent_run(conn, org_id, id)
+}
+
+pub fn archive_all_finished_autonomous_agent_runs(conn: &Connection, org_id: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE autonomous_agent_runs SET archived_at=datetime('now')
+         WHERE org_id=?1 AND archived_at IS NULL AND status NOT IN ('queued','leased','running')",
+        rusqlite::params![org_id],
+    )
+    .map_err(Into::into)
 }
 
 pub fn list_autonomous_agent_events(
@@ -17419,6 +17493,90 @@ pub fn put_autonomous_agent_connector(
     ).map_err(Into::into)
 }
 
+/// Store (or refresh) a LinkedIn OAuth connection as an encrypted `linkedin`
+/// connector, keyed by destination ("personal"|"organization"). The secret holds
+/// the token bundle JSON ({access_token, refresh_token, expires_at}); metadata
+/// holds the non-secret author URN + display name so callers can decide where to
+/// post without decrypting.
+pub fn upsert_linkedin_connector(
+    conn: &Connection,
+    org_id: &str,
+    user_id: &str,
+    destination: &str,
+    author_urn: &str,
+    display_name: &str,
+    token_bundle_json: &str,
+) -> Result<()> {
+    let ciphertext = crate::crypto::encrypt(token_bundle_json)
+        .ok_or_else(|| anyhow::anyhow!("encryption_required"))?;
+    let metadata = serde_json::json!({
+        "destination": destination,
+        "author_urn": author_urn,
+        "display_name": display_name,
+    });
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO autonomous_agent_connectors (id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,created_by)
+         VALUES (?1,?2,'linkedin',?3,?4,?5,'[]','ready',?6)
+         ON CONFLICT(org_id,kind,name) DO UPDATE SET
+           secret_ciphertext=excluded.secret_ciphertext,metadata_json=excluded.metadata_json,
+           health='ready',revocation_generation=autonomous_agent_connectors.revocation_generation+1,updated_at=datetime('now')",
+        rusqlite::params![id,org_id,destination,ciphertext,serde_json::to_string(&metadata)?,user_id],
+    )?;
+    Ok(())
+}
+
+/// Fetch a LinkedIn connection's metadata + decrypted token bundle for a
+/// destination, or None if not connected.
+pub fn get_linkedin_connector(
+    conn: &Connection,
+    org_id: &str,
+    destination: &str,
+) -> Result<Option<(serde_json::Value, serde_json::Value)>> {
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT metadata_json, secret_ciphertext FROM autonomous_agent_connectors
+             WHERE org_id=?1 AND kind='linkedin' AND name=?2 AND health!='revoked'",
+            rusqlite::params![org_id, destination],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((metadata_json, ciphertext)) = row else {
+        return Ok(None);
+    };
+    let Some(ciphertext) = ciphertext else {
+        return Ok(None);
+    };
+    let metadata: serde_json::Value =
+        serde_json::from_str(&metadata_json).unwrap_or(serde_json::Value::Null);
+    let plaintext =
+        crate::crypto::decrypt(&ciphertext).ok_or_else(|| anyhow::anyhow!("decryption_failed"))?;
+    let bundle: serde_json::Value =
+        serde_json::from_str(&plaintext).unwrap_or(serde_json::Value::Null);
+    Ok(Some((metadata, bundle)))
+}
+
+/// List connected LinkedIn destinations (non-secret) so the admin can show
+/// connection state.
+pub fn list_linkedin_connectors(conn: &Connection, org_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, metadata_json, updated_at FROM autonomous_agent_connectors
+         WHERE org_id=?1 AND kind='linkedin' AND health!='revoked' ORDER BY name",
+    )?;
+    let rows = stmt.query_map([org_id], |row| {
+        let name: String = row.get(0)?;
+        let metadata: String = row.get(1)?;
+        let updated: String = row.get(2)?;
+        Ok(serde_json::json!({
+            "destination": name,
+            "metadata": serde_json::from_str::<serde_json::Value>(&metadata).unwrap_or(serde_json::Value::Null),
+            "connected_at": updated,
+        }))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 pub fn revoke_autonomous_agent_connector(
     conn: &Connection,
     org_id: &str,
@@ -17707,6 +17865,20 @@ pub fn patch_autonomous_agent_finding(
     }
     conn.execute("UPDATE autonomous_agent_findings SET status=?3,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,status])?;
     conn.query_row("SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id],finding_from_row).optional().map_err(Into::into)
+}
+
+pub fn get_autonomous_agent_finding(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+) -> Result<Option<AutonomousAgentFinding>> {
+    conn.query_row(
+        "SELECT id,definition_id,run_id,fingerprint,title,severity,status,summary,evidence_json,occurrence_count,created_at,updated_at FROM autonomous_agent_findings WHERE org_id=?1 AND id=?2",
+        rusqlite::params![org_id, id],
+        finding_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Archive every finding that is not already archived (status `ignored`), returning

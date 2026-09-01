@@ -1,4 +1,5 @@
 pub mod connectors;
+pub mod linkedin;
 pub mod policy;
 pub mod r2;
 pub mod profiles;

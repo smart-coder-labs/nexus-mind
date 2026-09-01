@@ -136,6 +136,31 @@ async fn github_get(token: &str, path: &str) -> Result<Value> {
         .await?)
 }
 
+/// GET a resource as raw text under a caller-chosen media type (e.g. the diff
+/// or patch representations that GitHub renders server-side). Mirrors
+/// `github_get` but returns the body verbatim instead of parsing JSON, and
+/// surfaces a truncated body on failure so the error stays diagnosable.
+async fn github_get_text(token: &str, path: &str, accept: &str) -> Result<String> {
+    let response = reqwest::Client::new()
+        .get(format!("https://api.github.com{path}"))
+        .bearer_auth(token)
+        .header("Accept", accept)
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "nexusmind-autonomous-agents")
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!(
+            "github_api_{}: {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        );
+    }
+    Ok(text)
+}
+
 async fn github_put(token: &str, path: &str, body: Value) -> Result<Value> {
     let response = reqwest::Client::new()
         .put(format!("https://api.github.com{path}"))
@@ -241,6 +266,54 @@ pub async fn get_github_issue(token: &str, repository: &str, number: i64) -> Res
 pub async fn get_github_pull(token: &str, repository: &str, number: i64) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(token, &format!("/repos/{owner}/{repo}/pulls/{number}")).await
+}
+
+/// Merge a pull request with the given method ("squash" | "merge" | "rebase"),
+/// keeping the branch. Used by the PR reviewer's opt-in auto-merge; a failed
+/// merge (e.g. not mergeable, protected branch) surfaces GitHub's message.
+pub async fn merge_github_pull(
+    token: &str,
+    repository: &str,
+    number: i64,
+    method: &str,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_put(
+        token,
+        &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
+        json!({ "merge_method": method }),
+    )
+    .await
+}
+
+/// Three-dot diff (`merge-base(base, head)…head`) for a pull request, pinned to a
+/// specific `head_sha` so it matches exactly the snapshot the run checked out.
+///
+/// Uses the compare API with `Accept: application/vnd.github.diff`, which GitHub
+/// renders server-side. That means: (1) it needs no local git history, so it can
+/// run against a shallow `--depth 1` checkout; (2) it works even when the PR is
+/// conflicting/dirty (`merge_commit_sha` null), unlike a local `git diff base...HEAD`
+/// which fails with "no merge base"; and (3) pinning the right side to `head_sha`
+/// keeps the diff consistent with the checked-out code even if the PR head moved.
+pub async fn get_github_pull_diff(
+    token: &str,
+    repository: &str,
+    base: &str,
+    head_sha: &str,
+) -> Result<String> {
+    let (owner, repo) = repository_parts(repository)?;
+    if base.is_empty() || base.contains("..") || base.starts_with('/') {
+        anyhow::bail!("invalid_base_branch")
+    }
+    if head_sha.len() != 40 || !head_sha.chars().all(|value| value.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid_commit_sha")
+    }
+    github_get_text(
+        token,
+        &format!("/repos/{owner}/{repo}/compare/{base}...{head_sha}"),
+        "application/vnd.github.diff",
+    )
+    .await
 }
 
 pub async fn get_github_branch(token: &str, repository: &str, branch: &str) -> Result<Value> {
@@ -402,11 +475,30 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
 }
 
 /// Best-effort: ensure a label exists (needs push/triage). Ignored on failure.
+/// Color for a label following the QA taxonomy (mirrors the kasymir-create-issues
+/// skill so autonomously-filed issues look identical to hand-filed ones).
+fn label_color(label: &str) -> &'static str {
+    match label {
+        "severity:critical" | "security" => "b60205",
+        "severity:high" => "d93f0b",
+        "severity:medium" => "fbca04",
+        "severity:low" => "0e8a16",
+        "bug" => "d73a4a",
+        "qa" => "1d76db",
+        "i18n" => "c5def5",
+        "a11y" => "bfdadc",
+        "design" => "d4c5f9",
+        "ux" => "fef2c0",
+        _ if label.starts_with("module:") => "5319e7",
+        _ => "ededed",
+    }
+}
+
 async fn ensure_github_label(token: &str, owner: &str, repo: &str, label: &str) {
     let _ = github_post(
         token,
         &format!("/repos/{owner}/{repo}/labels"),
-        json!({"name": label, "color": "5319e7", "description": "NexusMind autonomous QA"}),
+        json!({"name": label, "color": label_color(label), "description": "NexusMind autonomous QA"}),
     )
     .await;
 }
@@ -416,16 +508,19 @@ pub async fn create_github_issue(
     repository: &str,
     title: &str,
     body: &str,
+    labels: &[String],
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
-    // Applying labels needs push/triage access. Try to label (ensuring it exists
-    // first); if the token lacks the permission the labelled create 403s, so fall
-    // back to an unlabelled create rather than failing the whole delivery.
-    ensure_github_label(token, owner, repo, "nexusmind-qa").await;
+    // Applying labels needs push/triage access. Ensure each exists (free/idempotent)
+    // then create labelled; if the token lacks the permission the labelled create
+    // 403s, so fall back to an unlabelled create rather than failing the delivery.
+    for label in labels {
+        ensure_github_label(token, owner, repo, label).await;
+    }
     let labeled = github_post(
         token,
         &format!("/repos/{owner}/{repo}/issues"),
-        json!({"title":title,"body":body,"labels":["nexusmind-qa"]}),
+        json!({"title":title,"body":body,"labels":labels}),
     )
     .await;
     match labeled {
@@ -457,6 +552,36 @@ pub async fn update_github_issue(
     .await
 }
 
+/// Close an issue (used by the Judge when it verifies the claim held and no
+/// problem remains). Idempotent — closing an already-closed issue is a no-op.
+pub async fn close_github_issue(token: &str, repository: &str, number: i64) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_patch(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}"),
+        json!({ "state": "closed" }),
+    )
+    .await
+}
+
+/// Link an existing issue as a sub-issue of `parent_number` via GitHub's
+/// sub-issues REST API. `sub_issue_id` is the child issue's database `id`
+/// (NOT its number — that field comes back on the create response).
+pub async fn add_sub_issue(
+    token: &str,
+    repository: &str,
+    parent_number: i64,
+    sub_issue_id: i64,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{parent_number}/sub_issues"),
+        json!({ "sub_issue_id": sub_issue_id }),
+    )
+    .await
+}
+
 pub async fn create_issue_comment(
     token: &str,
     repository: &str,
@@ -468,6 +593,24 @@ pub async fn create_issue_comment(
         token,
         &format!("/repos/{owner}/{repo}/issues/{number}/comments"),
         json!({ "body": body }),
+    )
+    .await
+}
+
+/// Assign an issue to the given accounts (added to any existing assignees).
+/// Used by "Resolve with agent" to claim the issue for the logged-in bot before
+/// work starts, so it reflects that the issue is being resolved.
+pub async fn add_issue_assignees(
+    token: &str,
+    repository: &str,
+    number: i64,
+    assignees: &[String],
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_post(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}/assignees"),
+        json!({ "assignees": assignees }),
     )
     .await
 }

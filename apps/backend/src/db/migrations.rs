@@ -70,6 +70,129 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v65(conn)?;
     run_v66(conn)?;
     run_v67(conn)?;
+    run_v68(conn)?;
+    run_v69(conn)?;
+    run_v70(conn)?;
+    Ok(())
+}
+
+/// Migration v70: allow the `linkedin` connector kind (AI Content Manager stores
+/// its OAuth token as an encrypted connector). SQLite can't ALTER a CHECK, so the
+/// connectors table is rebuilt; ids are preserved so inbound foreign keys stay valid.
+pub fn run_v70(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 70 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        -- Drop the trigger that references autonomous_agent_connectors before the
+        -- rebuild; the DROP+RENAME would otherwise corrupt its table reference. It
+        -- is recreated verbatim after the table is back.
+        DROP TRIGGER IF EXISTS autonomous_github_delivery_connector_scope;
+
+        CREATE TABLE autonomous_agent_connectors_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('github_app','slack','target_secret','linkedin')),
+            name TEXT NOT NULL,
+            secret_ciphertext TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            health TEXT NOT NULL DEFAULT 'unknown' CHECK(health IN ('unknown','ready','degraded','revoked')),
+            revocation_generation INTEGER NOT NULL DEFAULT 1 CHECK(revocation_generation > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, kind, name)
+        );
+
+        INSERT INTO autonomous_agent_connectors_new
+            (id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,revocation_generation,created_by,created_at,updated_at)
+        SELECT id,org_id,kind,name,secret_ciphertext,metadata_json,scopes_json,health,revocation_generation,created_by,created_at,updated_at
+        FROM autonomous_agent_connectors;
+
+        DROP TABLE autonomous_agent_connectors;
+        ALTER TABLE autonomous_agent_connectors_new RENAME TO autonomous_agent_connectors;
+
+        CREATE TRIGGER IF NOT EXISTS autonomous_github_delivery_connector_scope
+        BEFORE INSERT ON autonomous_github_deliveries
+        WHEN NOT EXISTS(
+            SELECT 1 FROM autonomous_agent_connectors connector
+            WHERE connector.id=NEW.connector_id AND connector.org_id=NEW.org_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'github delivery connector must belong to organization');
+        END;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 70;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v69: allow the `ai_content_manager` agent template (LinkedIn content
+/// creation). SQLite can't ALTER a CHECK, so the table is rebuilt (same proven
+/// pattern as run_v66); ids are preserved so inbound foreign keys stay valid.
+pub fn run_v69(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 69 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE autonomous_agent_definitions_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            template_key TEXT NOT NULL CHECK(template_key IN ('qa','github_issue_resolver','github_pr_reviewer','lead_generation','judge','ai_content_manager')),
+            template_version INTEGER NOT NULL CHECK(template_version > 0),
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK(status IN ('disabled','enabled','archived')),
+            current_revision INTEGER NOT NULL DEFAULT 1 CHECK(current_revision > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        INSERT INTO autonomous_agent_definitions_new
+            (id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at)
+        SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+        FROM autonomous_agent_definitions;
+
+        DROP TABLE autonomous_agent_definitions;
+        ALTER TABLE autonomous_agent_definitions_new RENAME TO autonomous_agent_definitions;
+
+        CREATE INDEX IF NOT EXISTS idx_autonomous_agent_definitions_org_status
+            ON autonomous_agent_definitions(org_id, status);
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 69;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v68: add a nullable `archived_at` to autonomous_agent_runs so runs can
+/// be archived (hidden from the default list) without deleting them. Nullable ADD
+/// COLUMN — no rebuild, existing rows and SELECTs are unaffected.
+pub fn run_v68(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 68 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        ALTER TABLE autonomous_agent_runs ADD COLUMN archived_at TEXT;
+        PRAGMA user_version = 68;
+        ",
+    )?;
     Ok(())
 }
 
@@ -3582,8 +3705,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4118,8 +4241,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4135,8 +4258,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must remain 67 after re-running v20 on already-migrated db"
+            70,
+            "user_version must remain 70 after re-running v20 on already-migrated db"
         );
     }
 
@@ -4304,8 +4427,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4347,8 +4470,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4358,8 +4481,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4503,8 +4626,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4532,8 +4655,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4543,8 +4666,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4637,8 +4760,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4648,8 +4771,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -4746,8 +4869,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5013,8 +5136,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5024,8 +5147,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5075,8 +5198,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5086,8 +5209,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5136,8 +5259,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5147,8 +5270,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after run_all"
+            70,
+            "user_version must be 70 after run_all"
         );
     }
 
@@ -5318,8 +5441,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must remain 67 (run_all already applied v41-v67)"
+            70,
+            "user_version must remain 70 (run_all already applied v41-v70)"
         );
     }
 
@@ -5331,8 +5454,8 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must be 67 after v41-v67 are included in run_all"
+            70,
+            "user_version must be 70 after v41-v70 are included in run_all"
         );
         assert!(
             table_exists(&conn, "code_files"),
@@ -5473,7 +5596,7 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
+            70,
             "version must remain 67 on second run_all"
         );
     }
@@ -5617,8 +5740,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must reach 67 after the backfill migration"
+            70,
+            "user_version must reach 70 after the backfill migration"
         );
     }
 
@@ -5634,8 +5757,8 @@ mod tests {
         );
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must remain 67 on second run_all"
+            70,
+            "user_version must remain 70 on second run_all"
         );
     }
 
@@ -5661,8 +5784,8 @@ mod tests {
         }
         assert_eq!(
             get_user_version(&conn),
-            67,
-            "user_version must reach 67 on a fresh db"
+            70,
+            "user_version must reach 70 on a fresh db"
         );
     }
 
@@ -6707,7 +6830,7 @@ mod tests {
         run_all(&conn).unwrap();
         assert_eq!(
             get_user_version(&conn),
-            67,
+            70,
             "run_all must leave user_version at 67"
         );
     }
@@ -6984,7 +7107,7 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 67, "user_version must remain 67");
+        assert_eq!(get_user_version(&conn), 70, "user_version must remain 70");
     }
 
     // ── v56 migration tests (knowledge migration durable review foundation) ─────
@@ -7254,7 +7377,7 @@ mod tests {
         std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
         let conn = in_memory_db();
         run_all(&conn).expect("a fresh database has no credentials to protect");
-        assert_eq!(get_user_version(&conn), 67);
+        assert_eq!(get_user_version(&conn), 70);
     }
 
     /// The new primary key is what lets a consultancy hold one GitHub account
@@ -7340,7 +7463,7 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert!(table_exists(&conn, "usage_events"), "missing: usage_events");
-        assert_eq!(get_user_version(&conn), 67);
+        assert_eq!(get_user_version(&conn), 70);
         assert!(index_exists(
             &conn,
             "usage_events",
@@ -7853,7 +7976,7 @@ mod tests {
             "organizations",
             "autonomous_agent_retention_days"
         ));
-        assert_eq!(get_user_version(&conn), 67);
+        assert_eq!(get_user_version(&conn), 70);
     }
 
     #[test]

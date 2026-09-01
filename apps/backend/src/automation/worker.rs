@@ -567,6 +567,14 @@ async fn publish_judge_comments(
         .ok()
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string());
+    // Sub-issue creation for problems is opt-in via `outputs: ["github_issue"]`;
+    // verdict comments + closing/resolving verified targets run whenever the Judge
+    // is in GitHub-write mode (this function only runs then).
+    let issue_enabled = claim
+        .config
+        .get("outputs")
+        .and_then(|v| v.as_array())
+        .is_some_and(|outputs| outputs.iter().any(|o| o.as_str() == Some("github_issue")));
     let mut posted = Vec::new();
     for target in targets.iter().take(50) {
         let Some(number) = target.get("number").and_then(|v| v.as_u64()) else {
@@ -575,26 +583,37 @@ async fn publish_judge_comments(
         let Some(repository) = target.get("repository").and_then(|v| v.as_str()) else {
             continue;
         };
+        let is_issue = target.get("type").and_then(|v| v.as_str()) == Some("issue");
+        // A finding belongs to this target when it carries the explicit target
+        // number (preferred) or, for older contracts, its title mentions #<number>.
         let needle = format!("#{number}");
         let own: Vec<&serde_json::Value> = findings
             .iter()
             .filter(|f| {
-                f.get("title")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|t| t.contains(&needle))
+                f.get("target_number").and_then(|t| t.as_u64()) == Some(number)
+                    || f.get("title")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.contains(&needle))
             })
             .collect();
-        let mut bugs = Vec::new();
-        let mut feedback = Vec::new();
-        for finding in own.iter().copied() {
-            let rendered =
-                render_judge_finding(finding, &claim.run.id, evidence_base.as_deref());
-            if judge_finding_is_bug(finding) {
-                bugs.push(rendered);
-            } else {
-                feedback.push(rendered);
-            }
-        }
+        let bug_findings: Vec<&serde_json::Value> = own
+            .iter()
+            .copied()
+            .filter(|f| judge_finding_is_bug(f))
+            .collect();
+        let feedback: Vec<String> = own
+            .iter()
+            .copied()
+            .filter(|f| !judge_finding_is_bug(f))
+            .map(|f| render_judge_finding(f, &claim.run.id, evidence_base.as_deref()))
+            .collect();
+        let bugs: Vec<String> = bug_findings
+            .iter()
+            .map(|f| render_judge_finding(f, &claim.run.id, evidence_base.as_deref()))
+            .collect();
+        let verified = bug_findings.is_empty();
+
+        // 1) Verdict comment (idempotent via the per-target delivery ledger).
         let mut sections = String::new();
         if !bugs.is_empty() {
             sections.push_str(&format!("### Issues found\n\n{}\n\n", bugs.join("\n\n")));
@@ -605,8 +624,13 @@ async fn publish_judge_comments(
         if sections.is_empty() {
             sections.push_str("NexusMind judged this target but produced no findings.\n\n");
         }
+        let verdict = if verified {
+            "✅ Verified — the claim holds against the live application."
+        } else {
+            "⚠️ Not verified — problems remain (see below)."
+        };
         let body: String = format!(
-            "## NexusMind — Judge verdict\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
+            "## NexusMind — Judge verdict\n\n{verdict}\n\n{sections}---\n- Run: `{}`\n\n_Verified autonomously against the live application; this comment does not approve or merge._",
             claim.run.id
         )
         .chars()
@@ -626,53 +650,170 @@ async fn publish_judge_comments(
                 &delivery_key,
             )?
         };
-        if delivery.status == "delivered" {
-            posted.push(json!({"number":number,"reconciled":true,"url":delivery.external_url}));
-            continue;
-        }
-        require_publish_authority(store, claim)?;
-        match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
-            .await
-        {
-            Ok(comment) => {
-                let db = store.conn();
-                let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-                let external_id = comment.get("id").map(|v| v.to_string());
-                let url = comment.get("html_url").and_then(|v| v.as_str());
-                queries::complete_autonomous_agent_delivery(
-                    &conn,
-                    &claim.org_id,
-                    &delivery.id,
-                    external_id.as_deref(),
-                    url,
-                )?;
-                if let Some(external_id) = external_id.as_deref() {
-                    queries::create_autonomous_output_link(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                        "issue_comment",
-                        external_id,
-                        url,
-                    )?;
-                }
-                posted.push(json!({"number":number,"url":url}));
-            }
-            Err(error) => {
-                let db = store.conn();
-                if let Ok(conn) = db.lock() {
-                    let _ = queries::fail_autonomous_agent_delivery(
+        if delivery.status != "delivered" {
+            require_publish_authority(store, claim)?;
+            match super::connectors::create_issue_comment(&token, repository, number as i64, &body)
+                .await
+            {
+                Ok(comment) => {
+                    let db = store.conn();
+                    let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+                    let external_id = comment.get("id").map(|v| v.to_string());
+                    let url = comment.get("html_url").and_then(|v| v.as_str());
+                    queries::complete_autonomous_agent_delivery(
                         &conn,
                         &claim.org_id,
                         &delivery.id,
-                        "github_issue_comment_failed",
-                    );
+                        external_id.as_deref(),
+                        url,
+                    )?;
+                    if let Some(external_id) = external_id.as_deref() {
+                        queries::create_autonomous_output_link(
+                            &conn,
+                            &claim.org_id,
+                            &claim.run.id,
+                            "issue_comment",
+                            external_id,
+                            url,
+                        )?;
+                    }
+                    posted.push(json!({"number":number,"verified":verified,"url":url}));
                 }
-                posted.push(json!({"number":number,"error":error.to_string()}));
+                Err(error) => {
+                    let db = store.conn();
+                    if let Ok(conn) = db.lock() {
+                        let _ = queries::fail_autonomous_agent_delivery(
+                            &conn,
+                            &claim.org_id,
+                            &delivery.id,
+                            "github_issue_comment_failed",
+                        );
+                    }
+                    posted.push(json!({"number":number,"error":error.to_string()}));
+                }
+            }
+        }
+
+        // 2) Verified issue: resolve the linked NexusMind findings and close it.
+        if verified && is_issue {
+            let issue_url = format!("https://github.com/{repository}/issues/{number}");
+            if let Ok(conn) = store.conn().lock() {
+                if let Ok(resolved) =
+                    queries::resolve_open_findings_for_issue(&conn, &claim.org_id, &issue_url)
+                {
+                    if resolved > 0 {
+                        tracing::info!(run_id = %claim.run.id, resolved, %issue_url, "judge resolved verified findings");
+                    }
+                }
+            }
+            if require_publish_authority(store, claim).is_ok() {
+                if let Err(error) =
+                    super::connectors::close_github_issue(&token, repository, number as i64).await
+                {
+                    tracing::warn!(run_id = %claim.run.id, %error, number, "judge: could not close verified issue");
+                }
+            }
+        }
+
+        // 3) Failed target: file each problem as an issue, linked as a sub-issue of
+        //    the judged issue (opt-in via outputs). PR targets / a failed link fall
+        //    back to an independent issue referencing the target.
+        if !verified && issue_enabled {
+            for finding in &bug_findings {
+                let fingerprint = finding
+                    .get("fingerprint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("finding");
+                let sub_key = format!(
+                    "judge-subissue:{}:{repository}:{number}:{fingerprint}",
+                    claim.run.definition_id
+                );
+                let delivery = {
+                    let db = store.conn();
+                    let Ok(conn) = db.lock() else { continue };
+                    queries::create_autonomous_agent_delivery(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                        None,
+                        "github_issue",
+                        &sub_key,
+                    )
+                    .ok()
+                };
+                let Some(delivery) = delivery else { continue };
+                if delivery.status == "delivered" {
+                    continue;
+                }
+                if require_publish_authority(store, claim).is_err() {
+                    continue;
+                }
+                let ftitle = finding
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Judge finding");
+                let severity = finding
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("medium");
+                let sub_body = format!(
+                    "_Filed by NexusMind Judge while verifying #{number}._\n\n{}",
+                    render_judge_finding(finding, &claim.run.id, evidence_base.as_deref())
+                );
+                let labels = vec![
+                    "qa".to_string(),
+                    "bug".to_string(),
+                    format!("severity:{severity}"),
+                ];
+                match super::connectors::create_github_issue(
+                    &token, repository, ftitle, &sub_body, &labels,
+                )
+                .await
+                {
+                    Ok(created) => {
+                        let child_url = created.get("html_url").and_then(|v| v.as_str());
+                        let external_id = created.get("number").map(|v| v.to_string());
+                        if is_issue {
+                            if let Some(child_id) = created.get("id").and_then(|v| v.as_i64()) {
+                                if let Err(error) = super::connectors::add_sub_issue(
+                                    &token,
+                                    repository,
+                                    number as i64,
+                                    child_id,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(run_id = %claim.run.id, %error, parent = number, "judge: sub-issue link failed; left as independent issue");
+                                }
+                            }
+                        }
+                        if let Ok(conn) = store.conn().lock() {
+                            let _ = queries::complete_autonomous_agent_delivery(
+                                &conn,
+                                &claim.org_id,
+                                &delivery.id,
+                                external_id.as_deref(),
+                                child_url,
+                            );
+                        }
+                        posted.push(json!({"sub_issue":child_url,"parent":number}));
+                    }
+                    Err(error) => {
+                        if let Ok(conn) = store.conn().lock() {
+                            let _ = queries::fail_autonomous_agent_delivery(
+                                &conn,
+                                &claim.org_id,
+                                &delivery.id,
+                                "judge_sub_issue_failed",
+                            );
+                        }
+                        posted.push(json!({"number":number,"error":error.to_string()}));
+                    }
+                }
             }
         }
     }
-    Ok(json!({"published": true, "comments": posted}))
+    Ok(json!({"published": true, "results": posted}))
 }
 
 async fn github_access(
@@ -894,34 +1035,56 @@ async fn clone_context_repos(
     cloned
 }
 
-async fn bounded_review_diff(workdir: &Path, config: &serde_json::Value) -> anyhow::Result<String> {
+/// The pull-request diff the reviewer agent reasons over. Fetched from GitHub's
+/// compare API (three-dot, server-rendered) rather than computed locally: the
+/// working tree is a `--depth 1` checkout with no ancestry, so a local
+/// `git diff origin/base...HEAD` cannot find a merge base and fails for EVERY PR
+/// (and additionally for any conflicting PR, whose `merge_commit_sha` is null).
+///
+/// The diff is pinned to the exact commit the run checked out (`git rev-parse
+/// HEAD` in the workdir, i.e. the fetched `pull/N/head`), so it always matches the
+/// code the agent reads — and it works whether or not the trigger carried a
+/// `head_sha` (manual runs do not). `base` mirrors the previous local behavior:
+/// the configured `base_branch`, defaulting to `main`.
+async fn bounded_review_diff(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    config: &serde_json::Value,
+) -> anyhow::Result<String> {
+    let repository = config
+        .pointer("/trigger/repository")
+        .or_else(|| config.get("repository"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
     let base = config
         .get("base_branch")
         .and_then(|value| value.as_str())
         .unwrap_or("main");
-    let output = Command::new("git")
+    let head = Command::new("git")
         .current_dir(workdir)
-        .args([
-            "diff",
-            "--no-ext-diff",
-            "--unified=3",
-            &format!("origin/{base}...HEAD"),
-            "--",
-        ])
+        .args(["rev-parse", "HEAD"])
         .output()
         .await?;
-    if !output.status.success() {
+    if !head.status.success() {
         anyhow::bail!("review_diff_unavailable")
     }
+    let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let token = github_access(store, claim)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("review_diff_unavailable"))?;
+    let diff = super::connectors::get_github_pull_diff(&token, repository, base, &head_sha)
+        .await
+        .map_err(|_| anyhow::anyhow!("review_diff_unavailable"))?;
     let max_bytes = config
         .pointer("/limits/max_diff_bytes")
         .and_then(|value| value.as_u64())
         .unwrap_or(500_000)
         .min(1_000_000) as usize;
-    if output.stdout.len() > max_bytes {
+    if diff.len() > max_bytes {
         anyhow::bail!("review_diff_too_large")
     }
-    Ok(sanitize_output(&output.stdout, max_bytes))
+    Ok(sanitize_output(diff.as_bytes(), max_bytes))
 }
 
 async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
@@ -996,6 +1159,10 @@ async fn publish_template_output(
     let structured = structured_result(result);
     match claim.template_key.as_str() {
         "github_issue_resolver" => {
+            // PENDING.md is the run's WIP progress scratchpad (used for checkpoints
+            // and the budget-exhausted partial PR). It must never land in a finished
+            // PR, so drop it from the working tree before we diff and commit.
+            let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
             let verification =
                 run_allowlisted_commands(workdir, claim.config.get("verification_commands"))
                     .await?;
@@ -1048,11 +1215,12 @@ async fn publish_template_output(
                 .pointer("/limits/max_changed_lines")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(800);
+            // A content-only "Resolve with agent" run has no GitHub issue to close,
+            // so the number is optional; a fanout/webhook run always carries one.
             let number = claim
                 .config
                 .pointer("/trigger/number")
-                .and_then(|v| v.as_i64())
-                .ok_or_else(|| anyhow::anyhow!("issue_number_missing"))?;
+                .and_then(|v| v.as_i64());
             // "No changes needed" is a legitimate outcome, not a failure: either the
             // agent explicitly declared it (no_op) or produced an empty diff. Instead
             // of blocking and discarding the run, explain it to the maintainer as an
@@ -1079,6 +1247,11 @@ async fn publish_template_output(
                     } else {
                         "NexusMind analyzed this issue but did not produce a code change."
                     });
+                // A finding-only run has no GitHub issue to comment on: record the
+                // no-op outcome and finish without a delivery.
+                let Some(number) = number else {
+                    return Ok(json!({"no_op": true, "reason": reason}));
+                };
                 let body = format!(
                     "## NexusMind — no code change required\n\n{reason}\n\n---\n- Run: `{}`\n\n_This issue was analyzed autonomously; no pull request was opened._",
                     claim.run.id
@@ -1154,6 +1327,14 @@ async fn publish_template_output(
             if files > max_files || lines > max_lines {
                 anyhow::bail!("change_limit_exceeded")
             }
+            // Content-only runs open a PR without an issue to close; issue-linked
+            // runs reference #N in the branch, commit, PR body, and delivery key.
+            let number_suffix = number
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "finding".into());
+            let closes_line = number
+                .map(|value| format!("Closes #{value}\n\n"))
+                .unwrap_or_default();
             let base = claim
                 .config
                 .get("base_branch")
@@ -1176,7 +1357,7 @@ async fn publish_template_output(
             // Per-ISSUE branch: one resolver run may open a PR per assigned issue
             // (each in its own worktree), so the run id alone would collide.
             let branch = format!(
-                "nexusmind/run-{}-{number}",
+                "nexusmind/run-{}-{number_suffix}",
                 &claim.run.id[..claim.run.id.len().min(12)]
             );
             let mut checkout = Command::new("git");
@@ -1197,14 +1378,10 @@ async fn publish_template_output(
                 .args([
                     "commit",
                     "-m",
-                    &format!(
-                        "NexusMind: resolve issue #{}",
-                        claim
-                            .config
-                            .pointer("/trigger/number")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0)
-                    ),
+                    &match number {
+                        Some(value) => format!("NexusMind: resolve issue #{value}"),
+                        None => "NexusMind: resolve QA finding".to_string(),
+                    },
                 ]);
             command_ok(commit).await?;
             let mut push = authenticated_git(&token);
@@ -1225,18 +1402,35 @@ async fn publish_template_output(
                 .filter(|v| !v.is_empty())
             {
                 Some(title) => title.to_string(),
-                None => super::connectors::get_github_issue(&token, repository, number)
-                    .await
-                    .ok()
-                    .and_then(|issue| {
-                        issue
-                            .get("title")
+                None => {
+                    // Fall back to the linked issue's title, or the handed-over
+                    // finding's title, before a static default.
+                    let live_title = match number {
+                        Some(number) => {
+                            super::connectors::get_github_issue(&token, repository, number)
+                                .await
+                                .ok()
+                                .and_then(|issue| {
+                                    issue
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::trim)
+                                        .filter(|v| !v.is_empty())
+                                        .map(str::to_string)
+                                })
+                        }
+                        None => claim
+                            .config
+                            .pointer("/issue/title")
                             .and_then(|v| v.as_str())
                             .map(str::trim)
                             .filter(|v| !v.is_empty())
-                            .map(|title| format!("NexusMind: resolve \"{title}\""))
-                    })
-                    .unwrap_or_else(|| "NexusMind autonomous issue resolution".to_string()),
+                            .map(str::to_string),
+                    };
+                    live_title
+                        .map(|title| format!("NexusMind: resolve \"{title}\""))
+                        .unwrap_or_else(|| "NexusMind autonomous issue resolution".to_string())
+                }
             };
             let verification_summary = verification
                 .iter()
@@ -1276,13 +1470,13 @@ async fn publish_template_output(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 format!(
-                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number} -->"
+                    "\n\n---\n_Once this branch is deployed to a preview, NexusMind's Judge verifies it against the running app and posts visual evidence here._\n<!-- nexusmind:preview-review judge={judge} issue={number_suffix} -->"
                 )
             } else {
                 String::new()
             };
             let body = format!(
-                "Closes #{number}\n\n## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
+                "{closes_line}## NexusMind evidence\n\n- Run: `{}`\n- Base snapshot: `{pinned_base}`\n- Changed files: {files}\n- Changed lines: {lines}\n\n## Verification\n\n{}\n\n## Limitations\n\nThis pull request is intentionally a draft. It was produced within configured path and diff budgets and requires human review; NexusMind never merges or deploys it.{review_marker}",
                 claim.run.id,
                 if verification_summary.is_empty() {
                     "- No verification command was configured.".to_string()
@@ -1290,8 +1484,10 @@ async fn publish_template_output(
                     verification_summary
                 }
             );
-            let delivery_key =
-                format!("resolver:{}:{repository}:{number}", claim.run.definition_id);
+            let delivery_key = format!(
+                "resolver:{}:{repository}:{number_suffix}",
+                claim.run.definition_id
+            );
             let delivery = {
                 let db = store.conn();
                 let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
@@ -1397,6 +1593,23 @@ async fn publish_template_output(
                         if resolved > 0 {
                             tracing::info!(run_id = %claim.run.id, resolved, %issue_url, "resolved linked findings");
                         }
+                    }
+                }
+                // "Resolve with agent" hands over a specific finding id: mark it
+                // resolved directly, covering the content-only case (no linked
+                // GitHub issue, so the delivery-based sweep above cannot match it).
+                if let Some(finding_id) = claim
+                    .config
+                    .pointer("/trigger/finding_id")
+                    .and_then(|value| value.as_str())
+                {
+                    if let Ok(Some(_)) = queries::patch_autonomous_agent_finding(
+                        &conn,
+                        &claim.org_id,
+                        finding_id,
+                        "resolved",
+                    ) {
+                        tracing::info!(run_id = %claim.run.id, finding_id, "resolved handed-over finding");
                     }
                 }
             }
@@ -1545,11 +1758,100 @@ async fn publish_template_output(
                     )?;
                 }
             }
+            // Opt-in auto-merge: squash-merge (keeping the branch) only when the
+            // review found nothing blocking AND every required check on the PR head
+            // is green. Best-effort — a skipped/failed merge never fails the review.
+            let mut auto_merge = json!(null);
+            if claim.config.get("auto_merge").and_then(|v| v.as_bool()) == Some(true) {
+                let has_blocking = findings.iter().any(|v| {
+                    matches!(
+                        v.get("severity").and_then(|s| s.as_str()),
+                        Some("medium" | "high" | "critical")
+                    )
+                });
+                auto_merge = if has_blocking {
+                    json!({"merged": false, "reason": "review_found_issues"})
+                } else {
+                    match auto_merge_pull(store, claim, &token, repository, number).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            json!({"merged": false, "reason": "merge_check_failed", "error": error.to_string()})
+                        }
+                    }
+                };
+            }
             Ok(
-                json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"}}),
+                json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"},"auto_merge":auto_merge}),
             )
         }
         _ => Ok(json!({})),
+    }
+}
+
+/// Decide whether a reviewed PR may be auto-merged and, if so, squash-merge it
+/// (keeping the branch). Merges only when every required check on the PR head is
+/// green; with no checks to verify it declines rather than merges blindly.
+async fn auto_merge_pull(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    token: &str,
+    repository: &str,
+    number: i64,
+) -> anyhow::Result<serde_json::Value> {
+    let required: Vec<String> = claim
+        .config
+        .get("required_checks")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let pull = super::connectors::get_github_pull(token, repository, number).await?;
+    if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(json!({"merged": true, "reason": "already_merged"}));
+    }
+    let head_sha = pull
+        .pointer("/head/sha")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("head_sha_missing"))?;
+    let checks = super::connectors::get_github_check_runs(token, repository, head_sha).await?;
+    let runs = checks
+        .get("check_runs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let relevant: Vec<&serde_json::Value> = runs
+        .iter()
+        .filter(|run| {
+            required.is_empty()
+                || required
+                    .iter()
+                    .any(|name| Some(name.as_str()) == run.get("name").and_then(|n| n.as_str()))
+        })
+        .collect();
+    // Guardrail: no checks means we cannot confirm green — decline the merge.
+    if relevant.is_empty() {
+        return Ok(json!({"merged": false, "reason": "no_checks_to_verify"}));
+    }
+    let all_green = relevant.iter().all(|run| {
+        run.get("status").and_then(|s| s.as_str()) == Some("completed")
+            && matches!(
+                run.get("conclusion").and_then(|c| c.as_str()),
+                Some("success" | "neutral" | "skipped")
+            )
+    });
+    if !all_green {
+        return Ok(json!({"merged": false, "reason": "checks_not_green"}));
+    }
+    require_publish_authority(store, claim)?;
+    match super::connectors::merge_github_pull(token, repository, number, "squash").await {
+        Ok(result) => Ok(json!({"merged": true, "detail": result})),
+        Err(error) => {
+            Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
+        }
     }
 }
 
@@ -1578,7 +1880,7 @@ fn fixed_prompt(
     // `-p` returns the model's final message verbatim, so it must be ONLY this
     // JSON object (no prose, no markdown fences) or evaluation fails
     // (result_summary_missing / invalid_finding).
-    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"<short title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<detail>\",\"fingerprint\":\"<stable-kebab-case-id>\",\"screenshot\":\"<optional evidence filename>.png\"}]}. The \"fingerprint\" MUST be a STABLE identifier of the specific defect built from the screen/route and the concrete problem (e.g. \"pos-success-toast-shows-uuid\" or \"users-birthdate-allows-future\") — it is used to avoid filing duplicate issues, so re-running QA on the same bug MUST produce the SAME fingerprint. Never include run-specific, timestamped or random content in it. Return an empty findings array when the target behaves correctly.";
+    let qa_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<concise overall QA summary>\",\"findings\":[{\"title\":\"[<Module>] <one specific symptom, scannable>\",\"severity\":\"info|low|medium|high|critical\",\"module\":\"<owning module, e.g. Users>\",\"type\":\"functional|security|i18n|a11y|design|ux\",\"location\":\"<component / route / field>\",\"steps\":[\"<step 1 from a clean state>\",\"<step 2>\"],\"expected\":\"<one line>\",\"actual\":\"<one line>\",\"summary\":\"<extra detail only if not captured by expected/actual>\",\"fingerprint\":\"<stable-kebab-case-id>\",\"screenshot\":\"<evidence filename>.png\"}]}. Follow GitHub issue best practices: the \"title\" is ONE specific symptom prefixed with its [Module] (e.g. \"[Users] Archive user is a no-op — no status sent\"), never vague like \"bug in users\". ONE finding = ONE problem (never bundle unrelated defects). Make \"steps\" reproducible from a clean state with exact inputs, and state \"expected\" vs \"actual\" explicitly and separately. Never put secrets, tokens or real customer PII in any field. The \"fingerprint\" MUST be a STABLE identifier of the specific defect built from the screen/route and the concrete problem (e.g. \"pos-success-toast-shows-uuid\" or \"users-birthdate-allows-future\") — it avoids duplicate issues, so re-running QA on the same bug MUST produce the SAME fingerprint; never include run-specific, timestamped or random content in it. Return an empty findings array when the target behaves correctly.";
     // Give the agent its exact turn budget so it can stop exploring in time to
     // emit the JSON; running out mid-action (error_max_turns) discards everything.
     let stop_by = max_turns.saturating_sub(20).max(1);
@@ -1607,7 +1909,7 @@ fn fixed_prompt(
             // The judge emits SPECIFIC findings, each tagged kind "bug" (a concrete
             // problem) or "feedback" (something that works / a positive note), and
             // maps them back to a target by putting its #number in the title.
-            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right (or, if the claim is fully met with nothing wrong, a single \"feedback\" finding stating it is met). Never return an empty findings array. Every finding \"title\" MUST contain the target's \"#<number>\" so it can be mapped back. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
+            let judge_contract = " Your final message MUST be exactly one JSON object and nothing else — no prose, no explanations, no markdown code fences — of the form {\"summary\":\"<overall verdict across all targets>\",\"findings\":[{\"title\":\"<target ref + specific point, e.g. 'PR #123: login button unresponsive'>\",\"target_number\":<the PR/issue number this finding is about>,\"kind\":\"bug|feedback\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<for a bug: exactly what you tested, observed vs expected, and why it's wrong; for feedback: what works or is done well>\",\"fingerprint\":\"<stable-kebab-case id from target+point, e.g. pr-123-login-unresponsive>\",\"screenshot\":\"<evidence filename>.png\"}]}. Rules: emit ONE finding per SPECIFIC point (do NOT collapse a target into a single verdict). Every finding MUST set \"target_number\" to the exact number of the PR/issue it refers to, and its \"title\" MUST also contain that \"#<number>\". For each target, report every concrete problem you find as its own finding with kind \"bug\" (severity low|medium|high|critical scaled to impact), AND at least one finding with kind \"feedback\" and severity \"info\" describing what the change got right. If the claim is fully met with nothing wrong, emit ONLY a single \"feedback\" finding for that target stating it is met and NO \"bug\" finding (a target with zero \"bug\" findings is treated as VERIFIED). Never return an empty findings array. The \"fingerprint\" MUST be stable across re-runs (no timestamps or random content).";
             // The browser starts from a fresh, in-memory profile each run, so any
             // stale content is the app's own service worker / CDN, not the agent.
             let cache_clause = " The browser session is fresh and cacheless. If a screen looks stale, broken, or inconsistent with what a normal reload shows, reload the page bypassing cache before judging; if it persists, that is a real finding about the app's caching, not a false positive.";
@@ -1647,7 +1949,7 @@ fn fixed_prompt(
             format!("Analyze the eligible issue configuration and propose a bounded implementation. Do not merge, deploy, or publish.{context_clause}{nexusmind_clause}{subagent_clause}{progress_clause}{custom_clause}{issue_contract}")
         }
         "github_pr_reviewer" => format!(
-            "Review the pinned pull request input. Return strict JSON findings. Never approve, merge, push, or publish.{custom_clause}"
+            "Review the pinned pull request in the configuration: `pull_request_diff` is the unified diff, and you may also read the checked-out repository (your working directory) for surrounding context. Report ONLY what matters: real bugs, correctness/security risks, and changes that should block or clearly improve the PR. SKIP style nitpicks, trivial preferences, restating the diff, and praise. Be terse and high-signal — a reviewer's time is scarce. Never approve, merge, push, or publish.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<a SHORT review, 1-4 lines: the overall verdict plus the few points that matter; this exact text is posted as the PR review>\",\"findings\":[{{\"title\":\"<short non-empty title>\",\"severity\":\"<one of: info, low, medium, high, critical>\",\"summary\":\"<ONE concise sentence: what is wrong, where (file:line), and the fix — do not restate the diff>\"}}]}}. HARD OUTPUT RULES: (1) top-level `summary` is REQUIRED, non-empty, and concise (no walls of text); (2) every finding MUST have a non-empty `title`; (3) `severity` MUST be EXACTLY one of info, low, medium, high, or critical — never any other word (no \"warning\", \"nit\", \"major\", \"minor\", \"suggestion\"); (4) use high or critical ONLY for issues that must block the PR; (5) if the PR has no issues that matter, return an EMPTY `findings` array (never invent findings, never pad with nitpicks) with a one-line `summary` that says it looks good; (6) prefer a few high-signal findings over many minor ones; return at most 100."
         ),
         "lead_generation" => {
             let count = config
@@ -1657,6 +1959,16 @@ fn fixed_prompt(
                 .clamp(1, 25);
             format!(
                 "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\"}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
+            )
+        }
+        "ai_content_manager" => {
+            let count = config
+                .get("posts_per_run")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(3)
+                .clamp(1, 10);
+            format!(
+                "You are a LinkedIn content strategist and copywriter for the account owner. Read the configuration: `topics` to write about, the target `audience` (ICP) to attract and convert into leads, the `language` to write in, the brand `tone`, the optional `cta`/lead magnet to drive toward, and any preferred `hashtags`. Write {count} distinct, ready-to-publish LinkedIn posts (TEXT ONLY) that give the audience genuine value, establish the author's authority, and naturally move the reader toward the CTA so the account captures leads and grows. Rules: each post is original and specific (never generic filler); open with a strong first-line hook that stops the scroll; use short lines and line breaks for skimmability; sound authentic and human, never spammy or clickbait; do NOT fabricate statistics, testimonials, client names, results, or credentials — if you would cite data you cannot verify, speak generally instead; weave in the CTA naturally at most once (near the end) only when one is configured; add 3-6 relevant hashtags. Write from expertise. You MAY consult the `nexusmind` MCP (get_context, search_memories, list_conventions) for the brand's voice, prior posts and conventions before writing; do not use any other tools.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<the themes you covered this run>\",\"findings\":[{{\"title\":\"<short internal label / the hook line>\",\"severity\":\"info\",\"summary\":\"<the FULL post text, ready to publish>\",\"fingerprint\":\"<stable-kebab-case id from topic + angle>\",\"kind\":\"post\",\"post\":{{\"body\":\"<the full post text, ready to publish>\",\"hashtags\":[\"#Example\"],\"cta\":\"<the exact CTA used, or empty>\",\"topic\":\"<which configured topic this addresses>\",\"destination\":\"<personal|organization, or empty>\"}}}}]}}. Never return an empty findings array."
             )
         }
         _ => anyhow::bail!("unsupported_template"),
@@ -1777,10 +2089,25 @@ fn evaluate_structured_result(
     }))
 }
 
-/// Issue numbers already covered by an OPEN resolver pull request (branch
-/// `nexusmind/run-*`), parsed from `Closes/Fixes/Resolves #N` in the PR body.
-/// Used to skip issues that are already being resolved so fan-out and re-runs
-/// don't produce duplicate PRs.
+/// Output-validator errors that are the model's fault and safe to fix by
+/// re-prompting (a malformed final JSON shape), as opposed to policy/security/
+/// infrastructure errors (`secret_canary_detected`, `evaluator_context_missing`)
+/// which must never trigger a re-run.
+fn is_retryable_agent_output_error(code: &str) -> bool {
+    matches!(
+        code,
+        "result_not_object"
+            | "result_summary_missing"
+            | "result_findings_missing"
+            | "invalid_finding"
+            | "too_many_findings"
+    )
+}
+
+/// Issue numbers already covered by an OPEN pull request — NexusMind's own or a
+/// human's — parsed from `Closes/Fixes/Resolves #N` in the PR body or title. An
+/// issue with a linked open PR is already being resolved, so fan-out and re-runs
+/// skip it to avoid duplicate/competing work.
 async fn resolver_open_pr_issue_numbers(
     token: &str,
     repository: &str,
@@ -1793,15 +2120,18 @@ async fn resolver_open_pr_issue_numbers(
         return covered;
     };
     for pull in pulls.as_array().into_iter().flatten() {
-        let head = pull
-            .pointer("/head/ref")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if !head.starts_with("nexusmind/run-") {
+        // Only OPEN PRs count as "in progress". A merged PR that closed its issue
+        // already flipped the issue to closed (filtered elsewhere); a closed-unmerged
+        // PR abandoned the work and must not permanently block the issue.
+        if pull.get("state").and_then(|v| v.as_str()) != Some("open") {
             continue;
         }
         let body = pull.get("body").and_then(|v| v.as_str()).unwrap_or_default();
-        for caps in re.captures_iter(body) {
+        let title = pull.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+        for caps in re
+            .captures_iter(body)
+            .chain(re.captures_iter(title))
+        {
             if let Ok(number) = caps[1].parse::<i64>() {
                 covered.insert(number);
             }
@@ -2609,11 +2939,25 @@ async fn execute_claim(
             .pointer("/trigger/number")
             .and_then(|v| v.as_i64())
             .is_none()
+        && claim
+            .config
+            .pointer("/trigger/explicit")
+            .and_then(|v| v.as_bool())
+            != Some(true)
     {
         return execute_resolver_fanout(store, config, claim).await;
     }
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
+        // An explicit "Resolve with agent" request (from a finding) deliberately
+        // targets ONE thing chosen by the operator, so it skips the autonomous
+        // scoping gates (assignee, label eligibility). The safety gates that run
+        // later — diff limits, secret scan, publish authority — still apply.
+        let explicit = runtime_config
+            .pointer("/trigger/explicit")
+            .and_then(|v| v.as_bool())
+            == Some(true);
+        let finding = runtime_config.pointer("/trigger/finding").cloned();
         let repository = runtime_config
             .get("repository")
             .and_then(|v| v.as_str())
@@ -2621,11 +2965,12 @@ async fn execute_claim(
                 runtime_config
                     .pointer("/trigger/repository")
                     .and_then(|v| v.as_str())
-            });
+            })
+            .map(str::to_string);
         let number = runtime_config
             .pointer("/trigger/number")
             .and_then(|v| v.as_i64());
-        if let (Some(repository), Some(number)) = (repository, number) {
+        if let (Some(repository), Some(number)) = (repository.as_deref(), number) {
             if let Ok(Some(token)) = github_access(store, claim).await {
                 if let Ok(issue) =
                     super::connectors::get_github_issue(&token, repository, number).await
@@ -2638,33 +2983,58 @@ async fn execute_claim(
                             json!({"code":"issue_not_open_or_is_pull_request"}),
                         );
                     }
-                    // Never resolve an issue that isn't ASSIGNED to the logged-in gh
-                    // account (the bot). Guards the webhook path and reassignments;
-                    // a failed identity lookup blocks rather than proceeds.
-                    match super::connectors::github_authenticated_login(&token).await {
-                        Ok(login) => {
-                            let assigned = issue
-                                .get("assignees")
-                                .and_then(|value| value.as_array())
-                                .map(|list| {
-                                    list.iter().any(|a| {
-                                        a.get("login").and_then(|l| l.as_str())
-                                            == Some(login.as_str())
-                                    })
-                                })
-                                .unwrap_or(false);
-                            if !assigned {
-                                return (
-                                    "blocked_policy".into(),
-                                    json!({"code":"issue_not_assigned"}),
-                                );
+                    if explicit {
+                        // "Resolve with agent" skips the assignee GATE, but still
+                        // CLAIMS the issue for the logged-in account before starting
+                        // so it reflects that the bot is now resolving it. Best-effort:
+                        // a failed assignment (e.g. missing permission) must not block.
+                        match super::connectors::github_authenticated_login(&token).await {
+                            Ok(login) => {
+                                if let Err(error) = super::connectors::add_issue_assignees(
+                                    &token,
+                                    repository,
+                                    number,
+                                    &[login],
+                                )
+                                .await
+                                {
+                                    tracing::warn!(run_id = %claim.run.id, %error, "resolve-with-agent: could not assign issue to bot");
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(run_id = %claim.run.id, %error, "resolve-with-agent: could not resolve bot login to assign issue");
                             }
                         }
-                        Err(error) => {
-                            return (
-                                "blocked_runtime".into(),
-                                json!({"code":"assignee_check_failed","detail":error.to_string()}),
-                            );
+                    }
+                    if !explicit {
+                        // Never resolve an issue that isn't ASSIGNED to the logged-in gh
+                        // account (the bot). Guards the webhook path and reassignments;
+                        // a failed identity lookup blocks rather than proceeds.
+                        match super::connectors::github_authenticated_login(&token).await {
+                            Ok(login) => {
+                                let assigned = issue
+                                    .get("assignees")
+                                    .and_then(|value| value.as_array())
+                                    .map(|list| {
+                                        list.iter().any(|a| {
+                                            a.get("login").and_then(|l| l.as_str())
+                                                == Some(login.as_str())
+                                        })
+                                    })
+                                    .unwrap_or(false);
+                                if !assigned {
+                                    return (
+                                        "blocked_policy".into(),
+                                        json!({"code":"issue_not_assigned"}),
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                return (
+                                    "blocked_runtime".into(),
+                                    json!({"code":"assignee_check_failed","detail":error.to_string()}),
+                                );
+                            }
                         }
                     }
                     let labels = issue
@@ -2677,39 +3047,64 @@ async fn execute_claim(
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    let required = runtime_config
-                        .get("labels")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    if required
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .any(|label| !labels.contains(&label))
-                    {
-                        return (
-                            "blocked_policy".into(),
-                            json!({"code":"issue_labels_ineligible"}),
-                        );
+                    if !explicit {
+                        let required = runtime_config
+                            .get("labels")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        if required
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .any(|label| !labels.contains(&label))
+                        {
+                            return (
+                                "blocked_policy".into(),
+                                json!({"code":"issue_labels_ineligible"}),
+                            );
+                        }
+                        let excluded = runtime_config
+                            .get("excluded_labels")
+                            .and_then(|value| value.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        if excluded
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .any(|label| labels.contains(&label))
+                        {
+                            return (
+                                "blocked_policy".into(),
+                                json!({"code":"issue_label_excluded"}),
+                            );
+                        }
                     }
-                    let excluded = runtime_config
-                        .get("excluded_labels")
-                        .and_then(|value| value.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    if excluded
-                        .iter()
-                        .filter_map(|value| value.as_str())
-                        .any(|label| labels.contains(&label))
-                    {
-                        return (
-                            "blocked_policy".into(),
-                            json!({"code":"issue_label_excluded"}),
-                        );
+                    let mut body = issue
+                        .get("body")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .chars()
+                        .take(30_000)
+                        .collect::<String>();
+                    // When a QA finding was handed over alongside a real issue, append
+                    // its structured detail so the agent fixes exactly what was found.
+                    if let Some(finding) = finding.as_ref() {
+                        let (_, detail) = finding_issue_markup(finding);
+                        body.push_str("\n\n## QA finding (handed over)\n");
+                        body.push_str(&detail);
                     }
                     if let Some(object) = runtime_config.as_object_mut() {
-                        object.insert("issue".into(),json!({"number":number,"title":issue.get("title"),"body":issue.get("body").and_then(|v|v.as_str()).unwrap_or("").chars().take(30_000).collect::<String>(),"labels":labels}));
+                        object.insert("issue".into(),json!({"number":number,"title":issue.get("title"),"body":body,"labels":labels}));
                     }
+                }
+            }
+        } else if explicit {
+            // Content-only resolve: there is no GitHub issue to link, so the QA
+            // finding itself IS the task the agent must fix.
+            if let Some(finding) = finding.as_ref() {
+                let (title, body) = finding_issue_markup(finding);
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("issue".into(), json!({"title":title,"body":body,"labels":[]}));
                 }
             }
         }
@@ -2809,7 +3204,7 @@ async fn execute_claim(
                 }
             }
         }
-        match bounded_review_diff(&workdir, &runtime_config).await {
+        match bounded_review_diff(store, claim, &workdir, &runtime_config).await {
             Ok(diff) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("pull_request_diff".into(), json!(diff));
@@ -2992,6 +3387,10 @@ async fn execute_claim(
             "default",
             "WebSearch,WebFetch,Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
         ),
+        ("ai_content_manager", _) => (
+            "default",
+            "Read,Skill,mcp__plugin_nexusmind_nexusmind__*",
+        ),
         _ => ("plan", "Read,Grep,Glob"),
     };
     let max_turns = max_turns_num.to_string();
@@ -3002,6 +3401,28 @@ async fn execute_claim(
         .and_then(|v| v.as_u64())
         .unwrap_or(3600)
         .clamp(30, 3600);
+    // Bounded output-format retry: the github_pr_reviewer agent's final JSON is
+    // validated deterministically; when the model returns a malformed finding
+    // (bad/missing severity, missing title, non-object result, >100 findings) we
+    // re-run it with the validation error fed back, up to `max_output_retries`
+    // (default 1, cap 3). The reviewer is read-only so re-running is side-effect
+    // free; every other template runs exactly once (breaks on the first pass).
+    let mut prompt = prompt;
+    let max_output_retries: u32 = claim
+        .run
+        .budget
+        .get("max_output_retries")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1)
+        .min(3) as u32;
+    let mut output_retry: u32 = 0;
+    // Per-run screenshot dir for QA/judge Playwright evidence; it is read back
+    // after the run loop, so it must be declared outside the loop scope.
+    let qa_screenshots_dir = workdir
+        .parent()
+        .unwrap_or(workdir.as_path())
+        .join("screenshots");
+    let mut outcome = loop {
     let mut claude = Command::new(&config.claude_code_bin);
     restrict_claude_environment(&mut claude);
     claude.args([
@@ -3035,11 +3456,8 @@ async fn execute_claim(
         }
     }
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
-    // a per-run directory the worker reads back afterwards for evidence upload.
-    let qa_screenshots_dir = workdir
-        .parent()
-        .unwrap_or(workdir.as_path())
-        .join("screenshots");
+    // the per-run directory (declared before the loop) the worker reads back
+    // afterwards for evidence upload.
     if matches!(claim.template_key.as_str(), "qa" | "judge") {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
@@ -3069,7 +3487,7 @@ async fn execute_claim(
         &claim.org_id,
         &claim.run.id,
         &secret_values,
-        0,
+        (output_retry as i64) * 100_000,
     );
     let cancelled = async {
         loop {
@@ -3113,7 +3531,7 @@ async fn execute_claim(
                 Err(error)=>return ("blocked_runtime".into(),json!({"code":error.to_string()})),
             };
             let max_cost=claim.run.budget.get("max_cost_usd").and_then(|v|v.as_f64()).unwrap_or(25.0);
-            if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest}))}
+            if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest.clone()}))}
         }
         Ok(Ok(output)) => {
             // A non-zero exit (typically hitting max-turns) can still carry a
@@ -3122,7 +3540,7 @@ async fn execute_claim(
             match parse_claude_event_stream(&output.stdout) {
                 Ok((value, stream)) => (
                     "succeeded".into(),
-                    json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest}),
+                    json!({"code":"completed_nonzero_exit","result":value,"stream":stream,"context_manifest":manifest.clone()}),
                 ),
                 Err(_) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
@@ -3145,23 +3563,60 @@ async fn execute_claim(
         }
         }
     };
+        // Evaluate the structured output inside the run loop so a malformed
+        // reviewer response can be retried. Resolver and reviewer share the
+        // evaluator, but only the (read-only) reviewer re-runs; re-running a
+        // code-writing resolver could compound its edits, so it stays single-shot.
+        if outcome.0 == "succeeded"
+            && matches!(
+                claim.template_key.as_str(),
+                "github_issue_resolver" | "github_pr_reviewer"
+            )
+        {
+            match evaluate_structured_result(&claim.template_key, &outcome.1) {
+                Ok(value) => {
+                    outcome.1["evaluation"] = value;
+                    break outcome;
+                }
+                Err(error) => {
+                    let code = error.to_string();
+                    if claim.template_key == "github_pr_reviewer"
+                        && output_retry < max_output_retries
+                        && is_retryable_agent_output_error(&code)
+                    {
+                        output_retry += 1;
+                        tracing::info!(
+                            run_id = %claim.run.id,
+                            attempt = output_retry,
+                            code = %code,
+                            "reviewer output rejected by validator; retrying with correction"
+                        );
+                        let preview = outcome
+                            .1
+                            .get("result")
+                            .map(|value| value.to_string())
+                            .unwrap_or_default();
+                        let preview = sanitize_output(preview.as_bytes(), 800);
+                        prompt = format!(
+                            "{prompt}\n\nYOUR PREVIOUS RESPONSE WAS REJECTED by the output validator with error `{code}`. Respond AGAIN with ONLY the single strict JSON object described above: a non-empty top-level `summary`, and a `findings` array where EVERY finding has a non-empty `title` and a `severity` that is EXACTLY one of info, low, medium, high, or critical (no other words). Your previous, rejected output (truncated): {preview}"
+                        );
+                        continue;
+                    }
+                    break ("blocked_policy".to_string(), json!({ "code": code }));
+                }
+            }
+        }
+        break outcome;
+    };
     if outcome.0 == "succeeded"
         && matches!(
             claim.template_key.as_str(),
             "github_issue_resolver" | "github_pr_reviewer"
         )
     {
-        match evaluate_structured_result(&claim.template_key, &outcome.1) {
-            Ok(value) => outcome.1["evaluation"] = value,
+        match publish_template_output(store, claim, &workdir, &outcome.1).await {
+            Ok(published) => outcome.1["published"] = published,
             Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
-        }
-        if outcome.0 == "succeeded" {
-            match publish_template_output(store, claim, &workdir, &outcome.1).await {
-                Ok(published) => outcome.1["published"] = published,
-                Err(error) => {
-                    outcome = ("blocked_policy".into(), json!({"code":error.to_string()}))
-                }
-            }
         }
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result(&claim.template_key, &outcome.1) {
@@ -3183,19 +3638,26 @@ async fn execute_claim(
             }
         }
     }
-    // Judge verdict comments are opt-in (`publish: "comment"`). Best-effort: a
-    // publish failure is recorded on the outcome but never discards the verdict.
-    if outcome.0 == "succeeded"
-        && claim.template_key == "judge"
-        && claim
+    // Judge GitHub write-back runs when the agent opts in via `publish: "comment"`
+    // (verdict comments + close/resolve verified targets) or `outputs: ["github_issue"]`
+    // (also file sub-issues for problems). Best-effort: a failure is recorded on the
+    // outcome but never discards the verdict.
+    if outcome.0 == "succeeded" && claim.template_key == "judge" {
+        let comment_mode = claim
             .config
             .get("publish")
             .and_then(|value| value.as_str())
-            == Some("comment")
-    {
-        match publish_judge_comments(store, claim, &outcome.1).await {
-            Ok(published) => outcome.1["published"] = published,
-            Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+            == Some("comment");
+        let issue_mode = claim
+            .config
+            .get("outputs")
+            .and_then(|value| value.as_array())
+            .is_some_and(|outputs| outputs.iter().any(|o| o.as_str() == Some("github_issue")));
+        if comment_mode || issue_mode {
+            match publish_judge_comments(store, claim, &outcome.1).await {
+                Ok(published) => outcome.1["published"] = published,
+                Err(error) => outcome.1["publish_error"] = json!(error.to_string()),
+            }
         }
     }
     // Upload any QA screenshot evidence to R2 before the sandbox is torn down;
@@ -3346,6 +3808,238 @@ fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
         .flatten()
 }
 
+/// Build a QA GitHub-issue body (kasymir issue structure: Severity/Type/Module/
+/// Location header, Steps, Expected, Actual, Evidence, footer) and its label set
+/// from a finding's structured fields, degrading gracefully when fields are absent.
+/// File a GitHub issue for an existing finding on demand — the "Create issue"
+/// action for findings the agent did not file itself. Reuses the QA issue
+/// structure + fingerprint dedup, records a `github_issue` delivery on the
+/// finding (so the UI links it), and returns the created/existing issue JSON.
+pub async fn create_issue_for_finding(
+    store: &SqliteStore,
+    org_id: &str,
+    finding_id: &str,
+    repository: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    let (finding, derived_repo) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let finding = queries::get_autonomous_agent_finding(&conn, org_id, finding_id)?
+            .ok_or_else(|| anyhow::anyhow!("finding_not_found"))?;
+        // Fall back to the owning agent's configured repository (singular, else the
+        // first of `repositories`) when the caller did not name one.
+        let derived = queries::get_autonomous_agent_detail(&conn, org_id, &finding.definition_id)
+            .ok()
+            .flatten()
+            .and_then(|detail| {
+                let config = &detail.revision.config;
+                config
+                    .get("repository")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        config
+                            .get("repositories")
+                            .and_then(|v| v.as_array())
+                            .and_then(|list| list.first())
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+            });
+        (finding, derived)
+    };
+    let Some(repository) = repository
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(derived_repo)
+    else {
+        anyhow::bail!("repository_required")
+    };
+    // Embed the stored evidence screenshot via the durable re-signing endpoint
+    // (when a public base is configured), else the stored URL.
+    let evidence_md = {
+        let ev = &finding.evidence;
+        let name = ev
+            .get("screenshot")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let base = std::env::var("PUBLIC_API_BASE_URL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.trim_end_matches('/').to_string());
+        let url = match (name, &base) {
+            (Some(name), Some(base)) => Some(format!("{base}/evidence/{}/{name}", finding.run_id)),
+            _ => ev
+                .get("screenshot_url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        url.map(|u| format!("\n\n## Evidence\n\n![evidence]({u})"))
+            .unwrap_or_default()
+    };
+    let (body, labels) = qa_issue_markup(&finding, &finding.run_id, &evidence_md);
+    let token = server_gh_token().await?;
+    // Reuse an existing issue with the same fingerprint/title before creating one.
+    let marker = format!("<!-- nexusmind-fingerprint:{} -->", finding.fingerprint);
+    let issue = match super::connectors::find_github_issue_by_marker(
+        &token,
+        &repository,
+        &marker,
+        &finding.title,
+    )
+    .await
+    {
+        Ok(Some(existing)) => existing,
+        _ => {
+            super::connectors::create_github_issue(
+                &token,
+                &repository,
+                &finding.title,
+                &body,
+                &labels,
+            )
+            .await?
+        }
+    };
+    let key = format!("manual-issue:{}:{repository}", finding.id);
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        if let Ok(delivery) = queries::create_autonomous_agent_delivery(
+            &conn,
+            org_id,
+            &finding.run_id,
+            Some(&finding.id),
+            "github_issue",
+            &key,
+        ) {
+            let external_id = issue.get("number").map(|v| v.to_string());
+            let url = issue.get("html_url").and_then(|v| v.as_str());
+            let _ = queries::complete_autonomous_agent_delivery(
+                &conn,
+                org_id,
+                &delivery.id,
+                external_id.as_deref(),
+                url,
+            );
+        }
+    }
+    Ok(issue)
+}
+
+fn qa_issue_markup(
+    finding: &crate::models::types::AutonomousAgentFinding,
+    run_id: &str,
+    evidence_md: &str,
+) -> (String, Vec<String>) {
+    let ev = &finding.evidence;
+    let field = |key: &str| {
+        ev.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let module = field("module");
+    let ftype = field("type");
+    let location = field("location");
+    let expected = field("expected");
+    let actual = field("actual");
+    let mut header = format!("**Severity:** {}", finding.severity);
+    if let Some(value) = ftype {
+        header.push_str(&format!(" · **Type:** {value}"));
+    }
+    if let Some(value) = module {
+        header.push_str(&format!("\n**Module:** {value}"));
+    }
+    if let Some(value) = location {
+        header.push_str(&format!("\n**Location:** {value}"));
+    }
+    let mut steps_md = String::new();
+    if let Some(steps) = ev
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .filter(|s| !s.is_empty())
+    {
+        steps_md.push_str("\n\n## Steps to reproduce\n");
+        for (index, step) in steps.iter().filter_map(|s| s.as_str()).enumerate() {
+            steps_md.push_str(&format!("{}. {step}\n", index + 1));
+        }
+    }
+    let ea_md = match (expected, actual) {
+        (Some(e), Some(a)) => format!("\n\n## Expected\n{e}\n\n## Actual\n{a}"),
+        _ => format!("\n\n{}", finding.summary),
+    };
+    let body = format!(
+        "{header}{steps_md}{ea_md}{evidence_md}\n\n---\n_Filed by NexusMind QA. Run: `{run_id}`._\n<!-- nexusmind-fingerprint:{} -->",
+        finding.fingerprint
+    );
+    let mut labels = vec![
+        "bug".to_string(),
+        "qa".to_string(),
+        format!("severity:{}", finding.severity),
+    ];
+    if let Some(value) = module {
+        labels.push(format!("module:{}", value.to_lowercase().replace(' ', "-")));
+    }
+    if let Some(value) = ftype {
+        if matches!(value, "security" | "i18n" | "a11y" | "design" | "ux") {
+            labels.push(value.to_string());
+        }
+    }
+    (body, labels)
+}
+
+/// Render a QA finding (as handed over by "Resolve with agent") into an
+/// (title, body) pair the resolver treats as the task to fix. Reads structured
+/// fields from the finding and its nested `evidence`, degrading gracefully.
+fn finding_issue_markup(finding: &serde_json::Value) -> (String, String) {
+    let ev = finding.get("evidence");
+    let get = |key: &str| {
+        finding
+            .get(key)
+            .or_else(|| ev.and_then(|e| e.get(key)))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let title = get("title").unwrap_or("QA finding").to_string();
+    let mut body = String::from("_Handed over from a NexusMind QA finding to fix._\n\n");
+    if let Some(value) = get("severity") {
+        body.push_str(&format!("**Severity:** {value}\n"));
+    }
+    if let Some(value) = get("type") {
+        body.push_str(&format!("**Type:** {value}\n"));
+    }
+    if let Some(value) = get("module") {
+        body.push_str(&format!("**Module:** {value}\n"));
+    }
+    if let Some(value) = get("location") {
+        body.push_str(&format!("**Location:** {value}\n"));
+    }
+    if let Some(steps) = finding
+        .get("steps")
+        .or_else(|| ev.and_then(|e| e.get("steps")))
+        .and_then(|v| v.as_array())
+        .filter(|s| !s.is_empty())
+    {
+        body.push_str("\n## Steps to reproduce\n");
+        for (index, step) in steps.iter().filter_map(|s| s.as_str()).enumerate() {
+            body.push_str(&format!("{}. {step}\n", index + 1));
+        }
+    }
+    match (get("expected"), get("actual")) {
+        (Some(expected), Some(actual)) => {
+            body.push_str(&format!("\n## Expected\n{expected}\n\n## Actual\n{actual}\n"))
+        }
+        _ => {
+            if let Some(summary) = get("summary") {
+                body.push_str(&format!("\n{summary}\n"));
+            }
+        }
+    }
+    (title, body)
+}
+
 async fn deliver_findings(
     store: &SqliteStore,
     config: &Config,
@@ -3354,7 +4048,7 @@ async fn deliver_findings(
 ) {
     if !matches!(
         claim.template_key.as_str(),
-        "qa" | "github_pr_reviewer" | "judge" | "lead_generation"
+        "qa" | "github_pr_reviewer" | "judge" | "lead_generation" | "ai_content_manager"
     ) {
         return;
     }
@@ -3366,7 +4060,7 @@ async fn deliver_findings(
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
     let outputs = if matches!(
         claim.template_key.as_str(),
-        "qa" | "lead_generation" | "judge"
+        "qa" | "lead_generation" | "judge" | "ai_content_manager"
     ) {
         claim
             .config
@@ -3551,6 +4245,12 @@ async fn deliver_findings(
                     };
                 }
                 Some("github_issue") => {
+                    // The Judge files its problems as sub-issues of the judged issue
+                    // (handled in publish_judge_comments), so skip the flat per-finding
+                    // creation here to avoid duplicates.
+                    if claim.template_key == "judge" {
+                        continue;
+                    }
                     let Some(repository) = claim.config.get("repository").and_then(|v| v.as_str())
                     else {
                         continue;
@@ -3574,7 +4274,10 @@ async fn deliver_findings(
                         Ok(token) => match require_publish_authority(store, claim) {
                             Err(error) => Err(error),
                             Ok(()) => {
-                                let issue_title = format!("[NexusMind QA] {title}");
+                                // The agent already prefixes the title with its
+                                // [Module]; keep that (best-practice) and only add a
+                                // module prefix as a fallback when it didn't.
+                                let issue_title = title.to_string();
                                 // Host the screenshot on the repo's evidence
                                 // branch so it renders permanently inside the
                                 // private issue; fall back to the R2 URL.
@@ -3601,10 +4304,8 @@ async fn deliver_findings(
                                     .as_deref()
                                     .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                                     .unwrap_or_default();
-                                let issue_body = format!(
-                                    "{}{}\n\nNexusMind run: `{}`\n<!-- nexusmind-fingerprint:{} -->",
-                                    summary, evidence_md, claim.run.id, finding.fingerprint
-                                );
+                                let (issue_body, labels) =
+                                    qa_issue_markup(&finding, &claim.run.id, &evidence_md);
                                 if delivery.status == "delivered" {
                                     match delivery
                                         .external_id
@@ -3645,6 +4346,7 @@ async fn deliver_findings(
                                                 repository,
                                                 &issue_title,
                                                 &issue_body,
+                                                &labels,
                                             )
                                             .await
                                         }
@@ -3655,6 +4357,10 @@ async fn deliver_findings(
                         },
                         Err(error) => Err(error),
                     };
+                    let created_number = response
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| value.get("number").and_then(|n| n.as_i64()));
                     let db = store.conn();
                     if let Ok(conn) = db.lock() {
                         match response {
@@ -3684,7 +4390,37 @@ async fn deliver_findings(
                                 );
                             }
                         }
-                    };
+                    }
+                    drop(db);
+                    // QA "assign to me": put the created/updated issue on the gh
+                    // account the server is logged in with (opt-in), so it lands in
+                    // the bot's queue. Best-effort; never blocks the delivery.
+                    if claim.template_key == "qa"
+                        && claim
+                            .config
+                            .get("assign_issues_to_self")
+                            .and_then(|v| v.as_bool())
+                            == Some(true)
+                    {
+                        if let Some(number) = created_number {
+                            if let Ok(token) = server_gh_token().await {
+                                if let Ok(login) =
+                                    super::connectors::github_authenticated_login(&token).await
+                                {
+                                    if let Err(error) = super::connectors::add_issue_assignees(
+                                        &token,
+                                        repository,
+                                        number,
+                                        &[login],
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(run_id = %claim.run.id, %error, number, "qa: could not assign created issue to self");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -3788,10 +4524,8 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                             .as_deref()
                             .map(|url| format!("\n\n**Evidence:**\n\n![screenshot]({url})"))
                             .unwrap_or_default();
-                        let body = format!(
-                            "{}{}\n<!-- nexusmind-fingerprint:{} -->",
-                            item.finding.summary, evidence_md, item.finding.fingerprint
-                        );
+                        let (body, labels) =
+                            qa_issue_markup(&item.finding, &item.finding.run_id, &evidence_md);
                         let response = if let Some(number) = item
                             .delivery
                             .external_id
@@ -3815,7 +4549,7 @@ async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
                                 Some(existing) => existing,
                                 None => {
                                     super::connectors::create_github_issue(
-                                        &token, repository, &title, &body,
+                                        &token, repository, &title, &body, &labels,
                                     )
                                     .await?
                                 }
@@ -4100,8 +4834,137 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     );
                 }
             };
+            // Agent-to-agent chaining: on a successful run, optionally enqueue the
+            // next agent on the same PR (Resolver → Reviewer → Judge).
+            if matches!(status.as_str(), "succeeded" | "partial") {
+                maybe_trigger_next_agent(&store, &claim, &result).await;
+            }
         }
     })
+}
+
+/// If the finished run's agent has an `on_success_trigger_agent_id`, enqueue that
+/// agent on the SAME pull request — the Resolver→Reviewer→Judge chain. The PR is
+/// derived per source template, and the input is shaped for the TARGET template
+/// (Judge wants `judge_targets`, the Reviewer wants `trigger`). An optional
+/// `on_success_trigger_delay_seconds` lets a post-merge Judge wait for the deploy.
+async fn maybe_trigger_next_agent(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    result: &serde_json::Value,
+) {
+    let Some(target_id) = claim
+        .config
+        .get("on_success_trigger_agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let repository = claim
+        .config
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            claim
+                .config
+                .pointer("/trigger/repository")
+                .and_then(|v| v.as_str())
+        });
+    let (repository, number) = match claim.template_key.as_str() {
+        "github_issue_resolver" => {
+            let number = result
+                .pointer("/draft_pull_request/number")
+                .and_then(|v| v.as_i64());
+            match (repository, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        "github_pr_reviewer" => {
+            // Chain onward only after an actual merge (so the Judge verifies the
+            // change once it is in production).
+            if result.pointer("/auto_merge/merged").and_then(|v| v.as_bool()) != Some(true) {
+                return;
+            }
+            let number = claim
+                .config
+                .pointer("/trigger/number")
+                .and_then(|v| v.as_i64());
+            match (repository, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        "judge" => {
+            let target = claim
+                .config
+                .get("judge_targets")
+                .and_then(|v| v.as_array())
+                .and_then(|list| list.first());
+            let repo = target
+                .and_then(|value| value.get("repository"))
+                .and_then(|v| v.as_str());
+            let number = target
+                .and_then(|value| value.get("number"))
+                .and_then(|v| v.as_i64());
+            match (repo, number) {
+                (Some(repo), Some(number)) => (repo.to_string(), number),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    let delay = claim
+        .config
+        .get("on_success_trigger_delay_seconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .clamp(0, 86_400);
+    let scheduled_for = if delay > 0 {
+        Some(
+            (chrono::Utc::now() + chrono::Duration::seconds(delay))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let db = store.conn();
+    let Ok(conn) = db.lock() else {
+        return;
+    };
+    let target_template = queries::get_autonomous_agent_detail(&conn, &claim.org_id, &target_id)
+        .ok()
+        .flatten()
+        .map(|detail| detail.definition.template_key);
+    let input = match target_template.as_deref() {
+        Some("judge") => {
+            json!({"judge_targets":[{"type":"pr","repository":repository,"number":number}]})
+        }
+        Some(_) => json!({"trigger":{"kind":"github_pr","repository":repository,"number":number}}),
+        None => return,
+    };
+    let occurrence_key = format!("chain:{}:{}", claim.run.id, target_id);
+    match queries::enqueue_autonomous_agent_run(
+        &conn,
+        &claim.org_id,
+        &target_id,
+        "reconcile",
+        &occurrence_key,
+        scheduled_for.as_deref(),
+        Some(&input),
+    ) {
+        Ok(Some(run)) => {
+            tracing::info!(source_run = %claim.run.id, target = %target_id, next_run = %run.id, "chained next agent")
+        }
+        Ok(None) => tracing::warn!(target = %target_id, "chain target agent not found"),
+        Err(error) => {
+            tracing::warn!(target = %target_id, %error, "chain enqueue failed (agent disabled?)")
+        }
+    }
 }
 
 #[cfg(test)]

@@ -498,6 +498,7 @@ export default function AutonomousAgents() {
   const metrics = useQuery({ queryKey: ['autonomous-metrics'], queryFn: () => client.getAutonomousAgentMetrics(), enabled: can('autonomous_agent:read') && tab === 'runtime', refetchInterval: 30_000 })
   const findings = useQuery({ queryKey: ['autonomous-findings'], queryFn: () => client.listAutonomousAgentFindings(), enabled: can('autonomous_agent:read') && tab === 'findings' })
   const deliveries = useQuery({ queryKey: ['autonomous-deliveries'], queryFn: () => client.listAutonomousAgentDeliveries(), enabled: can('autonomous_agent:read') && tab === 'findings' })
+  const linkedinConnections = useQuery({ queryKey: ['linkedin-connections'], queryFn: () => client.listLinkedinConnections(), enabled: can('autonomous_agent:read') && tab === 'findings' })
 
   const invalidate = (...keys: string[]) => Promise.all(keys.map(key => queryClient.invalidateQueries({ queryKey: [key] })))
   const friendly = (message: string) => message === 'validation_required' ? 'Validate the agent before enabling it.' : message
@@ -520,10 +521,16 @@ export default function AutonomousAgents() {
     onError: (value: unknown) => setActionError(value instanceof Error ? value.message : 'Validation failed'),
   })
   const clone = useMutation({ mutationFn: async (id: string) => { const source = await client.getAutonomousAgent(id); return client.createAutonomousAgent({ name: `${source.name} copy`, description: source.description ?? undefined, template_key: source.template_key, config: source.revision.config, budgets: source.revision.budgets }) }, onSuccess: () => invalidate('autonomous-agents') })
-  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null) } })
+  const runNow = useMutation({ mutationFn: (vars: { id: string; targets?: Array<{ repository: string; type: 'pr' | 'issue'; number: number }> }) => client.runAutonomousAgent(vars.id, vars.targets ? { targets: vars.targets } : undefined), onSuccess: () => { invalidate('autonomous-runs'); setRunJudge(null); setRunReviewer(null) } })
   const [runJudge, setRunJudge] = useState<AutonomousAgentDefinition | null>(null)
+  const [runReviewer, setRunReviewer] = useState<AutonomousAgentDefinition | null>(null)
   const cancelRun = useMutation({ mutationFn: (id: string) => client.cancelAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
   const continueRun = useMutation({ mutationFn: (id: string) => client.continueAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const archiveRun = useMutation({ mutationFn: (id: string) => client.archiveAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const unarchiveRun = useMutation({ mutationFn: (id: string) => client.unarchiveAutonomousAgentRun(id), onSuccess: () => invalidate('autonomous-runs') })
+  const archiveAllRuns = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentRuns(), onSuccess: () => invalidate('autonomous-runs') })
+  const [runStatusFilter, setRunStatusFilter] = useState<'all' | 'active' | 'succeeded' | 'failed' | 'blocked' | 'cancelled'>('all')
+  const [showArchivedRuns, setShowArchivedRuns] = useState(false)
   const checkRuntime = useMutation({ mutationFn: () => client.checkAutonomousRuntimeHealth(), onSuccess: () => invalidate('autonomous-runtime') })
   const toggleOrg = useMutation({ mutationFn: (enabled: boolean) => client.patchAutonomousAgentSettings({ enabled }), onSuccess: () => invalidate('autonomous-settings', 'autonomous-runs') })
   const saveRetention = useMutation({ mutationFn: (days: number) => client.patchAutonomousAgentSettings({ retention_days: days }), onSuccess: () => invalidate('autonomous-settings') })
@@ -531,8 +538,40 @@ export default function AutonomousAgents() {
   const resolveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'resolved'), onSuccess: () => invalidate('autonomous-findings') })
   const archiveFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'ignored'), onSuccess: () => invalidate('autonomous-findings') })
   const restoreFinding = useMutation({ mutationFn: (id: string) => client.patchAutonomousAgentFinding(id, 'open'), onSuccess: () => invalidate('autonomous-findings') })
+  // Approve & publish a generated post draft to LinkedIn.
+  const publishPost = useMutation({
+    mutationFn: (vars: { id: string; destination: 'personal' | 'organization' }) => client.publishFindingLinkedin(vars.id, { destination: vars.destination }),
+    onSuccess: result => { invalidate('autonomous-findings'); if (result.url) window.open(result.url, '_blank') },
+    onError: (err: unknown) => window.alert(`Could not publish: ${(err as { message?: string })?.message ?? 'unknown error'}`),
+  })
+  const connectLinkedin = useMutation({
+    mutationFn: (destination: 'personal' | 'organization') => client.linkedinAuthorize(destination),
+    onSuccess: result => { if (result.url) window.open(result.url, '_blank', 'width=600,height=760') },
+    onError: (err: unknown) => window.alert(`LinkedIn is not configured: ${(err as { message?: string })?.message ?? 'unknown error'}`),
+  })
   const archiveAllFindings = useMutation({ mutationFn: () => client.archiveAllAutonomousAgentFindings(), onSuccess: () => invalidate('autonomous-findings') })
+  // "Create issue" for a finding the agent did not file. Retries with an explicit
+  // repository when the agent has none configured.
+  const createFindingIssue = useMutation({
+    mutationFn: (vars: { findingId: string; repository?: string }) => client.createFindingIssue(vars.findingId, vars.repository),
+    onSuccess: () => invalidate('autonomous-findings', 'autonomous-deliveries'),
+    onError: (err: unknown, vars) => {
+      const code = (err as { code?: string })?.code
+      if (code === 'repository_required' && !vars.repository) {
+        const repository = window.prompt('Repository for this issue (owner/repo):')?.trim()
+        if (repository) createFindingIssue.mutate({ findingId: vars.findingId, repository })
+      }
+    },
+  })
   const [showArchivedFindings, setShowArchivedFindings] = useState(false)
+  // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
+  // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
+  const [resolveWith, setResolveWith] = useState<{ findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } } | null>(null)
+  const resolveWithAgent = useMutation({
+    mutationFn: (vars: { agentId: string; findingId: string; finding: Dict; issue?: { repository: string; number: number } }) =>
+      client.runAutonomousAgent(vars.agentId, { finding: vars.finding, finding_id: vars.findingId, ...(vars.issue ? { issue: vars.issue } : {}) }),
+    onSuccess: () => { invalidate('autonomous-runs'); setResolveWith(null); setTab('runs') },
+  })
 
   const openEdit = async (agent: AutonomousAgentDefinition) => {
     const detail = await client.getAutonomousAgent(agent.id)
@@ -607,7 +646,7 @@ export default function AutonomousAgents() {
                     : <span className="text-xs text-text-tertiary px-1">Validate to enable</span>}
                 </>}
                 {can('autonomous_agent:enable') && agent.status === 'enabled' && <Button size="sm" variant="outline" onClick={() => disable.mutate(agent.id)}>Disable</Button>}
-                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
+                {can('autonomous_agent:run') && agent.status === 'enabled' && <Button size="sm" variant="primary" leftIcon={<Play className="w-3.5 h-3.5" />} onClick={() => agent.template_key === 'judge' ? setRunJudge(agent) : agent.template_key === 'github_pr_reviewer' ? setRunReviewer(agent) : runNow.mutate({ id: agent.id })}>Run</Button>}
                 {can('autonomous_agent:update') && agent.status !== 'archived' && <Button size="sm" variant="ghost" leftIcon={<Pencil className="w-3.5 h-3.5" />} onClick={() => void openEdit(agent)}>Edit</Button>}
                 {can('autonomous_agent:create') && <Button size="sm" variant="ghost" leftIcon={<Copy className="w-3.5 h-3.5" />} onClick={() => clone.mutate(agent.id)}>Clone</Button>}
                 {can('autonomous_agent:update') && agent.status === 'disabled' && <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} onClick={() => archive.mutate(agent.id)}>Archive</Button>}
@@ -651,19 +690,49 @@ export default function AutonomousAgents() {
         </div>
       )}
 
-      {tab === 'runs' && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(280px,340px)_1fr]">
-          <div className="rounded-[14px] border border-border-primary overflow-hidden self-start">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border-primary">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Recent runs</span>
-              <span className="text-xs text-text-tertiary">{runs.data?.length ?? 0}</span>
+      {tab === 'runs' && (() => {
+        const allRuns = runs.data ?? []
+        // Collapse the many raw statuses into the filter's coarse buckets.
+        const group = (s: string): typeof runStatusFilter => s.startsWith('blocked') ? 'blocked' : ['queued', 'leased', 'running'].includes(s) ? 'active' : (s === 'succeeded' || s === 'failed' || s === 'cancelled') ? s : 'all'
+        const archivedCount = allRuns.filter(r => r.archived_at).length
+        const visibleRuns = allRuns
+          .filter(r => showArchivedRuns || !r.archived_at)
+          .filter(r => runStatusFilter === 'all' || group(r.status) === runStatusFilter)
+        const archivableCount = allRuns.filter(r => !r.archived_at && !['queued', 'leased', 'running'].includes(r.status)).length
+        const FILTERS: Array<{ value: typeof runStatusFilter; label: string }> = [
+          { value: 'all', label: 'All' }, { value: 'active', label: 'Active' }, { value: 'succeeded', label: 'Succeeded' }, { value: 'failed', label: 'Failed' }, { value: 'blocked', label: 'Blocked' }, { value: 'cancelled', label: 'Cancelled' },
+        ]
+        return (
+        // Fixed-height board: the list and the run detail each scroll on their own;
+        // the page itself stays put.
+        <div className="grid gap-4 lg:grid-cols-[minmax(280px,340px)_1fr] h-[calc(100vh-15rem)] min-h-[520px]">
+          <div className="rounded-[14px] border border-border-primary overflow-hidden flex flex-col min-h-0">
+            <div className="px-4 py-3 border-b border-border-primary space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Recent runs</span>
+                <span className="text-xs text-text-tertiary">{visibleRuns.length}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {FILTERS.map(f => (
+                  <button key={f.value} type="button" onClick={() => setRunStatusFilter(f.value)} className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${runStatusFilter === f.value ? 'bg-accent-blue/20 text-accent-blue' : 'text-text-tertiary hover:text-text-primary'}`}>{f.label}</button>
+                ))}
+              </div>
+              {(archivedCount > 0 || archivableCount > 0) && (
+                <div className="flex items-center justify-between gap-2">
+                  {archivedCount > 0 ? <Switch size="sm" checked={showArchivedRuns} onCheckedChange={setShowArchivedRuns} label={`Archived (${archivedCount})`} /> : <span />}
+                  {can('autonomous_agent:update') && archivableCount > 0 && (
+                    <button type="button" onClick={() => { if (window.confirm(`Archive all ${archivableCount} finished run${archivableCount === 1 ? '' : 's'}?`)) archiveAllRuns.mutate() }} className="text-[11px] text-text-tertiary hover:text-text-primary font-medium">Archive all</button>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="divide-y divide-border-secondary">
-              {runs.data?.map(run => {
+            <div className="divide-y divide-border-secondary overflow-y-auto min-h-0 flex-1">
+              {visibleRuns.map(run => {
                 const meta = runStatusMeta(run.status)
                 const active = selectedRun?.id === run.id
+                const isRunning = ['queued', 'leased', 'running'].includes(run.status)
                 return (
-                  <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className={`w-full px-4 py-3 flex flex-col gap-1.5 text-left transition-colors ${active ? 'bg-accent-blue/[0.10] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.02]'}`}>
+                  <button type="button" key={run.id} onClick={() => setSelectedRun(run)} className={`w-full px-4 py-3 flex flex-col gap-1.5 text-left transition-colors ${active ? 'bg-accent-blue/[0.10] shadow-[inset_3px_0_0_var(--color-accent-blue)]' : 'hover:bg-white/[0.02]'} ${run.archived_at ? 'opacity-60' : ''}`}>
                     <div className="flex justify-between gap-2 items-center">
                       <span className="text-[13px] font-semibold text-text-primary truncate">{allAgents.find(a => a.id === run.definition_id)?.name ?? `${titleCase(run.trigger_kind)} run`}</span>
                       <Badge size="sm" variant={meta.variant} dot={run.status !== 'running'}>{run.status === 'running' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}{meta.label}</Badge>
@@ -672,23 +741,28 @@ export default function AutonomousAgents() {
                       <span>{titleCase(run.trigger_kind)}</span>
                       <span>·</span>
                       <span>{new Date(`${run.created_at}Z`).toLocaleString()}</span>
-                      {can('autonomous_agent:cancel') && ['queued', 'leased', 'running'].includes(run.status) && (
+                      {can('autonomous_agent:cancel') && isRunning && (
                         <span onClick={event => { event.stopPropagation(); cancelRun.mutate(run.id) }} className="ml-auto text-status-error font-semibold">Cancel</span>
+                      )}
+                      {can('autonomous_agent:update') && !isRunning && (run.archived_at
+                        ? <span onClick={event => { event.stopPropagation(); unarchiveRun.mutate(run.id) }} className="ml-auto text-accent-blue font-semibold">Restore</span>
+                        : <span onClick={event => { event.stopPropagation(); archiveRun.mutate(run.id) }} className="ml-auto text-text-tertiary hover:text-text-primary font-semibold">Archive</span>
                       )}
                     </div>
                   </button>
                 )
               })}
-              {runs.data?.length === 0 && <div className="p-4"><EmptyState title="No runs yet" description="Runs appear here once an enabled agent is triggered." /></div>}
+              {visibleRuns.length === 0 && <div className="p-4"><EmptyState title="No runs" description={allRuns.length ? 'No runs match this filter.' : 'Runs appear here once an enabled agent is triggered.'} /></div>}
             </div>
           </div>
-          <aside className="rounded-[14px] border border-border-primary p-5">
+          <aside className="rounded-[14px] border border-border-primary p-5 overflow-y-auto min-h-0">
             {selectedRun ? (
               <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>
-      )}
+        )
+      })()}
 
       {tab === 'findings' && (() => {
         const allFindings = findings.data ?? []
@@ -707,6 +781,25 @@ export default function AutonomousAgents() {
               )}
             </div>
           )}
+          {(() => {
+            const hasPosts = allFindings.some(f => asStr((f.evidence as Dict)?.kind) === 'post')
+            if (!hasPosts) return null
+            const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
+            return (
+              <div className="rounded-[12px] border border-border-primary bg-white/[0.02] px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                <div className="text-[13px] text-text-secondary">
+                  <span className="font-medium text-text-primary">LinkedIn</span> — {connected.size ? `connected: ${[...connected].join(', ')}` : 'not connected. Connect an account to publish approved posts.'}
+                </div>
+                {can('autonomous_agent:update') && (
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant={connected.has('personal') ? 'ghost' : 'secondary'} loading={connectLinkedin.isPending} onClick={() => connectLinkedin.mutate('personal')}>{connected.has('personal') ? 'Reconnect personal' : 'Connect personal'}</Button>
+                    <Button size="sm" variant={connected.has('organization') ? 'ghost' : 'secondary'} loading={connectLinkedin.isPending} onClick={() => connectLinkedin.mutate('organization')}>{connected.has('organization') ? 'Reconnect company' : 'Connect company'}</Button>
+                    <button type="button" onClick={() => linkedinConnections.refetch()} className="text-xs text-accent-blue">Refresh</button>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           {visibleFindings.map(finding => {
             const ev = (finding.evidence ?? {}) as Dict
             // Build the screenshot src from the stable re-signing endpoint using the
@@ -722,6 +815,8 @@ export default function AutonomousAgents() {
             const steps = asArr(ev.steps)
             const repro = asStr(ev.repro) ?? asStr(ev.excerpt) ?? asStr(ev.code)
             const findingDeliveries = deliveries.data?.filter(item => item.finding_id === finding.id) ?? []
+            // The GitHub issue this finding was already filed as (if any).
+            const linkedIssue = findingDeliveries.find(d => d.channel === 'github_issue' && d.external_url)
             const hasStructured = shot || locDict || locStr || (steps && steps.length) || repro
             return (
               <article key={finding.id} className="rounded-[14px] border border-border-primary bg-white/[0.02] overflow-hidden grid grid-cols-[4px_1fr]">
@@ -731,8 +826,26 @@ export default function AutonomousAgents() {
                     <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
                     <div className="flex items-center gap-2">
                       {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
+                      {asStr(ev.kind) === 'post' && <Badge size="sm" variant="info">post</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) === 'post' && (() => {
+                        const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
+                        const postDest = asStr(asDict(ev.post)?.destination)
+                        const dest = (postDest === 'organization' || postDest === 'personal') && connected.has(postDest) ? postDest : connected.has('personal') ? 'personal' : connected.has('organization') ? 'organization' : null
+                        if (!dest) return null
+                        return <button type="button" disabled={publishPost.isPending} onClick={() => { if (window.confirm(`Publish this post to LinkedIn (${dest})?`)) publishPost.mutate({ id: finding.id, destination: dest as 'personal' | 'organization' }) }} className="text-xs text-accent-blue font-medium disabled:opacity-50">Publish to LinkedIn</button>
+                      })()}
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && asStr(ev.kind) !== 'post' && !linkedIssue && (
+                        <button type="button" disabled={createFindingIssue.isPending} onClick={() => createFindingIssue.mutate({ findingId: finding.id })} className="text-xs text-accent-blue font-medium disabled:opacity-50">Create issue</button>
+                      )}
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) !== 'post' && !asDict(ev.lead) && (() => {
+                        // Link the GitHub issue this finding was filed as (if any), so
+                        // the resolver both fixes the finding and closes the issue.
+                        const parsed = linkedIssue?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)
+                        const issue = parsed ? { repository: parsed[1], number: Number(parsed[2]) } : undefined
+                        return <button type="button" onClick={() => setResolveWith({ findingId: finding.id, title: finding.title, finding: { title: finding.title, summary: finding.summary, severity: finding.severity, evidence: ev }, issue })} className="text-xs text-accent-blue font-medium">Resolve with agent</button>
+                      })()}
                       {can('autonomous_agent:update') && finding.status === 'open' && <button type="button" onClick={() => resolveFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Resolve</button>}
                       {can('autonomous_agent:update') && finding.status !== 'ignored' && <button type="button" onClick={() => archiveFinding.mutate(finding.id)} className="text-xs text-text-tertiary hover:text-text-primary font-medium">Archive</button>}
                       {can('autonomous_agent:update') && finding.status === 'ignored' && <button type="button" onClick={() => restoreFinding.mutate(finding.id)} className="text-xs text-accent-blue font-medium">Restore</button>}
@@ -947,7 +1060,101 @@ export default function AutonomousAgents() {
           onRun={targets => runNow.mutate({ id: runJudge.id, targets })}
         />
       )}
+
+      {runReviewer && (
+        <ReviewerRunDialog
+          agent={runReviewer}
+          pending={runNow.isPending}
+          onClose={() => setRunReviewer(null)}
+          onRun={target => runNow.mutate({ id: runReviewer.id, targets: [target] })}
+        />
+      )}
+
+      {resolveWith && (
+        <ResolveWithAgentDialog
+          target={resolveWith}
+          resolvers={allAgents.filter(a => a.template_key === 'github_issue_resolver' && a.status === 'enabled')}
+          pending={resolveWithAgent.isPending}
+          onClose={() => setResolveWith(null)}
+          onRun={agentId => resolveWithAgent.mutate({ agentId, findingId: resolveWith.findingId, finding: resolveWith.finding, issue: resolveWith.issue })}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * "Resolve with agent": pick ONE enabled issue-resolver to fix a single finding.
+ * The finding content (and the GitHub issue it was filed as, when present) are
+ * handed to that resolver, which resolves ONLY this — nothing else in the repo.
+ */
+function ResolveWithAgentDialog({ target, resolvers, pending, onClose, onRun }: { target: { title: string; issue?: { repository: string; number: number } }; resolvers: AutonomousAgentDefinition[]; pending: boolean; onClose: () => void; onRun: (agentId: string) => void }) {
+  const [agentId, setAgentId] = useState('')
+  useEffect(() => { if (!agentId && resolvers.length) setAgentId(resolvers[0].id) }, [resolvers, agentId])
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Resolve with agent</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Hand this finding to an issue-resolver. It will fix <span className="text-text-primary">only</span> this — nothing else in the repository.</p>
+        <div className="rounded-lg border border-border-primary bg-white/[0.02] px-3 py-2 text-[13px] text-text-primary">{target.title}</div>
+        {target.issue
+          ? <p className="text-xs text-text-tertiary">Linked issue <span className="font-mono text-text-secondary">{target.issue.repository}#{target.issue.number}</span> — the pull request will close it.</p>
+          : <p className="text-xs text-text-tertiary">No GitHub issue is linked; the finding itself is handed over as the task.</p>}
+        {resolvers.length === 0
+          ? <p className="text-xs text-status-warning">No enabled issue-resolver agent exists. Create and enable one first.</p>
+          : (
+            <label className="block">
+              <span className="text-xs font-medium text-text-secondary">Resolver agent</span>
+              <select value={agentId} onChange={e => setAgentId(e.target.value)} className="mt-1 block w-full rounded-lg border border-border-primary bg-transparent px-3 py-2 text-sm text-text-primary focus:border-accent-blue focus:outline-none">
+                {resolvers.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </label>
+          )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={!agentId || resolvers.length === 0} onClick={() => agentId && onRun(agentId)}>Resolve</Button>
+        </div>
+      </ModalContent>
+    </Modal>
+  )
+}
+
+/**
+ * Run dialog for the PR reviewer: the PR to review is chosen per run. Repository
+ * defaults to the agent's configured `repository` (editable for multi-repo setups).
+ */
+function ReviewerRunDialog({ agent, pending, onClose, onRun }: { agent: AutonomousAgentDefinition; pending: boolean; onClose: () => void; onRun: (target: { repository: string; type: 'pr'; number: number }) => void }) {
+  const client = useMemo(() => createClient(), [])
+  const detail = useQuery({ queryKey: ['autonomous-agent-detail', agent.id], queryFn: () => client.getAutonomousAgent(agent.id) })
+  const configRepo = (typeof detail.data?.revision?.config?.repository === 'string' ? detail.data?.revision?.config?.repository : '') as string
+  const [repository, setRepository] = useState('')
+  const [number, setNumber] = useState('')
+  useEffect(() => { if (!repository && configRepo) setRepository(configRepo) }, [configRepo, repository])
+  const parsed = Number(String(number).replace('#', '').trim())
+  const valid = repository.trim().length > 0 && Number.isInteger(parsed) && parsed > 0
+  return (
+    <Modal open onOpenChange={value => { if (!value) onClose() }} size="md">
+      <ModalHeader>
+        <ModalTitle>Run “{agent.name}”</ModalTitle>
+      </ModalHeader>
+      <ModalContent className="space-y-4">
+        <p className="text-[13px] text-text-secondary">Choose the pull request to review this run. Only this PR is reviewed; nothing is merged.</p>
+        <label className="block">
+          <span className="text-xs font-medium text-text-secondary">Repository</span>
+          <Input inputSize="sm" className="mt-1 w-full" value={repository} onChange={e => setRepository(e.target.value)} placeholder="owner/repo" />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-text-secondary">Pull request number</span>
+          <Input inputSize="sm" className="mt-1 w-40" value={number} onChange={e => setNumber(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && valid) { e.preventDefault(); onRun({ repository: repository.trim(), type: 'pr', number: parsed }) } }} placeholder="123" />
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="primary" loading={pending} disabled={!valid} onClick={() => onRun({ repository: repository.trim(), type: 'pr', number: parsed })}>Review PR</Button>
+        </div>
+      </ModalContent>
+    </Modal>
   )
 }
 
