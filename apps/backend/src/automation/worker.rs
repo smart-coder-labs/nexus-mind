@@ -860,6 +860,31 @@ fn require_publish_authority(
     Ok(())
 }
 
+/// Close a resolver's GitHub issue when the agent EXPLICITLY declared `no_op`
+/// (it determined the issue is already resolved / needs no code change). Closed
+/// as `not_planned` — no work was delivered — and only after the explanatory
+/// comment. A bare empty diff (no `no_op` declaration) is too weak a signal and
+/// is intentionally NOT closed here. Best-effort and reversible via the
+/// output-link revert action; a failure only warns so the run still succeeds.
+async fn close_resolved_issue(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    token: &str,
+    repository: &str,
+    number: i64,
+    no_op: bool,
+) {
+    if !no_op || require_publish_authority(store, claim).is_err() {
+        return;
+    }
+    if let Err(error) =
+        super::connectors::close_github_issue_with_reason(token, repository, number, "not_planned")
+            .await
+    {
+        tracing::warn!(run_id = %claim.run.id, %error, number, "resolver: could not close resolved issue");
+    }
+}
+
 fn authenticated_git(token: &str) -> Command {
     use base64::Engine as _;
     let mut command = Command::new("git");
@@ -1273,6 +1298,7 @@ async fn publish_template_output(
                     )?
                 };
                 if delivery.status == "delivered" {
+                    close_resolved_issue(store, claim, &token, repository, number, no_op).await;
                     return Ok(json!({
                         "no_op": true,
                         "issue_comment": {"id": delivery.external_id, "html_url": delivery.external_url},
@@ -1322,6 +1348,7 @@ async fn publish_template_output(
                         )?;
                     }
                 }
+                close_resolved_issue(store, claim, &token, repository, number, no_op).await;
                 return Ok(json!({"no_op": true, "issue_comment": comment}));
             }
             if files > max_files || lines > max_lines {
@@ -1958,7 +1985,7 @@ fn fixed_prompt(
                 .unwrap_or(10)
                 .clamp(1, 25);
             format!(
-                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\"}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
+                "You are a B2B lead-generation researcher. Read the product and the ICP (ideal customer profile) from the configuration. Use the WebSearch tool (and WebFetch to read pages) to find up to {count} REAL companies that plausibly match the ICP and would benefit from the product. For each company, research its business, headquarters, public contact channels, social media profiles, and relevant directors or senior decision-makers, then draft a short, personalized cold outreach email. Prefer authoritative sources such as the company's website, contact/about/team pages, and public professional profiles. You have NO email or sending tools — you ONLY research and draft; never claim to have contacted anyone. Only ever use WebSearch, WebFetch and Read. Record only public business information that you actually verify. Never guess or derive an email address, phone number, person, title, or profile URL; use an empty string or empty array when a value cannot be found. Include the URLs used to verify the lead so every contact and executive can be checked. Collect public social profiles for the company and each executive in `social_links` (X/Twitter, Instagram, Facebook, YouTube, TikTok, personal site); LinkedIn stays in its dedicated field, and only record a direct phone or personal email when it is published on a public business source — never guess it.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<who you targeted and how many leads you found>\",\"findings\":[{{\"title\":\"<company name>\",\"severity\":\"info\",\"summary\":\"<one-line fit reason followed by the drafted email>\",\"fingerprint\":\"<stable-kebab-case company domain, e.g. acme-com>\",\"lead\":{{\"company\":\"<name>\",\"website\":\"<url>\",\"description\":\"<what the company does or empty>\",\"industry\":\"<industry or empty>\",\"headquarters\":\"<city, region, country or empty>\",\"company_linkedin\":\"<public company profile URL or empty>\",\"social_links\":[{{\"platform\":\"<x|twitter|instagram|facebook|youtube|tiktok|other>\",\"url\":\"<public profile URL>\"}}],\"contact_email\":\"<verified public business email or empty>\",\"contact_phone\":\"<verified public business phone or empty>\",\"contact_page\":\"<public contact-page URL or empty>\",\"executives\":[{{\"name\":\"<full name>\",\"title\":\"<current role>\",\"linkedin\":\"<public professional profile URL or empty>\",\"public_email\":\"<verified public business email or empty>\",\"direct_phone\":\"<verified public direct phone or empty>\",\"social_links\":[{{\"platform\":\"<x|twitter|personal|other>\",\"url\":\"<public profile URL>\"}}]}}],\"source_urls\":[\"<URL that verifies company/contact/executive data>\"],\"fit_reason\":\"<one sentence>\",\"email_subject\":\"<subject line>\",\"email_body\":\"<personalized email body addressed to the best verified decision-maker when available>\"}}}}]}}. Return an empty findings array if you cannot find qualifying companies."
             )
         }
         "ai_content_manager" => {
@@ -4999,9 +5026,11 @@ mod tests {
             "industry",
             "headquarters",
             "company_linkedin",
+            "social_links",
             "contact_phone",
             "contact_page",
             "executives",
+            "direct_phone",
             "source_urls",
         ] {
             assert!(prompt.contains(&format!("\"{field}\"")));

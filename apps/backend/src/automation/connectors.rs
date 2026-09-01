@@ -425,8 +425,110 @@ pub async fn find_github_review_by_marker(
     Ok(find_body_marker(&value, marker))
 }
 
+/// Pull the fingerprint value out of a `<!-- nexusmind-fingerprint:<fp> -->`
+/// marker (or any text that embeds it). Fingerprints are kebab-case and never
+/// contain whitespace, so we stop at the first whitespace after the prefix.
+fn extract_fingerprint(text: &str) -> String {
+    const PREFIX: &str = "nexusmind-fingerprint:";
+    match text.find(PREFIX) {
+        Some(idx) => text[idx + PREFIX.len()..]
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        None => String::new(),
+    }
+}
+
+/// Case/separator-insensitive fingerprint form so `pos-toast-uuid`,
+/// `pos_toast_uuid` and `POS-Toast-UUID` all compare equal.
+fn normalize_fingerprint(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Lowercase alphanumeric title with runs of punctuation/space collapsed to a
+/// single space — the comparison form for near-duplicate title detection.
+fn normalize_title(text: &str) -> String {
+    let mut out = String::new();
+    let mut prev_space = true;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.extend(ch.to_lowercase());
+            prev_space = false;
+        } else if !prev_space {
+            out.push(' ');
+            prev_space = true;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Leading `[Module]` tag (lowercased) if present, else empty. Two titles only
+/// dedupe by similarity when their module tag matches, so a lookalike symptom
+/// in a different module is never merged.
+fn module_prefix(text: &str) -> String {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('[') {
+        if let Some(end) = trimmed.find(']') {
+            return trimmed[..=end].to_lowercase();
+        }
+    }
+    String::new()
+}
+
+/// Digit runs in order — distinct bugs often differ only by a number
+/// ("2 items" vs "3 items"), so these must match for a title-similarity merge.
+fn digit_tokens(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_ascii_digit())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Token-coverage similarity: the fraction of the SHORTER title's words that
+/// also appear in the other title (multiset intersection over the smaller word
+/// count). Catches "same title + a few extra words" drift that character-level
+/// metrics miss, while the module + number guards upstream keep distinct
+/// defects apart. 1.0 == one title's words are all contained in the other.
+fn title_similarity(left: &str, right: &str) -> f64 {
+    let tokens = |value: &str| value.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+    let left_tokens = tokens(left);
+    let mut right_tokens = tokens(right);
+    let denom = left_tokens.len().min(right_tokens.len());
+    if denom == 0 {
+        return 0.0;
+    }
+    let mut overlap = 0usize;
+    for token in &left_tokens {
+        if let Some(pos) = right_tokens.iter().position(|other| other == token) {
+            right_tokens.remove(pos);
+            overlap += 1;
+        }
+    }
+    overlap as f64 / denom as f64
+}
+
+/// Minimum title coverage to treat two issues as the same defect when the
+/// fingerprint drifted. High on purpose — this is a last-resort dedup.
+const TITLE_DEDUP_THRESHOLD: f64 = 0.9;
+
+/// Titles shorter than this (in words) are too generic to dedupe by coverage
+/// alone, so a title match requires at least this many words on the shorter side.
+const TITLE_DEDUP_MIN_WORDS: usize = 3;
+
 fn find_issue_marker(value: &Value, marker: &str, title: &str) -> Option<Value> {
-    let want_title = title.trim().to_lowercase();
+    // Dedup an incoming finding against recent OPEN issues through three ladders,
+    // most precise first: (1) the exact fingerprint marker in the body; (2) the
+    // same fingerprint after case/separator normalization; (3) a near-identical
+    // title (same [Module], same numbers) when the fingerprint drifted entirely.
+    let want_fingerprint = normalize_fingerprint(&extract_fingerprint(marker));
+    let want_title = normalize_title(title);
+    let want_module = module_prefix(title);
+    let want_digits = digit_tokens(&want_title);
     value.as_array().and_then(|items| {
         items
             .iter()
@@ -434,16 +536,34 @@ fn find_issue_marker(value: &Value, marker: &str, title: &str) -> Option<Value> 
                 if item.get("pull_request").is_some() {
                     return false;
                 }
-                let body_match = item
-                    .get("body")
-                    .and_then(|body| body.as_str())
-                    .is_some_and(|body| body.contains(marker));
-                let title_match = !want_title.is_empty()
-                    && item
-                        .get("title")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|value| value.trim().to_lowercase() == want_title);
-                body_match || title_match
+                let body = item.get("body").and_then(Value::as_str).unwrap_or_default();
+                if !marker.is_empty() && body.contains(marker) {
+                    return true;
+                }
+                if !want_fingerprint.is_empty() {
+                    let their_fingerprint =
+                        normalize_fingerprint(&extract_fingerprint(body));
+                    if !their_fingerprint.is_empty() && their_fingerprint == want_fingerprint {
+                        return true;
+                    }
+                }
+                if !want_title.is_empty() {
+                    let raw_title = item.get("title").and_then(Value::as_str).unwrap_or_default();
+                    let their_title = normalize_title(raw_title);
+                    let shorter_words = want_title
+                        .split_whitespace()
+                        .count()
+                        .min(their_title.split_whitespace().count());
+                    if !their_title.is_empty()
+                        && shorter_words >= TITLE_DEDUP_MIN_WORDS
+                        && module_prefix(raw_title) == want_module
+                        && digit_tokens(&their_title) == want_digits
+                        && title_similarity(&want_title, &their_title) >= TITLE_DEDUP_THRESHOLD
+                    {
+                        return true;
+                    }
+                }
+                false
             })
             .cloned()
     })
@@ -560,6 +680,67 @@ pub async fn close_github_issue(token: &str, repository: &str, number: i64) -> R
         token,
         &format!("/repos/{owner}/{repo}/issues/{number}"),
         json!({ "state": "closed" }),
+    )
+    .await
+}
+
+/// Close an issue with an explicit `state_reason` (`completed` | `not_planned`).
+/// Used by the resolver when it determines a change is not required, so the
+/// closed issue reads as "not planned" rather than delivered work.
+pub async fn close_github_issue_with_reason(
+    token: &str,
+    repository: &str,
+    number: i64,
+    state_reason: &str,
+) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_patch(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/{number}"),
+        json!({ "state": "closed", "state_reason": state_reason }),
+    )
+    .await
+}
+
+/// Close a pull request (revert action for a draft PR an agent opened).
+pub async fn close_github_pull(token: &str, repository: &str, number: i64) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_patch(
+        token,
+        &format!("/repos/{owner}/{repo}/pulls/{number}"),
+        json!({ "state": "closed" }),
+    )
+    .await
+}
+
+async fn github_delete(token: &str, path: &str) -> Result<()> {
+    let response = reqwest::Client::new()
+        .delete(format!("https://api.github.com{path}"))
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "nexusmind-autonomous-agents")
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "github_api_{}: {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        );
+    }
+    Ok(())
+}
+
+/// Delete an issue/PR comment by its id (revert action for a comment an agent
+/// posted).
+pub async fn delete_issue_comment(token: &str, repository: &str, comment_id: i64) -> Result<()> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_delete(
+        token,
+        &format!("/repos/{owner}/{repo}/issues/comments/{comment_id}"),
     )
     .await
 }
@@ -707,5 +888,44 @@ mod tests {
                 .and_then(|value| value.get("id").cloned()),
             Some(json!(9))
         );
+    }
+
+    #[test]
+    fn find_issue_marker_dedupes_on_normalized_fingerprint_and_near_title() {
+        // Fingerprint drifted only by case/separator → still the same defect.
+        let issues = json!([
+            {"number":11,"title":"[POS] toast","body":"x\n<!-- nexusmind-fingerprint:POS_Toast_UUID -->"}
+        ]);
+        assert_eq!(
+            find_issue_marker(
+                &issues,
+                "<!-- nexusmind-fingerprint:pos-toast-uuid -->",
+                "[POS] something else entirely",
+            )
+            .and_then(|value| value.get("number").cloned()),
+            Some(json!(11)),
+        );
+
+        // Same [Module], title reworded a little, fingerprint gone → title match.
+        let issues = json!([
+            {"number":12,"title":"[Users] Archive user is a no-op","body":"no marker here"}
+        ]);
+        assert_eq!(
+            find_issue_marker(
+                &issues,
+                "missing",
+                "[Users] Archive user is a no-op — no status sent",
+            )
+            .and_then(|value| value.get("number").cloned()),
+            Some(json!(12)),
+        );
+
+        // Guardrails: different module, or a differing number, must NOT merge.
+        let issues = json!([
+            {"number":13,"title":"[Billing] Total wrong for 2 items","body":""},
+            {"number":14,"title":"[Cart] Archive user is a no-op","body":""}
+        ]);
+        assert!(find_issue_marker(&issues, "missing", "[Billing] Total wrong for 3 items").is_none());
+        assert!(find_issue_marker(&issues, "missing", "[Orders] Total wrong for 2 items").is_none());
     }
 }

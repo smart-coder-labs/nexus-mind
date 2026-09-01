@@ -859,12 +859,17 @@ export default function AutonomousAgents() {
                     const execs = (asArr(lead.executives) ?? []).map(asDict).filter(Boolean) as Dict[]
                     const sources = (asArr(lead.source_urls) ?? []).map(asStr).filter(Boolean) as string[]
                     const link = (label: string, url?: string, text?: string) => url ? <a key={label} href={url} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">{text ?? label}</a> : null
+                    const socialChips = (arr: unknown, prefix: string) => (asArr(arr) ?? []).map(asDict).filter(Boolean).map((s, i) => {
+                      const url = asStr((s as Dict).url); const platform = asStr((s as Dict).platform)
+                      return url ? <a key={`${prefix}${i}`} href={url} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">{platform ? titleCase(platform) : 'Link'}</a> : null
+                    }).filter(Boolean)
                     const contacts = [
                       link('Website', asStr(lead.website)),
                       asStr(lead.contact_email) ? <a key="email" href={`mailto:${asStr(lead.contact_email)}`} className="text-accent-blue hover:underline">{asStr(lead.contact_email)}</a> : null,
                       asStr(lead.contact_phone) ? <span key="phone" className="text-text-secondary">{asStr(lead.contact_phone)}</span> : null,
                       link('Contact page', asStr(lead.contact_page)),
                       link('LinkedIn', asStr(lead.company_linkedin)),
+                      ...socialChips(lead.social_links, 'co-social-'),
                     ].filter(Boolean)
                     return (
                       <div className="mt-3 rounded-[12px] border border-border-primary p-3 space-y-2.5 text-xs">
@@ -882,6 +887,8 @@ export default function AutonomousAgents() {
                                   {asStr(e.title) && <span className="text-text-tertiary">{asStr(e.title)}</span>}
                                   {asStr(e.linkedin) && <a href={asStr(e.linkedin)} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">LinkedIn</a>}
                                   {asStr(e.public_email) && <a href={`mailto:${asStr(e.public_email)}`} className="text-accent-blue hover:underline">{asStr(e.public_email)}</a>}
+                                  {asStr(e.direct_phone) && <span className="text-text-secondary">{asStr(e.direct_phone)}</span>}
+                                  {socialChips(e.social_links, `ex${i}-social-`)}
                                 </div>
                               ))}
                             </div>
