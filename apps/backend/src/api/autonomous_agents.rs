@@ -80,6 +80,12 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
     };
+    if status == StatusCode::INTERNAL_SERVER_ERROR {
+        // Log the real cause server-side while returning a generic message to the
+        // client. A masked "Database error" (e.g. a CHECK-constraint failure on an
+        // unknown template_key) is otherwise undiagnosable from outside the process.
+        tracing::error!(code, error = %message, "autonomous agent operation failed");
+    }
     error(
         status,
         code,
