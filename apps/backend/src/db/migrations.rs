@@ -73,6 +73,54 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v68(conn)?;
     run_v69(conn)?;
     run_v70(conn)?;
+    run_v71(conn)?;
+    Ok(())
+}
+
+/// Migration v71: allow the `security_scan` and `security_dast` agent templates. The
+/// template_key CHECK on autonomous_agent_definitions did not list them, so creating
+/// either agent failed with a CHECK-constraint error surfaced to the API as a generic
+/// "Database error". SQLite can't ALTER a CHECK, so the table is rebuilt (same proven
+/// pattern as run_v66/run_v69); ids are preserved so inbound foreign keys stay valid.
+pub fn run_v71(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 71 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE autonomous_agent_definitions_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT,
+            template_key TEXT NOT NULL CHECK(template_key IN ('qa','github_issue_resolver','github_pr_reviewer','lead_generation','judge','ai_content_manager','security_scan','security_dast')),
+            template_version INTEGER NOT NULL CHECK(template_version > 0),
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK(status IN ('disabled','enabled','archived')),
+            current_revision INTEGER NOT NULL DEFAULT 1 CHECK(current_revision > 0),
+            created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, name)
+        );
+
+        INSERT INTO autonomous_agent_definitions_new
+            (id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at)
+        SELECT id,org_id,name,description,template_key,template_version,status,current_revision,created_by,created_at,updated_at
+        FROM autonomous_agent_definitions;
+
+        DROP TABLE autonomous_agent_definitions;
+        ALTER TABLE autonomous_agent_definitions_new RENAME TO autonomous_agent_definitions;
+
+        CREATE INDEX IF NOT EXISTS idx_autonomous_agent_definitions_org_status
+            ON autonomous_agent_definitions(org_id, status);
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 71;
+        ",
+    )?;
     Ok(())
 }
 
@@ -8007,6 +8055,35 @@ mod tests {
             .is_err());
         assert!(conn
             .execute("DELETE FROM autonomous_agent_revisions WHERE id='r1'", [])
+            .is_err());
+    }
+
+    #[test]
+    fn run_v71_allows_security_scan_and_dast_templates() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 71);
+        seed_org(&conn, "org1", "acme");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
+            [],
+        )
+        .unwrap();
+        // Both new security templates are now accepted by the CHECK (the invalid_template
+        // fix in queries.rs is useless while the schema rejects the row).
+        for (id, key) in [("d1", "security_scan"), ("d2", "security_dast")] {
+            conn.execute(
+                "INSERT INTO autonomous_agent_definitions (id,org_id,name,template_key,template_version,created_by) VALUES (?1,'org1',?1,?2,1,'u1')",
+                rusqlite::params![id, key],
+            )
+            .unwrap_or_else(|e| panic!("{key} must be accepted by the CHECK: {e}"));
+        }
+        // An unknown template is still rejected.
+        assert!(conn
+            .execute(
+                "INSERT INTO autonomous_agent_definitions (id,org_id,name,template_key,template_version,created_by) VALUES ('d3','org1','bogus','not_a_template',1,'u1')",
+                [],
+            )
             .is_err());
     }
 }
