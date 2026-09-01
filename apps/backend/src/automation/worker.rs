@@ -296,6 +296,97 @@ async fn run_allowlisted_commands(
     Ok(receipts)
 }
 
+/// How long a single security scanner may run before it is killed.
+const SECURITY_SCANNER_TIMEOUT_SECS: u64 = 900;
+
+/// Spawn a process and capture its stdout, distinguishing "binary missing"
+/// (`scanner_unavailable`) and "timed out" (`scanner_timeout`) from a normal run.
+/// Security scanners exit non-zero when they FIND issues, so a non-zero status is
+/// NOT treated as a failure here — the caller parses the captured JSON report.
+async fn spawn_capture(
+    program: &str,
+    rest: &[String],
+    workdir: &Path,
+    timeout_secs: u64,
+) -> anyhow::Result<Vec<u8>> {
+    let mut command = Command::new(program);
+    command.current_dir(workdir).args(rest);
+    restrict_test_environment(&mut command, workdir, &[]);
+    match timeout(
+        Duration::from_secs(timeout_secs),
+        command.kill_on_drop(true).output(),
+    )
+    .await
+    {
+        Err(_) => anyhow::bail!("scanner_timeout"),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("scanner_unavailable")
+        }
+        Ok(Err(error)) => Err(error.into()),
+        Ok(Ok(output)) => Ok(output.stdout),
+    }
+}
+
+/// Run one allowlisted security scanner. `argv[0]` MUST be an allowlisted program
+/// (built by `security_scan::build_*_argv`, the only place fixed flags live); any
+/// other program is rejected before spawn.
+async fn run_scanner_capture(
+    argv: &[String],
+    workdir: &Path,
+    timeout_secs: u64,
+) -> anyhow::Result<Vec<u8>> {
+    let Some((program, rest)) = argv.split_first() else {
+        anyhow::bail!("empty_command")
+    };
+    if !super::security_scan::is_allowlisted_program(program) {
+        anyhow::bail!("command_not_allowlisted")
+    }
+    spawn_capture(program, rest, workdir, timeout_secs).await
+}
+
+/// Worker-driven security scan: run the allowlisted scanners over the checkout and
+/// return canonical findings for the agent to triage. SAST always runs; SCA runs
+/// unless explicitly disabled. A missing scanner fails the run closed
+/// (`scanner_unavailable`) instead of silently passing.
+async fn run_security_scanners(
+    workdir: &Path,
+    config: &serde_json::Value,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut findings = Vec::new();
+    let mut invocations = 0usize;
+
+    // SAST — always.
+    let ruleset = config
+        .pointer("/sast/ruleset")
+        .and_then(|value| value.as_str())
+        .unwrap_or("auto");
+    let semgrep_argv = super::security_scan::build_semgrep_argv(ruleset, ".", 30)?;
+    invocations += 1;
+    let semgrep_out =
+        run_scanner_capture(&semgrep_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&semgrep_out) {
+        findings.extend(super::security_scan::map_semgrep_json(&value));
+    }
+
+    // SCA — unless explicitly disabled in the definition config.
+    let sca_enabled = config
+        .pointer("/sca/enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    if sca_enabled {
+        let osv_argv = super::security_scan::build_osv_argv(".");
+        invocations += 1;
+        let osv_out =
+            run_scanner_capture(&osv_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&osv_out) {
+            findings.extend(super::security_scan::map_osv_json(&value));
+        }
+    }
+
+    debug_assert!(invocations <= super::security_scan::MAX_SCANNER_INVOCATIONS);
+    Ok(findings)
+}
+
 async fn collect_qa_results(
     workdir: &Path,
     value: Option<&serde_json::Value>,
@@ -1998,6 +2089,17 @@ fn fixed_prompt(
                 "You are a LinkedIn content strategist and copywriter for the account owner. Read the configuration: `topics` to write about, the target `audience` (ICP) to attract and convert into leads, the `language` to write in, the brand `tone`, the optional `cta`/lead magnet to drive toward, and any preferred `hashtags`. Write {count} distinct, ready-to-publish LinkedIn posts (TEXT ONLY) that give the audience genuine value, establish the author's authority, and naturally move the reader toward the CTA so the account captures leads and grows. Rules: each post is original and specific (never generic filler); open with a strong first-line hook that stops the scroll; use short lines and line breaks for skimmability; sound authentic and human, never spammy or clickbait; do NOT fabricate statistics, testimonials, client names, results, or credentials — if you would cite data you cannot verify, speak generally instead; weave in the CTA naturally at most once (near the end) only when one is configured; add 3-6 relevant hashtags. Write from expertise. You MAY consult the `nexusmind` MCP (get_context, search_memories, list_conventions) for the brand's voice, prior posts and conventions before writing; do not use any other tools.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<the themes you covered this run>\",\"findings\":[{{\"title\":\"<short internal label / the hook line>\",\"severity\":\"info\",\"summary\":\"<the FULL post text, ready to publish>\",\"fingerprint\":\"<stable-kebab-case id from topic + angle>\",\"kind\":\"post\",\"post\":{{\"body\":\"<the full post text, ready to publish>\",\"hashtags\":[\"#Example\"],\"cta\":\"<the exact CTA used, or empty>\",\"topic\":\"<which configured topic this addresses>\",\"destination\":\"<personal|organization, or empty>\"}}}}]}}. Never return an empty findings array."
             )
         }
+        "security_scan" => {
+            // Worker-driven: the scanners already ran under a fixed allowlist and the
+            // worker injected their canonical results as `scanner_findings`. The agent
+            // runs NO tools — it triages that list (dedupe, drop false positives,
+            // prioritize) and emits the finding contract, preserving each kept
+            // finding's fingerprint/evidence and never inventing new findings.
+            let scan_contract = " The configuration field `scanner_findings` is a JSON array the worker already produced by running Semgrep (SAST) and osv-scanner (SCA) over the checked-out repository; each item has title, severity, summary, fingerprint and an evidence object. Your job is TRIAGE ONLY: keep the real, actionable issues, drop obvious false positives and duplicates, and you may sharpen each title/summary — but you MUST preserve each kept finding's `fingerprint` and `evidence` unchanged, and you MUST NOT invent any finding that is not present in `scanner_findings`. You have no tools; do not attempt to run anything. Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {\"summary\":\"<one line: what was scanned and the headline counts by severity>\",\"findings\":[{\"title\":\"<short specific title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<one line: the issue and where>\",\"fingerprint\":\"<unchanged from the source finding>\",\"evidence\":<the source finding's evidence object, unchanged>}]}. Return at most 100 findings, prioritized by severity; return an empty findings array if the scanners found nothing real.";
+            format!(
+                "You are a security triage agent. Do not modify the repository.{custom_clause}{scan_contract}"
+            )
+        }
         _ => anyhow::bail!("unsupported_template"),
     };
     Ok(format!(
@@ -2064,7 +2166,7 @@ fn evaluate_structured_result(
     if !structured.is_object() {
         anyhow::bail!("result_not_object")
     }
-    if matches!(template, "qa" | "github_pr_reviewer" | "judge") {
+    if matches!(template, "qa" | "github_pr_reviewer" | "judge" | "security_scan") {
         if structured
             .get("summary")
             .and_then(|v| v.as_str())
@@ -3315,6 +3417,22 @@ async fn execute_claim(
             Ok(results) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("test_results".into(), json!(results));
+                }
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&workdir).await;
+                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+            }
+        }
+    }
+    if claim.template_key == "security_scan" {
+        // Worker-driven: run the allowlisted scanners over the checkout and inject
+        // their canonical findings for the agent to triage. A missing scanner fails
+        // the run closed rather than passing silently.
+        match run_security_scanners(&workdir, &runtime_config).await {
+            Ok(scanner_findings) => {
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("scanner_findings".into(), json!(scanner_findings));
                 }
             }
             Err(error) => {
@@ -5130,6 +5248,98 @@ mod tests {
         assert!(parse_claude_event_stream(
             br#"{"type":"assistant"}
 "#
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn spawn_capture_returns_stdout_on_success() {
+        let dir = std::env::temp_dir();
+        let out = spawn_capture("/bin/echo", &["hi".to_string()], &dir, 5)
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "hi");
+    }
+
+    #[tokio::test]
+    async fn spawn_capture_maps_missing_binary_to_scanner_unavailable() {
+        let dir = std::env::temp_dir();
+        let err = spawn_capture("/nonexistent/scanner-xyz", &[], &dir, 5)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "scanner_unavailable");
+    }
+
+    #[tokio::test]
+    async fn spawn_capture_times_out() {
+        let dir = std::env::temp_dir();
+        let err = spawn_capture("/bin/sleep", &["5".to_string()], &dir, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "scanner_timeout");
+    }
+
+    #[tokio::test]
+    async fn run_scanner_capture_rejects_non_allowlisted_program() {
+        let dir = std::env::temp_dir();
+        let err = run_scanner_capture(&["/bin/echo".to_string(), "hi".to_string()], &dir, 5)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "command_not_allowlisted");
+    }
+
+    #[test]
+    fn security_scan_prompt_is_triage_only_and_read_only() {
+        let prompt = fixed_prompt("security_scan", &json!({"scanner_findings": []}), 60).unwrap();
+        assert!(prompt.contains("TRIAGE ONLY"));
+        assert!(prompt.contains("Do not modify the repository"));
+        assert!(prompt.contains("scanner_findings"));
+        assert!(prompt.contains("preserve each kept finding's `fingerprint`"));
+        assert!(prompt.contains("MUST NOT invent"));
+    }
+
+    /// End-to-end smoke over the REAL scanner path. Ignored by default because it
+    /// requires `semgrep` on PATH. Run with:
+    ///   cargo test --lib -- --ignored security_scan_e2e
+    #[tokio::test]
+    #[ignore]
+    async fn security_scan_e2e_finds_a_planted_semgrep_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("rule.yml"),
+            "rules:\n  - id: no-eval\n    languages: [python]\n    message: avoid eval\n    severity: ERROR\n    pattern: eval(...)\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("bad.py"), "eval(user_input)\n").unwrap();
+        let config = json!({"sast":{"ruleset":"rule.yml"},"sca":{"enabled":false}});
+        let findings = run_security_scanners(root, &config).await.unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f["evidence"]["rule_id"] == "no-eval"),
+            "expected the planted no-eval finding, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn security_scan_evaluator_follows_finding_contract() {
+        // A clean scan (summary present, empty findings) passes.
+        assert!(evaluate_structured_result(
+            "security_scan",
+            &json!({"result":{"summary":"0 findings","findings":[]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_ok());
+        // Missing summary is rejected like QA.
+        assert!(evaluate_structured_result(
+            "security_scan",
+            &json!({"result":{"findings":[]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_err());
+        // A secret in a finding still trips the canary.
+        assert!(evaluate_structured_result(
+            "security_scan",
+            &json!({"result":{"summary":"1","findings":[{"title":"Leak","severity":"high","summary":"token=supersecretvalue"}]},"context_manifest":{"version":1,"evidence":[]}})
         )
         .is_err());
     }
