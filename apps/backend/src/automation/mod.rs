@@ -6,4 +6,5 @@ pub mod profiles;
 pub mod provenance;
 pub mod runtime;
 pub mod scheduler;
+pub mod security_scan;
 pub mod worker;

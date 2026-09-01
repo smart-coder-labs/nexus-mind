@@ -321,13 +321,20 @@ fn upsert_on_topic_key_increments_revision() {
 fn migration_idempotency() {
     let conn = connection::connect(":memory:").unwrap();
     migrations::run_all(&conn).unwrap();
-    // Run again — must not fail
+    let version_first: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+
+    // Run again — must not fail and must not change the schema version. Asserting
+    // the idempotency PROPERTY (a second run is a no-op) instead of a hard-coded
+    // version keeps this test correct as new migrations are added.
     let result = migrations::run_all(&conn);
     assert!(result.is_ok(), "run_all must be idempotent: {:?}", result.err());
+    let version_second: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
 
-    // Verify user_version is the current max (62 after the autonomous-agent control-plane migration)
-    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 62);
+    assert!(version_first > 0, "migrations must set a schema version");
+    assert_eq!(
+        version_first, version_second,
+        "a second run_all must not change user_version"
+    );
 }
 
 /// 4.5 — FTS backfill: pre-existing rows are searchable after migration v2.

@@ -187,6 +187,9 @@ const RATE_LIMIT_EXEMPT_PATHS: &[&str] = &["/v1/admin/auth/me"];
 ///
 /// Every response — success or 429 — includes `X-RateLimit-Limit` and
 /// `X-RateLimit-Remaining`. Throttled responses additionally carry `Retry-After`.
+// The Err variant carries the full 429 response (status + headers + body) by design;
+// boxing it would complicate every `?` call site.
+#[allow(clippy::result_large_err)]
 pub async fn rate_limit(
     State(state): State<RateLimitState>,
     Extension(auth): Extension<AuthContext>,

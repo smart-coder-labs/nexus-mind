@@ -143,6 +143,27 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             ],
         },
         AutonomousAgentTemplate {
+            key: "security_scan".into(),
+            version: 1,
+            name: "Security Scan".into(),
+            description: "Runs SAST (Semgrep) and dependency audit (SCA, osv-scanner) over a repository checkout and records canonical findings with file+line evidence. Read-only; never modifies code.".into(),
+            capabilities: vec![
+                "repository:read".into(),
+                "finding:write".into(),
+                "delivery:write".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 1800, "max_attempts": 1, "max_cost_usd": 8, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack","github_issue"]},"repository":{"type":"owner/repo","required":true},"github_auth":{"const":"server_gh_cli"},"server_integrations":{"github":"gh_cli","slack":"claude_mcp:slack"},"sast":{"ruleset":{"enum":["auto","p/ci","p/owasp-top-ten"],"default":"p/ci","description":"Semgrep ruleset; a bundled name or a checkout-relative .yml path. Default p/ci avoids the registry telemetry that auto emits"}},"sca":{"enabled":{"type":"boolean","default":true,"description":"Run the dependency audit (osv-scanner over lockfiles)"}},"custom_instructions":{"type":"string","description":"Optional triage guidance; cannot expand scope"}}),
+            workflow: vec![
+                "checkout".into(),
+                "sast_scan".into(),
+                "sca_audit".into(),
+                "evaluate".into(),
+                "record_findings".into(),
+                "deliver".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "github_issue_resolver".into(),
             version: 1,
             name: "GitHub Issue Resolver".into(),
@@ -1408,6 +1429,41 @@ mod tests {
             config: serde_json::json!({"outputs": ["nexusmind"]}),
             budgets: serde_json::json!({"wall_time_seconds": 300}),
         }
+    }
+
+    #[test]
+    fn security_scan_template_is_registered_read_only_and_shaped() {
+        let template = managed_templates()
+            .into_iter()
+            .find(|t| t.key == "security_scan")
+            .expect("security_scan template must be registered");
+        assert_eq!(template.version, 1);
+        // Read-only + evidence-only capabilities: never any write/merge/deploy.
+        assert_eq!(
+            template.capabilities,
+            vec!["repository:read", "finding:write", "delivery:write"]
+        );
+        for forbidden in ["repository:branch", "github:draft_pr", "scan:active"] {
+            assert!(
+                !template.capabilities.iter().any(|c| c == forbidden),
+                "{forbidden} must not be granted to security_scan"
+            );
+        }
+        assert_eq!(
+            template.workflow,
+            vec![
+                "checkout",
+                "sast_scan",
+                "sca_audit",
+                "evaluate",
+                "record_findings",
+                "deliver"
+            ]
+        );
+        assert_eq!(
+            template.config_schema.pointer("/repository/required"),
+            Some(&serde_json::json!(true))
+        );
     }
 
     #[test]

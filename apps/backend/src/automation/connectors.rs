@@ -432,7 +432,6 @@ fn extract_fingerprint(text: &str) -> String {
     const PREFIX: &str = "nexusmind-fingerprint:";
     match text.find(PREFIX) {
         Some(idx) => text[idx + PREFIX.len()..]
-            .trim_start()
             .split_whitespace()
             .next()
             .unwrap_or_default()

@@ -42,6 +42,9 @@ pub async fn accept_json(req: Request<Body>, next: Next) -> Response {
     next.run(req).await
 }
 
+// The Err variant is a full axum `Response` by design (the middleware short-circuits
+// with a ready response); boxing it would complicate every `?` call site.
+#[allow(clippy::result_large_err)]
 pub async fn auth(
     cookies: Cookies,
     State(db): State<Arc<Mutex<Connection>>>,
