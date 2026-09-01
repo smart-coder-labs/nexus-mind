@@ -41,8 +41,6 @@ Ask Claude: *"Store a memory: we use snake_case for all REST endpoints. Tag it a
 
 Switch to the admin panel → Memory Browser — the entry appears instantly.
 
-Full demo script: [demo/MCP_DEMO.md](demo/MCP_DEMO.md)
-
 ---
 
 ## Stack
@@ -87,8 +85,6 @@ apps/
 scripts/
   reset-demo.sh   # wipe + reseed demo data
   test-mcp.sh     # smoke test: store → search → delete
-demo/
-  MCP_DEMO.md     # step-by-step live demo script
 docs/
   RUNNING.md      # full local + Docker setup guide
 ```
@@ -143,3 +139,14 @@ CI runs on every push — backend build + tests + clippy, admin build, MCP smoke
 ## License
 
 MIT
+
+---
+
+## Related repositories
+
+- **[nexusmind-mcp](https://github.com/smart-coder-labs/nexusmind-mcp)** — the MCP server (`@smart-coder-labs/nexusmind-mcp`) that connects Claude Code, Cursor, and other MCP-compatible tools to this backend.
+- **[nexusmind-claude-plugin](https://github.com/smart-coder-labs/nexusmind-claude-plugin)** — the Claude Code plugin that bundles the MCP server, hooks, and skills.
+
+## License
+
+[MIT](LICENSE) © Smart Coder Labs
