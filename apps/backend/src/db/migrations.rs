@@ -73,18 +73,27 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v68(conn)?;
     run_v69(conn)?;
     run_v70(conn)?;
-    run_v71(conn)?;
+    // Gap at v71/v72: prod's shared DB was advanced to user_version 72 by an
+    // out-of-tree run_v72, so the security-template CHECK fix is v73 to land above it.
+    run_v73(conn)?;
     Ok(())
 }
 
-/// Migration v71: allow the `security_scan` and `security_dast` agent templates. The
+/// Migration v73: allow the `security_scan` and `security_dast` agent templates. The
 /// template_key CHECK on autonomous_agent_definitions did not list them, so creating
 /// either agent failed with a CHECK-constraint error surfaced to the API as a generic
 /// "Database error". SQLite can't ALTER a CHECK, so the table is rebuilt (same proven
 /// pattern as run_v66/run_v69); ids are preserved so inbound foreign keys stay valid.
-pub fn run_v71(conn: &Connection) -> Result<()> {
+///
+/// Numbered 73 (not 71/72) on purpose: the shared production DB was advanced to
+/// user_version 72 by an out-of-tree `run_v72` (an `autonomous_agent_deliveries`
+/// rebuild from the autonomous-agents-mvp WIP) that never landed on main, so a v71/v72
+/// migration would be skipped by the `>=` guard and never apply. This migration only
+/// touches `autonomous_agent_definitions`, which that out-of-tree v72 did not modify,
+/// so the rebuild is safe against prod's current schema.
+pub fn run_v73(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version >= 71 {
+    if version >= 73 {
         return Ok(());
     }
     conn.execute_batch(
@@ -118,7 +127,7 @@ pub fn run_v71(conn: &Connection) -> Result<()> {
             ON autonomous_agent_definitions(org_id, status);
 
         PRAGMA foreign_keys = ON;
-        PRAGMA user_version = 71;
+        PRAGMA user_version = 73;
         ",
     )?;
     Ok(())
@@ -8059,10 +8068,10 @@ mod tests {
     }
 
     #[test]
-    fn run_v71_allows_security_scan_and_dast_templates() {
+    fn run_v73_allows_security_scan_and_dast_templates() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 71);
+        assert_eq!(get_user_version(&conn), 73);
         seed_org(&conn, "org1", "acme");
         conn.execute(
             "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
