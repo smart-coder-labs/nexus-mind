@@ -89,6 +89,11 @@ merge — not one large PR. Phase 2 (`security_dast`) is a separate change and i
 - [~] 3.4 The card renders from the templates endpoint with **no admin-UI code change** (list is served by
   `list_templates`). **Remaining:** manual visual smoke in the Templates tab.
 
+## Status
+
+Branch `agent/security-scanner-templates` (commits `17ff6ac` feature, `aea2cc8` hardening) →
+**PR #268** (https://github.com/smart-coder-labs/nexus-mind/pull/268). Adversarial security review: clean.
+
 ## Definition of done
 
 - [ ] `security_scan` v1 runs end to end, records deduped findings with file+line evidence, and delivers to
