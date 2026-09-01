@@ -16132,6 +16132,8 @@ fn autonomous_agent_capabilities(template_key: &str) -> Result<Vec<String>> {
             "github:review",
         ],
         "ai_content_manager" => vec!["content:write", "delivery:write"],
+        "security_scan" => vec!["repository:read", "finding:write", "delivery:write"],
+        "security_dast" => vec!["scan:active", "finding:write", "delivery:write"],
         _ => anyhow::bail!("invalid_template"),
     };
     Ok(capabilities.into_iter().map(str::to_string).collect())
@@ -23514,27 +23516,22 @@ mod inheritance_tests {
         assert_eq!(cid.as_deref(), Some("cli_a"));
     }
 
-    /// Every advertised template MUST resolve a capability envelope — a template
-    /// present in the catalog but missing here fails agent creation with
-    /// `invalid_template` (the lead_generation regression). Judge is included.
+    /// Every advertised template MUST resolve a capability envelope that MATCHES the
+    /// catalog. A template present in `managed_templates()` but missing or mismatched
+    /// here fails agent creation with `invalid_template` (the lead_generation regression,
+    /// then security_scan/security_dast). Iterating the catalog — instead of a hand-kept
+    /// list — keeps the two sources of truth from drifting again.
     #[test]
     fn every_template_resolves_capabilities() {
-        for template in [
-            "qa",
-            "github_issue_resolver",
-            "github_pr_reviewer",
-            "lead_generation",
-            "judge",
-        ] {
-            assert!(
-                autonomous_agent_capabilities(template).is_ok(),
-                "template {template} must resolve capabilities"
+        for template in crate::api::autonomous_agents::managed_templates() {
+            let resolved = autonomous_agent_capabilities(&template.key)
+                .unwrap_or_else(|_| panic!("template {} must resolve capabilities", template.key));
+            assert_eq!(
+                resolved, template.capabilities,
+                "capabilities for {} must match the catalog",
+                template.key
             );
         }
-        assert_eq!(
-            autonomous_agent_capabilities("lead_generation").unwrap(),
-            vec!["web:search", "lead:write", "delivery:write"]
-        );
         assert!(autonomous_agent_capabilities("does_not_exist").is_err());
     }
 
