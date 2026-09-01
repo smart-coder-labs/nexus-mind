@@ -391,6 +391,82 @@ async fn run_security_scanners(
     Ok(findings)
 }
 
+/// How long a single nuclei scan of one target may run before it is killed.
+const DAST_SCAN_TIMEOUT_SECS: u64 = 1500;
+
+/// Run one allowlisted DAST scanner. `argv[0]` MUST be an allowlisted program (built
+/// by `security_dast::build_nuclei_argv`); anything else is rejected before spawn.
+async fn run_dast_capture(
+    argv: &[String],
+    workdir: &Path,
+    timeout_secs: u64,
+) -> anyhow::Result<Vec<u8>> {
+    let Some((program, rest)) = argv.split_first() else {
+        anyhow::bail!("empty_command")
+    };
+    if !super::security_dast::is_allowlisted_program(program) {
+        anyhow::bail!("command_not_allowlisted")
+    }
+    spawn_capture(program, rest, workdir, timeout_secs).await
+}
+
+/// Worker-driven active DAST: for each authorized `web_application` target, run nuclei
+/// against the target's registered URL (never free-form run input), keep only findings
+/// on the authorized host (scope guard lives in `map_nuclei_jsonl`), and return canonical
+/// findings for the agent to triage. Fails closed if there is no authorized target or the
+/// scanner is missing.
+async fn run_dast_scan(
+    workdir: &Path,
+    config: &serde_json::Value,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let selected = config
+        .get("target_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let targets: Vec<&serde_json::Value> = config
+        .get("targets")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|t| t.get("kind").and_then(|v| v.as_str()) == Some("web_application"))
+        .filter(|t| t.get("enabled").and_then(|v| v.as_bool()) == Some(true))
+        .filter(|t| match selected {
+            Some(name) => t.get("name").and_then(|v| v.as_str()) == Some(name),
+            None => true,
+        })
+        .collect();
+    if targets.is_empty() {
+        anyhow::bail!("no_authorized_target")
+    }
+
+    let severity = config
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("medium,high,critical");
+    let rate_limit = config
+        .get("rate_limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 500) as u32;
+
+    let mut findings = Vec::new();
+    let mut invocations = 0usize;
+    for target in targets
+        .into_iter()
+        .take(super::security_dast::MAX_DAST_INVOCATIONS)
+    {
+        let target_config = target.get("config").cloned().unwrap_or(serde_json::json!({}));
+        let (host, url) = super::security_dast::authorized_target_url(&target_config)?;
+        let argv = super::security_dast::build_nuclei_argv(&url, severity, rate_limit, 10)?;
+        invocations += 1;
+        let out = run_dast_capture(&argv, workdir, DAST_SCAN_TIMEOUT_SECS).await?;
+        findings.extend(super::security_dast::map_nuclei_jsonl(&out, &host));
+    }
+    debug_assert!(invocations <= super::security_dast::MAX_DAST_INVOCATIONS);
+    Ok(findings)
+}
+
 async fn collect_qa_results(
     workdir: &Path,
     value: Option<&serde_json::Value>,
@@ -2104,6 +2180,17 @@ fn fixed_prompt(
                 "You are a security triage agent. Do not modify the repository.{custom_clause}{scan_contract}"
             )
         }
+        "security_dast" => {
+            // Worker-driven: the worker already ran nuclei against the authorized
+            // web_application target(s) and injected the results as `scanner_findings`,
+            // already filtered to the authorized host. The agent runs NO tools — it
+            // triages that list and emits the finding contract, preserving each kept
+            // finding's fingerprint/evidence and never inventing new findings.
+            let dast_contract = " The configuration field `scanner_findings` is a JSON array the worker already produced by running an authorized active security scan (Nuclei) against the registered target(s); each item has title, severity, summary, fingerprint and an evidence object (template id, matched-at URL, and the request/response that proves it). Your job is TRIAGE ONLY: keep the real, actionable issues, drop obvious false positives and duplicates, and you may sharpen each title/summary — but you MUST preserve each kept finding's `fingerprint` and `evidence` unchanged, and you MUST NOT invent any finding that is not present in `scanner_findings`. You have no tools and MUST NOT attempt to scan, fetch, or reach any host yourself. Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {\"summary\":\"<one line: what was scanned and the headline counts by severity>\",\"findings\":[{\"title\":\"<short specific title>\",\"severity\":\"info|low|medium|high|critical\",\"summary\":\"<one line: the issue and where>\",\"fingerprint\":\"<unchanged from the source finding>\",\"evidence\":<the source finding's evidence object, unchanged>}]}. Return at most 100 findings, prioritized by severity; return an empty findings array if the scan found nothing real.";
+            format!(
+                "You are a security triage agent reviewing the results of an authorized active scan. Do not attempt any scanning yourself.{custom_clause}{dast_contract}"
+            )
+        }
         _ => anyhow::bail!("unsupported_template"),
     };
     Ok(format!(
@@ -2170,7 +2257,10 @@ fn evaluate_structured_result(
     if !structured.is_object() {
         anyhow::bail!("result_not_object")
     }
-    if matches!(template, "qa" | "github_pr_reviewer" | "judge" | "security_scan") {
+    if matches!(
+        template,
+        "qa" | "github_pr_reviewer" | "judge" | "security_scan" | "security_dast"
+    ) {
         if structured
             .get("summary")
             .and_then(|v| v.as_str())
@@ -3435,6 +3525,23 @@ async fn execute_claim(
         // their canonical findings for the agent to triage. A missing scanner fails
         // the run closed rather than passing silently.
         match run_security_scanners(&workdir, &runtime_config).await {
+            Ok(scanner_findings) => {
+                if let Some(object) = runtime_config.as_object_mut() {
+                    object.insert("scanner_findings".into(), json!(scanner_findings));
+                }
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&workdir).await;
+                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+            }
+        }
+    }
+    if claim.template_key == "security_dast" {
+        // Worker-driven active scan: nuclei runs ONLY against the registered, enabled
+        // web_application target(s); the URL never comes from run input and findings
+        // are scope-guarded to the authorized host. No authorized target or a missing
+        // scanner fails the run closed.
+        match run_dast_scan(&workdir, &runtime_config).await {
             Ok(scanner_findings) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("scanner_findings".into(), json!(scanner_findings));
@@ -5347,5 +5454,55 @@ mod tests {
             &json!({"result":{"summary":"1","findings":[{"title":"Leak","severity":"high","summary":"token=supersecretvalue"}]},"context_manifest":{"version":1,"evidence":[]}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn security_dast_prompt_is_triage_only_and_scan_forbidden() {
+        let prompt = fixed_prompt("security_dast", &json!({"scanner_findings": []}), 60).unwrap();
+        assert!(prompt.contains("TRIAGE ONLY"));
+        assert!(prompt.contains("MUST NOT attempt to scan"));
+        assert!(prompt.contains("scanner_findings"));
+        assert!(prompt.contains("preserve each kept finding's `fingerprint`"));
+    }
+
+    #[test]
+    fn security_dast_evaluator_follows_finding_contract() {
+        assert!(evaluate_structured_result(
+            "security_dast",
+            &json!({"result":{"summary":"0 findings","findings":[]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_ok());
+        assert!(evaluate_structured_result(
+            "security_dast",
+            &json!({"result":{"findings":[]},"context_manifest":{"version":1,"evidence":[]}})
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn run_dast_scan_fails_closed_without_authorized_target() {
+        let dir = std::env::temp_dir();
+        // No web_application targets at all.
+        let err = run_dast_scan(&dir, &json!({"targets": []}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "no_authorized_target");
+        // A repository target is not an authorized web target.
+        let err2 = run_dast_scan(
+            &dir,
+            &json!({"targets": [{"kind":"repository","name":"r","enabled":true,"config":{}}]}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err2.to_string(), "no_authorized_target");
+    }
+
+    #[tokio::test]
+    async fn run_dast_capture_rejects_non_allowlisted_program() {
+        let dir = std::env::temp_dir();
+        let err = run_dast_capture(&["/bin/echo".to_string(), "x".to_string()], &dir, 5)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "command_not_allowlisted");
     }
 }

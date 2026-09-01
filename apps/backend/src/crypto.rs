@@ -98,8 +98,11 @@ mod tests {
     fn decrypt_rejects_tampered_blob() {
         with_key(|| {
             let mut blob = encrypt("secret").unwrap();
-            blob.pop();
-            blob.push('0');
+            // Flip the last character to a GUARANTEED-different one. Popping and
+            // pushing a fixed char was flaky: when the last char already equaled it
+            // the blob was unchanged and decryption (correctly) succeeded.
+            let last = blob.pop().unwrap();
+            blob.push(if last == '0' { '1' } else { '0' });
             assert!(decrypt(&blob).is_none(), "GCM must reject a tampered blob");
         });
     }
