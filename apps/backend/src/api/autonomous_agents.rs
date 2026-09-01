@@ -164,6 +164,28 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             ],
         },
         AutonomousAgentTemplate {
+            key: "security_dast".into(),
+            version: 1,
+            name: "Security DAST".into(),
+            description: "Runs an authorized active security scan (Nuclei) against a pre-registered web_application target and records findings with request/response evidence. Only scans allowlisted, owner-authorized environments.".into(),
+            capabilities: vec![
+                "scan:active".into(),
+                "finding:write".into(),
+                "delivery:write".into(),
+            ],
+            default_budgets: serde_json::json!({"wall_time_seconds": 2700, "max_attempts": 1, "max_cost_usd": 15, "requests_per_second": 20, "max_definition_concurrency": 1, "max_organization_concurrency": 2}),
+            config_schema: serde_json::json!({"outputs":{"type":"array","items":["nexusmind","slack"]},"target_name":{"type":"string","description":"Optional: restrict the scan to the named web_application target; otherwise every enabled web_application target of this agent is scanned. The scan URL always comes from the registered target, never from run input"},"severity":{"type":"string","default":"medium,high,critical","description":"Comma-separated Nuclei severity filter (info,low,medium,high,critical)"},"rate_limit":{"type":"integer","default":20,"description":"Max requests per second sent to the target"},"custom_instructions":{"type":"string","description":"Optional triage guidance; cannot expand scope"}}),
+            workflow: vec![
+                "select_target".into(),
+                "authorize_scope".into(),
+                "active_scan".into(),
+                "collect_evidence".into(),
+                "evaluate".into(),
+                "record_findings".into(),
+                "deliver".into(),
+            ],
+        },
+        AutonomousAgentTemplate {
             key: "github_issue_resolver".into(),
             version: 1,
             name: "GitHub Issue Resolver".into(),
@@ -1464,6 +1486,31 @@ mod tests {
             template.config_schema.pointer("/repository/required"),
             Some(&serde_json::json!(true))
         );
+    }
+
+    #[test]
+    fn security_dast_template_is_registered_active_and_target_scoped() {
+        let template = managed_templates()
+            .into_iter()
+            .find(|t| t.key == "security_dast")
+            .expect("security_dast template must be registered");
+        assert_eq!(template.version, 1);
+        assert!(
+            template.capabilities.iter().any(|c| c == "scan:active"),
+            "security_dast must carry the active-scan capability tag"
+        );
+        // Never a write/deploy/repository capability — it is evidence-only.
+        for forbidden in ["repository:read", "repository:branch", "github:draft_pr", "tests:run"] {
+            assert!(
+                !template.capabilities.iter().any(|c| c == forbidden),
+                "{forbidden} must not be granted to security_dast"
+            );
+        }
+        // The scan URL is never taken from config — no url/repository field exists;
+        // it comes from a registered web_application target.
+        assert!(template.config_schema.pointer("/repository").is_none());
+        assert!(template.config_schema.pointer("/url").is_none());
+        assert!(template.default_budgets.pointer("/requests_per_second").is_some());
     }
 
     #[test]
