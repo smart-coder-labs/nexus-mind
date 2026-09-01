@@ -16524,15 +16524,29 @@ pub fn validate_autonomous_agent_definition(
         }
         "security_scan" => {
             // SAST/SCA runs over a repository checkout, so a valid repo is required.
-            match current
+            // It may be set directly in config.repository OR carried by a `repository`
+            // target (the wizard's default for a repository-kind target).
+            let is_repo = |v: &str| crate::automation::connectors::validate_repository(v).is_ok();
+            let repo_in_config = current
                 .revision
                 .config
                 .get("repository")
                 .and_then(|v| v.as_str())
-            {
-                Some(value)
-                    if crate::automation::connectors::validate_repository(value).is_ok() => {}
-                _ => errors.push("valid_repository_required"),
+                .is_some_and(is_repo);
+            let repo_in_target = list_autonomous_agent_targets(conn, org_id, id)
+                .map(|targets| {
+                    targets.iter().any(|t| {
+                        t.kind == "repository"
+                            && t.enabled
+                            && t.config
+                                .get("repository")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(is_repo)
+                    })
+                })
+                .unwrap_or(false);
+            if !repo_in_config && !repo_in_target {
+                errors.push("valid_repository_required")
             }
             if current
                 .revision
@@ -17130,6 +17144,23 @@ pub fn claim_next_autonomous_agent_run(
     let mut config: serde_json::Value = serde_json::from_str(&config_raw)?;
     if let Some(object) = config.as_object_mut() {
         let targets = list_autonomous_agent_targets(conn, &org_id, &run.definition_id)?;
+        // The wizard stores a repository-based agent's repo in a `repository` target,
+        // not in config.repository. Materialize it so prepare_repository and the rest
+        // of the run (which read config.repository) find it when it isn't set directly.
+        if object.get("repository").and_then(|v| v.as_str()).is_none() {
+            if let Some(repo) = targets.iter().find_map(|t| {
+                if t.kind == "repository" && t.enabled {
+                    t.config
+                        .get("repository")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                } else {
+                    None
+                }
+            }) {
+                object.insert("repository".into(), serde_json::json!(repo));
+            }
+        }
         object.insert(
             "targets".into(),
             serde_json::to_value(targets).unwrap_or_else(|_| serde_json::json!([])),
