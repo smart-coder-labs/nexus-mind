@@ -91,8 +91,14 @@ merge — not one large PR. Phase 2 (`security_dast`) is a separate change and i
 
 ## Status
 
-Branch `agent/security-scanner-templates` (commits `17ff6ac` feature, `aea2cc8` hardening) →
-**PR #268** (https://github.com/smart-coder-labs/nexus-mind/pull/268). Adversarial security review: clean.
+Branch `agent/security-scanner-templates` → **PR #268**
+(https://github.com/smart-coder-labs/nexus-mind/pull/268). Adversarial security review: clean.
+**CI: all green** (Backend/Rust, Admin, Backoffice, E2E Smoke).
+
+Commits: `17ff6ac` feature · `aea2cc8` ruleset hardening · `59404dd`+`0333473` fix two pre-existing
+stale tests (`main` was already red on both) · `3abf0ae` clear pre-existing clippy lints under
+`-D warnings` (stable 1.98). The test/clippy fixes are repo-wide CI debt unrelated to the feature,
+folded in here to unblock the pipeline.
 
 ## Definition of done
 
