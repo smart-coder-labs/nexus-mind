@@ -565,6 +565,13 @@ export default function AutonomousAgents() {
   })
   const [showArchivedFindings, setShowArchivedFindings] = useState(false)
   const [findingTypeFilter, setFindingTypeFilter] = useState<'all' | 'bug' | 'post' | 'feedback' | 'lead'>('all')
+  // Findings filters (client-side over the already-loaded list).
+  const [findingAgent, setFindingAgent] = useState('all')       // definition_id
+  const [findingTemplate, setFindingTemplate] = useState('all') // template_key
+  const [findingKind, setFindingKind] = useState('all')         // evidence kind/type: sast|sca|dast|functional|…
+  const [findingSeverity, setFindingSeverity] = useState('all')
+  const [findingStatus, setFindingStatus] = useState('all')     // open|resolved (archived via the toggle)
+  const [findingSearch, setFindingSearch] = useState('')
   // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
   // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
   const [resolveWith, setResolveWith] = useState<{ findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } } | null>(null)
@@ -786,16 +793,65 @@ export default function AutonomousAgents() {
           { value: 'lead', label: 'Leads' },
         ]
         const statusScopedFindings = allFindings.filter(f => showArchivedFindings || f.status !== 'ignored')
-        // Only offer type pills that actually occur in the current status scope,
-        // so a pill never resolves to an empty list.
+        const agentsById = new Map(allAgents.map(a => [a.id, a]))
+        // A finding's evidence class (sast/sca/dast for security, functional/security/… for QA)
+        // and the template that produced it — both requested as filters.
+        const kindOf = (f: typeof allFindings[number]): string => { const ev = asDict(f.evidence) ?? {}; return asStr(ev.kind) || asStr(ev.type) || '' }
+        const templateOf = (f: typeof allFindings[number]): string => agentsById.get(f.definition_id)?.template_key ?? ''
+        // Options are drawn from what's actually present, so a filter never resolves to an empty list.
         const presentTypes = new Set(statusScopedFindings.map(findingType))
+        const presentAgents = [...new Map(statusScopedFindings.map(f => [f.definition_id, agentsById.get(f.definition_id)?.name ?? f.definition_id.slice(0, 8)] as const)).entries()]
+        const presentTemplates = [...new Set(statusScopedFindings.map(templateOf).filter(Boolean))].sort()
+        const presentKinds = [...new Set(statusScopedFindings.map(kindOf).filter(Boolean))].sort()
+        const presentSeverities = [...new Set(statusScopedFindings.map(f => f.severity))]
+        const presentStatuses = [...new Set(statusScopedFindings.map(f => f.status).filter(s => s !== 'ignored'))]
+        const q = findingSearch.trim().toLowerCase()
+        const anyFilterActive = findingAgent !== 'all' || findingTemplate !== 'all' || findingKind !== 'all' || findingSeverity !== 'all' || findingStatus !== 'all' || findingTypeFilter !== 'all' || q !== ''
+        const clearFindingFilters = () => { setFindingAgent('all'); setFindingTemplate('all'); setFindingKind('all'); setFindingSeverity('all'); setFindingStatus('all'); setFindingTypeFilter('all'); setFindingSearch('') }
         const visibleFindings = statusScopedFindings
           .filter(f => findingTypeFilter === 'all' || findingType(f) === findingTypeFilter)
+          .filter(f => findingAgent === 'all' || f.definition_id === findingAgent)
+          .filter(f => findingTemplate === 'all' || templateOf(f) === findingTemplate)
+          .filter(f => findingKind === 'all' || kindOf(f) === findingKind)
+          .filter(f => findingSeverity === 'all' || f.severity === findingSeverity)
+          .filter(f => findingStatus === 'all' || f.status === findingStatus)
+          .filter(f => !q || (f.title?.toLowerCase().includes(q) ?? false) || (f.summary?.toLowerCase().includes(q) ?? false))
         return (
         <div className="space-y-3">
           {allFindings.length > 0 && (
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <input value={findingSearch} onChange={e => setFindingSearch(e.target.value)} placeholder="Search…" className="rounded-lg border border-border-primary bg-transparent px-2.5 py-1 text-xs text-text-primary placeholder:text-text-tertiary focus:border-accent-blue focus:outline-none w-36" />
+                {presentAgents.length > 1 && (
+                  <select value={findingAgent} onChange={e => setFindingAgent(e.target.value)} className="rounded-lg border border-border-primary bg-transparent px-2 py-1 text-xs text-text-primary focus:border-accent-blue focus:outline-none">
+                    <option value="all">All agents</option>
+                    {presentAgents.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                  </select>
+                )}
+                {presentTemplates.length > 1 && (
+                  <select value={findingTemplate} onChange={e => setFindingTemplate(e.target.value)} className="rounded-lg border border-border-primary bg-transparent px-2 py-1 text-xs text-text-primary focus:border-accent-blue focus:outline-none">
+                    <option value="all">All templates</option>
+                    {presentTemplates.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                  </select>
+                )}
+                {presentKinds.length > 1 && (
+                  <select value={findingKind} onChange={e => setFindingKind(e.target.value)} className="rounded-lg border border-border-primary bg-transparent px-2 py-1 text-xs text-text-primary focus:border-accent-blue focus:outline-none">
+                    <option value="all">All types</option>
+                    {presentKinds.map(k => <option key={k} value={k}>{k.length <= 4 ? k.toUpperCase() : k}</option>)}
+                  </select>
+                )}
+                {presentSeverities.length > 1 && (
+                  <select value={findingSeverity} onChange={e => setFindingSeverity(e.target.value)} className="rounded-lg border border-border-primary bg-transparent px-2 py-1 text-xs text-text-primary focus:border-accent-blue focus:outline-none">
+                    <option value="all">All severities</option>
+                    {['critical', 'high', 'medium', 'low', 'info'].filter(s => presentSeverities.includes(s)).map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                )}
+                {presentStatuses.length > 1 && (
+                  <select value={findingStatus} onChange={e => setFindingStatus(e.target.value)} className="rounded-lg border border-border-primary bg-transparent px-2 py-1 text-xs text-text-primary focus:border-accent-blue focus:outline-none">
+                    <option value="all">All statuses</option>
+                    {presentStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                )}
                 {presentTypes.size > 1 && (
                   <div className="flex flex-wrap gap-1">
                     {TYPE_FILTERS.filter(f => f.value === 'all' || presentTypes.has(f.value)).map(f => (
@@ -804,6 +860,8 @@ export default function AutonomousAgents() {
                   </div>
                 )}
                 {archivedFindingsCount > 0 && <Switch size="sm" checked={showArchivedFindings} onCheckedChange={setShowArchivedFindings} label={`Show archived (${archivedFindingsCount})`} />}
+                {anyFilterActive && <button type="button" onClick={clearFindingFilters} className="text-[11px] text-accent-blue hover:underline">Clear</button>}
+                <span className="text-[11px] text-text-tertiary">{visibleFindings.length} of {statusScopedFindings.length}</span>
               </div>
               {can('autonomous_agent:update') && activeCount > 0 && (
                 <Button size="sm" variant="ghost" leftIcon={<Archive className="w-3.5 h-3.5" />} loading={archiveAllFindings.isPending} onClick={() => { if (window.confirm(`Archive all ${activeCount} finding${activeCount === 1 ? '' : 's'}? You can restore them from “Show archived”.`)) archiveAllFindings.mutate() }}>Archive all</Button>
