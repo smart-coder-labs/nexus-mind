@@ -76,6 +76,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     // Gap at v71/v72: prod's shared DB was advanced to user_version 72 by an
     // out-of-tree run_v72, so the security-template CHECK fix is v73 to land above it.
     run_v73(conn)?;
+    run_v74(conn)?;
     Ok(())
 }
 
@@ -128,6 +129,84 @@ pub fn run_v73(conn: &Connection) -> Result<()> {
 
         PRAGMA foreign_keys = ON;
         PRAGMA user_version = 73;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Migration v74: admits the `source-code` connector.
+///
+/// `migration_runs.source_kind` carries a CHECK constraint, and SQLite cannot
+/// alter one in place — the table is rebuilt with the widened list, exactly as
+/// v73 rebuilt `autonomous_agent_definitions`. Its child tables reference it by
+/// name and their rows are untouched, so with foreign keys off during the swap
+/// the ids they point at survive the rename. The triggers and indexes are
+/// recreated verbatim; only the connector list changed.
+pub fn run_v74(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 74 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE migration_runs_new (
+            id             TEXT PRIMARY KEY,
+            org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            client_id      TEXT REFERENCES clients(id)  ON DELETE RESTRICT,
+            project_id     TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+            source_kind    TEXT NOT NULL CHECK(source_kind IN
+                             ('repo-docs','git-history','claude-memories','db-schema','source-code','noop')),
+            status         TEXT NOT NULL DEFAULT 'staging' CHECK(status IN
+                             ('staging','in_review','committing','completed','cancelled')),
+            source_ref     TEXT,
+            runner_version TEXT,
+            attestation    TEXT NOT NULL DEFAULT '{}',
+            created_by     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO migration_runs_new
+            (id,org_id,client_id,project_id,source_kind,status,source_ref,runner_version,attestation,created_by,created_at,updated_at)
+        SELECT id,org_id,client_id,project_id,source_kind,status,source_ref,runner_version,attestation,created_by,created_at,updated_at
+        FROM migration_runs;
+
+        DROP TABLE migration_runs;
+        ALTER TABLE migration_runs_new RENAME TO migration_runs;
+
+        CREATE INDEX idx_migration_runs_org_status ON migration_runs(org_id, status);
+        CREATE INDEX idx_migration_runs_client     ON migration_runs(client_id);
+
+        CREATE TRIGGER migration_runs_project_scope_insert
+        BEFORE INSERT ON migration_runs
+        WHEN NEW.project_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM projects WHERE id = NEW.project_id AND org_id = NEW.org_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'migration project must belong to run organization');
+        END;
+        CREATE TRIGGER migration_runs_client_scope_insert
+        BEFORE INSERT ON migration_runs
+        WHEN NEW.client_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM clients WHERE id = NEW.client_id AND org_id = NEW.org_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'migration client must belong to run organization');
+        END;
+        CREATE TRIGGER migration_runs_scope_immutable
+        BEFORE UPDATE OF org_id, client_id, project_id, source_kind ON migration_runs
+        WHEN OLD.org_id <> NEW.org_id
+          OR OLD.source_kind <> NEW.source_kind
+          OR OLD.client_id IS NOT NEW.client_id
+          OR OLD.project_id IS NOT NEW.project_id
+        BEGIN
+            SELECT RAISE(ABORT, 'migration run scope is immutable');
+        END;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 74;
         ",
     )?;
     Ok(())
@@ -8071,7 +8150,7 @@ mod tests {
     fn run_v73_allows_security_scan_and_dast_templates() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 73);
+        assert_eq!(get_user_version(&conn), 74);
         seed_org(&conn, "org1", "acme");
         conn.execute(
             "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
@@ -8094,5 +8173,41 @@ mod tests {
                 [],
             )
             .is_err());
+    }
+
+    /// v74 admits the `source-code` connector into the `migration_runs`
+    /// source_kind CHECK, and the rebuild preserves the scope triggers.
+    #[test]
+    fn run_v74_admits_the_source_code_connector() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), 74);
+        seed_org(&conn, "org1", "acme");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
+            [],
+        )
+        .unwrap();
+
+        // A source-code run is now accepted by the CHECK.
+        conn.execute(
+            "INSERT INTO migration_runs (id,org_id,source_kind,created_by) VALUES ('r1','org1','source-code','u1')",
+            [],
+        )
+        .expect("source-code must be accepted by the widened CHECK");
+
+        // An unknown source is still rejected, and the immutability trigger the
+        // rebuild recreated still fires.
+        assert!(conn
+            .execute(
+                "INSERT INTO migration_runs (id,org_id,source_kind,created_by) VALUES ('r2','org1','bogus','u1')",
+                [],
+            )
+            .is_err());
+        assert!(
+            conn.execute("UPDATE migration_runs SET source_kind='repo-docs' WHERE id='r1'", [])
+                .is_err(),
+            "source_kind stays immutable after the rebuild"
+        );
     }
 }

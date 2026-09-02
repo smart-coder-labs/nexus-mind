@@ -12,14 +12,16 @@ pub enum Source {
     RepoDocs,
     ClaudeMemories,
     GitHistory,
+    Code,
     DbSchema,
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [
+    pub const ALL: [Source; 5] = [
         Source::RepoDocs,
         Source::ClaudeMemories,
         Source::GitHistory,
+        Source::Code,
         Source::DbSchema,
     ];
 
@@ -29,6 +31,7 @@ impl Source {
             Source::RepoDocs => "repo-docs",
             Source::ClaudeMemories => "claude-memories",
             Source::GitHistory => "git-history",
+            Source::Code => "source-code",
             Source::DbSchema => "db-schema",
         }
     }
@@ -38,6 +41,7 @@ impl Source {
             Source::RepoDocs => "Repository documents",
             Source::ClaudeMemories => "Claude assets",
             Source::GitHistory => "Git history",
+            Source::Code => "Source code",
             Source::DbSchema => "Database schema",
         }
     }
@@ -56,6 +60,11 @@ impl Source {
             Source::GitHistory => {
                 "Substantive commits and merged PRs. Trailers are stripped before the body \
                  is measured, so a one-line commit with five trailers still reads as trivial."
+            }
+            Source::Code => {
+                "The code itself. Two independent actions: extract the conventions and \
+                 technical decisions embedded in each file (proposed for review), and/or \
+                 index the whole codebase for vector/semantic search."
             }
             Source::DbSchema => {
                 "Tables, columns, constraints and relationships, grouped into areas. \
@@ -95,6 +104,14 @@ pub struct RunConfig {
 
     // repo-docs
     pub include_sdd: bool,
+    // source-code — two independent actions
+    /// Extract conventions/decisions from code via the classifier (a run that
+    /// stages candidates for review). On by default: it is why this source
+    /// exists.
+    pub extract_knowledge: bool,
+    /// Index the codebase for vector/semantic search via the `/v1/code`
+    /// subsystem. Off by default; a separate backend action, not a runner pass.
+    pub index_code: bool,
     // claude-memories
     pub host_scope: bool,
     // git-history
@@ -137,6 +154,8 @@ impl Default for RunConfig {
             includes: String::new(),
             excludes: String::new(),
             include_sdd: false,
+            extract_knowledge: true,
+            index_code: false,
             host_scope: false,
             since_commit: String::new(),
             // Read from the environment on purpose: a DSN typed into a field is
@@ -746,6 +765,22 @@ mod tests {
         let args = single.to_args(false);
         assert!(args.contains(&"--client".to_string()));
         assert!(args.contains(&"--project".to_string()));
+    }
+
+    #[test]
+    fn the_source_code_source_scans_a_path_like_the_others() {
+        assert!(Source::Code.takes_path());
+        assert_eq!(Source::Code.flag(), "source-code");
+        let cfg = RunConfig {
+            source: Source::Code,
+            path: "/repo".into(),
+            ..Default::default()
+        };
+        let args = cfg.to_args(true);
+        assert!(args.contains(&"--source".to_string()));
+        assert!(args.contains(&"source-code".to_string()));
+        let i = args.iter().position(|a| a == "--path").unwrap();
+        assert_eq!(args[i + 1], "/repo");
     }
 
     #[test]

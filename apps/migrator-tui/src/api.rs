@@ -132,6 +132,16 @@ impl Project {
     }
 }
 
+/// The result of a `POST /v1/code/index`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodeIndexOutcome {
+    pub status: String,
+    #[serde(default)]
+    pub file_count: i64,
+    #[serde(default)]
+    pub chunk_count: i64,
+}
+
 /// A reviewer's decision.
 ///
 /// The wire values are `approved` / `rejected` / `restaged` — past tense. An
@@ -337,6 +347,43 @@ impl Client {
             .cloned()
             .unwrap_or(value);
         Ok(serde_json::from_value(items).unwrap_or_default())
+    }
+
+    /// Indexes a codebase for vector/semantic search via the `/v1/code`
+    /// subsystem. `root_path` indexes a local checkout (only works when the
+    /// backend can see the path — i.e. a local backend); `repo_url` clones a
+    /// remote. Exactly one is sent. This is the source-code source's *index*
+    /// action, entirely separate from its knowledge-extraction run.
+    pub fn index_code(
+        &self,
+        project: &str,
+        root_path: Option<&str>,
+        repo_url: Option<&str>,
+    ) -> Result<CodeIndexOutcome> {
+        let mut body = serde_json::Map::new();
+        body.insert("project".into(), serde_json::json!(project));
+        match (root_path, repo_url) {
+            (Some(p), _) if !p.trim().is_empty() => {
+                body.insert("root_path".into(), serde_json::json!(p.trim()));
+            }
+            (_, Some(u)) if !u.trim().is_empty() => {
+                body.insert("repo_url".into(), serde_json::json!(u.trim()));
+            }
+            _ => anyhow::bail!(
+                "no code source: a remote backend needs the repo's git remote (origin) set"
+            ),
+        }
+        // A long index must not read as a hung TUI — this call can outlast the
+        // default request, so it gets its own generous deadline.
+        Ok(self
+            .http
+            .post(self.url("/v1/code/index"))
+            .timeout(Duration::from_secs(600))
+            .bearer_auth(&self.key)
+            .json(&serde_json::Value::Object(body))
+            .send()?
+            .error_for_status()?
+            .json()?)
     }
 
     /// Creates a project for a detected sub-package that had no match.

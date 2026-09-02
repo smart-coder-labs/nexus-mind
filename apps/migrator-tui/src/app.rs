@@ -4,7 +4,9 @@
 //! Nothing here draws. `ui.rs` renders this state and never mutates it, which
 //! is what lets every rule in `config.rs` be tested without a terminal.
 
-use crate::api::{Candidate, Client, CommitResponse, Project, ReviewResponse, Run, Verdict};
+use crate::api::{
+    Candidate, Client, CodeIndexOutcome, CommitResponse, Project, ReviewResponse, Run, Verdict,
+};
 use crate::config::{Blocker, RunConfig, Source, Warning};
 use crate::mascot::{self, Graphics, Mascot, Mood};
 use crate::monorepo::{self, Action, PlanRow};
@@ -73,6 +75,8 @@ pub enum FieldId {
     Includes,
     Excludes,
     IncludeSdd,
+    ExtractKnowledge,
+    IndexCode,
     HostScope,
     SinceCommit,
     Supabase,
@@ -92,9 +96,8 @@ impl FieldId {
         use FieldId::*;
         match self {
             ApiKey => FieldKind::Secret,
-            IncludeSdd | HostScope | Supabase | IncludeData | RedactPii | NoLlm => {
-                FieldKind::Toggle
-            }
+            IncludeSdd | ExtractKnowledge | IndexCode | HostScope | Supabase | IncludeData
+            | RedactPii | NoLlm => FieldKind::Toggle,
             _ => FieldKind::Text,
         }
     }
@@ -110,6 +113,8 @@ impl FieldId {
             Includes => "Include (comma separated)",
             Excludes => "Exclude (comma separated)",
             IncludeSdd => "Include SDD artifacts",
+            ExtractKnowledge => "Extract knowledge (conventions, decisions)",
+            IndexCode => "Index for vector/semantic search",
             HostScope => "Include host-level assets (~/.claude)",
             SinceCommit => "Since commit",
             Supabase => "Supabase conventions",
@@ -139,6 +144,10 @@ impl FieldId {
             }
             Excludes => "Skip these subpaths, on top of the connector's own rules.",
             IncludeSdd => "Proposals, designs and task lists under openspec/.",
+            ExtractKnowledge => "Reads each code file with Claude and proposes the conventions \
+                                 and decisions in it for review. The reason this source exists.",
+            IndexCode => "Vectorises the codebase via /v1/code so it is searchable. A separate \
+                          backend action; runs on a real run, not a preview.",
             HostScope => "Your personal Claude configuration, not just the repo's.",
             SinceCommit => "Only history after this commit. Empty means the whole history.",
             Supabase => "Read Supabase-specific conventions alongside the schema.",
@@ -174,6 +183,8 @@ impl FieldId {
             Parallel => c.parallel.clone(),
             ClaudeBin => c.claude_bin.clone(),
             IncludeSdd => c.include_sdd.to_string(),
+            ExtractKnowledge => c.extract_knowledge.to_string(),
+            IndexCode => c.index_code.to_string(),
             HostScope => c.host_scope.to_string(),
             Supabase => c.supabase.to_string(),
             IncludeData => c.include_data.to_string(),
@@ -229,6 +240,8 @@ impl FieldId {
         use FieldId::*;
         match self {
             IncludeSdd => c.include_sdd = !c.include_sdd,
+            ExtractKnowledge => c.extract_knowledge = !c.extract_knowledge,
+            IndexCode => c.index_code = !c.index_code,
             HostScope => c.host_scope = !c.host_scope,
             Supabase => c.supabase = !c.supabase,
             RedactPii => c.redact_pii = !c.redact_pii,
@@ -265,6 +278,9 @@ pub fn fields_for(screen: Screen, source: Source) -> Vec<FieldId> {
                 Source::RepoDocs => f.extend([Includes, Excludes, IncludeSdd]),
                 Source::ClaudeMemories => f.extend([Includes, Excludes, HostScope]),
                 Source::GitHistory => f.extend([SinceCommit, Includes, Excludes]),
+                Source::Code => {
+                    f.extend([ExtractKnowledge, IndexCode, Includes, Excludes])
+                }
                 Source::DbSchema => {
                     f.push(Supabase);
                     f.push(IncludeData);
@@ -682,6 +698,8 @@ pub enum ApiMsg {
     /// The plan executed: projects created, ids resolved, `.nexusmind.yaml`
     /// written. On success the caller starts the routed run.
     PlanExecuted(Result<ExecutedPlan, String>),
+    /// The source-code index action finished (or failed).
+    Indexed(Result<CodeIndexOutcome, String>),
     Failed(String),
 }
 
@@ -1029,6 +1047,25 @@ impl App {
             self.status = "a run is already in flight — press x to stop it".into();
             return;
         }
+        // The source-code source has two independent actions. Indexing is a
+        // backend call, not a runner pass, and only makes sense on a real run;
+        // extraction is the ordinary run below. Fire the index first, then fall
+        // through to extraction only when it is enabled.
+        if self.config.source == Source::Code {
+            if !dry_run && self.config.index_code {
+                self.index_code();
+            }
+            if !self.config.extract_knowledge {
+                self.status = if dry_run {
+                    "extraction is off — nothing to preview".into()
+                } else if self.config.index_code {
+                    "indexing started — extraction is off".into()
+                } else {
+                    "enable Extract knowledge or Index for the code source".into()
+                };
+                return;
+            }
+        }
         let blockers = self.blockers(dry_run);
         if let Some(first) = blockers.first() {
             self.status = format!("cannot start: {}", first.why);
@@ -1211,6 +1248,13 @@ impl App {
                 self.start(exec.dry_run);
             }
             ApiMsg::PlanExecuted(Err(e)) => self.status = format!("plan failed: {e}"),
+            ApiMsg::Indexed(Ok(out)) => {
+                self.status = format!(
+                    "code index {}: {} file(s), {} chunk(s)",
+                    out.status, out.file_count, out.chunk_count
+                );
+            }
+            ApiMsg::Indexed(Err(e)) => self.status = format!("code index failed: {e}"),
         }
     }
 
@@ -1401,6 +1445,30 @@ impl App {
     pub fn probe(&mut self) {
         self.spawn_api("testing the connection", |c| {
             ApiMsg::Probed(c.probe().map_err(|e| e.to_string()))
+        });
+    }
+
+    /// Fires the source-code index action against `/v1/code`.
+    ///
+    /// The project is the one named on Connection, or the repository's own name
+    /// when none is set — code search is scoped to a project just like memory.
+    /// A local backend indexes the checkout in place (`root_path`); a remote one
+    /// must clone, so the repo's `origin` URL is sent instead.
+    pub fn index_code(&mut self) {
+        let path = self.config.path.trim().to_string();
+        let project = if self.config.project.trim().is_empty() {
+            repository_name(Path::new(&path))
+        } else {
+            self.config.project.trim().to_string()
+        };
+        let local = crate::config::is_local(&self.config.api_url);
+        let root_path = local.then(|| path.clone());
+        let repo_url = if local { None } else { git_origin_url(&path) };
+        self.spawn_api("indexing code for search", move |c| {
+            ApiMsg::Indexed(
+                c.index_code(&project, root_path.as_deref(), repo_url.as_deref())
+                    .map_err(|e| e.to_string()),
+            )
         });
     }
 
@@ -1658,6 +1726,21 @@ fn in_git_repo(root: &Path) -> bool {
             None => return false,
         }
     }
+}
+
+/// The repository's `origin` remote URL, for indexing a remote checkout the
+/// backend cannot see on disk. `None` when the path is not a repo or has no
+/// origin — the caller turns that into a clear "set your git remote" message.
+fn git_origin_url(path: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", path, "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!url.is_empty()).then_some(url)
 }
 
 /// A human name for the repository at `root`, used as `repository.id` (slugged
@@ -2251,6 +2334,50 @@ mod tests {
             "note: {}",
             app.plan_note
         );
+    }
+
+    // ── Source-code source ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_code_source_with_both_actions_off_runs_nothing() {
+        let mut app = App::new();
+        app.config.source = Source::Code;
+        app.config.extract_knowledge = false;
+        app.config.index_code = false;
+        app.config.path = ".".into();
+        app.config.api_url = "http://localhost:8080".into();
+        app.config.api_key = "nm_x".into();
+        app.start(false);
+        assert!(app.handle.is_none(), "the extractor did not run");
+        assert!(!app.is_waiting(), "and nothing was indexed");
+        assert!(app.status.contains("enable"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_code_source_with_only_index_indexes_without_running_the_extractor() {
+        let mut app = App::new();
+        app.config.source = Source::Code;
+        app.config.extract_knowledge = false;
+        app.config.index_code = true;
+        app.config.path = ".".into();
+        app.config.api_url = "http://localhost:8080".into();
+        app.config.api_key = "nm_x".into();
+        app.start(false);
+        assert!(app.handle.is_none(), "extraction is off, so no runner");
+        assert!(app.is_waiting(), "the index call is in flight");
+    }
+
+    /// A preview must never index — indexing is a real, remote write.
+    #[test]
+    fn a_code_preview_does_not_index() {
+        let mut app = App::new();
+        app.config.source = Source::Code;
+        app.config.extract_knowledge = false;
+        app.config.index_code = true;
+        app.config.path = ".".into();
+        app.start(true);
+        assert!(!app.is_waiting(), "a dry run indexes nothing");
+        assert!(app.handle.is_none());
     }
 
     #[test]

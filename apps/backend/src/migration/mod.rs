@@ -18,10 +18,12 @@ pub mod git_history;
 pub mod pg_reader;
 pub mod redact;
 pub mod repo_docs;
+pub mod source_code;
 
 pub use claude_memories::ClaudeMemoriesConnector;
 pub use git_history::GitHistoryConnector;
 pub use repo_docs::RepoDocsConnector;
+pub use source_code::SourceCodeConnector;
 
 use anyhow::Result;
 use std::fmt;

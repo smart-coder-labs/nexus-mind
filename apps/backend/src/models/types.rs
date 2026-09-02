@@ -3562,6 +3562,7 @@ pub enum SourceKind {
     GitHistory,
     ClaudeMemories,
     DbSchema,
+    SourceCode,
     Noop,
 }
 
@@ -3572,6 +3573,7 @@ impl SourceKind {
             SourceKind::GitHistory => "git-history",
             SourceKind::ClaudeMemories => "claude-memories",
             SourceKind::DbSchema => "db-schema",
+            SourceKind::SourceCode => "source-code",
             SourceKind::Noop => "noop",
         }
     }
@@ -3586,6 +3588,7 @@ impl FromStr for SourceKind {
             "git-history" => Ok(SourceKind::GitHistory),
             "claude-memories" => Ok(SourceKind::ClaudeMemories),
             "db-schema" => Ok(SourceKind::DbSchema),
+            "source-code" => Ok(SourceKind::SourceCode),
             "noop" => Ok(SourceKind::Noop),
             _ => Err("unsupported_source_kind"),
         }

@@ -50,7 +50,7 @@ pub use nexusmind::migration::{
     events::{clip, EventSink, RunEvent},
     pg_reader::PgSchemaReader,
     CandidatePayload, ClaudeMemoriesConnector, Connector, GitHistoryConnector, RepoDocsConnector,
-    ScanOptions, ScanProgress, SourceItem,
+    ScanOptions, ScanProgress, SourceCodeConnector, SourceItem,
 };
 
 // ── The noop connector ───────────────────────────────────────────────────────
@@ -1176,6 +1176,9 @@ fn connector_for(source: &str, args: &Args) -> Result<Box<dyn Connector>> {
             GitHistoryConnector::new(GitHistoryConnector::repo_name_for(&args.path))
                 .since(args.since_commit.clone()),
         )),
+        "source-code" => Ok(Box::new(SourceCodeConnector::new(
+            SourceCodeConnector::repo_name_for(&args.path),
+        ))),
         "db-schema" => {
             // The DSN never comes from argv: it would survive in shell history,
             // in `ps`, and in anything that logs commands.
@@ -2217,7 +2220,7 @@ mod tests {
     /// still has to say where they live rather than just failing.
     #[test]
     fn repo_docs_is_available_and_the_other_three_are_not() {
-        for available in ["noop", "repo-docs", "claude-memories", "git-history"] {
+        for available in ["noop", "repo-docs", "claude-memories", "git-history", "source-code"] {
             assert!(
                 connector_for(available, &args_for(available)).is_ok(),
                 "`{available}` must be available"
