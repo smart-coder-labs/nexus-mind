@@ -37,6 +37,22 @@ RUN apt-get update \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
+# Security scanners for the `security_scan` template. The worker runs these on PATH:
+# semgrep (SAST) from pip's prebuilt aarch64 wheel, osv-scanner (SCA) as a pinned
+# static binary. Versions are pinned so findings are reproducible across builds.
+ARG SEMGREP_VERSION=1.176.0
+ARG OSV_SCANNER_VERSION=2.5.1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && pip3 install --no-cache-dir --break-system-packages "semgrep==${SEMGREP_VERSION}" \
+    && ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /usr/local/bin/osv-scanner \
+         "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
+    && chmod +x /usr/local/bin/osv-scanner \
+    && semgrep --version \
+    && osv-scanner --version \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
+
 WORKDIR /app
 # Browsers live outside HOME because the k8s deployment mounts a volume over
 # /claude-home at runtime, which would otherwise shadow anything baked there.
