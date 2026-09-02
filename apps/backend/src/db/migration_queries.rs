@@ -786,6 +786,31 @@ mod tests {
         );
     }
 
+    /// Conventions link to the run's project too — by id directly, since a
+    /// convention already scopes by project_id.
+    #[test]
+    fn a_committed_convention_links_to_the_runs_project() {
+        let conn = setup();
+        let run = run_for(&conn, Some("cl_a"), Some("p_a"));
+        stage_candidates(&conn, "org1", &run.id, &[input("src:c", DestinationKind::Convention)]).unwrap();
+        let candidate = list_candidates(&conn, &run.id, None, None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.destination_kind == DestinationKind::Convention)
+            .expect("the convention candidate is staged");
+
+        let convention_id = write_destination(&conn, &run, &candidate).unwrap();
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM conventions WHERE id = ?1",
+                [&convention_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("p_a"));
+    }
+
     /// An internal run (no project) must still commit an org-shared memory —
     /// the fallback must not invent a project where the run had none.
     #[test]

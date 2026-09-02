@@ -242,3 +242,67 @@ projects:
     assert_eq!(plan.groups[0].item_indices, vec![0]);
     assert_eq!(plan.unmapped_indices, vec![1, 2]);
 }
+
+/// The exact `.nexusmind.yaml` the migrator TUI writes must be accepted by this
+/// (stricter) parser and route every path to the right project. Captured
+/// verbatim from `migrator-tui`'s `monorepo::to_yaml`, so a drift between the
+/// TUI's config shape and what the runner accepts fails here rather than in a
+/// live monorepo run.
+const TUI_GENERATED: &[u8] = b"version: 1
+repository:
+  id: acme-monorepo
+defaults:
+  project: repo
+projects:
+  repo:
+    project_id: proj_root_id
+    client_id: client_acme
+    paths:
+    - '**'
+  web:
+    project_id: proj_web_id
+    client_id: client_acme
+    paths:
+    - apps/web/**
+";
+
+#[test]
+fn the_tui_generated_config_parses_and_routes_to_the_right_projects() {
+    let snap = ConfigSnapshot::from_bytes(
+        TUI_GENERATED,
+        PathBuf::from("/repo"),
+        ".nexusmind.yaml".into(),
+    )
+    .expect("the runner must accept the TUI's config");
+    assert_eq!(snap.config.repository.id, "acme-monorepo");
+    assert_eq!(snap.config.defaults.project.as_deref(), Some("repo"));
+
+    let resolver = ProjectResolver::compile(snap).unwrap();
+
+    // A package file routes to its package (the more specific glob wins).
+    let web = resolver
+        .resolve(Path::new("apps/web/src/index.ts"))
+        .unwrap();
+    assert!(
+        matches!(web, ResolutionStatus::Resolved(ResolvedProject { ref alias, ref project_id, .. }) if alias == "web" && project_id == "proj_web_id"),
+        "package file must route to the package: {web:?}"
+    );
+
+    // A root-level doc — the case that used to fail with ROUTING_UNMAPPED —
+    // routes to the repository catch-all, not nowhere.
+    let doc = resolver.resolve(Path::new("docs/verification.md")).unwrap();
+    assert!(
+        matches!(doc, ResolutionStatus::Resolved(ResolvedProject { ref alias, ref project_id, .. }) if alias == "repo" && project_id == "proj_root_id"),
+        "root-level knowledge must route to the repo catch-all: {doc:?}"
+    );
+
+    // Nothing is unmapped, so the run cannot abort with ROUTING_UNMAPPED.
+    let plan = resolver
+        .plan_paths(
+            [Some("docs/verification.md"), Some("apps/web/src/index.ts"), Some("README.md")]
+                .into_iter(),
+            &DestinationOverride::default(),
+        )
+        .unwrap();
+    assert!(plan.unmapped_indices.is_empty(), "nothing may be unmapped");
+}
