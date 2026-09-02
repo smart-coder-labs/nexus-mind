@@ -22,6 +22,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Inbox,
+  Trash2,
   type LucideIcon,
 } from 'lucide-react'
 import { createClient } from '../api/client'
@@ -327,6 +328,38 @@ export default function Migrations() {
     }
   }
 
+  // Hard-deletes the selected run. The backend refuses (409) any run that
+  // committed knowledge, so the destructive reach here is limited to aborted
+  // scans and test runs — exactly what needs clearing out.
+  async function deleteRun() {
+    if (!selectedRun) return
+    const run = runs.find((r) => r.id === selectedRun)
+    const label = run ? (SOURCE_LABELS[run.source_kind] ?? run.source_kind) : 'this run'
+    const ok = window.confirm(
+      `Delete ${label}${run?.source_ref ? ` (${run.source_ref})` : ''}?\n\n` +
+        'This removes the run and its staged candidates. A run that already ' +
+        'committed knowledge cannot be deleted — cancel it instead.',
+    )
+    if (!ok) return
+    setLoading(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await api.deleteMigrationRun(selectedRun)
+      setSelectedRun(null)
+      setCandidates([])
+      setReport(null)
+      setCommitResult(null)
+      setNotice('Run deleted.')
+      const list = await api.listMigrationRuns({ limit: 50 })
+      setRuns(list)
+    } catch (e: unknown) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const open = candidates.find((c) => c.id === openCandidate) ?? null
   const approvedCount = candidates.filter((c) => c.status === 'approved').length
 
@@ -461,6 +494,16 @@ export default function Migrations() {
               Review queue
             </h2>
             <span className="text-[10px] text-text-quaternary">{staged.length} staged</span>
+            <button
+              type="button"
+              onClick={deleteRun}
+              disabled={loading}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error/[0.08] px-2.5 py-1 text-[11px] font-medium text-status-error transition-colors hover:bg-status-error/[0.14] disabled:opacity-50"
+              title="Delete this run and its candidates. A run that committed knowledge cannot be deleted."
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete run
+            </button>
           </div>
 
           {/* Run summary — the aggregate counts that tell the reviewer where this

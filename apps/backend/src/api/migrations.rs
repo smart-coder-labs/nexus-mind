@@ -238,6 +238,66 @@ pub async fn cancel_run(
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }
 
+/// Hard-deletes a run and its cascade. Privileged-only, and refused by the
+/// database for any run that committed knowledge (its provenance is protected).
+/// The cleanup path for aborted scans and test runs — cancel is the answer for
+/// a run that actually landed something.
+pub async fn delete_run(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !auth.role.is_privileged() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "deleting a migration run requires an administrator".to_string(),
+                code: "forbidden".to_string(),
+            }),
+        ));
+    }
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "migration:write")?;
+    // Scopes the delete to a run the caller may actually see, and gives a clean
+    // 404 for one they may not — same visibility rule as every other verb here.
+    let run = load_visible_run(&conn, &auth, &run_id, "DELETE")?;
+    let deleted = mq::delete_run(&conn, &auth.org_id, &run.id).map_err(|e| {
+        if e.to_string().contains("run_has_provenance") {
+            (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "this run committed knowledge; its provenance is protected. \
+                            Cancel it instead of deleting."
+                        .to_string(),
+                    code: "run_has_provenance".to_string(),
+                }),
+            )
+        } else {
+            db_err(e)
+        }
+    })?;
+    if !deleted {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "migration run not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        ));
+    }
+    let _ = queries::log_audit(
+        &conn,
+        &auth.org_id,
+        &auth.user_id,
+        "delete",
+        "migration_run",
+        Some(&run.id),
+        serde_json::json!({ "source_kind": run.source_kind.as_str() }),
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn get_report(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,
@@ -2092,5 +2152,98 @@ mod tests {
             .unwrap();
         assert_eq!(harnesses, 0, "no catalog row without a published version");
         assert_eq!(versions, 0);
+    }
+
+    // ── Delete ─────────────────────────────────────────────────────────────────
+
+    /// A run that only staged candidates (an aborted scan, a test run) deletes
+    /// cleanly, taking its candidates with it.
+    #[tokio::test]
+    async fn a_run_that_committed_nothing_can_be_deleted() {
+        let store = store();
+        let run = create(&store, &admin(), None).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
+
+        let status = delete_run(State(store.clone()), Extension(admin()), Path(run.id.clone()))
+            .await
+            .expect("a run with nothing committed deletes");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Gone: a second delete is a 404, and its candidates went with it.
+        let again = delete_run(State(store.clone()), Extension(admin()), Path(run.id.clone())).await;
+        assert!(matches!(again, Err((StatusCode::NOT_FOUND, _))), "the run is gone");
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let candidates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migration_candidates WHERE run_id = ?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(candidates, 0, "candidates cascade away with the run");
+    }
+
+    /// The safety this whole endpoint is built around: once a run has committed
+    /// knowledge, the provenance RESTRICT refuses the delete. Cancel, not delete.
+    #[tokio::test]
+    async fn a_run_that_committed_knowledge_cannot_be_deleted() {
+        let store = store();
+        let run = create(&store, &admin(), None).await;
+        stage(
+            &store,
+            &admin(),
+            &run.id,
+            vec![with_hint(
+                "src:a",
+                DestinationKind::Memory,
+                serde_json::json!({ "title": "A" }),
+            )],
+        )
+        .await;
+        approve_all(&store, &run.id).await;
+        commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
+            .await
+            .expect("commit succeeds");
+
+        let result = delete_run(State(store.clone()), Extension(admin()), Path(run.id.clone())).await;
+        match result {
+            Err((StatusCode::CONFLICT, Json(e))) => assert_eq!(e.code, "run_has_provenance"),
+            other => panic!("a committed run must not be deletable: {other:?}"),
+        }
+
+        // The run and its provenance are untouched.
+        let db = store.conn();
+        let conn = db.lock().unwrap();
+        let runs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migration_runs WHERE id = ?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(runs, 1, "the run survives the refused delete");
+    }
+
+    /// Deletion is an administrator's verb — a member with write cannot reach it.
+    #[tokio::test]
+    async fn a_member_cannot_delete_a_run() {
+        let store = store();
+        let run = create(&store, &admin(), None).await;
+        let result = delete_run(State(store.clone()), Extension(member("m")), Path(run.id.clone())).await;
+        assert!(
+            matches!(result, Err((StatusCode::FORBIDDEN, _))),
+            "a non-admin is refused before anything is deleted"
+        );
     }
 }

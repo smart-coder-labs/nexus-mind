@@ -746,6 +746,12 @@ export class NexusMindClient {
     return this.request<{ cancelled: number }>(`/v1/migrations/${id}/cancel`, { method: 'POST' })
   }
 
+  // Hard-deletes a run and its candidates. The backend refuses (409
+  // `run_has_provenance`) any run that committed knowledge — cancel those.
+  deleteMigrationRun(id: string): Promise<void> {
+    return this.request<void>(`/v1/migrations/${id}`, { method: 'DELETE' })
+  }
+
   getMigrationReport(id: string): Promise<MigrationRunReport> {
     return this.request<MigrationRunReport>(`/v1/migrations/${id}/report`)
   }

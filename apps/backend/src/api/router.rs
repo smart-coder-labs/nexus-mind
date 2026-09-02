@@ -133,7 +133,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/migrations",
             get(migrations_api::list_runs).post(migrations_api::create_run),
         )
-        .route("/v1/migrations/:id", get(migrations_api::get_run))
+        .route(
+            "/v1/migrations/:id",
+            get(migrations_api::get_run).delete(migrations_api::delete_run),
+        )
         .route(
             "/v1/migrations/:id/candidates",
             get(migrations_api::list_candidates).post(migrations_api::stage_candidates),

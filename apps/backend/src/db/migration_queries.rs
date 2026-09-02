@@ -241,6 +241,37 @@ pub fn cancel_run(conn: &Connection, org_id: &str, run_id: &str) -> Result<usize
     Ok(cancelled)
 }
 
+/// Hard-deletes a run and everything that cascades from it — its candidates and
+/// outcomes. This is the cleanup path for runs that never committed anything
+/// (an aborted scan, a test run); the audit trail of committed knowledge is
+/// protected by the database, not by this function.
+///
+/// `migration_provenance.candidate_id` references `migration_candidates` with
+/// `ON DELETE RESTRICT`, and candidates cascade from the run. So the moment a
+/// run has one committed candidate, deleting the run tries to delete a candidate
+/// a provenance row still points at, the RESTRICT aborts the whole statement,
+/// and this returns `run_has_provenance`. Cancel such a run instead — there is
+/// deliberately no way to erase provenance from here.
+///
+/// Returns `Ok(true)` when a run was deleted, `Ok(false)` when none matched this
+/// org (a not-found the caller turns into 404).
+pub fn delete_run(conn: &Connection, org_id: &str, run_id: &str) -> Result<bool> {
+    match conn.execute(
+        "DELETE FROM migration_runs WHERE id = ?2 AND org_id = ?1",
+        rusqlite::params![org_id, run_id],
+    ) {
+        Ok(n) => Ok(n > 0),
+        // The provenance RESTRICT firing through the candidate cascade. Named so
+        // the handler can answer with "cancel it instead" rather than a 500.
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            anyhow::bail!("run_has_provenance")
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 // ── Candidate staging ────────────────────────────────────────────────────────
 
 /// Has this source identity already been rejected for this destination, in any
