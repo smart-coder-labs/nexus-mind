@@ -34,6 +34,15 @@ pub const MAX_DAST_INVOCATIONS: usize = 8;
 /// never download templates or phone home at run time.
 pub const NUCLEI_TEMPLATES_DIR: &str = "/opt/nuclei-home/nuclei-templates";
 
+/// High-signal template tags run by default. The full ~13.6k-template set is far too
+/// slow to even load per target (a run appears to hang for many minutes); this curated
+/// set (CVEs, misconfigurations, exposures, default logins, exposed panels) filtered by
+/// severity loads and runs in a couple of minutes while keeping the actionable coverage.
+pub const NUCLEI_TAGS: &str = "cve,misconfig,exposure,default-login,exposed-panel";
+
+/// Nuclei template concurrency — the full set is otherwise slow against one target.
+pub const NUCLEI_CONCURRENCY: u32 = 50;
+
 const US: char = '\u{1f}';
 
 pub fn is_allowlisted_program(program: &str) -> bool {
@@ -153,6 +162,12 @@ pub fn build_nuclei_argv(
         // Run the templates baked into the image; no runtime download.
         "-t".into(),
         NUCLEI_TEMPLATES_DIR.into(),
+        // Scope to a fast, high-signal tag set (the full template set is too slow to
+        // load per target) and raise template concurrency.
+        "-tags".into(),
+        NUCLEI_TAGS.into(),
+        "-c".into(),
+        NUCLEI_CONCURRENCY.to_string(),
     ])
 }
 
@@ -325,9 +340,11 @@ mod tests {
         assert!(argv.contains(&"-no-interactsh".to_string()));
         // redirects are disabled so scope holds at the traffic layer (blind-SSRF guard)
         assert!(argv.contains(&"-disable-redirects".to_string()));
-        // baked templates dir passed via -t (no runtime download)
+        // baked templates dir passed via -t (no runtime download) + scoped tags
         assert!(argv.contains(&"-t".to_string()));
         assert!(argv.contains(&NUCLEI_TEMPLATES_DIR.to_string()));
+        assert!(argv.contains(&"-tags".to_string()));
+        assert!(argv.contains(&NUCLEI_TAGS.to_string()));
         // target is present and exactly the authorized url
         let i = argv.iter().position(|a| a == "-u").unwrap();
         assert_eq!(argv[i + 1], "https://staging.example.com");

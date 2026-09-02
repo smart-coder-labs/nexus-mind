@@ -391,8 +391,10 @@ async fn run_security_scanners(
     Ok(findings)
 }
 
-/// How long a single nuclei scan of one target may run before it is killed.
-const DAST_SCAN_TIMEOUT_SECS: u64 = 1500;
+/// How long a single nuclei scan of one target may run before it is killed. The scan
+/// is scoped to a fast tag set, so a well-behaved run finishes in minutes; this is the
+/// backstop for an unreachable or very slow target.
+const DAST_SCAN_TIMEOUT_SECS: u64 = 900;
 
 /// Run one allowlisted DAST scanner. `argv[0]` MUST be an allowlisted program (built
 /// by `security_dast::build_nuclei_argv`); anything else is rejected before spawn.
