@@ -16,6 +16,13 @@ FROM debian:bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.235
 
+# When true (default), the runtime image bundles Playwright's chromium +
+# chrome-for-testing so backend-spawned QA agents can drive a browser. The u2s
+# self-host build overrides this to false: its 8 GB disk cannot fit the ~1 GB of
+# browsers (the pull fills the disk and fails). Only the u2s :main image is slim;
+# main-arm64 / oracle keep the default. See .github/workflows/deploy-u2s.yml.
+ARG INSTALL_BROWSERS=true
+
 # Node 20 (from NodeSource, not Debian's Node 18) because Playwright requires
 # Node >= 20. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
 # global bins (claude, mcp-server-playwright) resolve where the rest of the
@@ -40,8 +47,11 @@ ENV HOME=/claude-home \
 
 # Playwright CLI + browsers (so the QA template's `npx playwright test` runs) and
 # the Playwright MCP (so QA agents can drive a browser via mcp__playwright__*).
+# The npm packages + symlinks are ALWAYS installed (small, and the MCP configs
+# below reference them). Only the heavy browser downloads (~1 GB) are gated on
+# INSTALL_BROWSERS, so the slim u2s image still boots with the MCP binaries
+# present — it just has no browser to launch.
 RUN npm install -g playwright@latest @playwright/mcp@latest @smart-coder-labs/nexusmind-mcp@0.15.0 \
-    && playwright install --with-deps chromium \
     # @playwright/mcp's real bin name isn't `mcp-server-playwright`; resolve the
     # actual entry from its package.json and expose it under a stable name so the
     # MCP config below works without npx (no network) or bin-name guessing.
@@ -57,11 +67,16 @@ RUN npm install -g playwright@latest @playwright/mcp@latest @smart-coder-labs/ne
     && test -n "${BINN}" && test -f "${PKGN}/${BINN}" \
     && ln -sf "${PKGN}/${BINN}" /usr/local/bin/nexusmind-mcp \
     && chmod +x "${PKGN}/${BINN}" \
-    # Let @playwright/mcp install exactly the browser build it will look for at
-    # runtime (its own pinned chrome-for-testing revision), into
-    # PLAYWRIGHT_BROWSERS_PATH; OS libs already came from the --with-deps step.
-    && mcp-server-playwright install-browser chrome-for-testing \
-    && ls -la /ms-playwright/ \
+    # Browser downloads are the heavy part (~1 GB). --with-deps also apt-installs
+    # the OS libs chrome-for-testing needs, so both browser steps live together
+    # inside the guard. Skipped entirely when INSTALL_BROWSERS=false (u2s).
+    && if [ "$INSTALL_BROWSERS" = "true" ]; then \
+         playwright install --with-deps chromium \
+         && mcp-server-playwright install-browser chrome-for-testing \
+         && ls -la /ms-playwright/ ; \
+       else \
+         echo "INSTALL_BROWSERS=false — skipping chromium + chrome-for-testing (slim u2s image)" ; \
+       fi \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 

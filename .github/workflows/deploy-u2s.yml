@@ -68,11 +68,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push backend
+      # INSTALL_BROWSERS=false makes a SLIM backend image (no Playwright chromium
+      # / chrome-for-testing, ~1 GB lighter) so the pull fits the box's 8 GB disk.
+      # Trade-off: browser-driven QA agents (mcp__playwright__*) won't run on u2s.
+      # This is u2s-only — main-arm64 (oracle, deploy.yml) keeps the browsers.
+      - name: Build & push backend (slim, no browsers)
         uses: docker/build-push-action@v6
         with:
           context: apps/backend
           push: true
+          build-args: |
+            INSTALL_BROWSERS=false
           tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-backend:main
 
       # Admin is built WITHOUT VITE_API_URL on purpose: the client falls back to
