@@ -1441,15 +1441,23 @@ impl App {
         }
 
         self.existing_config = monorepo::read_existing(root).is_some();
-        let detected = monorepo::detect(root);
+        let mut detected = monorepo::detect(root);
         if detected.is_empty() {
             self.plan_note =
                 "no sub-projects found — this scans as a single project (use the Project field on Connection)"
                     .into();
             return;
         }
+        // Prepend the repository itself as the catch-all project, so root-level
+        // docs and anything outside a package still route somewhere instead of
+        // failing the run as unmapped.
+        let root_row = monorepo::repository_root_row(root, &detected);
+        detected.insert(0, root_row);
         // Build with no matches yet; the async listing rebuilds with them.
-        self.plan_note = format!("{} sub-project(s) detected", detected.len());
+        self.plan_note = format!(
+            "{} package(s) + the repository root",
+            detected.len().saturating_sub(1)
+        );
         self.plan = monorepo::build_plan(detected, &self.existing_projects);
         self.load_projects();
     }

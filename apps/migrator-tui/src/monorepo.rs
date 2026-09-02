@@ -116,6 +116,45 @@ pub fn detect(root: &Path) -> Vec<Detected> {
     into_detected(dirs)
 }
 
+/// A synthetic row for the repository itself — the catch-all project.
+///
+/// A monorepo's root-level knowledge (top-level guides, `/docs`, ADRs) lives
+/// outside every package. Route only by package globs and that knowledge maps
+/// nowhere, and the runner aborts the whole run with `ROUTING_UNMAPPED`. This
+/// row's `**` glob is the *least* specific of all, so a package's own files
+/// still route to the package (the resolver prefers the more specific pattern);
+/// only what no package claims falls here. It also becomes the config's
+/// `defaults.project`, the final backstop for anything a glob misses.
+///
+/// Kept out of [`detect`] so detection stays a pure "what packages exist" —
+/// this is a routing decision layered on top, added only when packages exist.
+pub fn repository_root_row(root: &Path, existing: &[Detected]) -> Detected {
+    let name = root
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repository".to_string());
+    let taken: std::collections::BTreeSet<&str> =
+        existing.iter().map(|d| d.alias.as_str()).collect();
+    let mut alias = slugify(&name).unwrap_or_else(|| "repository".to_string());
+    if taken.contains(alias.as_str()) {
+        alias = format!("{alias}-root");
+    }
+    Detected {
+        alias,
+        name,
+        rel_dir: String::new(),
+        via: "repository root",
+    }
+}
+
+/// Whether a row is the synthetic repository-root catch-all.
+pub fn is_repository_root(row: &Detected) -> bool {
+    row.rel_dir.is_empty()
+}
+
 /// Turns raw `(rel_dir, via)` hits into de-duplicated, slug-stable rows.
 fn into_detected(mut dirs: Vec<(String, &'static str)>) -> Vec<Detected> {
     // A directory can be matched by more than one source (a package listed in
@@ -488,12 +527,25 @@ pub fn build_config(
             },
         );
     }
+    // The repository-root row is the catch-all: anything a package glob misses
+    // routes here instead of failing the run as unmapped. Only when it actually
+    // made it into the config (resolved, not skipped) can it be the default.
+    let default = rows
+        .iter()
+        .find(|r| {
+            is_repository_root(&r.detected)
+                && r.action != Action::Skip
+                && r.resolved_project_id.is_some()
+        })
+        .map(|r| r.detected.alias.clone())
+        .filter(|alias| projects.contains_key(alias));
+
     RepoConfig {
         version: 1,
         repository: RepoIdentity {
             id: slugify(repository_id).unwrap_or_else(|| "repository".to_string()),
         },
-        defaults: Defaults::default(),
+        defaults: Defaults { project: default },
         projects,
     }
 }

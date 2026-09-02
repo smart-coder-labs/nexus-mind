@@ -273,6 +273,84 @@ fn the_config_round_trips_through_yaml() {
     assert!(yaml.contains("apps/web/**"));
 }
 
+// ── Repository-root catch-all ────────────────────────────────────────────────
+
+#[test]
+fn the_repository_root_row_is_a_wildcard_catch_all() {
+    let s = Scratch::new();
+    s.file("apps/web/package.json", "{}");
+    let row = repository_root_row(s.root(), &[]);
+    assert!(is_repository_root(&row));
+    assert_eq!(row.rel_dir, "", "the root spans the whole repository");
+    assert_eq!(row.route_glob(), "**", "and matches everything a package doesn't");
+    assert!(!row.name.is_empty());
+}
+
+/// Its alias must not collide with a package that happens to share the repo's
+/// name — the config keys on the alias.
+#[test]
+fn the_root_alias_steps_aside_for_a_package_of_the_same_name() {
+    let s = Scratch::new();
+    let repo_name = s.root().canonicalize().unwrap();
+    let same = slugify(repo_name.file_name().unwrap().to_str().unwrap()).unwrap();
+    let existing = vec![Detected {
+        alias: same.clone(),
+        name: "x".into(),
+        rel_dir: format!("apps/{same}"),
+        via: "test",
+    }];
+    let row = repository_root_row(s.root(), &existing);
+    assert_ne!(row.alias, same, "the root gets a distinct alias");
+    assert!(row.alias.ends_with("-root"));
+}
+
+fn root_row(action: Action, resolved: Option<&str>) -> PlanRow {
+    PlanRow {
+        detected: Detected {
+            alias: "repo".into(),
+            name: "repo".into(),
+            rel_dir: String::new(),
+            via: "repository root",
+        },
+        matched: None,
+        action,
+        resolved_project_id: resolved.map(str::to_string),
+    }
+}
+
+#[test]
+fn the_repository_root_becomes_the_default_project() {
+    let rows = vec![
+        root_row(Action::Create, Some("p_repo")),
+        resolved_row("apps/web", Action::Create, Some("p_web")),
+    ];
+    let config = build_config("repo", None, &rows);
+    assert_eq!(
+        config.defaults.project.as_deref(),
+        Some("repo"),
+        "unmapped units fall to the repository project"
+    );
+    assert_eq!(config.projects["repo"].paths, vec!["**"]);
+    // It serializes, and round-trips with the default intact.
+    let yaml = to_yaml(&config).unwrap();
+    assert!(yaml.contains("project: repo"), "{yaml}");
+    let parsed: RepoConfig = serde_yaml::from_str(&yaml).unwrap();
+    assert_eq!(parsed, config);
+}
+
+/// A skipped root leaves no default — the operator chose not to have a catch-all,
+/// and the config must not name a project it did not write.
+#[test]
+fn a_skipped_repository_root_leaves_no_default() {
+    let rows = vec![
+        root_row(Action::Skip, None),
+        resolved_row("apps/web", Action::Create, Some("p_web")),
+    ];
+    let config = build_config("repo", None, &rows);
+    assert_eq!(config.defaults.project, None);
+    assert!(!config.projects.contains_key("repo"));
+}
+
 #[test]
 fn read_existing_returns_none_for_a_missing_or_unreadable_file() {
     let s = Scratch::new();

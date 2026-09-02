@@ -1505,10 +1505,15 @@ fn projects(f: &mut Frame, area: Rect, app: &App) {
                 Action::Create => format!("  ▸ {} (new)", row.detected.name),
                 Action::Skip => String::new(),
             };
+            let where_ = if row.detected.rel_dir.is_empty() {
+                "· repository root".to_string()
+            } else {
+                row.detected.rel_dir.clone()
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{badge}  "), Style::default().fg(badge_color)),
                 Span::styled(
-                    format!("{:<22}", row.detected.rel_dir),
+                    format!("{where_:<22}"),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(target, Style::default().fg(MUTED)),
