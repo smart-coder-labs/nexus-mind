@@ -1666,10 +1666,27 @@ fn summary(f: &mut Frame, area: Rect, app: &App) {
             ),
             ACCENT,
         ),
-        (_, Some(_)) => (
-            format!("Run finished — {} candidate(s) staged", p.classified + p.fallbacks),
-            GOOD,
-        ),
+        // Report what actually reached the queue, not how many units were
+        // classified. A rescan of an already-migrated source classifies every
+        // unit and stages none of them — saying "12 staged" there is the exact
+        // lie that makes an empty review screen look like a bug.
+        (_, Some(_)) => match p.staged {
+            Some((0, skipped, rejected)) if skipped + rejected > 0 => (
+                format!(
+                    "Run finished — nothing new to review ({skipped} already migrated \
+                     or previously rejected, {rejected} rejected now)"
+                ),
+                CAUTION,
+            ),
+            Some((staged, _, _)) => (
+                format!("Run finished — {staged} candidate(s) staged for review"),
+                GOOD,
+            ),
+            None => (
+                format!("Run finished — {} unit(s) classified", p.classified + p.fallbacks),
+                GOOD,
+            ),
+        },
         _ => ("Nothing has been run yet.".to_string(), MUTED),
     };
     lines.push(Line::styled(
@@ -1760,6 +1777,14 @@ fn summary(f: &mut Frame, area: Rect, app: &App) {
         }
         (Some(LastCommand::Commit(_)), _) => {
             "Committed knowledge is vectorized and searchable. Nothing else is pending."
+        }
+        // A finished run that staged nothing has an empty queue by design — a
+        // rescan of an already-migrated source. Do not send the operator to a
+        // review screen that will correctly show zero.
+        (_, Some(fin)) if fin.ok && matches!(p.staged, Some((0, s, r)) if s + r > 0) => {
+            "This source was already migrated — its units are committed or were rejected \
+             before, so there is nothing new to review. Change or add sources, or edit the \
+             source to produce new units."
         }
         (_, Some(fin)) if fin.ok && p.run_id.is_some() => {
             "Next: press R to open the review queue. Nothing is written until you commit."
@@ -2587,6 +2612,30 @@ mod tests {
         let text = render(&app, 140, 40);
         assert!(text.contains("2 project queue(s) staged"), "{text}");
         assert!(text.contains("web") && text.contains("api"), "{text}");
+    }
+
+    /// The reported confusion: a rescan classifies every unit but stages none,
+    /// and the summary must say so plainly instead of claiming N were staged.
+    #[test]
+    fn a_rescan_that_stages_nothing_says_so_instead_of_claiming_candidates() {
+        let mut app = populated();
+        app.progress.classified = 0;
+        app.progress.fallbacks = 12;
+        app.progress.staged = Some((0, 12, 0));
+        app.progress.run_id = Some("01ec".into());
+        app.progress.finished = Some(crate::app::FinishedRun {
+            ok: true,
+            aborted_on_budget: false,
+            error: None,
+        });
+        app.goto(Screen::Summary);
+        let text = render(&app, 140, 40);
+        assert!(text.contains("nothing new to review"), "{text}");
+        assert!(
+            !text.contains("12 candidate(s) staged"),
+            "the misleading headline must be gone: {text}"
+        );
+        assert!(text.contains("already migrated"), "{text}");
     }
 
     #[test]
