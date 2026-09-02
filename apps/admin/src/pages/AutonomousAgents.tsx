@@ -541,7 +541,7 @@ export default function AutonomousAgents() {
   // Approve & publish a generated post draft to LinkedIn.
   const publishPost = useMutation({
     mutationFn: (vars: { id: string; destination: 'personal' | 'organization' }) => client.publishFindingLinkedin(vars.id, { destination: vars.destination }),
-    onSuccess: result => { invalidate('autonomous-findings'); if (result.url) window.open(result.url, '_blank') },
+    onSuccess: result => { invalidate('autonomous-findings', 'autonomous-deliveries'); if (result.url) window.open(result.url, '_blank') },
     onError: (err: unknown) => window.alert(`Could not publish: ${(err as { message?: string })?.message ?? 'unknown error'}`),
   })
   const connectLinkedin = useMutation({
@@ -564,6 +564,7 @@ export default function AutonomousAgents() {
     },
   })
   const [showArchivedFindings, setShowArchivedFindings] = useState(false)
+  const [findingTypeFilter, setFindingTypeFilter] = useState<'all' | 'bug' | 'post' | 'feedback' | 'lead'>('all')
   // "Resolve with agent": hand a single finding (and its linked GitHub issue, if
   // one was filed) to a chosen issue-resolver so it fixes ONLY that one thing.
   const [resolveWith, setResolveWith] = useState<{ findingId: string; title: string; finding: Dict; issue?: { repository: string; number: number } } | null>(null)
@@ -768,12 +769,40 @@ export default function AutonomousAgents() {
         const allFindings = findings.data ?? []
         const archivedFindingsCount = allFindings.filter(f => f.status === 'ignored').length
         const activeCount = allFindings.length - archivedFindingsCount
-        const visibleFindings = showArchivedFindings ? allFindings : allFindings.filter(f => f.status !== 'ignored')
+        // A finding's type: post / feedback / lead are flagged in evidence; the rest are bugs/issues.
+        const findingType = (f: typeof allFindings[number]): 'bug' | 'post' | 'feedback' | 'lead' => {
+          const ev = asDict(f.evidence) ?? {}
+          const kind = asStr(ev.kind)
+          if (kind === 'post') return 'post'
+          if (kind === 'feedback') return 'feedback'
+          if (asDict(ev.lead)) return 'lead'
+          return 'bug'
+        }
+        const TYPE_FILTERS: Array<{ value: typeof findingTypeFilter; label: string }> = [
+          { value: 'all', label: 'All' },
+          { value: 'bug', label: 'Bugs' },
+          { value: 'post', label: 'Posts' },
+          { value: 'feedback', label: 'Feedback' },
+          { value: 'lead', label: 'Leads' },
+        ]
+        const statusScopedFindings = allFindings.filter(f => showArchivedFindings || f.status !== 'ignored')
+        // Only offer type pills that actually occur in the current status scope,
+        // so a pill never resolves to an empty list.
+        const presentTypes = new Set(statusScopedFindings.map(findingType))
+        const visibleFindings = statusScopedFindings
+          .filter(f => findingTypeFilter === 'all' || findingType(f) === findingTypeFilter)
         return (
         <div className="space-y-3">
           {allFindings.length > 0 && (
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                {presentTypes.size > 1 && (
+                  <div className="flex flex-wrap gap-1">
+                    {TYPE_FILTERS.filter(f => f.value === 'all' || presentTypes.has(f.value)).map(f => (
+                      <button key={f.value} type="button" onClick={() => setFindingTypeFilter(f.value)} className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${findingTypeFilter === f.value ? 'bg-accent-blue/20 text-accent-blue' : 'text-text-tertiary hover:text-text-primary'}`}>{f.label}</button>
+                    ))}
+                  </div>
+                )}
                 {archivedFindingsCount > 0 && <Switch size="sm" checked={showArchivedFindings} onCheckedChange={setShowArchivedFindings} label={`Show archived (${archivedFindingsCount})`} />}
               </div>
               {can('autonomous_agent:update') && activeCount > 0 && (
@@ -817,6 +846,9 @@ export default function AutonomousAgents() {
             const findingDeliveries = deliveries.data?.filter(item => item.finding_id === finding.id) ?? []
             // The GitHub issue this finding was already filed as (if any).
             const linkedIssue = findingDeliveries.find(d => d.channel === 'github_issue' && d.external_url)
+            // Whether this post was already published to LinkedIn (a delivered
+            // 'linkedin' delivery). Drives the "Published" state and blocks re-publish.
+            const linkedinDelivery = findingDeliveries.find(d => d.channel === 'linkedin' && d.status === 'delivered')
             const hasStructured = shot || locDict || locStr || (steps && steps.length) || repro
             return (
               <article key={finding.id} className="rounded-[14px] border border-border-primary bg-white/[0.02] overflow-hidden grid grid-cols-[4px_1fr]">
@@ -829,7 +861,13 @@ export default function AutonomousAgents() {
                       {asStr(ev.kind) === 'post' && <Badge size="sm" variant="info">post</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) === 'post' && (() => {
+                      {asStr(ev.kind) === 'post' && linkedinDelivery && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-status-success">
+                          Published
+                          {linkedinDelivery.external_url && <a href={linkedinDelivery.external_url} target="_blank" rel="noreferrer" className="text-accent-blue inline-flex"><ExternalLink className="w-3 h-3" /></a>}
+                        </span>
+                      )}
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) === 'post' && !linkedinDelivery && (() => {
                         const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
                         const postDest = asStr(asDict(ev.post)?.destination)
                         const dest = (postDest === 'organization' || postDest === 'personal') && connected.has(postDest) ? postDest : connected.has('personal') ? 'personal' : connected.has('organization') ? 'organization' : null

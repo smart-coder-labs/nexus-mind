@@ -1330,6 +1330,25 @@ pub async fn publish_finding_linkedin(
             &urn,
             Some(&url),
         );
+        // Record the publication as a first-class delivery so the UI can show it as
+        // "published" (with a link to the post) and prevent a duplicate re-publish.
+        // The finding id is the idempotency key: one LinkedIn delivery per finding.
+        if let Ok(delivery) = queries::create_autonomous_agent_delivery(
+            &conn,
+            &auth.org_id,
+            &finding.run_id,
+            Some(&finding.id),
+            "linkedin",
+            &finding.id,
+        ) {
+            let _ = queries::complete_autonomous_agent_delivery(
+                &conn,
+                &auth.org_id,
+                &delivery.id,
+                Some(&urn),
+                Some(&url),
+            );
+        }
         let _ = queries::patch_autonomous_agent_finding(&conn, &auth.org_id, &finding.id, "resolved");
     }
     Ok(Json(serde_json::json!({ "url": url, "urn": urn })))
