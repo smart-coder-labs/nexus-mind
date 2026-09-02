@@ -108,6 +108,30 @@ pub struct Run {
     pub attestation: serde_json::Value,
 }
 
+/// A backend project, as returned by `GET /v1/projects`.
+///
+/// Only the fields the monorepo planner needs are carried; the backend sends
+/// more (`org_id`, `created_at`), and `#[serde(default)]` on the rest keeps a
+/// widened response from breaking the picker. Matching a detected sub-package
+/// to an existing project is done by `name`, which is unique per organization.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Non-null when the project is soft-archived. An archived project is a poor
+    /// migration target, so the planner shows it but does not match to it.
+    #[serde(default)]
+    pub archived_at: Option<String>,
+}
+
+impl Project {
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+}
+
 /// A reviewer's decision.
 ///
 /// The wire values are `approved` / `rejected` / `restaged` — past tense. An
@@ -286,6 +310,66 @@ impl Client {
             .send()?
             .error_for_status()?
             .json()?)
+    }
+
+    /// The projects the monorepo planner matches detected sub-packages against.
+    ///
+    /// Scoped to one client when the run has one: a migration for `acme` should
+    /// only ever match — and never accidentally reuse — a project that belongs
+    /// to `acme`. With no client the listing is org-wide, which is what an
+    /// internal (u2s) migration wants.
+    pub fn projects(&self, client_id: Option<&str>) -> Result<Vec<Project>> {
+        let mut url = self.url("/v1/projects");
+        if let Some(cid) = client_id.filter(|c| !c.trim().is_empty()) {
+            url.push_str(&format!("?client_id={}", cid.trim()));
+        }
+        let value: serde_json::Value = self
+            .http
+            .get(url)
+            .bearer_auth(&self.key)
+            .send()?
+            .error_for_status()?
+            .json()?;
+        // Tolerate either a bare array or an envelope, like `runs` does.
+        let items = value
+            .get("projects")
+            .or_else(|| value.get("items"))
+            .cloned()
+            .unwrap_or(value);
+        Ok(serde_json::from_value(items).unwrap_or_default())
+    }
+
+    /// Creates a project for a detected sub-package that had no match.
+    ///
+    /// `client_id` owns it (the run's client, or `None` for internal work);
+    /// `parent_id` is set when the operator asked for the repo to be a parent
+    /// project. A name that already exists comes back as a 409, surfaced as a
+    /// plain message rather than an opaque error — the planner turns that into
+    /// "select the existing one instead".
+    pub fn create_project(
+        &self,
+        name: &str,
+        client_id: Option<&str>,
+        parent_id: Option<&str>,
+    ) -> Result<Project> {
+        let mut body = serde_json::Map::new();
+        body.insert("name".into(), serde_json::json!(name));
+        if let Some(cid) = client_id.filter(|c| !c.trim().is_empty()) {
+            body.insert("client_id".into(), serde_json::json!(cid.trim()));
+        }
+        if let Some(pid) = parent_id.filter(|p| !p.trim().is_empty()) {
+            body.insert("parent_id".into(), serde_json::json!(pid.trim()));
+        }
+        let resp = self
+            .http
+            .post(self.url("/v1/projects"))
+            .bearer_auth(&self.key)
+            .json(&serde_json::Value::Object(body))
+            .send()?;
+        if resp.status() == reqwest::StatusCode::CONFLICT {
+            anyhow::bail!("a project named `{name}` already exists — select it instead");
+        }
+        Ok(resp.error_for_status()?.json()?)
     }
 }
 

@@ -4,18 +4,24 @@
 //! Nothing here draws. `ui.rs` renders this state and never mutates it, which
 //! is what lets every rule in `config.rs` be tested without a terminal.
 
-use crate::api::{Candidate, Client, CommitResponse, ReviewResponse, Run, Verdict};
+use crate::api::{Candidate, Client, CommitResponse, Project, ReviewResponse, Run, Verdict};
 use crate::config::{Blocker, RunConfig, Source, Warning};
 use crate::mascot::{self, Graphics, Mascot, Mood};
+use crate::monorepo::{self, Action, PlanRow};
 use crate::protocol::{ParsedLine, RunEvent};
 use crate::runner::{resolve_binary, RunHandle, RunnerMsg};
 use std::collections::{BTreeMap, VecDeque};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Connection,
     Source,
     Options,
+    /// The monorepo plan: which sub-projects the path contains, and whether each
+    /// is created, routed into an existing project, or skipped. Sits after
+    /// Options because it needs the path Options collects.
+    Projects,
     Running,
     Review,
     Summary,
@@ -26,7 +32,7 @@ impl Screen {
     /// light up the diagram in the header.
     pub fn stage(self) -> usize {
         match self {
-            Screen::Connection | Screen::Source | Screen::Options => 0,
+            Screen::Connection | Screen::Source | Screen::Options | Screen::Projects => 0,
             Screen::Running => 1,
             Screen::Review => 3,
             Screen::Summary => 4,
@@ -38,6 +44,7 @@ impl Screen {
             Screen::Connection => "Connection",
             Screen::Source => "Source",
             Screen::Options => "Options",
+            Screen::Projects => "Projects",
             Screen::Running => "Run",
             Screen::Review => "Review",
             Screen::Summary => "Summary",
@@ -309,6 +316,10 @@ pub struct Progress {
     pub failed: usize,
     pub tokens: i64,
     pub run_id: Option<String>,
+    /// Every run this session created, one per routed project. In a monorepo run
+    /// the runner emits a `RunCreated` per group, so the single `run_id` above —
+    /// the last one seen — is not enough to review them all.
+    pub created_runs: Vec<CreatedRun>,
     pub staged: Option<(usize, usize, usize)>,
     pub finished: Option<FinishedRun>,
     pub unknown_events: usize,
@@ -316,6 +327,15 @@ pub struct Progress {
     /// Recent exchanges with the model. Bounded like the log: a 3000-unit run
     /// would otherwise hold every prompt it ever sent.
     pub agents: VecDeque<AgentExchange>,
+}
+
+/// A run the runner created for one routed project, collected so the review
+/// screen can walk every project's queue, not just the last.
+#[derive(Debug, Clone)]
+pub struct CreatedRun {
+    pub alias: String,
+    pub project_id: String,
+    pub run_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -484,8 +504,17 @@ impl Progress {
             } => {
                 self.note(format!("· routing ready: {groups} group(s), {mapped_items} mapped, {unmapped_items} unmapped"));
             }
-            RunEvent::RunCreated { alias, run_id, .. } => {
+            RunEvent::RunCreated {
+                alias,
+                run_id,
+                project_id,
+            } => {
                 self.note(format!("· created run {run_id} for {alias}"));
+                self.created_runs.push(CreatedRun {
+                    alias,
+                    project_id,
+                    run_id: run_id.clone(),
+                });
                 self.run_id = Some(run_id);
             }
             RunEvent::Agent {
@@ -648,7 +677,21 @@ pub enum ApiMsg {
     Committed(Result<CommitResponse, String>),
     Probed(Result<String, String>),
     Cancelled(Result<usize, String>),
+    /// The backend projects fetched to match the monorepo plan against.
+    Projects(Result<Vec<Project>, String>),
+    /// The plan executed: projects created, ids resolved, `.nexusmind.yaml`
+    /// written. On success the caller starts the routed run.
+    PlanExecuted(Result<ExecutedPlan, String>),
     Failed(String),
+}
+
+/// The result of confirming a monorepo plan: every non-skipped row resolved to
+/// a project id, and the path of the config the runner will route from.
+#[derive(Debug)]
+pub struct ExecutedPlan {
+    pub rows: Vec<PlanRow>,
+    pub config_path: String,
+    pub dry_run: bool,
 }
 
 /// What the summary screen is summarising.
@@ -699,6 +742,30 @@ pub struct App {
     /// Recent runs, for reviewing work staged before this session started.
     pub runs: Vec<Run>,
     pub run_cursor: usize,
+
+    // ── Monorepo plan ─────────────────────────────────────────────────────────
+    /// The sub-projects detected under the scan path, each with its decision.
+    /// Empty means either "not detected yet" or "not a monorepo"; `detected`
+    /// distinguishes them.
+    pub plan: Vec<PlanRow>,
+    pub plan_cursor: usize,
+    /// The path detection last ran for, so re-entering the screen keeps the
+    /// operator's edits instead of re-detecting and resetting them.
+    pub plan_path: String,
+    /// True once detection has run for the current path, so an empty `plan` can
+    /// be shown as "single project" rather than "not looked yet".
+    pub plan_detected: bool,
+    /// A one-line note from detection: how many sub-projects, or why none.
+    pub plan_note: String,
+    /// The backend projects fetched for the run's client, matched by name.
+    pub existing_projects: Vec<Project>,
+    /// When set, the plan row whose existing-project target is being picked, and
+    /// the cursor into `existing_projects` for that picker.
+    pub selecting_for: Option<usize>,
+    pub select_cursor: usize,
+    /// A `.nexusmind.yaml` already present at the scan root — writing overwrites
+    /// it, which the plan screen warns about before the operator confirms.
+    pub existing_config: bool,
     /// The reply channel of the API call currently in flight, if any.
     api_rx: Option<std::sync::mpsc::Receiver<ApiMsg>>,
     /// What that call is, for the status line. `None` means idle.
@@ -751,6 +818,15 @@ impl App {
             selected: Vec::new(),
             runs: Vec::new(),
             run_cursor: 0,
+            plan: Vec::new(),
+            plan_cursor: 0,
+            plan_path: String::new(),
+            plan_detected: false,
+            plan_note: String::new(),
+            existing_projects: Vec::new(),
+            selecting_for: None,
+            select_cursor: 0,
+            existing_config: false,
             api_rx: None,
             pending: None,
             picked_run: None,
@@ -940,6 +1016,11 @@ impl App {
         self.screen = screen;
         self.cursor = 0;
         self.editing = false;
+        // Arriving at the plan screen is what triggers detection — it needs the
+        // path from Options, which the operator has just finished with.
+        if screen == Screen::Projects {
+            self.enter_projects();
+        }
     }
 
     /// Starts a run. Refuses rather than launching something that will fail.
@@ -1109,6 +1190,27 @@ impl App {
                 self.load_runs();
             }
             ApiMsg::Cancelled(Err(e)) => self.status = format!("cancel failed: {e}"),
+            ApiMsg::Projects(Ok(projects)) => {
+                self.existing_projects = projects;
+                self.rematch_plan();
+                let (create, select, _) = self.plan_summary();
+                self.status = format!(
+                    "{} project(s) on the backend · plan: {create} new, {select} existing",
+                    self.existing_projects.len()
+                );
+            }
+            ApiMsg::Projects(Err(e)) => {
+                self.status = format!("could not list projects: {e} — matching by name only")
+            }
+            ApiMsg::PlanExecuted(Ok(exec)) => {
+                self.plan = exec.rows;
+                self.config.config_path = exec.config_path.clone();
+                self.status = format!("wrote {} — starting routed run", exec.config_path);
+                // The routed run reads the config just written; `start` reuses
+                // the ordinary launch path, which now emits `--config`.
+                self.start(exec.dry_run);
+            }
+            ApiMsg::PlanExecuted(Err(e)) => self.status = format!("plan failed: {e}"),
         }
     }
 
@@ -1118,15 +1220,40 @@ impl App {
     /// an operator can come back the next morning and finish a queue they left
     /// half-reviewed — the queue lives in the backend, not in this process.
     pub fn active_run(&self) -> Option<String> {
-        self.picked_run
-            .clone()
-            .or_else(|| self.progress.run_id.clone())
+        if let Some(picked) = &self.picked_run {
+            return Some(picked.clone());
+        }
+        // A monorepo run creates one run per project. Pointing the review screen
+        // at the last one would silently hide every other project's queue, so
+        // with more than one this session the operator must pick which project
+        // to review. A single run keeps opening directly, as before.
+        if self.progress.created_runs.len() > 1 {
+            return None;
+        }
+        self.progress.run_id.clone()
     }
 
     /// True when the review screen has nothing to act on and should offer the
     /// list of runs instead of an empty queue.
     pub fn picking_run(&self) -> bool {
         self.active_run().is_none()
+    }
+
+    /// Whether the run picker is showing this session's per-project runs rather
+    /// than the backend's run history. The session list is offered first after a
+    /// monorepo run — it is labelled by project and is exactly the set the
+    /// operator just staged — and `R` still loads the full history over it.
+    pub fn showing_session_runs(&self) -> bool {
+        self.runs.is_empty() && !self.progress.created_runs.is_empty()
+    }
+
+    /// The number of rows the run picker is currently showing.
+    pub fn run_list_len(&self) -> usize {
+        if self.showing_session_runs() {
+            self.progress.created_runs.len()
+        } else {
+            self.runs.len()
+        }
     }
 
     pub fn load_runs(&mut self) {
@@ -1136,10 +1263,18 @@ impl App {
     }
 
     pub fn pick_run(&mut self) {
-        let Some(run) = self.runs.get(self.run_cursor) else {
+        let id = if self.showing_session_runs() {
+            self.progress
+                .created_runs
+                .get(self.run_cursor)
+                .map(|r| r.run_id.clone())
+        } else {
+            self.runs.get(self.run_cursor).map(|r| r.id.clone())
+        };
+        let Some(id) = id else {
             return;
         };
-        self.picked_run = Some(run.id.clone());
+        self.picked_run = Some(id);
         self.load_candidates();
     }
 
@@ -1268,6 +1403,265 @@ impl App {
             ApiMsg::Probed(c.probe().map_err(|e| e.to_string()))
         });
     }
+
+    // ── Monorepo plan ─────────────────────────────────────────────────────────
+
+    /// Detects the sub-projects under the current path and loads the backend
+    /// projects to match them against.
+    ///
+    /// Runs at most once per path: re-entering the screen keeps the operator's
+    /// decisions. Detection touches only the filesystem and is bounded, so it
+    /// runs inline; the project listing it matches against is a backend call and
+    /// goes through the async channel like every other.
+    pub fn enter_projects(&mut self) {
+        if self.plan_detected && self.plan_path == self.config.path {
+            return; // already detected for this path — keep the operator's edits
+        }
+        self.plan.clear();
+        self.plan_cursor = 0;
+        self.selecting_for = None;
+        self.plan_detected = true;
+        self.plan_path = self.config.path.clone();
+        self.existing_config = false;
+
+        if !self.config.source.takes_path() {
+            self.plan_note = "this source scans no path, so it has no sub-projects".into();
+            return;
+        }
+        let raw = self.config.path.trim();
+        let root = Path::new(raw);
+        if raw.is_empty() || !root.is_dir() {
+            self.plan_note = "set a valid path on the Options screen first".into();
+            return;
+        }
+        if !in_git_repo(root) {
+            self.plan_note =
+                "monorepo routing needs a Git repository — none found at or above this path".into();
+            return;
+        }
+
+        self.existing_config = monorepo::read_existing(root).is_some();
+        let detected = monorepo::detect(root);
+        if detected.is_empty() {
+            self.plan_note =
+                "no sub-projects found — this scans as a single project (use the Project field on Connection)"
+                    .into();
+            return;
+        }
+        // Build with no matches yet; the async listing rebuilds with them.
+        self.plan_note = format!("{} sub-project(s) detected", detected.len());
+        self.plan = monorepo::build_plan(detected, &self.existing_projects);
+        self.load_projects();
+    }
+
+    /// Fetches the backend projects the plan matches against, scoped to the
+    /// run's client when it has one.
+    pub fn load_projects(&mut self) {
+        let client = self.config.client.trim().to_string();
+        self.spawn_api("loading projects", move |c| {
+            let cid = (!client.is_empty()).then_some(client.as_str());
+            ApiMsg::Projects(c.projects(cid).map_err(|e| e.to_string()))
+        });
+    }
+
+    fn rematch_plan(&mut self) {
+        if self.plan.is_empty() {
+            return;
+        }
+        let detected: Vec<_> = self.plan.iter().map(|r| r.detected.clone()).collect();
+        self.plan = monorepo::build_plan(detected, &self.existing_projects);
+        self.plan_cursor = self.plan_cursor.min(self.plan.len().saturating_sub(1));
+    }
+
+    pub fn plan_move(&mut self, delta: isize) {
+        if self.selecting_for.is_some() {
+            let n = self.existing_projects.len();
+            if n > 0 {
+                self.select_cursor =
+                    (self.select_cursor as isize + delta).rem_euclid(n as isize) as usize;
+            }
+            return;
+        }
+        let n = self.plan.len();
+        if n > 0 {
+            self.plan_cursor = (self.plan_cursor as isize + delta).rem_euclid(n as isize) as usize;
+        }
+    }
+
+    /// Cycles the focused row's action: Create → Skip → (Select if it matched)
+    /// → Create. A row with no match never offers Select here — that is what the
+    /// existing-project picker is for.
+    pub fn cycle_action(&mut self) {
+        let Some(row) = self.plan.get_mut(self.plan_cursor) else {
+            return;
+        };
+        row.action = match &row.action {
+            Action::Create => Action::Skip,
+            Action::Skip => match &row.matched {
+                Some(p) => Action::Select(p.id.clone()),
+                None => Action::Create,
+            },
+            Action::Select(_) => Action::Create,
+        };
+    }
+
+    /// Opens the picker of existing backend projects for the focused row.
+    pub fn begin_select(&mut self) {
+        if self.plan.get(self.plan_cursor).is_none() {
+            return;
+        }
+        if self.existing_projects.is_empty() {
+            self.status = "no existing projects to choose from on this backend".into();
+            return;
+        }
+        self.selecting_for = Some(self.plan_cursor);
+        // Open on the current selection when there is one, else the top.
+        self.select_cursor = self
+            .plan
+            .get(self.plan_cursor)
+            .and_then(|r| r.selected_project_id())
+            .and_then(|id| self.existing_projects.iter().position(|p| p.id == id))
+            .unwrap_or(0);
+    }
+
+    pub fn cancel_select(&mut self) {
+        self.selecting_for = None;
+    }
+
+    /// Routes the row being picked into the highlighted existing project.
+    pub fn confirm_select(&mut self) {
+        let Some(row_idx) = self.selecting_for.take() else {
+            return;
+        };
+        let Some(project) = self.existing_projects.get(self.select_cursor).cloned() else {
+            return;
+        };
+        if let Some(row) = self.plan.get_mut(row_idx) {
+            row.action = Action::Select(project.id.clone());
+            row.matched = Some(project);
+        }
+    }
+
+    /// How many rows the plan will act on, and how many of those create a new
+    /// project — the two numbers the confirmation needs to state plainly.
+    pub fn plan_summary(&self) -> (usize, usize, usize) {
+        let mut create = 0;
+        let mut select = 0;
+        let mut skip = 0;
+        for row in &self.plan {
+            match row.action {
+                Action::Create => create += 1,
+                Action::Select(_) => select += 1,
+                Action::Skip => skip += 1,
+            }
+        }
+        (create, select, skip)
+    }
+
+    /// Confirms the plan: creates the projects that need creating, writes the
+    /// `.nexusmind.yaml`, and — on success — launches the routed run.
+    ///
+    /// All of it happens on one background thread and reports once, rather than
+    /// a create-per-keystroke state machine: a monorepo of twenty packages
+    /// should be one confirmation, not twenty.
+    pub fn execute_plan(&mut self, dry_run: bool) {
+        if self.is_running() {
+            self.status = "a run is already in flight — press x to stop it".into();
+            return;
+        }
+        // Confirming a plan creates backend projects and writes a file into the
+        // repository — real, hard-to-undo side effects. A "preview" must not do
+        // either, so a dry run is refused here rather than quietly creating
+        // projects. Preview each project's queue after the run instead.
+        if dry_run {
+            self.status =
+                "a monorepo plan is applied with r — it creates projects and writes the config, \
+                 so there is no side-effect-free preview; review each queue after the run"
+                    .into();
+            return;
+        }
+        let (create, select, _skip) = self.plan_summary();
+        if create + select == 0 {
+            self.status = "every sub-project is skipped — nothing to migrate".into();
+            return;
+        }
+        // A real run needs credentials before it creates anything on the backend;
+        // fail here rather than after creating half the projects.
+        if let Some(first) = self.config.blockers(dry_run).into_iter().next() {
+            self.status = format!("cannot start: {}", first.why);
+            return;
+        }
+        let rows = self.plan.clone();
+        let client = self.config.client.trim().to_string();
+        let root = Path::new(self.config.path.trim()).to_path_buf();
+        let repo_id = repository_name(&root);
+        let config_path = monorepo::config_path(&root)
+            .to_string_lossy()
+            .to_string();
+
+        self.spawn_api("creating projects & writing config", move |c| {
+            let mut rows = rows;
+            let client = (!client.is_empty()).then_some(client.as_str());
+            for row in rows.iter_mut() {
+                match &row.action {
+                    Action::Skip => continue,
+                    Action::Select(id) => row.resolved_project_id = Some(id.clone()),
+                    Action::Create => match c.create_project(&row.detected.name, client, None) {
+                        Ok(p) => row.resolved_project_id = Some(p.id),
+                        Err(e) => {
+                            return ApiMsg::PlanExecuted(Err(format!(
+                                "creating project `{}`: {e}",
+                                row.detected.name
+                            )))
+                        }
+                    },
+                }
+            }
+            let config = monorepo::build_config(&repo_id, client, &rows);
+            if config.projects.is_empty() {
+                return ApiMsg::PlanExecuted(Err("no routable sub-projects after execution".into()));
+            }
+            let yaml = match monorepo::to_yaml(&config) {
+                Ok(y) => y,
+                Err(e) => return ApiMsg::PlanExecuted(Err(format!("building config: {e}"))),
+            };
+            if let Err(e) = std::fs::write(&config_path, yaml) {
+                return ApiMsg::PlanExecuted(Err(format!("writing {config_path}: {e}")));
+            }
+            ApiMsg::PlanExecuted(Ok(ExecutedPlan {
+                rows,
+                config_path,
+                dry_run,
+            }))
+        });
+    }
+}
+
+/// Whether `root` or any ancestor holds a `.git` — the routing config is
+/// discovered from the Git root, so a path outside a repository cannot route.
+fn in_git_repo(root: &Path) -> bool {
+    let mut cursor = root;
+    loop {
+        if cursor.join(".git").exists() {
+            return true;
+        }
+        match cursor.parent() {
+            Some(parent) => cursor = parent,
+            None => return false,
+        }
+    }
+}
+
+/// A human name for the repository at `root`, used as `repository.id` (slugged
+/// downstream). The directory's own name, or `repository` when the path has
+/// none (e.g. `.` at a filesystem root, which does not happen in practice).
+fn repository_name(root: &Path) -> String {
+    root.canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repository".to_string())
 }
 
 #[cfg(test)]
@@ -1725,6 +2119,130 @@ mod tests {
         // The repository this crate lives in must pass both.
         app.config.path = "../../".into();
         assert!(app.blockers(true).is_empty(), "{:?}", app.blockers(true));
+    }
+
+    // ── Monorepo plan ─────────────────────────────────────────────────────────
+
+    fn created(alias: &str, run: &str) -> CreatedRun {
+        CreatedRun {
+            alias: alias.into(),
+            project_id: format!("p_{alias}"),
+            run_id: run.into(),
+        }
+    }
+
+    fn plan_row(rel: &str, action: Action) -> PlanRow {
+        let name = rel.rsplit('/').next().unwrap().to_string();
+        PlanRow {
+            detected: crate::monorepo::Detected {
+                alias: name.clone(),
+                name,
+                rel_dir: rel.into(),
+                via: "test",
+            },
+            matched: None,
+            action,
+            resolved_project_id: None,
+        }
+    }
+
+    /// The multi-run failure this prevents: after a monorepo run the review
+    /// screen must not silently open only the last project's queue.
+    #[test]
+    fn several_session_runs_force_a_pick_but_one_opens_directly() {
+        let mut app = App::new();
+        app.progress.run_id = Some("last".into());
+        app.progress.created_runs = vec![created("web", "run-web")];
+        assert_eq!(
+            app.active_run().as_deref(),
+            Some("last"),
+            "a single project opens without a pick"
+        );
+
+        app.progress.created_runs.push(created("api", "run-api"));
+        assert!(
+            app.picking_run(),
+            "two projects means the operator chooses which to review"
+        );
+        assert!(app.showing_session_runs());
+        assert_eq!(app.run_list_len(), 2);
+    }
+
+    #[test]
+    fn picking_a_session_run_targets_that_projects_queue() {
+        let mut app = App::new();
+        app.config.api_url = "http://127.0.0.1:1".into();
+        app.config.api_key = "k".into();
+        app.progress.created_runs = vec![created("web", "run-web"), created("api", "run-api")];
+        app.run_cursor = 1;
+        app.pick_run();
+        assert_eq!(app.picked_run.as_deref(), Some("run-api"));
+        assert_eq!(app.active_run().as_deref(), Some("run-api"));
+        assert!(!app.picking_run(), "a pick settles the target");
+    }
+
+    #[test]
+    fn cycling_a_matched_row_offers_select_but_an_unmatched_one_does_not() {
+        let mut app = App::new();
+        app.plan = vec![plan_row("apps/web", Action::Create)];
+        app.plan[0].matched = Some(Project {
+            id: "p_web".into(),
+            name: "web".into(),
+            client_id: None,
+            archived_at: None,
+        });
+        app.cycle_action(); // Create → Skip
+        assert_eq!(app.plan[0].action, Action::Skip);
+        app.cycle_action(); // Skip → Select (it matched)
+        assert_eq!(app.plan[0].action, Action::Select("p_web".into()));
+        app.cycle_action(); // Select → Create
+        assert_eq!(app.plan[0].action, Action::Create);
+
+        // With no match, Skip goes straight back to Create.
+        app.plan[0].matched = None;
+        app.cycle_action(); // Create → Skip
+        app.cycle_action(); // Skip → Create
+        assert_eq!(app.plan[0].action, Action::Create);
+    }
+
+    #[test]
+    fn a_plan_where_everything_is_skipped_refuses_to_execute() {
+        let mut app = App::new();
+        app.config.api_url = "http://localhost:8080".into();
+        app.config.api_key = "nm_x".into();
+        app.config.path = ".".into();
+        app.plan = vec![plan_row("apps/web", Action::Skip)];
+        app.execute_plan(false);
+        assert!(app.handle.is_none(), "nothing was launched");
+        assert!(app.status.contains("skipped"), "{}", app.status);
+    }
+
+    #[test]
+    fn plan_summary_counts_each_action() {
+        let mut app = App::new();
+        app.plan = vec![
+            plan_row("a", Action::Create),
+            plan_row("b", Action::Select("p".into())),
+            plan_row("c", Action::Skip),
+            plan_row("d", Action::Create),
+        ];
+        assert_eq!(app.plan_summary(), (2, 1, 1));
+    }
+
+    /// Detection reports a non-monorepo path as "single project" rather than an
+    /// empty screen with no explanation.
+    #[test]
+    fn a_path_that_is_not_a_git_repo_is_explained_not_left_blank() {
+        let mut app = App::new();
+        app.config.path = "/".into(); // a directory, but not a Git repository
+        app.enter_projects();
+        assert!(app.plan.is_empty());
+        assert!(app.plan_detected);
+        assert!(
+            app.plan_note.contains("Git repository"),
+            "note: {}",
+            app.plan_note
+        );
     }
 
     #[test]

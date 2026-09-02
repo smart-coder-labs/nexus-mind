@@ -236,8 +236,15 @@ impl RunConfig {
         }
         push_flag(&mut a, "--api-url", &self.api_url);
         push_flag(&mut a, "--api-key", &self.api_key);
-        push_flag(&mut a, "--client", &self.client);
-        push_flag(&mut a, "--project", &self.project);
+        // In monorepo mode the routing config carries a client and project per
+        // group, and the runner treats a bare `--project`/`--client` as an
+        // *override* that forces every unit into one project — with a config
+        // present, a client override without a project is refused outright. So
+        // once a config is in play these are the config's job, never argv's.
+        if self.config_path.trim().is_empty() {
+            push_flag(&mut a, "--client", &self.client);
+            push_flag(&mut a, "--project", &self.project);
+        }
         for inc in split_list(&self.includes) {
             push_flag(&mut a, "--include", &inc);
         }
@@ -711,6 +718,34 @@ mod tests {
             cfg.blockers(false).iter().all(|b| b.field != "parallel"),
             "blank is serial, not an error"
         );
+    }
+
+    /// With a routing config, the client and project belong to the config, not
+    /// to argv — a `--client` override without a `--project` is exactly what the
+    /// runner refuses when a config is present.
+    #[test]
+    fn a_routing_config_suppresses_the_client_and_project_overrides() {
+        let cfg = RunConfig {
+            client: "client_acme".into(),
+            project: "p_web".into(),
+            config_path: "/repo/.nexusmind.yaml".into(),
+            api_url: "http://localhost:8080".into(),
+            api_key: "nm_x".into(),
+            ..Default::default()
+        };
+        let args = cfg.to_args(false);
+        assert!(args.contains(&"--config".to_string()));
+        assert!(!args.contains(&"--client".to_string()), "the config owns the client");
+        assert!(!args.contains(&"--project".to_string()), "the config owns the project");
+
+        // Without a config the single-project overrides are emitted as before.
+        let single = RunConfig {
+            config_path: String::new(),
+            ..cfg
+        };
+        let args = single.to_args(false);
+        assert!(args.contains(&"--client".to_string()));
+        assert!(args.contains(&"--project".to_string()));
     }
 
     #[test]

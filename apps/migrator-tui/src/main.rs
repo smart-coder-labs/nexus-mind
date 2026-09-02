@@ -13,6 +13,7 @@ mod api;
 mod app;
 mod config;
 mod mascot;
+mod monorepo;
 mod protocol;
 mod runner;
 mod ui;
@@ -131,6 +132,22 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         return;
     }
 
+    // While picking an existing project, Esc backs out of the picker rather than
+    // quitting the whole TUI — the same key, read in context.
+    if app.screen == Screen::Projects && app.selecting_for.is_some() {
+        match code {
+            KeyCode::Esc => {
+                app.cancel_select();
+                return;
+            }
+            KeyCode::Enter => {
+                app.confirm_select();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
@@ -146,6 +163,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             Screen::Source => app.goto(Screen::Options),
             Screen::Review if app.picking_run() => app.pick_run(),
             Screen::Review => app.toggle_selected(),
+            Screen::Projects => app.cycle_action(),
             _ => {
                 if let Some(f) = app.current_field() {
                     if f.kind() == app::FieldKind::Toggle {
@@ -159,6 +177,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         },
         KeyCode::Char(' ') => match app.screen {
             Screen::Review => app.toggle_selected(),
+            Screen::Projects => app.cycle_action(),
             Screen::Source => {}
             _ => {
                 if let Some(f) = app.current_field() {
@@ -175,6 +194,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         KeyCode::Char('f') if app.screen == Screen::Running => app.follow_latest_agent(),
         KeyCode::Char('m') => app.toggle_mascot(),
+        // On the plan screen, `d`/`r` confirm the plan — create the projects,
+        // write the config, then launch the routed (dry or real) run — instead
+        // of starting a single-project run that would ignore the plan.
+        KeyCode::Char('d') if app.screen == Screen::Projects => app.execute_plan(true),
+        KeyCode::Char('r') if app.screen == Screen::Projects => app.execute_plan(false),
+        KeyCode::Char('s') if app.screen == Screen::Projects => app.begin_select(),
         KeyCode::Char('d') => app.start(true),
         KeyCode::Char('r') => app.start(false),
         KeyCode::Char('x') => app.stop(),
@@ -182,6 +207,8 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('R') => {
             app.goto(Screen::Review);
             if app.picking_run() {
+                // Explicit request for the full backend history, even when this
+                // session's per-project runs are already on offer.
                 app.load_runs();
             } else {
                 app.load_candidates();
@@ -217,7 +244,7 @@ fn vertical(app: &mut App, delta: isize) {
             app.config.source = Source::ALL[(i + delta).rem_euclid(n) as usize];
         }
         Screen::Review if app.picking_run() => {
-            let n = app.runs.len();
+            let n = app.run_list_len();
             if n > 0 {
                 app.run_cursor = (app.run_cursor as isize + delta).rem_euclid(n as isize) as usize;
             }
@@ -229,6 +256,8 @@ fn vertical(app: &mut App, delta: isize) {
                     (app.review_cursor as isize + delta).rem_euclid(n as isize) as usize;
             }
         }
+        // Walks the plan rows, or the existing-project picker when it is open.
+        Screen::Projects => app.plan_move(delta),
         // On the run screen the arrows walk the exchanges — there are no
         // fields there, and inspecting what the model was asked is the reason
         // anyone stops on this screen.
@@ -238,10 +267,11 @@ fn vertical(app: &mut App, delta: isize) {
 }
 
 fn next_screen(app: &mut App, delta: isize) {
-    const ORDER: [Screen; 6] = [
+    const ORDER: [Screen; 7] = [
         Screen::Connection,
         Screen::Source,
         Screen::Options,
+        Screen::Projects,
         Screen::Running,
         Screen::Review,
         Screen::Summary,
@@ -249,7 +279,10 @@ fn next_screen(app: &mut App, delta: isize) {
     let i = ORDER.iter().position(|s| *s == app.screen).unwrap_or(0) as isize;
     let next = ORDER[(i + delta).rem_euclid(ORDER.len() as isize) as usize];
     app.goto(next);
-    if next == Screen::Review && app.candidates.is_empty() && app.progress.run_id.is_some() {
+    // Auto-open the queue only when a single run is unambiguously the target.
+    // In a monorepo review there are several, and loading here would fetch the
+    // backend history over this session's labelled per-project picker.
+    if next == Screen::Review && app.candidates.is_empty() && app.active_run().is_some() {
         app.load_candidates();
     }
 }
@@ -389,11 +422,11 @@ mod tests {
     fn tab_cycles_through_every_screen_and_wraps() {
         let mut app = App::new();
         let mut seen = vec![app.screen];
-        for _ in 0..5 {
+        for _ in 0..6 {
             next_screen(&mut app, 1);
             seen.push(app.screen);
         }
-        assert_eq!(seen.len(), 6);
+        assert_eq!(seen.len(), 7);
         next_screen(&mut app, 1);
         assert_eq!(app.screen, Screen::Connection, "it wraps");
         next_screen(&mut app, -1);

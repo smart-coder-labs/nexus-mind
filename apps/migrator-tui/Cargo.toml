@@ -24,6 +24,11 @@ crossterm = "0.28"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reads and writes the repository's `.nexusmind.yaml` monorepo routing file. The
+# TUI keeps its own minimal mirror of that schema (see `monorepo.rs`) rather than
+# depending on the `nexusmind` crate — the same reason the rest of these
+# dependencies are duplicated instead of shared through a workspace.
+serde_yaml = "0.9"
 anyhow = "1"
 shell-words = "1"
 # `chafa-dyn` is in this crate's defaults and pulls a C library through

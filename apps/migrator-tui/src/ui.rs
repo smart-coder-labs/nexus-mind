@@ -2,6 +2,7 @@
 
 use crate::app::{is_active, ActivityView, App, FieldKind, LastCommand, Screen, STAGES};
 use crate::config::{is_local, Source};
+use crate::monorepo::Action;
 use ratatui::prelude::*;
 use ratatui::widgets::{
     BarChart, Block, Borders, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Tabs,
@@ -27,6 +28,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Connection => connection(f, rows[1], app),
         Screen::Source => source(f, rows[1], app),
         Screen::Options => options(f, rows[1], app),
+        Screen::Projects => projects(f, rows[1], app),
         Screen::Running => running(f, rows[1], app),
         Screen::Review => review(f, rows[1], app),
         Screen::Summary => summary(f, rows[1], app),
@@ -55,6 +57,7 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
             Screen::Connection,
             Screen::Source,
             Screen::Options,
+            Screen::Projects,
             Screen::Running,
             Screen::Review,
             Screen::Summary,
@@ -67,9 +70,10 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
         Screen::Connection => 0,
         Screen::Source => 1,
         Screen::Options => 2,
-        Screen::Running => 3,
-        Screen::Review => 4,
-        Screen::Summary => 5,
+        Screen::Projects => 3,
+        Screen::Running => 4,
+        Screen::Review => 5,
+        Screen::Summary => 6,
     })
     .style(Style::default().fg(MUTED))
     .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
@@ -171,6 +175,17 @@ fn keys(app: &App) -> String {
             format!(
                 "↑↓ move · Space select · a approve · j reject · s restage · A approve {n} \
                  ({scope}) · C commit · p other run · {common}"
+            )
+        }
+        Screen::Projects if app.selecting_for.is_some() => {
+            format!("↑↓ pick · Enter choose · Esc cancel · {common}")
+        }
+        Screen::Projects if app.plan.is_empty() => common.to_string(),
+        Screen::Projects => {
+            let (create, select, _) = app.plan_summary();
+            format!(
+                "↑↓ move · Enter cycle · s pick existing · r apply & run \
+                 ({create} new, {select} existing) · {common}"
             )
         }
         Screen::Summary => format!("R review · r run again · {common}"),
@@ -1273,6 +1288,12 @@ fn review(f: &mut Frame, area: Rect, app: &App) {
 /// able to open one it did not create — otherwise an interrupted review is
 /// unfinishable from here.
 fn run_picker(f: &mut Frame, area: Rect, app: &App) {
+    // After a monorepo run, offer this session's per-project runs first — they
+    // are labelled by project and are exactly what was just staged. `R` still
+    // loads the full backend history over this view.
+    if app.showing_session_runs() {
+        return session_run_picker(f, area, app);
+    }
     if app.runs.is_empty() {
         f.render_widget(
             Paragraph::new(vec![
@@ -1388,6 +1409,227 @@ fn run_picker(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// This session's per-project runs, from a monorepo migration. Each row is one
+/// project's queue; opening one reviews it exactly like any other run.
+fn session_run_picker(f: &mut Frame, area: Rect, app: &App) {
+    let created = &app.progress.created_runs;
+    let items: Vec<ListItem> = created
+        .iter()
+        .map(|r| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<20}", r.alias), Style::default().fg(ACCENT)),
+                Span::styled(
+                    format!("{:<26}", r.project_id),
+                    Style::default().fg(MUTED),
+                ),
+                Span::raw(r.run_id.clone()),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(app.run_cursor.min(created.len().saturating_sub(1))));
+    f.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " This run's projects ({}) — Enter reviews · R backend history ",
+                        created.len()
+                    ))
+                    .border_style(ACCENT)
+                    .padding(Padding::horizontal(1)),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+        area,
+        &mut state,
+    );
+}
+
+// ── Projects (monorepo plan) ─────────────────────────────────────────────────
+
+fn projects(f: &mut Frame, area: Rect, app: &App) {
+    if app.plan.is_empty() {
+        let note = if app.plan_note.is_empty() {
+            "Set a path on the Options screen, then return here."
+        } else {
+            &app.plan_note
+        };
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Monorepo plan",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Line::raw(""),
+                Line::styled(note.to_string(), Style::default().fg(MUTED)),
+                Line::raw(""),
+                Line::styled(
+                    "A monorepo routes each package into its own project. When one is \
+                     detected, you decide here — create a new project, route into an \
+                     existing one, or skip it — before anything is created.",
+                    Style::default().fg(MUTED),
+                ),
+            ])
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::bordered()
+                    .title(" Projects ")
+                    .border_style(MUTED)
+                    .padding(Padding::horizontal(1)),
+            ),
+            area,
+        );
+        return;
+    }
+
+    let rows = Layout::vertical([Constraint::Min(6), Constraint::Length(6)]).split(area);
+
+    let items: Vec<ListItem> = app
+        .plan
+        .iter()
+        .map(|row| {
+            let (badge, badge_color) = match &row.action {
+                Action::Create => ("＋ create ", GOOD),
+                Action::Select(_) => ("→ existing", ACCENT),
+                Action::Skip => ("∅ skip   ", MUTED),
+            };
+            let target = match &row.action {
+                Action::Select(id) => {
+                    let name = row
+                        .matched
+                        .as_ref()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| id.clone());
+                    format!("  ▸ {name}")
+                }
+                Action::Create => format!("  ▸ {} (new)", row.detected.name),
+                Action::Skip => String::new(),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{badge}  "), Style::default().fg(badge_color)),
+                Span::styled(
+                    format!("{:<22}", row.detected.rel_dir),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(target, Style::default().fg(MUTED)),
+            ]))
+        })
+        .collect();
+
+    let (create, select, skip) = app.plan_summary();
+    let title = format!(
+        " Sub-projects — {} create, {} existing, {} skip ",
+        create, select, skip
+    );
+    let mut state = ListState::default();
+    state.select(Some(app.plan_cursor));
+    f.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::bordered()
+                    .title(title)
+                    .border_style(MUTED)
+                    .padding(Padding::horizontal(1)),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+        rows[0],
+        &mut state,
+    );
+
+    // The footer of the screen: what the focused row was matched on, plus the
+    // one thing the operator must know before confirming — that a config will be
+    // written, and whether it overwrites one.
+    let mut detail: Vec<Line> = Vec::new();
+    if let Some(row) = app.plan.get(app.plan_cursor) {
+        detail.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", row.detected.name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("· found via {} · routes {}", row.detected.via, row.detected.route_glob()),
+                Style::default().fg(MUTED),
+            ),
+        ]));
+        match &row.matched {
+            Some(p) => detail.push(Line::styled(
+                format!("name matches existing project “{}”", p.name),
+                Style::default().fg(ACCENT),
+            )),
+            None => detail.push(Line::styled(
+                "no project of this name — Enter creates one, s picks another",
+                Style::default().fg(MUTED),
+            )),
+        }
+    }
+    if create + select == 0 {
+        detail.push(Line::styled(
+            "every sub-project is skipped — nothing would be migrated",
+            Style::default().fg(CAUTION),
+        ));
+    } else {
+        detail.push(Line::styled(
+            format!(
+                "r writes .nexusmind.yaml and runs {create} new + {select} existing project(s){}",
+                if app.existing_config {
+                    " — overwrites the one already here"
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(if app.existing_config { CAUTION } else { GOOD }),
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(detail).wrap(Wrap { trim: true }).block(
+            Block::bordered()
+                .title(" Plan ")
+                .border_style(MUTED)
+                .padding(Padding::horizontal(1)),
+        ),
+        rows[1],
+    );
+
+    if app.selecting_for.is_some() {
+        existing_project_picker(f, area, app);
+    }
+}
+
+/// The overlay for routing a row into an existing backend project.
+fn existing_project_picker(f: &mut Frame, area: Rect, app: &App) {
+    let area = centered(60, 60, area);
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = app
+        .existing_projects
+        .iter()
+        .map(|p| {
+            let client = p
+                .client_id
+                .as_deref()
+                .map(|c| format!("  ({c})"))
+                .unwrap_or_else(|| "  (internal)".to_string());
+            ListItem::new(Line::from(vec![
+                Span::raw(p.name.clone()),
+                Span::styled(client, Style::default().fg(MUTED)),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(app.select_cursor));
+    f.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::bordered()
+                    .title(" Route into which project? ")
+                    .border_style(ACCENT)
+                    .padding(Padding::horizontal(1)),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+        area,
+        &mut state,
+    );
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 
 fn summary(f: &mut Frame, area: Rect, app: &App) {
@@ -1482,7 +1724,21 @@ fn summary(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]));
     }
-    if let Some(id) = &p.run_id {
+    // A monorepo run staged one queue per project. List them so the operator
+    // knows there is more than one to review, and that R opens the picker.
+    if p.created_runs.len() > 1 {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("  {} project queue(s) staged — R opens the picker", p.created_runs.len()),
+            Style::default().fg(ACCENT),
+        ));
+        for r in &p.created_runs {
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {:<20}", r.alias), Style::default().fg(ACCENT)),
+                Span::styled(r.run_id.clone(), Style::default().fg(MUTED)),
+            ]));
+        }
+    } else if let Some(id) = &p.run_id {
         lines.push(Line::from(vec![
             Span::styled("  run id                   ", Style::default().fg(MUTED)),
             Span::raw(id.clone()),
@@ -1566,6 +1822,15 @@ fn help_overlay(f: &mut Frame, app: &App) {
         Line::raw("  a recorded attestation — all four, every time."),
         Line::raw(""),
         Line::styled(
+            "Monorepos",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw("The Projects screen detects each package under the path and routes it"),
+        Line::raw("into its own NexusMind project — create a new one, pick an existing"),
+        Line::raw("one, or skip it. Confirming writes .nexusmind.yaml and runs one queue"),
+        Line::raw("per project; nothing is created on the backend until you confirm."),
+        Line::raw(""),
+        Line::styled(
             "Keys",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
@@ -1573,6 +1838,7 @@ fn help_overlay(f: &mut Frame, app: &App) {
         Line::raw("↑ ↓          move between fields or candidates"),
         Line::raw("Enter        edit a field (Esc or Enter to leave)"),
         Line::raw("Space        toggle a switch, or select a candidate"),
+        Line::raw("Enter / s    (Projects) cycle a row's action / pick an existing project"),
         Line::raw("d            dry run — scan and report, post nothing"),
         Line::raw("r            run — scan, classify, stage for review"),
         Line::raw("x            stop a run (staged work survives)"),
@@ -1701,10 +1967,11 @@ mod tests {
         app
     }
 
-    const SCREENS: [Screen; 6] = [
+    const SCREENS: [Screen; 7] = [
         Screen::Connection,
         Screen::Source,
         Screen::Options,
+        Screen::Projects,
         Screen::Running,
         Screen::Review,
         Screen::Summary,
@@ -2243,6 +2510,83 @@ mod tests {
             text.contains("node_modules/x/LICENSE.md"),
             "a count with no example cannot be checked: {text}"
         );
+    }
+
+    /// Pins a plan onto an app without re-detecting: goto(Projects) would
+    /// otherwise wipe it and scan the filesystem.
+    fn with_plan(app: &mut App, rows: Vec<crate::monorepo::PlanRow>) {
+        app.plan = rows;
+        app.plan_detected = true;
+        app.plan_path = app.config.path.clone();
+        app.plan_note = format!("{} sub-project(s) detected", app.plan.len());
+        app.goto(Screen::Projects);
+    }
+
+    fn plan_row_ui(rel: &str, action: Action, matched: Option<&str>) -> crate::monorepo::PlanRow {
+        let name = rel.rsplit('/').next().unwrap().to_string();
+        crate::monorepo::PlanRow {
+            detected: crate::monorepo::Detected {
+                alias: name.clone(),
+                name: name.clone(),
+                rel_dir: rel.into(),
+                via: "test",
+            },
+            matched: matched.map(|id| crate::api::Project {
+                id: id.into(),
+                name,
+                client_id: None,
+                archived_at: None,
+            }),
+            action,
+            resolved_project_id: None,
+        }
+    }
+
+    #[test]
+    fn the_projects_screen_lists_each_subproject_with_its_action() {
+        let mut app = populated();
+        with_plan(
+            &mut app,
+            vec![
+                plan_row_ui("apps/web", Action::Create, None),
+                plan_row_ui("packages/ui", Action::Select("p_ui".into()), Some("p_ui")),
+                plan_row_ui("apps/api", Action::Skip, None),
+            ],
+        );
+        let text = render(&app, 140, 40);
+        assert!(text.contains("apps/web"), "{text}");
+        assert!(text.contains("packages/ui"), "{text}");
+        assert!(text.contains("create"), "{text}");
+        assert!(text.contains("existing"), "{text}");
+        assert!(text.contains("skip"), "{text}");
+        // The counts the confirmation states plainly: 1 create, 1 existing.
+        assert!(text.contains("1 create") || text.contains("1 new"), "{text}");
+    }
+
+    #[test]
+    fn the_summary_lists_every_project_queue_after_a_monorepo_run() {
+        let mut app = populated();
+        app.progress.created_runs = vec![
+            crate::app::CreatedRun {
+                alias: "web".into(),
+                project_id: "p_web".into(),
+                run_id: "run-web".into(),
+            },
+            crate::app::CreatedRun {
+                alias: "api".into(),
+                project_id: "p_api".into(),
+                run_id: "run-api".into(),
+            },
+        ];
+        app.progress.finished = Some(crate::app::FinishedRun {
+            ok: true,
+            aborted_on_budget: false,
+            error: None,
+        });
+        app.goto(Screen::Summary);
+        let text = render(&app, 140, 40);
+        assert!(text.contains("2 project queue(s) staged"), "{text}");
+        assert!(text.contains("web") && text.contains("api"), "{text}");
     }
 
     #[test]
