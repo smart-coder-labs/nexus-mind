@@ -53,6 +53,23 @@ RUN apt-get update \
     && osv-scanner --version \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 
+# nuclei (active DAST) for the security_dast template. Templates are baked at build
+# time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime
+# volume mounts on /claude-home — so runs use them via `-t` with update checks
+# disabled and never download templates or phone home at run time.
+ARG NUCLEI_VERSION=3.11.1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip \
+    && ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /tmp/nuclei.zip \
+         "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip" \
+    && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
+    && chmod +x /usr/local/bin/nuclei \
+    && rm -f /tmp/nuclei.zip \
+    && HOME=/opt/nuclei-home nuclei -update-templates \
+    && nuclei -version \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 # Browsers live outside HOME because the k8s deployment mounts a volume over
 # /claude-home at runtime, which would otherwise shadow anything baked there.

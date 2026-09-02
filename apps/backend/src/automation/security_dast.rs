@@ -29,6 +29,11 @@ pub const NUCLEI_SEVERITIES: [&str; 5] = ["info", "low", "medium", "high", "crit
 
 pub const MAX_DAST_INVOCATIONS: usize = 8;
 
+/// Nuclei templates baked into the runtime image at build time (see
+/// apps/backend/Dockerfile). Passed via `-t` with update checks disabled so runs
+/// never download templates or phone home at run time.
+pub const NUCLEI_TEMPLATES_DIR: &str = "/opt/nuclei-home/nuclei-templates";
+
 const US: char = '\u{1f}';
 
 pub fn is_allowlisted_program(program: &str) -> bool {
@@ -145,6 +150,9 @@ pub fn build_nuclei_argv(
         timeout_secs.to_string(),
         "-severity".into(),
         severity.into(),
+        // Run the templates baked into the image; no runtime download.
+        "-t".into(),
+        NUCLEI_TEMPLATES_DIR.into(),
     ])
 }
 
@@ -244,6 +252,9 @@ pub fn map_nuclei_jsonl(bytes: &[u8], authorized_host: &str) -> Vec<Value> {
                 "response": str_at(&v, "/response"),
                 "curl_command": str_at(&v, "/curl-command"),
                 "description": str_at(&v, "/info/description"),
+                // Proposed remediation (nuclei templates often carry one; the triage
+                // agent enriches it when absent) plus the documented references.
+                "remediation": str_at(&v, "/info/remediation"),
                 "cwe": join_str_array(&v, "/info/classification/cwe-id"),
                 "cve": join_str_array(&v, "/info/classification/cve-id"),
                 "reference": join_str_array(&v, "/info/reference")
@@ -314,6 +325,9 @@ mod tests {
         assert!(argv.contains(&"-no-interactsh".to_string()));
         // redirects are disabled so scope holds at the traffic layer (blind-SSRF guard)
         assert!(argv.contains(&"-disable-redirects".to_string()));
+        // baked templates dir passed via -t (no runtime download)
+        assert!(argv.contains(&"-t".to_string()));
+        assert!(argv.contains(&NUCLEI_TEMPLATES_DIR.to_string()));
         // target is present and exactly the authorized url
         let i = argv.iter().position(|a| a == "-u").unwrap();
         assert_eq!(argv[i + 1], "https://staging.example.com");

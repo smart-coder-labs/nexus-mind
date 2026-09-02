@@ -200,6 +200,9 @@ pub fn map_semgrep_json(raw: &Value) -> Vec<Value> {
                     "end_line": end_line,
                     "snippet": snippet,
                     "message": message,
+                    // Semgrep's autofix when the rule ships one; the triage agent
+                    // proposes a concrete fix when this is empty.
+                    "remediation": str_at(r, "/extra/fix"),
                     "cwe": cwe,
                     "references": references
                 }
@@ -275,6 +278,11 @@ pub fn map_osv_json(raw: &Value) -> Vec<Value> {
                     None => normalize_text_severity(str_at(vuln, "/database_specific/severity")),
                 };
                 let fixed_version = osv_fixed_version(vuln);
+                let remediation = if fixed_version.is_empty() {
+                    format!("No fixed version published; evaluate replacing or mitigating {name}")
+                } else {
+                    format!("Upgrade {name} to {fixed_version} or later")
+                };
                 let title = format!("{advisory_id} in {name}");
                 findings.push(json!({
                     "title": title,
@@ -289,6 +297,7 @@ pub fn map_osv_json(raw: &Value) -> Vec<Value> {
                         "installed_version": installed,
                         "advisory_id": advisory_id,
                         "fixed_version": fixed_version,
+                        "remediation": remediation,
                         "manifest_path": manifest_path
                     }
                 }));
