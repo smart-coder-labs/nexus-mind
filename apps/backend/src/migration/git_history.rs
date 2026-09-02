@@ -227,13 +227,21 @@ impl GitHistoryConnector {
         const FLD: &str = "\u{1f}";
         let format = format!("--format={REC}%H{FLD}%P{FLD}%an{FLD}%aI{FLD}%s{FLD}%b");
 
-        let range = self
-            .since_commit
-            .as_ref()
-            .map(|c| format!("{c}..HEAD"))
-            .unwrap_or_else(|| "HEAD".to_string());
+        // Every branch, not just the checked-out one. A decision can live on a
+        // branch that was never merged into HEAD, and scanning only HEAD would
+        // silently miss it. `HEAD` stays in the set so a detached checkout with
+        // no local branch refs still yields its own history; tags and stash are
+        // left out — a tag is not a branch and a stashed WIP is not a decision.
+        // A `--since` commit becomes a negative ref (`^sha`), excluding its
+        // ancestors across every branch, which generalises the old `sha..HEAD`.
         let max = self.max_commits.to_string();
-        let mut args: Vec<String> = vec!["log".into(), format, "-n".into(), max, range];
+        let mut args: Vec<String> = vec!["log".into(), format, "-n".into(), max];
+        args.push("HEAD".into());
+        args.push("--branches".into());
+        args.push("--remotes".into());
+        if let Some(c) = self.since_commit.as_ref() {
+            args.push(format!("^{c}"));
+        }
         let pathspec = Self::pathspec(opts);
         if !pathspec.is_empty() {
             // Without this, git simplifies merges away when a pathspec is given
@@ -657,6 +665,36 @@ mod tests {
             .unwrap();
         assert_eq!(incremental.len(), 1, "only what came after");
         assert!(incremental[0].meta["subject"].as_str().unwrap().contains("second"));
+    }
+
+    /// A decision on a branch that was never merged into HEAD must still be
+    /// found: the scan walks every branch, not just the checked-out one.
+    #[test]
+    fn commits_on_an_unmerged_branch_are_scanned() {
+        let dir = repo();
+        commit(dir.path(), "base.txt", "feat: base", REAL_BODY, "Dev");
+        git(dir.path(), &["checkout", "-q", "-b", "feature"]);
+        commit(
+            dir.path(),
+            "f.txt",
+            "feat(feature): a decision made off main",
+            REAL_BODY,
+            "Dev",
+        );
+        // Back on main, with `feature` left UNMERGED — the old HEAD-only scan
+        // would never have seen its commit.
+        git(dir.path(), &["checkout", "-q", "main"]);
+
+        let subjects: Vec<String> = connector()
+            .scan(&opts(&dir))
+            .unwrap()
+            .iter()
+            .map(|u| u.meta["subject"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            subjects.iter().any(|s| s.contains("a decision made off main")),
+            "the unmerged branch's commit must be scanned: {subjects:?}"
+        );
     }
 
     // ── Grouping ─────────────────────────────────────────────────────────────

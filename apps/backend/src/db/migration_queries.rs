@@ -756,6 +756,61 @@ mod tests {
         }
     }
 
+    /// The reported bug: a committed memory must carry the run's project, not
+    /// fall back to the org default. Memories key on the project *name*, so this
+    /// exercises the id→name resolution the fix added.
+    #[test]
+    fn a_committed_memory_links_to_the_runs_project() {
+        let conn = setup();
+        let run = run_for(&conn, Some("cl_a"), Some("p_a"));
+        stage_candidates(&conn, "org1", &run.id, &[input("src:m", DestinationKind::Memory)]).unwrap();
+        let candidate = list_candidates(&conn, &run.id, None, None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.destination_kind == DestinationKind::Memory)
+            .expect("the memory candidate is staged");
+
+        let memory_id = write_destination(&conn, &run, &candidate).unwrap();
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM memories WHERE id = ?1",
+                [&memory_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project_id.as_deref(),
+            Some("p_a"),
+            "the committed memory inherits the run's routed project"
+        );
+    }
+
+    /// An internal run (no project) must still commit an org-shared memory —
+    /// the fallback must not invent a project where the run had none.
+    #[test]
+    fn a_committed_memory_from_an_internal_run_stays_org_shared() {
+        let conn = setup();
+        let run = run_for(&conn, None, None);
+        stage_candidates(&conn, "org1", &run.id, &[input("src:m", DestinationKind::Memory)]).unwrap();
+        let candidate = list_candidates(&conn, &run.id, None, None, 10)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let memory_id = write_destination(&conn, &run, &candidate).unwrap();
+
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM memories WHERE id = ?1",
+                [&memory_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id, None, "no run project means an org-shared memory");
+    }
+
     // ── T-05: runs ───────────────────────────────────────────────────────────
 
     /// The coherence trigger, not application code, is what stops this.
@@ -1367,6 +1422,21 @@ fn hint_str<'a>(hint: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 /// first-class API uses. There is deliberately no SQL here: a parallel write
 /// path would skip the destination's own scoping, audit and validation, which is
 /// exactly the failure mode "Destination Persistence Reuse" exists to forbid.
+/// The run's project as a NAME, for destinations that scope by project name.
+///
+/// A run carries a project *id* (the routed backend project), but memories,
+/// tasks and SDD artifacts key on the human project *name* — the same string an
+/// agent passes as `project`. Resolving the id to its name here is what links a
+/// committed memory to the project the run was routed to; without it the memory
+/// falls back to the org default and looks unlinked. Returns `None` for an
+/// internal run (no project) or an id that no longer resolves.
+fn run_project_name(conn: &Connection, run: &MigrationRun) -> Option<String> {
+    run.project_id
+        .as_deref()
+        .and_then(|pid| queries::get_project_by_id(conn, &run.org_id, pid).ok().flatten())
+        .map(|p| p.name)
+}
+
 pub fn write_destination(
     conn: &Connection,
     run: &MigrationRun,
@@ -1376,7 +1446,10 @@ pub fn write_destination(
     match candidate.destination_kind {
         DestinationKind::Memory => {
             let req = StoreMemoryRequest {
-                project: hint_str(hint, "project").map(str::to_string),
+                // Scope to the run's project unless the candidate named its own.
+                project: hint_str(hint, "project")
+                    .map(str::to_string)
+                    .or_else(|| run_project_name(conn, run)),
                 tool: hint_str(hint, "tool").unwrap_or("migration").to_string(),
                 content: candidate.content.clone(),
                 tags: hint.get("tags").and_then(|t| {
@@ -1416,6 +1489,7 @@ pub fn write_destination(
             let req = CreateTaskRequest {
                 project: hint_str(hint, "project")
                     .map(str::to_string)
+                    .or_else(|| run_project_name(conn, run))
                     .unwrap_or_else(|| "default".to_string()),
                 title: hint_str(hint, "title")
                     .unwrap_or_else(|| first_line(&candidate.content))
@@ -1444,6 +1518,7 @@ pub fn write_destination(
             let req = SaveArtifactRequest {
                 project: hint_str(hint, "project")
                     .map(str::to_string)
+                    .or_else(|| run_project_name(conn, run))
                     .unwrap_or_else(|| "default".to_string()),
                 change_name: hint_str(hint, "change_name")
                     .unwrap_or("migrated")
