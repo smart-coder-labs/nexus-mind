@@ -57,18 +57,27 @@ RUN apt-get update \
 # time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime
 # volume mounts on /claude-home — so runs use them via `-t` with update checks
 # disabled and never download templates or phone home at run time.
+#
+# Gated on INSTALL_NUCLEI: the binary plus its full template set is heavy, and a
+# deployment that does not run the security_dast agent (u2s, whose 8 GB disk is
+# already tight) skips it entirely. Default true keeps oracle/main unchanged.
 ARG NUCLEI_VERSION=3.11.1
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends unzip \
-    && ARCH="$(dpkg --print-architecture)" \
-    && curl -fsSL -o /tmp/nuclei.zip \
-         "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip" \
-    && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
-    && chmod +x /usr/local/bin/nuclei \
-    && rm -f /tmp/nuclei.zip \
-    && HOME=/opt/nuclei-home nuclei -update-templates \
-    && nuclei -version \
-    && rm -rf /var/lib/apt/lists/*
+ARG INSTALL_NUCLEI=true
+RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends unzip \
+      && ARCH="$(dpkg --print-architecture)" \
+      && curl -fsSL -o /tmp/nuclei.zip \
+           "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${ARCH}.zip" \
+      && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
+      && chmod +x /usr/local/bin/nuclei \
+      && rm -f /tmp/nuclei.zip \
+      && HOME=/opt/nuclei-home nuclei -update-templates \
+      && nuclei -version \
+      && rm -rf /var/lib/apt/lists/* ; \
+    else \
+      echo "INSTALL_NUCLEI=false — skipping nuclei + templates (slim u2s image)" ; \
+    fi
 
 WORKDIR /app
 # Browsers live outside HOME because the k8s deployment mounts a volume over
@@ -78,40 +87,38 @@ ENV HOME=/claude-home \
     DISABLE_AUTOUPDATER=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Playwright CLI + browsers (so the QA template's `npx playwright test` runs) and
-# the Playwright MCP (so QA agents can drive a browser via mcp__playwright__*).
-# The npm packages + symlinks are ALWAYS installed (small, and the MCP configs
-# below reference them). Only the heavy browser downloads (~1 GB) are gated on
-# INSTALL_BROWSERS, so the slim u2s image still boots with the MCP binaries
-# present — it just has no browser to launch.
-RUN npm install -g playwright@latest @playwright/mcp@latest @smart-coder-labs/nexusmind-mcp@0.15.0 \
-    # @playwright/mcp's real bin name isn't `mcp-server-playwright`; resolve the
-    # actual entry from its package.json and expose it under a stable name so the
-    # MCP config below works without npx (no network) or bin-name guessing.
-    && PKG="$(npm root -g)/@playwright/mcp" \
-    && BIN="$(node -e "const b=require('${PKG}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
-    && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
-    && ln -sf "${PKG}/${BIN}" /usr/local/bin/mcp-server-playwright \
-    && chmod +x "${PKG}/${BIN}" \
-    # Same for the NexusMind MCP so agents (issue-resolver, lead-generation) can
-    # load project context without an npx network fetch at spawn time.
+# The NexusMind MCP is ALWAYS installed — every agent uses it for project
+# context, and it is small. Its symlink lets agents load it without an npx
+# network fetch at spawn time.
+RUN npm install -g @smart-coder-labs/nexusmind-mcp@0.15.0 \
     && PKGN="$(npm root -g)/@smart-coder-labs/nexusmind-mcp" \
     && BINN="$(node -e "const b=require('${PKGN}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
     && test -n "${BINN}" && test -f "${PKGN}/${BINN}" \
     && ln -sf "${PKGN}/${BINN}" /usr/local/bin/nexusmind-mcp \
     && chmod +x "${PKGN}/${BINN}" \
-    # Browser downloads are the heavy part (~1 GB). --with-deps also apt-installs
-    # the OS libs chrome-for-testing needs, so both browser steps live together
-    # inside the guard. Skipped entirely when INSTALL_BROWSERS=false (u2s).
-    && if [ "$INSTALL_BROWSERS" = "true" ]; then \
-         playwright install --with-deps chromium \
-         && mcp-server-playwright install-browser chrome-for-testing \
-         && ls -la /ms-playwright/ ; \
-       else \
-         echo "INSTALL_BROWSERS=false — skipping chromium + chrome-for-testing (slim u2s image)" ; \
-       fi \
-    && npm cache clean --force \
-    && rm -rf /var/lib/apt/lists/*
+    && npm cache clean --force
+
+# Playwright: the CLI + MCP (so QA agents drive a browser via mcp__playwright__*)
+# AND the ~1 GB chromium / chrome-for-testing downloads. The whole stack — npm
+# packages, symlink, and browsers — is gated on INSTALL_BROWSERS: without a
+# browser the Playwright MCP has nothing to launch, so on the slim u2s image
+# (INSTALL_BROWSERS=false) none of it is installed. Default true keeps
+# oracle/main's browser-driven QA agents working.
+RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
+      npm install -g playwright@latest @playwright/mcp@latest \
+      && PKG="$(npm root -g)/@playwright/mcp" \
+      && BIN="$(node -e "const b=require('${PKG}/package.json').bin; process.stdout.write(typeof b==='string'?b:(Object.values(b)[0]||''))")" \
+      && test -n "${BIN}" && test -f "${PKG}/${BIN}" \
+      && ln -sf "${PKG}/${BIN}" /usr/local/bin/mcp-server-playwright \
+      && chmod +x "${PKG}/${BIN}" \
+      && playwright install --with-deps chromium \
+      && mcp-server-playwright install-browser chrome-for-testing \
+      && ls -la /ms-playwright/ \
+      && npm cache clean --force \
+      && rm -rf /var/lib/apt/lists/* ; \
+    else \
+      echo "INSTALL_BROWSERS=false — skipping Playwright npm + chromium + chrome-for-testing (slim u2s image)" ; \
+    fi
 
 # MCP config wired into QA runs via `claude --mcp-config`. --no-sandbox is
 # required because chromium runs as root inside the container.
