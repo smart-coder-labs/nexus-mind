@@ -273,6 +273,62 @@ fn the_config_round_trips_through_yaml() {
     assert!(yaml.contains("apps/web/**"));
 }
 
+// ── Layout: a folder of separate repositories ────────────────────────────────
+
+/// The microservice-estate shape: no workspace manifest, no shared repository,
+/// just N checkouts side by side under one folder.
+#[test]
+fn a_folder_of_separate_repositories_is_surveyed_as_a_repo_collection() {
+    let s = Scratch::new();
+    for repo in ["svc-a", "svc-b"] {
+        s.file(&format!("{repo}/.git/HEAD"), "ref: refs/heads/main\n");
+        s.file(&format!("{repo}/package.json"), "{}");
+    }
+    // A repository with no manifest is still a project worth migrating.
+    s.file("docs-repo/.git/HEAD", "ref: refs/heads/main\n");
+    // Scaffolding, not projects.
+    s.file("svc-a-worktrees/wt1/file.txt", "x");
+    s.file("notes/readme.txt", "x");
+
+    let (layout, found) = survey(s.root());
+    assert_eq!(layout, Layout::RepoCollection);
+    let names: Vec<String> = found.into_iter().map(|d| d.rel_dir).collect();
+    assert_eq!(
+        names,
+        vec!["docs-repo", "svc-a", "svc-b"],
+        "every child checkout, including the manifest-less one; no worktree parents, no plain dirs"
+    );
+}
+
+#[test]
+fn a_checkout_with_packages_is_surveyed_as_a_monorepo() {
+    let s = Scratch::new();
+    s.file(".git/HEAD", "ref: refs/heads/main\n");
+    s.file("apps/web/package.json", "{}");
+
+    let (layout, found) = survey(s.root());
+    assert_eq!(layout, Layout::Monorepo);
+    assert_eq!(
+        found.iter().map(|d| d.rel_dir.as_str()).collect::<Vec<_>>(),
+        vec!["apps/web"],
+        "inside a checkout the packages come from the workspace, not from child .git dirs"
+    );
+}
+
+/// A repository nested inside a checkout is that checkout's business (a
+/// submodule), not a separate project — the layout decides which detector runs.
+#[test]
+fn child_repositories_are_not_offered_inside_a_checkout() {
+    let s = Scratch::new();
+    s.file(".git/HEAD", "ref: refs/heads/main\n");
+    s.file("vendor/thing/.git/HEAD", "ref: refs/heads/main\n");
+    s.file("vendor/thing/package.json", "{}");
+
+    let (layout, found) = survey(s.root());
+    assert_eq!(layout, Layout::Monorepo);
+    assert!(found.is_empty(), "no workspace declared, and vendor/ is not a package dir");
+}
+
 // ── Repository-root catch-all ────────────────────────────────────────────────
 
 #[test]

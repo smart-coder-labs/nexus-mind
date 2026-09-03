@@ -1412,7 +1412,7 @@ fn run_picker(f: &mut Frame, area: Rect, app: &App) {
 /// This session's per-project runs, from a monorepo migration. Each row is one
 /// project's queue; opening one reviews it exactly like any other run.
 fn session_run_picker(f: &mut Frame, area: Rect, app: &App) {
-    let created = &app.progress.created_runs;
+    let created = &app.session_runs;
     let items: Vec<ListItem> = created
         .iter()
         .map(|r| {
@@ -1569,21 +1569,35 @@ fn projects(f: &mut Frame, area: Rect, app: &App) {
     }
     if create + select == 0 {
         detail.push(Line::styled(
-            "every sub-project is skipped — nothing would be migrated",
+            "everything is skipped — nothing would be migrated",
             Style::default().fg(CAUTION),
         ));
     } else {
-        detail.push(Line::styled(
-            format!(
-                "r writes .nexusmind.yaml and runs {create} new + {select} existing project(s){}",
-                if app.existing_config {
-                    " — overwrites the one already here"
-                } else {
-                    ""
-                }
+        // The two layouts execute differently, and the line has to say which:
+        // one routed run over a checkout, or one run per repository.
+        let (text, tone) = match app.plan_layout {
+            crate::monorepo::Layout::Monorepo => (
+                format!(
+                    "r writes .nexusmind.yaml and runs {create} new + {select} existing project(s){}",
+                    if app.existing_config {
+                        " — overwrites the one already here"
+                    } else {
+                        ""
+                    }
+                ),
+                if app.existing_config { CAUTION } else { GOOD },
             ),
-            Style::default().fg(if app.existing_config { CAUTION } else { GOOD }),
-        ));
+            crate::monorepo::Layout::RepoCollection => (
+                format!(
+                    "r runs {} repositor{} one at a time ({create} new project(s), {select} existing) \
+                     — no config file, each repo is its own run",
+                    create + select,
+                    if create + select == 1 { "y" } else { "ies" }
+                ),
+                GOOD,
+            ),
+        };
+        detail.push(Line::styled(text, Style::default().fg(tone)));
     }
     f.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: true }).block(
@@ -1748,13 +1762,13 @@ fn summary(f: &mut Frame, area: Rect, app: &App) {
     }
     // A monorepo run staged one queue per project. List them so the operator
     // knows there is more than one to review, and that R opens the picker.
-    if p.created_runs.len() > 1 {
+    if app.session_runs.len() > 1 {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
-            format!("  {} project queue(s) staged — R opens the picker", p.created_runs.len()),
+            format!("  {} project queue(s) staged — R opens the picker", app.session_runs.len()),
             Style::default().fg(ACCENT),
         ));
-        for r in &p.created_runs {
+        for r in &app.session_runs {
             lines.push(Line::from(vec![
                 Span::styled(format!("    {:<20}", r.alias), Style::default().fg(ACCENT)),
                 Span::styled(r.run_id.clone(), Style::default().fg(MUTED)),
@@ -1857,8 +1871,9 @@ fn help_overlay(f: &mut Frame, app: &App) {
         ),
         Line::raw("The Projects screen detects each package under the path and routes it"),
         Line::raw("into its own NexusMind project — create a new one, pick an existing"),
-        Line::raw("one, or skip it. Confirming writes .nexusmind.yaml and runs one queue"),
-        Line::raw("per project; nothing is created on the backend until you confirm."),
+        Line::raw("one, or skip it. Inside one checkout that means a .nexusmind.yaml and"),
+        Line::raw("a single routed run; a folder holding separate repos runs one per repo."),
+        Line::raw("Nothing is created on the backend until you confirm."),
         Line::raw(""),
         Line::styled(
             "Keys",
@@ -2596,7 +2611,7 @@ mod tests {
     #[test]
     fn the_summary_lists_every_project_queue_after_a_monorepo_run() {
         let mut app = populated();
-        app.progress.created_runs = vec![
+        app.session_runs = vec![
             crate::app::CreatedRun {
                 alias: "web".into(),
                 project_id: "p_web".into(),

@@ -75,6 +75,74 @@ impl Detected {
     }
 }
 
+/// How the scan root is laid out. This decides how the run is *executed*, not
+/// just what is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// One Git repository holding packages. Routing is a `.nexusmind.yaml`
+    /// written at its root, and the whole thing migrates in a single run.
+    Monorepo,
+    /// A plain folder holding independent Git repositories — the shape a
+    /// microservice estate takes on disk. There is no repository to host a
+    /// routing config (the runner discovers one via `git rev-parse`, which
+    /// fails outside a checkout) and no shared history, so each repository is
+    /// migrated on its own: one run apiece, with an explicit `--project`.
+    RepoCollection,
+}
+
+/// Whether `root` or any ancestor holds a `.git`.
+///
+/// The routing config is discovered from the Git root, so a path outside a
+/// checkout cannot use it — which is exactly what separates the two layouts.
+pub fn in_git_repo(root: &Path) -> bool {
+    let mut cursor = root;
+    loop {
+        if cursor.join(".git").exists() {
+            return true;
+        }
+        match cursor.parent() {
+            Some(parent) => cursor = parent,
+            None => return false,
+        }
+    }
+}
+
+/// What the scan root actually is, and the projects it contains.
+///
+/// The two layouts are mutually exclusive by construction: inside a checkout
+/// the packages are found by workspace manifests; outside one, the only things
+/// that can be migrated are the repositories sitting directly inside.
+pub fn survey(root: &Path) -> (Layout, Vec<Detected>) {
+    if in_git_repo(root) {
+        (Layout::Monorepo, detect(root))
+    } else {
+        (Layout::RepoCollection, detect_sibling_repos(root))
+    }
+}
+
+/// Immediate children that are Git repositories of their own.
+///
+/// Deliberately permissive about what counts as a project: a repository with no
+/// package manifest (a docs repo, an infrastructure repo, a mobile app) is
+/// still a body of knowledge worth migrating, and excluding it by manifest
+/// would silently drop real projects. The operator skips what they do not want
+/// on the plan screen; the only things filtered here are scaffolding —
+/// `*-worktrees` parents, and the dot-directories `immediate_subdirs` already
+/// drops.
+pub fn detect_sibling_repos(root: &Path) -> Vec<Detected> {
+    let mut dirs: Vec<(String, &'static str)> = Vec::new();
+    for name in immediate_subdirs(root) {
+        // A worktree parent holds checkouts of a repo already listed on its own.
+        if name.ends_with("-worktrees") {
+            continue;
+        }
+        if root.join(&name).join(".git").exists() {
+            dirs.push((name, "sibling git repository"));
+        }
+    }
+    into_detected(dirs)
+}
+
 /// Every sub-project a scan root contains, de-duplicated and slug-stable.
 ///
 /// An empty result is meaningful: the path is a single project, not a monorepo,

@@ -9,7 +9,7 @@ use crate::api::{
 };
 use crate::config::{Blocker, RunConfig, Source, Warning};
 use crate::mascot::{self, Graphics, Mascot, Mood};
-use crate::monorepo::{self, Action, PlanRow};
+use crate::monorepo::{self, Action, Layout, PlanRow};
 use crate::protocol::{ParsedLine, RunEvent};
 use crate::runner::{resolve_binary, RunHandle, RunnerMsg};
 use std::collections::{BTreeMap, VecDeque};
@@ -349,6 +349,18 @@ pub struct Progress {
     /// Recent exchanges with the model. Bounded like the log: a 3000-unit run
     /// would otherwise hold every prompt it ever sent.
     pub agents: VecDeque<AgentExchange>,
+}
+
+/// One repository still to migrate in a folder-of-repos plan.
+///
+/// That layout has no shared repository to host a routing config, so it cannot
+/// be one run: each repository is its own scan root with its own `--project`,
+/// and they go through the runner one after another.
+#[derive(Debug, Clone)]
+pub struct QueuedRun {
+    pub alias: String,
+    pub path: String,
+    pub project_id: String,
 }
 
 /// A run the runner created for one routed project, collected so the review
@@ -779,6 +791,9 @@ pub struct App {
     /// True once detection has run for the current path, so an empty `plan` can
     /// be shown as "single project" rather than "not looked yet".
     pub plan_detected: bool,
+    /// What the scan root turned out to be. Decides how the plan executes: one
+    /// routed run for a monorepo, one run per repository for a folder of them.
+    pub plan_layout: Layout,
     /// A one-line note from detection: how many sub-projects, or why none.
     pub plan_note: String,
     /// The backend projects fetched for the run's client, matched by name.
@@ -790,6 +805,19 @@ pub struct App {
     /// A `.nexusmind.yaml` already present at the scan root — writing overwrites
     /// it, which the plan screen warns about before the operator confirms.
     pub existing_config: bool,
+    /// Repositories still to migrate, for a folder-of-repos plan. Empty for a
+    /// monorepo, which is a single routed run.
+    pub run_queue: Vec<QueuedRun>,
+    /// Which entry of `run_queue` is running now.
+    pub queue_pos: usize,
+    /// `(path, project)` as they were before the queue took over, restored when
+    /// it drains so the operator's own configuration is not left pointing at
+    /// the last repository the queue happened to visit.
+    queue_restore: Option<(String, String)>,
+    /// Every run this session created, across every invocation of the runner.
+    /// `start` resets `progress` between queued runs, so the review's list of
+    /// runs cannot live inside it.
+    pub session_runs: Vec<CreatedRun>,
     /// The reply channel of the API call currently in flight, if any.
     api_rx: Option<std::sync::mpsc::Receiver<ApiMsg>>,
     /// What that call is, for the status line. `None` means idle.
@@ -846,11 +874,16 @@ impl App {
             plan_cursor: 0,
             plan_path: String::new(),
             plan_detected: false,
+            plan_layout: Layout::Monorepo,
             plan_note: String::new(),
             existing_projects: Vec::new(),
             selecting_for: None,
             select_cursor: 0,
             existing_config: false,
+            run_queue: Vec::new(),
+            queue_pos: 0,
+            queue_restore: None,
+            session_runs: Vec::new(),
             api_rx: None,
             pending: None,
             picked_run: None,
@@ -1077,6 +1110,11 @@ impl App {
             self.status = format!("cannot start: {}", first.why);
             return;
         }
+        // A fresh, unqueued run begins a new review set; a queued one continues
+        // the plan's, which is why `session_runs` outlives `progress`.
+        if self.run_queue.is_empty() {
+            self.session_runs.clear();
+        }
         self.progress = Progress {
             dry_run,
             ..Default::default()
@@ -1125,8 +1163,20 @@ impl App {
         for msg in messages {
             self.progress.apply(msg);
         }
+        // Runs created by this invocation join the session's list. A monorepo
+        // run emits several at once; a queued plan adds one per invocation, and
+        // `start` clears `progress` between them.
+        for created in &self.progress.created_runs {
+            if !self.session_runs.iter().any(|r| r.run_id == created.run_id) {
+                self.session_runs.push(created.clone());
+            }
+        }
         if !was_done && self.progress.finished.is_some() {
-            self.goto(Screen::Summary);
+            // A folder-of-repos plan is a queue: the next repository starts
+            // where the last finished, and only the final run lands on Summary.
+            if !self.advance_queue() {
+                self.goto(Screen::Summary);
+            }
         }
         if let Some(reply) = self.take_api_reply() {
             self.handle_api(reply);
@@ -1247,11 +1297,17 @@ impl App {
             }
             ApiMsg::PlanExecuted(Ok(exec)) => {
                 self.plan = exec.rows;
-                self.config.config_path = exec.config_path.clone();
-                self.status = format!("wrote {} — starting routed run", exec.config_path);
-                // The routed run reads the config just written; `start` reuses
-                // the ordinary launch path, which now emits `--config`.
-                self.start(exec.dry_run);
+                match self.plan_layout {
+                    Layout::Monorepo => {
+                        self.config.config_path = exec.config_path.clone();
+                        self.status =
+                            format!("wrote {} — starting routed run", exec.config_path);
+                        // The routed run reads the config just written; `start`
+                        // reuses the ordinary launch path, which emits --config.
+                        self.start(exec.dry_run);
+                    }
+                    Layout::RepoCollection => self.start_repo_queue(),
+                }
             }
             ApiMsg::PlanExecuted(Err(e)) => self.status = format!("plan failed: {e}"),
             ApiMsg::Indexed(Ok(out)) => {
@@ -1277,7 +1333,7 @@ impl App {
         // at the last one would silently hide every other project's queue, so
         // with more than one this session the operator must pick which project
         // to review. A single run keeps opening directly, as before.
-        if self.progress.created_runs.len() > 1 {
+        if self.session_runs.len() > 1 {
             return None;
         }
         self.progress.run_id.clone()
@@ -1294,13 +1350,13 @@ impl App {
     /// monorepo run — it is labelled by project and is exactly the set the
     /// operator just staged — and `R` still loads the full history over it.
     pub fn showing_session_runs(&self) -> bool {
-        self.runs.is_empty() && !self.progress.created_runs.is_empty()
+        self.runs.is_empty() && !self.session_runs.is_empty()
     }
 
     /// The number of rows the run picker is currently showing.
     pub fn run_list_len(&self) -> usize {
         if self.showing_session_runs() {
-            self.progress.created_runs.len()
+            self.session_runs.len()
         } else {
             self.runs.len()
         }
@@ -1314,8 +1370,7 @@ impl App {
 
     pub fn pick_run(&mut self) {
         let id = if self.showing_session_runs() {
-            self.progress
-                .created_runs
+            self.session_runs
                 .get(self.run_cursor)
                 .map(|r| r.run_id.clone())
         } else {
@@ -1508,30 +1563,50 @@ impl App {
             self.plan_note = "set a valid path on the Options screen first".into();
             return;
         }
-        if !in_git_repo(root) {
-            self.plan_note =
-                "monorepo routing needs a Git repository — none found at or above this path".into();
+        // Two shapes reach this screen. A checkout holds packages and routes
+        // them from one config in one run; a plain folder holds independent
+        // repositories, which have no shared repo to host that config and are
+        // migrated one run apiece.
+        let (layout, mut detected) = monorepo::survey(root);
+        self.plan_layout = layout;
+        self.existing_config =
+            layout == Layout::Monorepo && monorepo::read_existing(root).is_some();
+
+        if detected.is_empty() {
+            self.plan_note = match layout {
+                Layout::Monorepo =>
+                    "no sub-projects found — this scans as a single project (use the Project field on Connection)"
+                        .into(),
+                Layout::RepoCollection =>
+                    "not a Git repository, and no Git repositories directly inside it — nothing to plan"
+                        .into(),
+            };
             return;
         }
 
-        self.existing_config = monorepo::read_existing(root).is_some();
-        let mut detected = monorepo::detect(root);
-        if detected.is_empty() {
-            self.plan_note =
-                "no sub-projects found — this scans as a single project (use the Project field on Connection)"
-                    .into();
-            return;
+        match layout {
+            Layout::Monorepo => {
+                // Prepend the repository itself as the catch-all project, so
+                // root-level docs and anything outside a package still route
+                // somewhere instead of failing the run as unmapped.
+                let root_row = monorepo::repository_root_row(root, &detected);
+                detected.insert(0, root_row);
+                self.plan_note = format!(
+                    "{} package(s) + the repository root — one routed run",
+                    detected.len().saturating_sub(1)
+                );
+            }
+            Layout::RepoCollection => {
+                // No catch-all: each repository is its own scan root, and there
+                // is nothing outside them to sweep up.
+                self.plan_note = format!(
+                    "{} separate repositor{} — one run each",
+                    detected.len(),
+                    if detected.len() == 1 { "y" } else { "ies" }
+                );
+            }
         }
-        // Prepend the repository itself as the catch-all project, so root-level
-        // docs and anything outside a package still route somewhere instead of
-        // failing the run as unmapped.
-        let root_row = monorepo::repository_root_row(root, &detected);
-        detected.insert(0, root_row);
         // Build with no matches yet; the async listing rebuilds with them.
-        self.plan_note = format!(
-            "{} package(s) + the repository root",
-            detected.len().saturating_sub(1)
-        );
         self.plan = monorepo::build_plan(detected, &self.existing_projects);
         self.load_projects();
     }
@@ -1640,6 +1715,82 @@ impl App {
         (create, select, skip)
     }
 
+    /// Starts the next repository of a folder-of-repos plan.
+    ///
+    /// Returns false when the queue is spent, which is what lets the last run
+    /// land on the Summary screen instead of looping. Draining also restores
+    /// the operator's own path/project: the queue rewrites both per repository,
+    /// and leaving them pointed at whichever repository happened to be last
+    /// would quietly change what the next manual run scans.
+    fn advance_queue(&mut self) -> bool {
+        if self.queue_pos + 1 < self.run_queue.len() {
+            self.queue_pos += 1;
+            self.start_queued_run();
+            return true;
+        }
+        if !self.run_queue.is_empty() {
+            if let Some((path, project)) = self.queue_restore.take() {
+                self.config.path = path;
+                self.config.project = project;
+            }
+            self.run_queue.clear();
+            self.queue_pos = 0;
+        }
+        false
+    }
+
+    /// Points the configuration at one queued repository and launches it.
+    ///
+    /// No routing config is involved: with `config_path` empty, `to_args` emits
+    /// `--project`, which is the single-project flow the runner already has.
+    /// Each repository is its own Git checkout, so history and ignore rules
+    /// resolve the way they would if it were scanned on its own — which is the
+    /// reason this layout is a queue rather than one big scan.
+    fn start_queued_run(&mut self) {
+        let Some(next) = self.run_queue.get(self.queue_pos).cloned() else {
+            return;
+        };
+        self.config.path = next.path;
+        self.config.project = next.project_id;
+        self.config.config_path.clear();
+        let (pos, total) = (self.queue_pos + 1, self.run_queue.len());
+        self.start(false);
+        if self.handle.is_some() {
+            self.status = format!("repository {pos}/{total} — {}", next.alias);
+        }
+    }
+
+    /// Turns a resolved folder-of-repos plan into the run queue and starts it.
+    fn start_repo_queue(&mut self) {
+        // `plan_path` is the folder detection ran against; `config.path` is
+        // about to be rewritten per repository, so the parent has to come from
+        // the plan, not from the live configuration.
+        let root = std::path::PathBuf::from(self.plan_path.trim());
+        self.queue_restore = Some((self.config.path.clone(), self.config.project.clone()));
+        self.run_queue = self
+            .plan
+            .iter()
+            .filter(|r| r.action != Action::Skip)
+            .filter_map(|r| {
+                r.resolved_project_id.as_ref().map(|pid| QueuedRun {
+                    alias: r.detected.alias.clone(),
+                    path: root.join(&r.detected.rel_dir).to_string_lossy().to_string(),
+                    project_id: pid.clone(),
+                })
+            })
+            .collect();
+        self.queue_pos = 0;
+        if self.run_queue.is_empty() {
+            self.queue_restore = None;
+            self.status = "no repository resolved to a project".into();
+            return;
+        }
+        // The whole queue is one review set, so it is cleared once here rather
+        // than by each `start` inside it.
+        self.session_runs.clear();
+        self.start_queued_run();
+    }
+
     /// Confirms the plan: creates the projects that need creating, writes the
     /// `.nexusmind.yaml`, and — on success — launches the routed run.
     ///
@@ -1656,10 +1807,16 @@ impl App {
         // either, so a dry run is refused here rather than quietly creating
         // projects. Preview each project's queue after the run instead.
         if dry_run {
-            self.status =
-                "a monorepo plan is applied with r — it creates projects and writes the config, \
-                 so there is no side-effect-free preview; review each queue after the run"
-                    .into();
+            self.status = match self.plan_layout {
+                Layout::Monorepo =>
+                    "a plan is applied with r — it creates projects and writes the config, so \
+                     there is no side-effect-free preview; review each queue after the run"
+                        .into(),
+                Layout::RepoCollection =>
+                    "a plan is applied with r — it creates projects and runs each repository, \
+                     so there is no side-effect-free preview; review each queue after the runs"
+                        .into(),
+            };
             return;
         }
         let (create, select, _skip) = self.plan_summary();
@@ -1674,6 +1831,7 @@ impl App {
             return;
         }
         let rows = self.plan.clone();
+        let layout = self.plan_layout;
         let client = self.config.client.trim().to_string();
         let root = Path::new(self.config.path.trim()).to_path_buf();
         let repo_id = repository_name(&root);
@@ -1681,7 +1839,7 @@ impl App {
             .to_string_lossy()
             .to_string();
 
-        self.spawn_api("creating projects & writing config", move |c| {
+        self.spawn_api("creating projects", move |c| {
             let mut rows = rows;
             let client = (!client.is_empty()).then_some(client.as_str());
             for row in rows.iter_mut() {
@@ -1698,6 +1856,16 @@ impl App {
                         }
                     },
                 }
+            }
+            // A folder of separate repositories has no repository to hold a
+            // routing config — each one runs on its own, so there is nothing to
+            // write and the queue takes over from here.
+            if layout == Layout::RepoCollection {
+                return ApiMsg::PlanExecuted(Ok(ExecutedPlan {
+                    rows,
+                    config_path: String::new(),
+                    dry_run,
+                }));
             }
             let config = monorepo::build_config(&repo_id, client, &rows);
             if config.projects.is_empty() {
@@ -1716,21 +1884,6 @@ impl App {
                 dry_run,
             }))
         });
-    }
-}
-
-/// Whether `root` or any ancestor holds a `.git` — the routing config is
-/// discovered from the Git root, so a path outside a repository cannot route.
-fn in_git_repo(root: &Path) -> bool {
-    let mut cursor = root;
-    loop {
-        if cursor.join(".git").exists() {
-            return true;
-        }
-        match cursor.parent() {
-            Some(parent) => cursor = parent,
-            None => return false,
-        }
     }
 }
 
@@ -2249,14 +2402,14 @@ mod tests {
     fn several_session_runs_force_a_pick_but_one_opens_directly() {
         let mut app = App::new();
         app.progress.run_id = Some("last".into());
-        app.progress.created_runs = vec![created("web", "run-web")];
+        app.session_runs = vec![created("web", "run-web")];
         assert_eq!(
             app.active_run().as_deref(),
             Some("last"),
             "a single project opens without a pick"
         );
 
-        app.progress.created_runs.push(created("api", "run-api"));
+        app.session_runs.push(created("api", "run-api"));
         assert!(
             app.picking_run(),
             "two projects means the operator chooses which to review"
@@ -2270,7 +2423,7 @@ mod tests {
         let mut app = App::new();
         app.config.api_url = "http://127.0.0.1:1".into();
         app.config.api_key = "k".into();
-        app.progress.created_runs = vec![created("web", "run-web"), created("api", "run-api")];
+        app.session_runs = vec![created("web", "run-web"), created("api", "run-api")];
         app.run_cursor = 1;
         app.pick_run();
         assert_eq!(app.picked_run.as_deref(), Some("run-api"));
@@ -2300,6 +2453,71 @@ mod tests {
         app.cycle_action(); // Create → Skip
         app.cycle_action(); // Skip → Create
         assert_eq!(app.plan[0].action, Action::Create);
+    }
+
+    fn resolved_row(rel: &str, action: Action, pid: Option<&str>) -> PlanRow {
+        let mut row = plan_row(rel, action);
+        row.resolved_project_id = pid.map(str::to_string);
+        row
+    }
+
+    /// A folder of separate repositories cannot be one routed run — there is no
+    /// repository to hold the config — so it becomes one run per repository.
+    #[test]
+    fn a_folder_of_repositories_becomes_one_queued_run_per_repository() {
+        let mut app = App::new();
+        app.plan_layout = Layout::RepoCollection;
+        app.plan_path = "/estate".into();
+        app.config.path = "/estate".into();
+        // No credentials: `start` refuses, so this asserts the queue that was
+        // built rather than a launched process.
+        app.config.api_key.clear();
+        app.plan = vec![
+            resolved_row("svc-a", Action::Create, Some("p_a")),
+            resolved_row("svc-b", Action::Select("p_b".into()), Some("p_b")),
+            resolved_row("svc-c", Action::Skip, None),
+            resolved_row("svc-d", Action::Create, None), // never resolved
+        ];
+
+        app.start_repo_queue();
+
+        let queued: Vec<(String, String)> = app
+            .run_queue
+            .iter()
+            .map(|q| (q.path.clone(), q.project_id.clone()))
+            .collect();
+        assert_eq!(
+            queued,
+            vec![
+                ("/estate/svc-a".to_string(), "p_a".to_string()),
+                ("/estate/svc-b".to_string(), "p_b".to_string()),
+            ],
+            "skipped and unresolved repositories never enter the queue"
+        );
+        assert_eq!(app.queue_pos, 0);
+        assert!(app.handle.is_none(), "no credentials, so nothing launched");
+    }
+
+    /// The queue rewrites path and project per repository; draining it must put
+    /// the operator's own configuration back, or the next manual run silently
+    /// scans whichever repository happened to be last.
+    #[test]
+    fn draining_the_queue_restores_the_operators_path_and_project() {
+        let mut app = App::new();
+        app.config.path = "/estate/svc-b".into();
+        app.config.project = "p_b".into();
+        app.queue_restore = Some(("/estate".into(), String::new()));
+        app.run_queue = vec![QueuedRun {
+            alias: "svc-b".into(),
+            path: "/estate/svc-b".into(),
+            project_id: "p_b".into(),
+        }];
+        app.queue_pos = 0;
+
+        assert!(!app.advance_queue(), "one entry means the queue is spent");
+        assert_eq!(app.config.path, "/estate");
+        assert_eq!(app.config.project, "");
+        assert!(app.run_queue.is_empty(), "a spent queue frees the next manual run");
     }
 
     #[test]
