@@ -89,6 +89,7 @@ pub enum FieldId {
     MaxTokens,
     Parallel,
     ClaudeBin,
+    Model,
 }
 
 impl FieldId {
@@ -127,6 +128,7 @@ impl FieldId {
             MaxTokens => "Token budget",
             Parallel => "Parallel classifier calls",
             ClaudeBin => "claude binary",
+            Model => "Classifier model",
         }
     }
 
@@ -162,6 +164,8 @@ impl FieldId {
                          ~6 is a good start. It cuts time, not tokens — and much \
                          higher risks the provider rate-limiting.",
             ClaudeBin => "The headless classifier invoked as `claude -p`.",
+            Model => "Haiku by default — this prompt runs once per unit, so a frontier \
+                      model multiplies the bill without improving the answer.",
         }
     }
 
@@ -182,6 +186,7 @@ impl FieldId {
             MaxTokens => c.max_tokens.clone(),
             Parallel => c.parallel.clone(),
             ClaudeBin => c.claude_bin.clone(),
+            Model => c.model.clone(),
             IncludeSdd => c.include_sdd.to_string(),
             ExtractKnowledge => c.extract_knowledge.to_string(),
             IndexCode => c.index_code.to_string(),
@@ -214,6 +219,7 @@ impl FieldId {
             MaxTokens => &mut c.max_tokens,
             Parallel => &mut c.parallel,
             ClaudeBin => &mut c.claude_bin,
+            Model => &mut c.model,
             _ => return None,
         })
     }
@@ -287,7 +293,7 @@ pub fn fields_for(screen: Screen, source: Source) -> Vec<FieldId> {
                     f.extend([Tables, SampleLimit, RedactPii, Attest]);
                 }
             }
-            f.extend([NoLlm, MaxTokens, Parallel, ClaudeBin]);
+            f.extend([NoLlm, MaxTokens, Parallel, ClaudeBin, Model]);
             f
         }
         _ => Vec::new(),
@@ -302,7 +308,7 @@ pub fn is_active(field: FieldId, c: &RunConfig) -> bool {
     use FieldId::*;
     match field {
         Tables | SampleLimit | RedactPii | Attest => c.include_data,
-        MaxTokens | ClaudeBin | Parallel => !c.no_llm,
+        MaxTokens | ClaudeBin | Model | Parallel => !c.no_llm,
         _ => true,
     }
 }

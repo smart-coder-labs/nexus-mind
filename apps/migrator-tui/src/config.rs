@@ -128,6 +128,10 @@ pub struct RunConfig {
     pub no_llm: bool,
     pub max_tokens: String,
     pub claude_bin: String,
+    /// Model for the classifier. Haiku by default: classification runs once per
+    /// unit, so a frontier model here multiplies the bill of a large source
+    /// without improving a short, structured judgement.
+    pub model: String,
     /// How many classifier calls run at once. Empty or "1" means serial (the
     /// runner's default); a value above 1 becomes `--parallel N`. Kept as a
     /// string like the other typed fields so an in-progress edit is never a
@@ -170,6 +174,7 @@ impl Default for RunConfig {
             no_llm: false,
             max_tokens: String::new(),
             claude_bin: "claude".to_string(),
+            model: "claude-haiku-4-5".to_string(),
             parallel: String::new(),
         }
     }
@@ -273,6 +278,7 @@ impl RunConfig {
         push_flag(&mut a, "--since-commit", &self.since_commit);
         push_flag(&mut a, "--max-tokens", &self.max_tokens);
         push_flag(&mut a, "--claude-bin", &self.claude_bin);
+        push_flag(&mut a, "--model", &self.model);
         // A pool only makes sense with a model to wait on, and only above 1.
         // "1" and blank are the serial default and emit no flag; an invalid
         // value is caught by `blockers`, so parsing failures are simply not
@@ -781,6 +787,17 @@ mod tests {
         assert!(args.contains(&"source-code".to_string()));
         let i = args.iter().position(|a| a == "--path").unwrap();
         assert_eq!(args[i + 1], "/repo");
+    }
+
+    /// The classifier must not inherit the operator's default model — on a
+    /// coding machine that is a frontier model, and this runs once per unit.
+    #[test]
+    fn the_classifier_model_defaults_to_haiku_and_reaches_argv() {
+        let cfg = RunConfig::default();
+        assert_eq!(cfg.model, "claude-haiku-4-5");
+        let args = cfg.to_args(true);
+        let i = args.iter().position(|a| a == "--model").expect("--model must be sent");
+        assert_eq!(args[i + 1], "claude-haiku-4-5");
     }
 
     #[test]

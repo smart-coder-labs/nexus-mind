@@ -262,6 +262,14 @@ pub fn parse_usage(envelope: &serde_json::Value) -> Option<TokenUsage> {
 
 pub struct ClaudeCli {
     pub bin: String,
+    /// The model the classifier runs on, passed as `--model`.
+    ///
+    /// Without it the CLI inherits whatever the operator's default happens to
+    /// be — which on a coding machine is a frontier model. Classification here
+    /// is a short, highly structured judgement repeated once per unit, so a
+    /// 3000-unit source billed at Opus rates costs several times what the same
+    /// run costs on Haiku for no measurable gain in the answer.
+    pub model: String,
 }
 
 impl ClaudeCli {
@@ -319,6 +327,11 @@ impl ClaudeCli {
             .args([
                 "-p",
                 &prompt,
+                // Pinned rather than inherited: the operator's default model is
+                // whatever their coding session uses, and this classifier runs
+                // once per unit across the whole source.
+                "--model",
+                &self.model,
                 "--output-format",
                 "json",
                 // The classifier gets its own system prompt, and the dynamic
@@ -1041,6 +1054,12 @@ struct Args {
     #[arg(long, default_value = "claude")]
     claude_bin: String,
 
+    /// Model for the classifier. Defaults to Haiku: classification is a short,
+    /// repetitive judgement, and it runs once per unit — a frontier model here
+    /// multiplies the bill of a large source without improving the answer.
+    #[arg(long, default_value = "claude-haiku-4-5")]
+    model: String,
+
     /// Narrow the scan to paths containing any of these fragments. The way to
     /// keep a first pass affordable: `--include docs/adr` instead of the whole
     /// tree. Repeatable, or comma-separated.
@@ -1461,6 +1480,7 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
 
     let cli = (!args.no_llm).then(|| ClaudeCli {
         bin: args.claude_bin.clone(),
+        model: args.model.clone(),
     });
     let mut budget = Budget {
         max_tokens: args.max_tokens,
@@ -2181,6 +2201,23 @@ mod tests {
         assert!(!b.would_exceed());
     }
 
+    /// The classifier must never inherit the operator's default model. On a
+    /// coding machine that default is a frontier model, and this prompt runs
+    /// once per unit — a large source then costs several times what the same
+    /// run costs on Haiku, for a short structured judgement that does not
+    /// benefit from the bigger model.
+    #[test]
+    fn the_classifier_defaults_to_haiku_rather_than_the_operators_model() {
+        let args = Args::parse_from(["migrate-knowledge", "--source", "repo-docs"]);
+        assert_eq!(args.model, "claude-haiku-4-5");
+        // And it reaches the CLI: the flag is what stops the inheritance.
+        let cli = ClaudeCli {
+            bin: args.claude_bin.clone(),
+            model: args.model.clone(),
+        };
+        assert_eq!(cli.model, "claude-haiku-4-5");
+    }
+
     // ── The core change ships no real connector ──────────────────────────────
 
     fn args_for(source: &str) -> Args {
@@ -2201,6 +2238,7 @@ mod tests {
             no_llm: false,
             max_tokens: None,
             claude_bin: "claude".to_string(),
+            model: "claude-haiku-4-5".to_string(),
             include_sdd: false,
             host_scope: None,
             since_commit: None,
