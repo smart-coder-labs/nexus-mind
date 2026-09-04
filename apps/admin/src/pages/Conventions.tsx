@@ -488,15 +488,28 @@ function ConventionCard({
   // '' is the org-wide option, not "unset" — see handleSave.
   const [editProjectId, setEditProjectId] = useState(conv.project_id ?? '')
 
-  // Shared query key with every other card and page that lists projects, so the
-  // list is fetched once however many conventions are on screen.
+  // One shared query key, so the list is fetched once however many conventions
+  // are on screen. `include_archived` is on because a convention outlives the
+  // archiving of its project, and a scope you cannot see is a scope you cannot
+  // correct.
   const { data: projects = [] } = useQuery({
-    queryKey: ['projects', { include_archived: false }],
-    queryFn: () => client.listProjects({ include_archived: false }),
+    queryKey: ['projects', { include_archived: true }],
+    queryFn: () => client.listProjects({ include_archived: true }),
   })
   const projectName = conv.project_id
     ? projects.find(p => p.id === conv.project_id)?.name
     : undefined
+
+  // The listing can legitimately not contain this convention's project: for
+  // anyone below super-user the endpoint returns only projects they are a
+  // member of, and never archived ones. Without a matching <option> the select
+  // renders blank — showing "org-wide" for a convention that is scoped, while
+  // still saving the scope it doesn't show. A synthetic row keeps what is on
+  // screen equal to what will be saved.
+  const projectOptions = useMemo(() => {
+    if (!editProjectId || projects.some(p => p.id === editProjectId)) return projects
+    return [{ id: editProjectId, name: `${editProjectId} (not in your list)` }, ...projects]
+  }, [projects, editProjectId])
 
   const enterEdit = () => {
     setEditTitle(conv.title ?? '')
@@ -588,12 +601,14 @@ function ConventionCard({
             )}
             {/* Scope is worth showing on the card: an org-wide convention and a
                 project-scoped one look identical otherwise, and which one it is
-                decides who the convention reaches. The id fallback covers a
-                project that was deleted out from under the link. */}
+                decides who the convention reaches. The raw id shows when the
+                project is not in this viewer's listing — archived, or one they
+                are not a member of — which is more honest than showing nothing.
+                */}
             {conv.project_id && (
               <span
                 className="text-[10px] bg-accent-blue/10 text-accent-blue rounded-[5px] px-1.5 py-0.5 max-w-[180px] truncate"
-                title={projectName ?? conv.project_id}
+                title={projectName ?? `project ${conv.project_id} (not in your list)`}
               >
                 {projectName ?? conv.project_id}
               </span>
@@ -682,7 +697,7 @@ function ConventionCard({
               {/* Named rather than blank: an empty first option reads as "not
                   chosen yet", and org-wide is a real, common choice. */}
               <option value="">Org-wide (no project)</option>
-              {projects.map(p => (
+              {projectOptions.map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>

@@ -14,11 +14,28 @@ use crate::{
     store::sqlite::SqliteStore,
 };
 
+/// Maps a query error to a response.
+///
+/// `unknown_project:` is a client mistake, not a server fault, and it is
+/// reachable on an ordinary save: the admin UI sends `project_id` on every
+/// convention edit, so a convention pointing at a since-deleted project fails
+/// validation when somebody only changed its weight. Reporting that as a 500
+/// would tell the user nothing and page whoever watches the error rate.
 fn db_err(e: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+    let msg = e.to_string();
+    if let Some(rest) = msg.strip_prefix("unknown_project: ") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("no project {rest} in this organization"),
+                code: "unknown_project".to_string(),
+            }),
+        );
+    }
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ApiError {
-            error: e.to_string(),
+            error: msg,
             code: "internal_error".to_string(),
         }),
     )

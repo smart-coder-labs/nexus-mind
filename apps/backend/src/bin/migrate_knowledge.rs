@@ -336,9 +336,9 @@ impl ClaudeCli {
                 &self.model,
                 "--output-format",
                 "json",
-                // The classifier gets its own system prompt, and the dynamic
-                // sections — the operator's CLAUDE.md among them — are left
-                // out.
+                // The classifier gets its own system prompt, which also replaces
+                // the default one's dynamic sections — the operator's CLAUDE.md
+                // among them.
                 //
                 // This is not tidiness. With the user's own instructions in
                 // play the model answered "Nada que persistir en este turno…"
@@ -348,26 +348,26 @@ impl ClaudeCli {
                 // fell back, and every unit was billed.
                 "--system-prompt",
                 CLASSIFIER_SYSTEM_PROMPT,
-                "--exclude-dynamic-system-prompt-sections",
-                // The two flags above are not enough on their own, and the gap
-                // is expensive. `--exclude-dynamic-system-prompt-sections`
-                // drops CLAUDE.md, but the operator's `settings.json` still
-                // loads — and with it every enabled plugin, which means that
-                // plugin's skills and its SessionStart hooks. Measured against
-                // a real CSS unit with NexusMind's own plugin installed: the
-                // classifier replied "The NexusMind protocol requires
-                // `project`… I can't call `store_memory`" instead of a
-                // candidate. 42 of 56 units failed that way in one run, all of
-                // them billed. Loading no setting sources at all fixes it (and
-                // cuts the call from ~46s to ~16s, since none of that context
-                // is assembled or sent). Auth is not a setting source, so the
-                // operator stays logged in.
+                // A custom system prompt is not enough on its own, and the gap
+                // is expensive: the operator's `settings.json` still loads, and
+                // with it every enabled plugin — that plugin's skills and its
+                // SessionStart hooks. Measured against a real CSS unit with
+                // NexusMind's own plugin installed, the classifier replied "The
+                // NexusMind protocol requires `project`… I can't call
+                // `store_memory`" instead of a candidate. 42 of 56 units failed
+                // that way in one run, all of them billed. Loading no setting
+                // sources at all fixes it, and cuts the call from ~46s to ~16s
+                // since none of that context is assembled or sent. Auth is not
+                // a setting source, so the operator stays logged in.
                 "--setting-sources",
                 "",
                 // Same reasoning for MCP: the servers configured for the
                 // operator's coding sessions would otherwise hand the
                 // classifier tools like `store_memory`, and a model given a
                 // tool tends to reach for it instead of answering.
+                //
+                // `--mcp-config` is variadic, so it stays last: anything added
+                // after it would be swallowed as a second config file.
                 "--strict-mcp-config",
                 "--mcp-config",
                 r#"{"mcpServers":{}}"#,
@@ -377,11 +377,10 @@ impl ClaudeCli {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let hint = if stderr.contains("unknown option") || stderr.contains("--exclude-dynamic")
-            {
-                "\nThis needs a `claude` new enough for --system-prompt and \
-                 --exclude-dynamic-system-prompt-sections. Without them the classifier \
-                 inherits your CLAUDE.md and answers the wrong question."
+            let hint = if stderr.contains("unknown option") {
+                "\nThis needs a `claude` new enough for --system-prompt, --setting-sources, \
+                 --strict-mcp-config and --mcp-config. Without them the classifier inherits \
+                 your settings, plugins and MCP servers, and answers the wrong question."
             } else {
                 ""
             };
@@ -533,6 +532,19 @@ fn emit_failed(sink: &EventSink, index: usize, total: usize, item: &SourceItem, 
 /// batch of twenty large documents is a prompt nobody should send. Whichever
 /// limit is reached first closes the batch.
 pub const BULK_MAX_ITEMS: usize = 20;
+
+/// Rejects `--parallel 0` instead of quietly treating it as serial.
+///
+/// The pool is only taken when the value is above 1, so a zero would run
+/// serially — which was harmless when serial was also the default, and is a
+/// silent surprise now that it is not.
+fn parse_parallel(raw: &str) -> Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(0) => Err("must be at least 1 — 1 means serial".to_string()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 /// Concurrent classifier calls when `--parallel` is not given.
 ///
@@ -1040,7 +1052,7 @@ struct Args {
     /// This does NOT lower token spend: every unit still costs its own call —
     /// `--bulk` is the mode for that, and this flag is ignored under it. Values
     /// much above ~6 risk the provider rate-limiting the concurrent calls.
-    #[arg(long, default_value_t = DEFAULT_PARALLEL)]
+    #[arg(long, default_value_t = DEFAULT_PARALLEL, value_parser = parse_parallel)]
     parallel: usize,
 
     /// Emit NDJSON progress events on stdout instead of prose.

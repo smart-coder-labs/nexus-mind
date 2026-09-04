@@ -15235,11 +15235,27 @@ pub fn get_convention_visible(
     Ok(result)
 }
 
+/// Refuses a `project_id` that is not this org's.
+///
+/// The rows it protects are inert either way — every read filters by `org_id`,
+/// so a cross-tenant `project_id` would simply never resolve — but a foreign id
+/// sitting in the column is a tenancy invariant broken in storage, which is the
+/// kind of thing a later join or export is entitled to trust.
+fn check_project_in_org(conn: &Connection, org_id: &str, project_id: Option<&str>) -> Result<()> {
+    if let Some(pid) = project_id {
+        if get_project_by_id(conn, org_id, pid)?.is_none() {
+            anyhow::bail!("unknown_project: {pid}");
+        }
+    }
+    Ok(())
+}
+
 pub fn create_convention(
     conn: &Connection,
     org_id: &str,
     req: &CreateConventionRequest,
 ) -> Result<Convention> {
+    check_project_in_org(conn, org_id, req.project_id.as_deref())?;
     let tags_json = serde_json::to_string(&req.tags.clone().unwrap_or_default())?;
     let category = req.category.as_deref().unwrap_or("general");
     let weight = req.weight.unwrap_or(100);
@@ -15285,9 +15301,7 @@ pub fn update_convention(
         None => existing.project_id.clone(),
         Some(None) => None,
         Some(Some(pid)) => {
-            if get_project_by_id(conn, org_id, pid)?.is_none() {
-                anyhow::bail!("unknown_project: {pid}");
-            }
+            check_project_in_org(conn, org_id, Some(pid))?;
             Some(pid.clone())
         }
     };
@@ -15421,11 +15435,67 @@ mod convention_scope_tests {
             .unwrap();
         assert_eq!(cleared.project_id, None);
 
-        // A project of another org is not a project this org may point at.
         req.project_id = Some(Some("no-such-project".to_string()));
         assert!(
             update_convention(&conn, &org_id, conv.id, &req).is_err(),
             "an unknown project id must be refused, not written through"
+        );
+    }
+
+    /// The tri-state only exists on the wire. Constructing the request as a Rust
+    /// literal — which the test above does — passes just as happily with the
+    /// `deserialize_with` attribute deleted, at which point `{"project_id":
+    /// null}` degrades to "leave alone" and unscoping becomes unreachable
+    /// through the API while still looking available in the admin UI.
+    #[test]
+    fn the_update_request_distinguishes_an_absent_project_from_an_explicit_null() {
+        let absent: UpdateConventionRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.project_id, None, "absent must mean 'leave alone'");
+
+        let cleared: UpdateConventionRequest =
+            serde_json::from_str(r#"{"project_id":null}"#).unwrap();
+        assert_eq!(
+            cleared.project_id,
+            Some(None),
+            "an explicit null must mean 'make it org-wide'"
+        );
+
+        let set: UpdateConventionRequest =
+            serde_json::from_str(r#"{"project_id":"p1"}"#).unwrap();
+        assert_eq!(set.project_id, Some(Some("p1".to_string())));
+    }
+
+    /// Tenancy: a convention may only point at a project of its own org, on the
+    /// way in as well as on the way through. `create_convention` wrote
+    /// `project_id` unvalidated until this was added.
+    #[test]
+    fn a_convention_cannot_point_at_another_orgs_project() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org2', 'Other', 'other')",
+            [],
+        )
+        .unwrap();
+        let theirs = create_project(&conn, "org2", "their-proj", None, None).unwrap();
+
+        assert!(
+            create_convention(&conn, &org_id, &make_req("Rule", Some(&theirs.id))).is_err(),
+            "creating with another org's project must be refused"
+        );
+
+        let conv = create_convention(&conn, &org_id, &make_req("Rule", None)).unwrap();
+        let req = UpdateConventionRequest {
+            title: None,
+            content: None,
+            category: None,
+            weight: None,
+            tags: None,
+            project_id: Some(Some(theirs.id.clone())),
+        };
+        assert!(
+            update_convention(&conn, &org_id, conv.id, &req).is_err(),
+            "moving to another org's project must be refused"
         );
     }
 

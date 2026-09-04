@@ -696,7 +696,7 @@ mod tests {
     /// nothing reaches argv under `--no-llm`, where there is no model call to
     /// parallelise.
     #[test]
-    fn parallel_reaches_argv_only_above_one_and_never_under_no_llm() {
+    fn a_typed_parallel_reaches_argv_but_never_under_no_llm() {
         let mut cfg = RunConfig {
             api_url: "http://localhost:8080".into(),
             api_key: "nm_x".into(),
@@ -746,7 +746,7 @@ mod tests {
         cfg.parallel = "  ".into();
         assert!(
             cfg.blockers(false).iter().all(|b| b.field != "parallel"),
-            "blank is serial, not an error"
+            "blank defers to the runner, which is not an error"
         );
     }
 
