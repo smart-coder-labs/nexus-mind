@@ -74,7 +74,10 @@ pub async fn get_global_search(
         Some(auth.user_id.as_str())
     };
     let memories =
-        queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer).map_err(db_err)?;
+        // Global search is org-wide by design — it is the "search everything"
+        // surface, scoped by membership rather than by a project argument.
+        queries::search_memories_visible(&conn, &auth.org_id, q, limit, viewer, None)
+            .map_err(db_err)?;
 
     let users = if auth.role.is_super_user() {
         queries::search_users_by_query(&conn, &auth.org_id, q, limit).map_err(db_err)?
@@ -203,7 +206,7 @@ mod tests {
 
         // Member: shared + orgless, not secret.
         let mut member =
-            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, Some("m1")).unwrap();
+            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, Some("m1"), None).unwrap();
         member.sort_by(|a, b| a.id.cmp(&b.id));
         let ids: Vec<&str> = member.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
@@ -214,7 +217,7 @@ mod tests {
 
         // Admin (None): all three.
         let admin =
-            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, None).unwrap();
+            queries::search_memories_visible(&conn, &org_id, "ZEBRAWORD", 10, None, None).unwrap();
         assert_eq!(admin.len(), 3, "admin sees everything");
     }
 

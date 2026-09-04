@@ -84,7 +84,8 @@ impl MemoryStore for SqliteStore {
         Ok(memory)
     }
 
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
+    #[allow(clippy::too_many_arguments)]
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>, project: Option<&str>) -> Result<Vec<Memory>> {
         // Resolve effective mode: downgrade to Keyword if no embed service.
         let effective_mode = if self.will_degrade(mode) {
             tracing::debug!("No embed service — falling back to Keyword search");
@@ -96,10 +97,10 @@ impl MemoryStore for SqliteStore {
         let memories = match effective_mode {
             SearchMode::Keyword => {
                 let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-                queries::search_memories_visible(&conn, org_id, query, limit, viewer_user_id)?
+                queries::search_memories_visible(&conn, org_id, query, limit, viewer_user_id, project)?
             }
-            SearchMode::Semantic => self.search_semantic(org_id, query, limit, viewer_user_id)?,
-            SearchMode::Hybrid   => self.search_hybrid(org_id, query, limit, viewer_user_id)?,
+            SearchMode::Semantic => self.search_semantic(org_id, query, limit, viewer_user_id, project)?,
+            SearchMode::Hybrid   => self.search_hybrid(org_id, query, limit, viewer_user_id, project)?,
         };
 
         let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
@@ -260,13 +261,14 @@ impl MemoryStore for SqliteStore {
 
 impl SqliteStore {
     /// Pure semantic search: embed the query, cosine-rank all org embeddings, return top-K.
-    fn search_semantic(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
+    #[allow(clippy::too_many_arguments)]
+    fn search_semantic(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>, project: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
         let q_vec = svc.embed_query(query)?;
 
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_project(&conn, org_id, project)?
         };
 
         let mut scored: Vec<(String, f32)> = pairs
@@ -287,7 +289,8 @@ impl SqliteStore {
     }
 
     /// Hybrid search: merge FTS5 ranks and cosine ranks via Reciprocal Rank Fusion (k=60).
-    fn search_hybrid(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
+    #[allow(clippy::too_many_arguments)]
+    fn search_hybrid(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>, project: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
         let q_vec = svc.embed_query(query)?;
 
@@ -297,7 +300,10 @@ impl SqliteStore {
         // FTS5 results (rank = position in result list, 1-based)
         let fts_ids: Vec<String> = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::search_memories(&conn, org_id, query, fetch_n)?
+            // Scoped like the vector half, or hybrid would fuse a narrowed
+            // semantic list with an org-wide keyword list and reintroduce the
+            // very cross-project results the scope exists to exclude.
+            queries::search_memories_visible(&conn, org_id, query, fetch_n, viewer_user_id, project)?
                 .into_iter()
                 .map(|m| m.id)
                 .collect()
@@ -306,7 +312,7 @@ impl SqliteStore {
         // Semantic KNN results
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
-            queries::get_embeddings_for_org(&conn, org_id)?
+            queries::get_embeddings_for_project(&conn, org_id, project)?
         };
 
         let mut sem_scored: Vec<(String, f32)> = pairs
@@ -391,7 +397,7 @@ mod tests {
         let (store, org_id, user_id) = make_store();
         store.store(&org_id, &user_id, &req("use snake_case")).unwrap();
         store.store(&org_id, &user_id, &req("unrelated content")).unwrap();
-        let results = store.search(&org_id, &user_id, "snake_case", 10, SearchMode::Keyword, None).unwrap();
+        let results = store.search(&org_id, &user_id, "snake_case", 10, SearchMode::Keyword, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 

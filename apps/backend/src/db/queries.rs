@@ -308,7 +308,7 @@ pub fn search_memories(
     query: &str,
     limit: i64,
 ) -> Result<Vec<Memory>> {
-    search_memories_visible(conn, org_id, query, limit, None)
+    search_memories_visible(conn, org_id, query, limit, None, None)
 }
 
 /// Like [`search_memories`], but when `viewer_user_id` is `Some(uid)` the result set is
@@ -320,6 +320,7 @@ pub fn search_memories_visible(
     query: &str,
     limit: i64,
     viewer_user_id: Option<&str>,
+    project: Option<&str>,
 ) -> Result<Vec<Memory>> {
     let fts_query = match sanitize_fts_query(query) {
         Some(q) => q,
@@ -337,6 +338,11 @@ pub fn search_memories_visible(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> =
         vec![Box::new(fts_query), Box::new(org_id.to_string())];
     let mut idx = 3usize;
+    if let Some(p) = project {
+        sql.push_str(&format!(" AND m.project = ?{idx}"));
+        params.push(Box::new(p.to_string()));
+        idx += 1;
+    }
     if let Some(vid) = viewer_user_id {
         sql.push_str(&visibility_predicate("m.project_id", &format!("?{idx}")));
         params.push(Box::new(vid.to_string()));
@@ -3398,13 +3404,37 @@ pub fn store_embedding(conn: &Connection, memory_id: &str, embedding: &[u8]) -> 
 /// Load all (memory_id, embedding_blob) pairs for an org.
 /// Used for in-process cosine KNN during semantic search.
 pub fn get_embeddings_for_org(conn: &Connection, org_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut stmt = conn.prepare(
+    get_embeddings_for_project(conn, org_id, None)
+}
+
+/// Candidate vectors for a semantic search, narrowed to one project when asked.
+///
+/// The narrowing is not a convenience. Cosine ranking has no notion of scope, so
+/// an unnarrowed search ranks every memory in the organization against the
+/// query and returns the global top-K. In a single-project org that is right. In
+/// an org holding several unrelated clients it is not: measured on a live corpus
+/// of 2,907 entries across three clients, "cómo configuro el despliegue en
+/// vercel de este monorepo" returned three of five results from an unrelated
+/// client's Shopify theme. The corpus does not have to be large for this — it
+/// has to be *mixed*, and it gets worse with every client added.
+pub fn get_embeddings_for_project(
+    conn: &Connection,
+    org_id: &str,
+    project: Option<&str>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut sql = String::from(
         "SELECT me.memory_id, me.embedding
          FROM memory_embeddings me
          JOIN memories m ON m.id = me.memory_id
          WHERE m.org_id = ?1 AND m.archived_at IS NULL",
-    )?;
-    let rows = stmt.query_map([org_id], |row| {
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(org_id.to_string())];
+    if let Some(p) = project {
+        sql.push_str(" AND m.project = ?2");
+        params.push(Box::new(p.to_string()));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter().map(|b| &**b)), |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
     let mut pairs = Vec::new();
@@ -15356,6 +15386,63 @@ fn convention_from_row(row: &rusqlite::Row) -> rusqlite::Result<Convention> {
 }
 
 #[cfg(test)]
+mod memory_project_scope_tests {
+    use super::*;
+    use crate::db::{connection, migrations};
+
+    fn seeded() -> Connection {
+        let conn = connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        conn.execute("INSERT INTO organizations (id, name, slug) VALUES ('org1','Acme','acme')", []).unwrap();
+        conn.execute("INSERT INTO users (id, org_id, email, name, role, status) VALUES ('u1','org1','a@b.c','A','admin','active')", []).unwrap();
+        for (id, project, content) in [
+            ("m1", "geocorp", "el despliegue en vercel usa turbo-ignore para evitar builds cruzados"),
+            ("m2", "verdan", "el despliegue del tema shopify se hace con theme push"),
+            ("m3", "verdan", "el carrusel del home se reemplaza por un stack en mobile"),
+        ] {
+            conn.execute(
+                "INSERT INTO memories (id, org_id, user_id, project, tool, content, tags, created_at, scope)
+                 VALUES (?1,'org1','u1',?2,'claude',?3,'[]',datetime('now'),'project')",
+                rusqlite::params![id, project, content],
+            ).unwrap();
+        }
+        conn
+    }
+
+    /// The measured failure: an organization holding several unrelated clients
+    /// ranked all of them against one query, and a question about one client's
+    /// deploy setup came back mostly answered by another client's storefront.
+    /// Keyword search is where that is cheapest to pin.
+    #[test]
+    fn a_scoped_search_never_returns_another_projects_memory() {
+        let conn = seeded();
+        let scoped = search_memories_visible(&conn, "org1", "despliegue", 10, None, Some("geocorp")).unwrap();
+        assert_eq!(scoped.len(), 1, "only geocorp's memory may match");
+        assert_eq!(scoped[0].project, "geocorp");
+
+        let unscoped = search_memories_visible(&conn, "org1", "despliegue", 10, None, None).unwrap();
+        assert_eq!(unscoped.len(), 2, "without a scope the org-wide behaviour is unchanged");
+    }
+
+    /// The vector half needs the same narrowing, and for a sharper reason:
+    /// cosine ranking cannot express scope at all, so an unnarrowed candidate
+    /// set silently decides the answer by similarity across clients.
+    #[test]
+    fn the_candidate_vectors_are_narrowed_to_the_project() {
+        let conn = seeded();
+        for id in ["m1", "m2", "m3"] {
+            conn.execute(
+                "INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?1, ?2)",
+                rusqlite::params![id, vec![0u8; 8]],
+            ).unwrap();
+        }
+        assert_eq!(get_embeddings_for_project(&conn, "org1", Some("geocorp")).unwrap().len(), 1);
+        assert_eq!(get_embeddings_for_project(&conn, "org1", Some("verdan")).unwrap().len(), 2);
+        assert_eq!(get_embeddings_for_project(&conn, "org1", None).unwrap().len(), 3);
+        assert_eq!(get_embeddings_for_org(&conn, "org1").unwrap().len(), 3, "the old entry point stays org-wide");
+    }
+}
+
 mod convention_scope_tests {
     use super::*;
     use crate::db::{connection, migrations};

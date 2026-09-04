@@ -188,6 +188,16 @@ pub async fn export(
 pub struct SearchInput {
     pub query: String,
     pub limit: Option<i64>,
+    /// Narrow the search to one project.
+    ///
+    /// Absent means the whole organization, which is the right default for a
+    /// single-project org and the wrong one for an org holding several clients:
+    /// cosine ranking has no notion of scope, so every client's memories compete
+    /// for the same top-K. Measured on a 2,907-entry corpus across three
+    /// clients, an unscoped question about one client's deploy setup returned
+    /// three of five results from another client's storefront.
+    #[serde(default)]
+    pub project: Option<String>,
     /// Search mode: "hybrid" (default), "keyword", or "semantic".
     pub mode: Option<String>,
     /// When true, each returned item is a compact `MemoryPreview` instead of
@@ -430,6 +440,7 @@ pub async fn search(
             limit,
             mode,
             viewer_scope(&auth),
+            input.project.as_deref(),
         )
         .map_err(store_err)?;
     // Strip admin_note — never exposed to agents or non-admin callers.

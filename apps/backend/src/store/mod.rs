@@ -68,7 +68,11 @@ pub trait MemoryStore: Send + Sync {
     /// Implementations should write a `search` audit event.
     /// `viewer_user_id` restricts results to memories that user may see (see
     /// [`MemoryFilters::viewer_user_id`]); pass `None` for admins / internal callers.
-    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>) -> Result<Vec<Memory>>;
+    /// `project` narrows the search to one project. Semantic ranking has no
+    /// notion of scope on its own, so without this an org holding several
+    /// clients ranks them all against each other.
+    #[allow(clippy::too_many_arguments)]
+    fn search(&self, org_id: &str, user_id: &str, query: &str, limit: i64, mode: SearchMode, viewer_user_id: Option<&str>, project: Option<&str>) -> Result<Vec<Memory>>;
 
     /// List memories with optional filters. Returns a pagination envelope.
     fn list(&self, org_id: &str, filters: &MemoryFilters<'_>) -> Result<MemoryPage>;
