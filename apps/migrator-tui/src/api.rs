@@ -126,6 +126,18 @@ pub struct Project {
     pub archived_at: Option<String>,
 }
 
+impl Run {
+    /// Whether this run still has work a reviewer could pick up.
+    ///
+    /// `completed` and `cancelled` are closed: their candidates are committed or
+    /// gone. The rest — a run that staged and was never reviewed, one left half
+    /// decided, one whose commit was interrupted — is exactly what somebody
+    /// reconnecting is looking for.
+    pub fn is_resumable(&self) -> bool {
+        !matches!(self.status.as_str(), "completed" | "cancelled")
+    }
+}
+
 impl Project {
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
@@ -282,7 +294,8 @@ impl Client {
             .json()?)
     }
 
-    /// Rewrites a staged candidate before anyone decides on it.
+    /// Rewrites a staged candidate before anyone decides on it, re-filing it
+    /// under a different destination when the reviewer says so.
     ///
     /// The third verb in the queue, alongside approve and reject: a finding
     /// that is mostly right no longer has to be thrown away and re-derived by
@@ -296,6 +309,7 @@ impl Client {
         expected_version: i64,
         content: &str,
         destination_hint: &serde_json::Value,
+        destination_kind: &str,
     ) -> Result<Candidate> {
         let resp = self
             .http
@@ -307,6 +321,7 @@ impl Client {
                 "expected_version": expected_version,
                 "content": content,
                 "destination_hint": destination_hint,
+                "destination_kind": destination_kind,
             }))
             .send()?;
         // A refused edit has a reason worth reading — "moved under you", "no

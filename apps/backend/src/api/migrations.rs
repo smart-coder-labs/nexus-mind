@@ -561,6 +561,9 @@ pub struct EditCandidateBody {
     pub content: Option<String>,
     #[serde(default)]
     pub destination_hint: Option<serde_json::Value>,
+    /// Re-file the candidate: "memory", "convention", "task" or "sdd_artifact".
+    #[serde(default)]
+    pub destination_kind: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
     #[serde(default)]
@@ -597,14 +600,53 @@ pub async fn edit_candidate(
     }
     let run = load_visible_run(&conn, &auth, &run_id, "PATCH")?;
 
+    // Parsed and vetted before anything is written, so an unknown kind is a 400
+    // rather than a CHECK-constraint failure surfacing as a 500.
+    let destination_kind = match body.destination_kind.as_deref() {
+        None => None,
+        Some(raw) => {
+            let kind: DestinationKind = raw.parse().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: format!("unknown destination kind {raw:?}"),
+                        code: "unsupported_destination_kind".to_string(),
+                    }),
+                )
+            })?;
+            // A harness candidate is executable configuration carrying a
+            // manifest, and `needs_individual_review` exists to make somebody
+            // read it. Re-filing prose *into* one would manufacture that
+            // configuration out of a paragraph nobody wrote as one — the review
+            // gate would still fire, but on content that never went through the
+            // connector that builds a manifest. Demoting one is fine.
+            if matches!(
+                kind,
+                DestinationKind::Harness | DestinationKind::HarnessConfigReview
+            ) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: "a candidate cannot be re-filed as a harness — a harness \
+                                carries a manifest its connector builds"
+                            .to_string(),
+                        code: "unsupported_destination_kind".to_string(),
+                    }),
+                ));
+            }
+            Some(kind)
+        }
+    };
+
     // An edit that changes nothing would still burn a version and land in the
     // audit trail, making a later stale-version conflict look like somebody
     // else's work when it was an empty PATCH.
-    if body.content.is_none() && body.destination_hint.is_none() {
+    if body.content.is_none() && body.destination_hint.is_none() && destination_kind.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
-                error: "an edit must change content or destination_hint".to_string(),
+                error: "an edit must change content, destination_hint or destination_kind"
+                    .to_string(),
                 code: "no_changes".to_string(),
             }),
         ));
@@ -619,6 +661,7 @@ pub async fn edit_candidate(
             expected_version: body.expected_version,
             content: body.content.as_deref(),
             destination_hint: body.destination_hint.as_ref(),
+            destination_kind,
             reason: body.reason.as_deref(),
             correlation: body.request_correlation_id.as_deref(),
         },

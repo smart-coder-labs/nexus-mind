@@ -847,6 +847,14 @@ pub struct App {
     /// is what you want the moment something looks wrong.
     pub agent_cursor: Option<usize>,
     pub show_help: bool,
+    /// The (url, key) pair the last probe was fired for.
+    ///
+    /// Finishing an edit on either connection field probes, so that reaching the
+    /// backend — and pulling its run history — is something the operator gets by
+    /// typing rather than by knowing a keystroke. This remembers what was
+    /// already tried so tabbing back through an unchanged field does not fire a
+    /// request every time.
+    last_probed: Option<(String, String)>,
     pub should_quit: bool,
     binary: std::path::PathBuf,
 }
@@ -905,6 +913,7 @@ impl App {
             activity: ActivityView::Both,
             agent_cursor: None,
             show_help: false,
+            last_probed: None,
             should_quit: false,
             binary: resolve_binary(),
         }
@@ -1239,11 +1248,28 @@ impl App {
     fn handle_api(&mut self, msg: ApiMsg) {
         match msg {
             ApiMsg::Failed(e) => self.status = format!("✗ {e}"),
-            ApiMsg::Probed(Ok(m)) => self.status = m,
+            ApiMsg::Probed(Ok(m)) => {
+                self.status = m;
+                // A backend that answers has history, and the operator who just
+                // typed a URL and a key is often here to pick up a run they
+                // already started rather than to begin a new one. Fetching the
+                // list now means it is on the Review screen when they reach it,
+                // instead of requiring them to know that `R` reloads it.
+                self.load_runs();
+            }
             ApiMsg::Probed(Err(e)) => self.status = format!("✗ {e}"),
             ApiMsg::Runs(Ok(runs)) => {
                 self.status = if runs.is_empty() {
                     "no migration runs on this backend yet".into()
+                } else if self.screen == Screen::Connection {
+                    // Said differently on the connection screen: the list is not
+                    // in front of them yet, so the message has to say where it
+                    // is and how many resumable runs it holds.
+                    let resumable = runs.iter().filter(|r| r.is_resumable()).count();
+                    format!(
+                        "connected · {} existing run(s), {resumable} still open — R to resume one",
+                        runs.len()
+                    )
                 } else {
                     format!("{} run(s) — Enter opens one", runs.len())
                 };
@@ -1536,7 +1562,12 @@ impl App {
     /// `title` is folded into the destination hint rather than sent separately:
     /// the hint is what the destination actually reads at commit time, and a
     /// title stored anywhere else would not survive the trip.
-    pub fn apply_candidate_edit(&mut self, title: String, content: String) {
+    ///
+    /// `kind` re-files the candidate. It is here rather than behind its own
+    /// keystroke because the classifier's most common mistake is the
+    /// destination, not the wording — a rule filed as context — and the
+    /// reviewer is already looking at the text when they notice.
+    pub fn apply_candidate_edit(&mut self, title: String, kind: String, content: String) {
         let Some(run_id) = self.active_run() else {
             return;
         };
@@ -1544,6 +1575,13 @@ impl App {
             return;
         };
         let (id, version) = (candidate.id.clone(), candidate.version);
+        // A blank or unchanged kind means "leave it where it is"; the backend
+        // rejects anything it does not recognise, so a typo is a message rather
+        // than a silent no-op.
+        let kind = match kind.trim() {
+            "" => candidate.destination_kind.clone(),
+            k => k.to_string(),
+        };
         let mut hint = candidate.destination_hint.clone();
         let trimmed = title.trim();
         if !trimmed.is_empty() {
@@ -1558,7 +1596,7 @@ impl App {
         }
         self.spawn_api("saving edit", move |c| {
             ApiMsg::Edited(
-                c.edit_candidate(&run_id, &id, version, &content, &hint)
+                c.edit_candidate(&run_id, &id, version, &content, &hint, &kind)
                     .map_err(|e| e.to_string()),
             )
         });
@@ -1571,6 +1609,24 @@ impl App {
         self.spawn_api("committing", move |c| {
             ApiMsg::Committed(c.commit(&run_id).map_err(|e| e.to_string()))
         });
+    }
+
+    /// Probes if the connection details are complete and have changed.
+    ///
+    /// Called when an edit on the URL or the key ends. Returns quietly when
+    /// either field is blank — half-typed connection details are the normal
+    /// state while typing, not an error worth a red line.
+    pub fn probe_if_connection_changed(&mut self) {
+        let (url, key) = (self.config.api_url.trim(), self.config.api_key.trim());
+        if url.is_empty() || key.is_empty() {
+            return;
+        }
+        let pair = (url.to_string(), key.to_string());
+        if self.last_probed.as_ref() == Some(&pair) {
+            return;
+        }
+        self.last_probed = Some(pair);
+        self.probe();
     }
 
     pub fn probe(&mut self) {

@@ -624,6 +624,13 @@ pub struct EditRequest<'a> {
     pub expected_version: i64,
     pub content: Option<&'a str>,
     pub destination_hint: Option<&'a serde_json::Value>,
+    /// Where this candidate should land instead.
+    ///
+    /// The classifier's most common mistake is not the wording, it is the
+    /// destination: a rule filed as context, or context filed as a rule. Making
+    /// the reviewer reject and re-derive for that is the expensive way to fix a
+    /// one-word error.
+    pub destination_kind: Option<DestinationKind>,
     pub reason: Option<&'a str>,
     pub correlation: Option<&'a str>,
 }
@@ -684,12 +691,19 @@ pub fn edit_candidate(conn: &Connection, req: &EditRequest) -> Result<EditOutcom
         Some(h) => serde_json::to_string(h)?,
         None => serde_json::to_string(&candidate.destination_hint)?,
     };
+    let kind = req.destination_kind.unwrap_or(candidate.destination_kind);
     let updated = conn.execute(
         "UPDATE migration_candidates
-            SET content = ?3, destination_hint = ?4,
+            SET content = ?3, destination_hint = ?4, destination_kind = ?5,
                 version = version + 1, updated_at = datetime('now')
           WHERE id = ?1 AND version = ?2",
-        rusqlite::params![req.candidate_id, req.expected_version, content, hint],
+        rusqlite::params![
+            req.candidate_id,
+            req.expected_version,
+            content,
+            hint,
+            kind.as_str()
+        ],
     )?;
     if updated == 0 {
         record_action(
@@ -1479,6 +1493,7 @@ mod tests {
                 expected_version: c[0].version,
                 content: Some("what the reviewer actually meant"),
                 destination_hint: Some(&hint),
+                destination_kind: None,
                 reason: None,
                 correlation: None,
             },
@@ -1505,6 +1520,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(recorded, 1, "the edit must name both versions in the trail");
+    }
+
+    /// Re-filing is the point of editing as much as rewording is: the
+    /// classifier's most common mistake is a rule filed as context, and the fix
+    /// is one word, not a rejection and another model call.
+    #[test]
+    fn editing_can_refile_a_candidate_under_a_different_kind() {
+        let conn = setup();
+        let run = run_for(&conn, None, None);
+        stage_candidates(
+            &conn,
+            "org1",
+            &run.id,
+            &[input("src:a", DestinationKind::Convention)],
+        )
+        .unwrap();
+        let c = list_candidates(&conn, &run.id, None, None, 10).unwrap();
+        assert_eq!(c[0].destination_kind, DestinationKind::Convention);
+
+        edit_candidate(
+            &conn,
+            &EditRequest {
+                run_id: &run.id,
+                candidate_id: &c[0].id,
+                actor_id: "admin",
+                expected_version: c[0].version,
+                content: None,
+                destination_hint: None,
+                destination_kind: Some(DestinationKind::Memory),
+                reason: None,
+                correlation: None,
+            },
+        )
+        .unwrap();
+
+        let after = get_candidate(&conn, &c[0].id).unwrap().unwrap();
+        assert_eq!(after.destination_kind, DestinationKind::Memory);
+        assert_eq!(after.content, c[0].content, "only the kind changed");
+        assert_eq!(after.version, c[0].version + 1);
     }
 
     /// Editing an approved candidate would commit content nobody approved: the
@@ -1544,6 +1598,7 @@ mod tests {
                 expected_version: c[0].version + 1,
                 content: Some("sneaking this in after approval"),
                 destination_hint: None,
+                destination_kind: None,
                 reason: None,
                 correlation: None,
             },
@@ -1579,6 +1634,7 @@ mod tests {
             expected_version: c[0].version,
             content: Some("first reviewer's wording"),
             destination_hint: None,
+            destination_kind: None,
             reason: None,
             correlation: None,
         };

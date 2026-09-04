@@ -114,12 +114,14 @@ fn edit_current_candidate(terminal: &mut ratatui::DefaultTerminal, app: &mut App
         "# Editing a staged migration candidate. Lines starting with '#' are ignored.\n\
          # Save and quit to apply; quit without saving to leave it as it was.\n\
          #\n\
-         # Destination: {} · source: {}\n\
+         # Source: {}\n\
+         # Kind may be: memory, convention, task, sdd_artifact\n\
+         Kind: {}\n\
          Title: {}\n\
          \n\
          {}\n",
-        candidate.destination_kind,
         candidate.source_identity,
+        candidate.destination_kind,
         candidate.title(),
         candidate.content,
     );
@@ -163,45 +165,56 @@ fn edit_current_candidate(terminal: &mut ratatui::DefaultTerminal, app: &mut App
 
     let edited = std::fs::read_to_string(&path).unwrap_or_default();
     let _ = std::fs::remove_file(&path);
-    let (title, content) = parse_edited_candidate(&edited);
+    let (title, kind, content) = parse_edited_candidate(&edited);
     if content.trim().is_empty() {
         app.status = "the edited candidate was empty — nothing was changed".into();
         return;
     }
-    if content == app.current_candidate().map(|c| c.content.clone()).unwrap_or_default()
-        && title == app.current_candidate().map(|c| c.title()).unwrap_or_default()
-    {
+    let before = app.current_candidate();
+    let unchanged = before.is_some_and(|c| {
+        content == c.content && title == c.title() && (kind.is_empty() || kind == c.destination_kind)
+    });
+    if unchanged {
         app.status = "unchanged".into();
         return;
     }
-    app.apply_candidate_edit(title, content);
+    app.apply_candidate_edit(title, kind, content);
 }
 
-/// Splits the edited document back into a title and a body.
+/// Splits the edited document back into a title, a destination kind and a body.
 ///
-/// Comment lines are dropped, the first `Title:` line is the title, and
-/// everything after it is the content. Only the *first* `Title:` is special, so
-/// a body that happens to contain one survives intact.
-fn parse_edited_candidate(document: &str) -> (String, String) {
-    let mut title = String::new();
+/// Comment lines are dropped, the first `Kind:` and `Title:` lines are the
+/// header, and everything after the title is the content. Only the *first* of
+/// each is special, so a body that happens to contain one survives intact — a
+/// convention about commit messages that itself shows a `Title:` line must not
+/// be truncated at it.
+///
+/// An empty kind means "leave it where it is". A reviewer who deletes the
+/// header entirely still gets their prose sent rather than silently dropped.
+fn parse_edited_candidate(document: &str) -> (String, String, String) {
+    let (mut title, mut kind) = (String::new(), String::new());
     let mut body: Vec<&str> = Vec::new();
-    let mut seen_title = false;
+    let (mut seen_title, mut seen_kind) = (false, false);
     for line in document.lines() {
         if line.starts_with('#') && !seen_title {
             continue;
+        }
+        if !seen_kind && !seen_title {
+            if let Some(rest) = line.strip_prefix("Kind:") {
+                kind = rest.trim().to_string();
+                seen_kind = true;
+                continue;
+            }
         }
         match line.strip_prefix("Title:") {
             Some(rest) if !seen_title => {
                 title = rest.trim().to_string();
                 seen_title = true;
             }
-            _ if seen_title => body.push(line),
-            // Anything before the title line in a document whose header was
-            // deleted is still content, not a stray.
             _ => body.push(line),
         }
     }
-    (title, body.join("\n").trim().to_string())
+    (title, kind, body.join("\n").trim().to_string())
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
@@ -210,8 +223,16 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     if app.editing {
         match code {
             KeyCode::Esc | KeyCode::Enter => {
+                let was = app.current_field();
                 app.editing = false;
                 app.edit_pristine = false;
+                // Finishing the URL or the key is the moment the operator has
+                // said what backend they mean. Probing here — rather than
+                // waiting for `t` — is what makes the run history appear for
+                // someone who came back to resume a migration.
+                if matches!(was, Some(app::FieldId::ApiUrl | app::FieldId::ApiKey)) {
+                    app.probe_if_connection_changed();
+                }
             }
             // Clear the field outright, for when replace-on-first-keystroke is
             // not what you want and backspacing a long path is not either.
@@ -414,15 +435,38 @@ mod tests {
         let doc = "# Editing a staged migration candidate.\n\
                    # Save and quit to apply.\n\
                    #\n\
-                   # Destination: memory · source: src/a.rs\n\
+                   # Source: src/a.rs\n\
+                   Kind: convention\n\
                    Title: Corrected title\n\
                    \n\
                    First paragraph.\n\
                    \n\
                    Second paragraph.\n";
-        let (title, content) = parse_edited_candidate(doc);
+        let (title, kind, content) = parse_edited_candidate(doc);
         assert_eq!(title, "Corrected title");
+        assert_eq!(kind, "convention");
         assert_eq!(content, "First paragraph.\n\nSecond paragraph.");
+    }
+
+    /// Re-filing is the point: the reviewer changes one word in the header and
+    /// the candidate lands somewhere else.
+    #[test]
+    fn the_kind_line_is_how_a_candidate_is_refiled() {
+        let (_, kind, content) =
+            parse_edited_candidate("Kind: memory\nTitle: T\n\nthe body\n");
+        assert_eq!(kind, "memory");
+        assert_eq!(content, "the body");
+    }
+
+    /// A body discussing a Kind: line — a convention about this very format —
+    /// must not be truncated at it, and must not silently re-file itself.
+    #[test]
+    fn a_kind_line_inside_the_body_is_left_alone() {
+        let (_, kind, content) = parse_edited_candidate(
+            "Kind: convention\nTitle: T\n\nWrite the header as:\nKind: memory\n",
+        );
+        assert_eq!(kind, "convention", "only the first Kind: is the header");
+        assert_eq!(content, "Write the header as:\nKind: memory");
     }
 
     /// Only the first `Title:` is the title. A body that discusses one — a
@@ -430,7 +474,7 @@ mod tests {
     #[test]
     fn a_title_line_inside_the_body_is_left_alone() {
         let doc = "Title: The real title\n\nUse this shape:\nTitle: <what changed>\n";
-        let (title, content) = parse_edited_candidate(doc);
+        let (title, _, content) = parse_edited_candidate(doc);
         assert_eq!(title, "The real title");
         assert_eq!(content, "Use this shape:\nTitle: <what changed>");
     }
@@ -439,9 +483,44 @@ mod tests {
     /// silently dropped as "no title line found".
     #[test]
     fn a_document_with_no_header_is_all_content() {
-        let (title, content) = parse_edited_candidate("just the prose, rewritten\n");
+        let (title, kind, content) = parse_edited_candidate("just the prose, rewritten\n");
         assert_eq!(title, "");
+        assert_eq!(kind, "", "no header means the kind is left where it is");
         assert_eq!(content, "just the prose, rewritten");
+    }
+
+    /// Connecting has to be something you get by typing the details, not by
+    /// knowing a keystroke — that is what puts the run history in front of
+    /// someone who came back to resume a migration. But it must not fire on a
+    /// half-typed URL, nor again on a field that did not change.
+    #[test]
+    fn finishing_the_connection_fields_probes_once_and_only_when_complete() {
+        let mut app = App::new();
+        app.goto(Screen::Connection);
+        app.config.api_url = "http://localhost:8080".into();
+        app.config.api_key = String::new();
+
+        app.probe_if_connection_changed();
+        assert!(
+            app.status.is_empty() || !app.status.contains("testing"),
+            "a blank key is mid-typing, not a connection attempt: {}",
+            app.status
+        );
+
+        app.config.api_key = "nm_x".into();
+        app.probe_if_connection_changed();
+        assert!(
+            app.status.contains("testing"),
+            "complete details must reach the backend: {}",
+            app.status
+        );
+
+        app.status = "quiet".into();
+        app.probe_if_connection_changed();
+        assert_eq!(
+            app.status, "quiet",
+            "an unchanged pair must not fire a second request"
+        );
     }
 
     /// The bug this prevents: typing a path with an `r` in it silently starting

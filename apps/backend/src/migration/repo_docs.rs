@@ -48,6 +48,31 @@ const DEFAULT_EXCLUDED_PATHS: &[(&str, &str)] = &[
         "/openspec/changes/archive/",
         "closed changes already live in the SDD artifact store",
     ),
+    // Harness assets belong to the `claude-memories` connector, which knows they
+    // are skills and agents rather than prose. Reading them here would import
+    // the same files a second time, as memories, stripped of what they are — and
+    // on a real repository they outnumber the documentation: one client's
+    // monorepo holds 259 of these against 40 genuine documents.
+    (
+        "/.claude/",
+        "harness assets are the claude-memories connector's, not documentation",
+    ),
+    (
+        "/.agents/",
+        "harness assets are the claude-memories connector's, not documentation",
+    ),
+    (
+        "/.codex/",
+        "harness assets are the claude-memories connector's, not documentation",
+    ),
+    // Point-in-time working notes. A file recording that a check passed on a
+    // given date is superseded by the code it describes the moment that code
+    // changes, and migrating it produces durable "knowledge" that was never
+    // meant to outlive its afternoon.
+    (
+        "/progress/",
+        "progress logs are point-in-time notes, not durable knowledge",
+    ),
 ];
 
 /// Words that mark a section as stating a rule rather than describing one.

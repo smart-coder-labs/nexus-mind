@@ -66,6 +66,17 @@ pub struct CandidatePayload {
     /// copy was output tokens spent to be discarded.
     #[serde(default)]
     pub source_identity: String,
+    /// Where this candidate lands. Defaults on the way in and is filled from the
+    /// deterministic draft when the model omits it.
+    ///
+    /// Measured against the real corpus: asked for distilled knowledge, the
+    /// model returns `item` and `content` and leaves the routing to the
+    /// pipeline — which is the right instinct, since the draft already proposed
+    /// a destination from the document's own shape. Requiring it turned seven
+    /// good answers into seven deserialization failures, and each failure fell
+    /// back to the draft, whose content is the raw section text. The strictness
+    /// produced exactly the outcome it was meant to prevent.
+    #[serde(default)]
     pub destination_kind: String,
     pub content: String,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]

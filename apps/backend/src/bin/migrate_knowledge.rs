@@ -108,17 +108,20 @@ pub struct TokenUsage {
 
 /// Why an item in a batch carries no candidate from the model.
 ///
-/// The two cases look identical to the caller — the deterministic draft is used
-/// either way — but they mean opposite things and must not share a counter. A
-/// sparse reply leaves most items `Unchanged` by design; reporting those as
+/// The two cases must not share a counter, because they mean opposite things: a
+/// sparse reply leaves most items `Passed` by design, and reporting those as
 /// failures would put "112 of 120 item(s) unusable" on screen for a batch that
-/// went perfectly, and would train the operator to ignore the number that
-/// actually matters.
+/// went perfectly.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BulkMiss {
-    /// The model said nothing about this item, which is how it approves the
-    /// draft.
-    Unchanged,
+    /// The model did not put this item forward.
+    ///
+    /// This is a *decline*, not an approval. The deterministic draft's content
+    /// is the section's raw text, so treating silence as assent would migrate
+    /// the document verbatim, one chunk per heading — exactly the review queue
+    /// full of unread prose that this pipeline exists to avoid. Nothing is
+    /// staged for an item the model did not speak for.
+    Passed,
     /// The model answered and the answer could not be used.
     Unusable(String),
 }
@@ -126,7 +129,7 @@ pub enum BulkMiss {
 impl std::fmt::Display for BulkMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BulkMiss::Unchanged => f.write_str("draft kept"),
+            BulkMiss::Passed => f.write_str("not put forward"),
             BulkMiss::Unusable(why) => f.write_str(why),
         }
     }
@@ -428,7 +431,12 @@ impl ClaudeCli {
     /// and nothing is reordered — the caller pairs the results back up by
     /// position, so a short or scrambled reply degrades per item instead of
     /// costing the batch.
-    pub fn classify_bulk(&self, prompt: &str, items: &[SourceItem]) -> Result<BulkOutput> {
+    pub fn classify_bulk(
+        &self,
+        prompt: &str,
+        items: &[SourceItem],
+        drafts: &[Option<CandidatePayload>],
+    ) -> Result<BulkOutput> {
         let envelope = self.invoke(prompt)?;
         let usage = parse_usage(&envelope);
         let raw_response = match envelope.get("result") {
@@ -441,7 +449,7 @@ impl ClaudeCli {
             .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(json).ok())
             .unwrap_or_default();
 
-        let candidates = map_bulk_reply(&parsed, items);
+        let candidates = map_bulk_reply(&parsed, items, drafts);
 
         Ok(BulkOutput {
             candidates,
@@ -489,6 +497,13 @@ pub struct RunSummary {
     pub classified: usize,
     pub fallbacks: usize,
     pub failed: usize,
+    /// Units the model read and did not put forward.
+    ///
+    /// Its own number rather than folded into `fallbacks`, because it is the one
+    /// that says whether a run was selective. A scan of 3,000 sections that
+    /// stages 3,000 candidates has not read anything; one that stages 200 and
+    /// passes on 2,800 has.
+    pub passed: usize,
     pub aborted_on_budget: bool,
     pub tokens_spent: i64,
 }
@@ -520,6 +535,26 @@ fn emit_classified(
     });
 }
 
+/// Emits the outcome for a unit the model read and declined to put forward.
+///
+/// Separate from `emit_failed` because it is not a failure — it is the pipeline
+/// doing its job. The TUI counts these so an operator can see, while the run is
+/// still going, whether the classifier is being selective or waving everything
+/// through.
+fn emit_passed(sink: &EventSink, index: usize, total: usize, item: &SourceItem) {
+    if !sink.is_enabled() {
+        return;
+    }
+    sink.emit(&RunEvent::Classified {
+        index,
+        total,
+        origin: item.display_origin.clone(),
+        destination_kind: String::new(),
+        via: "passed".to_string(),
+        tokens_spent: 0,
+    });
+}
+
 fn emit_failed(sink: &EventSink, index: usize, total: usize, item: &SourceItem, spent: i64) {
     sink.emit(&RunEvent::Classified {
         index,
@@ -537,19 +572,22 @@ fn emit_failed(sink: &EventSink, index: usize, total: usize, item: &SourceItem, 
 /// batch of large documents is a prompt nobody should send. Whichever limit is
 /// reached first closes the batch.
 ///
-/// Both were raised sharply — 20 items and 60 KB — once the reply became sparse
-/// (see [`bulk_prompt`]). The old count existed to bound the *output*: a reply
-/// that had to carry one full object per item, content included, runs out of
-/// output tokens long before the input runs out of context. A reply that names
-/// only what it changes does not, so the cap that matters is now the input, and
-/// 200 KB leaves ample room in a 200k-token context.
+/// The count still bounds the *output*, which is what actually runs out: an
+/// endorsed item carries its distilled content back, measured at ~450 tokens
+/// before the four-sentence limit in [`bulk_prompt`] and well under it after. At
+/// forty items a batch where everything is worth keeping still fits; the byte
+/// cap is the one that rarely binds, since forty sections of prose are nowhere
+/// near 200 KB.
+///
+/// It was 20 before the reply became sparse, when every item cost a full object
+/// whether or not it was worth keeping.
 ///
 /// This is the whole cost story. A call carries ~14k tokens of fixed context
 /// before it reads a word of the prompt, so classifying a 500-byte section on
 /// its own spends a hundred tokens of overhead for every token of work. Nothing
 /// about the classification is expensive; calling is. Batching is not a
 /// nice-to-have here, it is the only lever that matters.
-pub const BULK_MAX_ITEMS: usize = 120;
+pub const BULK_MAX_ITEMS: usize = 40;
 
 /// Rejects `--parallel 0` instead of quietly treating it as serial.
 ///
@@ -646,6 +684,7 @@ fn document_groups(items: &[SourceItem]) -> Vec<std::ops::Range<usize>> {
 pub fn map_bulk_reply(
     parsed: &[serde_json::Value],
     items: &[SourceItem],
+    drafts: &[Option<CandidatePayload>],
 ) -> Vec<Result<CandidatePayload, BulkMiss>> {
     let mut answers: std::collections::HashMap<usize, &serde_json::Value> =
         std::collections::HashMap::new();
@@ -665,7 +704,7 @@ pub fn map_bulk_reply(
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let value = answers.get(&(i + 1)).ok_or(BulkMiss::Unchanged)?;
+            let value = answers.get(&(i + 1)).ok_or(BulkMiss::Passed)?;
             let mut candidate: CandidatePayload = serde_json::from_value((*value).clone())
                 .map_err(|e| BulkMiss::Unusable(format!("item {}: {e}", i + 1)))?;
             if candidate.content.trim().is_empty() {
@@ -674,6 +713,42 @@ pub fn map_bulk_reply(
             // Provenance is the connector's to decide, never the model's — the
             // same rule as the single-item path.
             candidate.source_identity = item.source_identity.clone();
+
+            // Anything the model left to the pipeline comes from the draft. It
+            // is asked for one thing — the knowledge, stated on its own — and
+            // answering only that is correct; the draft already worked out the
+            // destination and the title from the document's shape.
+            let draft = drafts.get(i).and_then(|d| d.as_ref());
+            if candidate.destination_kind.trim().is_empty() {
+                match draft {
+                    Some(d) => candidate.destination_kind = d.destination_kind.clone(),
+                    // Nothing proposed a destination, so there is nowhere to put
+                    // this. Better a recorded failure than a candidate the
+                    // backend refuses at commit time.
+                    None => {
+                        return Err(BulkMiss::Unusable(format!(
+                            "item {}: no destination_kind, and no draft to take one from",
+                            i + 1
+                        )))
+                    }
+                }
+            }
+            if candidate.destination_hint.get("title").is_none() {
+                if let Some(title) = draft
+                    .and_then(|d| d.destination_hint.get("title"))
+                    .cloned()
+                {
+                    match candidate.destination_hint.as_object_mut() {
+                        Some(map) => {
+                            map.insert("title".into(), title);
+                        }
+                        None => {
+                            candidate.destination_hint =
+                                serde_json::json!({ "title": title })
+                        }
+                    }
+                }
+            }
             Ok(candidate)
         })
         .collect()
@@ -719,23 +794,26 @@ pub fn bulk_prompt(
     drafts: &[Option<CandidatePayload>],
 ) -> String {
     let mut out = format!(
-        "You are reviewing {} items in one go.\n\n\
-         Every item below already has a DRAFT produced without a model, by rules that \
-         cannot read. The draft stands unless you say otherwise.\n\n\
-         Your job is to catch the drafts that are WRONG. Two things go wrong far more \
-         often than anything else:\n\
-         - The draft proposes migrating something with no durable value — a table of \
-         contents, a heading with nothing under it, navigation text, a changelog \
-         fragment, boilerplate. Answer with \"destination_kind\": \"skip\" and say why in \
-         \"content\". Migrating these is what turns review into a job nobody does.\n\
-         - The draft picked the wrong destination_kind. Follow each item's own rules \
-         below for what each kind means.\n\n\
-         Reply with a JSON array holding ONLY the items you are changing. Each object \
-         must carry an \"item\" field with that item's number, plus the fields you want \
-         instead. Omitting an item is how you approve its draft, and for a genuinely good \
-         draft that is the right answer. An empty array [] is valid.\n\n\
-         Do not restate a draft you agree with, and do not invent items that are not \
-         listed.\n",
+        "You are reading {} sections of a software team's material and putting forward \
+         the few that carry knowledge worth keeping.\n\n\
+         Reply with a JSON array holding ONLY the items worth migrating. Each object \
+         must carry an \"item\" field with that item's number, plus the candidate fields. \
+         Anything you leave out is dropped and never reaches a human — that is the \
+         correct outcome for most sections, and an empty array [] is a valid reply.\n\n\
+         Put an item forward ONLY if someone joining this team next month would be worse \
+         off not knowing it. Leave out, without comment:\n\
+         - navigation, tables of contents, links to other documents, headings with \
+         nothing under them;\n\
+         - progress notes, checklists of what was done, changelog entries, dated audits;\n\
+         - anything whose meaning depends on the file it sits in.\n\n\
+         For each item you do put forward, \"content\" must be the knowledge stated on its \
+         own — a claim a reader can use without the surrounding document — in at most \
+         four sentences, and including WHY where the section gives a reason. Do not copy \
+         the section back. A section you cannot restate that way is a section to leave \
+         out.\n\n\
+         Each item carries a DRAFT built by rules that cannot read. Use it for the title \
+         and the destination it suggests; its content is the raw section text and is NOT \
+         an answer. Do not invent items that are not listed.\n",
         items.len()
     );
     for (i, item) in items.iter().enumerate() {
@@ -808,7 +886,7 @@ pub fn build_candidates_bulk(
 
         let prompt = bulk_prompt(connector, slice, batch_drafts);
         let started = std::time::Instant::now();
-        let outcome = classifier.classify_bulk(&prompt, slice);
+        let outcome = classifier.classify_bulk(&prompt, slice, batch_drafts);
         let (usage, results, answer) = match outcome {
             Ok(out) => (out.usage, out.candidates, out.raw_response),
             // The call itself failed, so no item was answered. That is
@@ -857,8 +935,19 @@ pub fn build_candidates_bulk(
                     emit_classified(sink, index, total, item, &candidate, "classified", 0);
                     candidates.push(candidate);
                 }
-                // The floor: the deterministic draft stands.
-                Err(_) => match batch_drafts[offset].clone() {
+                // A section the model did not put forward is dropped. It is
+                // NOT filled in from the draft: the draft's content is the raw
+                // section text, so doing that would stage the document verbatim
+                // one heading at a time and bury the reviewer in prose nobody
+                // vouched for.
+                Err(BulkMiss::Passed) => {
+                    summary.passed += 1;
+                    emit_passed(sink, index, total, item);
+                }
+                // A broken answer is different: the model tried and we could not
+                // read it, so the deterministic draft is the floor that keeps
+                // the run from losing the unit entirely.
+                Err(BulkMiss::Unusable(_)) => match batch_drafts[offset].clone() {
                     Some(draft) => {
                         summary.fallbacks += 1;
                         emit_classified(sink, index, total, item, &draft, "fallback", 0);
@@ -2109,6 +2198,12 @@ mod tests {
         assert_eq!(extract_json_array(raw), Some(raw));
     }
 
+    /// The deterministic drafts the pipeline always has alongside a batch.
+    fn drafts_for(items: &[SourceItem]) -> Vec<Option<CandidatePayload>> {
+        let c = NoopConnector { items: vec![] };
+        items.iter().map(|i| c.fallback(i)).collect()
+    }
+
     fn bulk_items(n: usize, size: usize) -> Vec<SourceItem> {
         (0..n)
             .map(|i| SourceItem {
@@ -2207,23 +2302,23 @@ mod tests {
         }
     }
 
-    /// The heart of the sparse contract: an item the model says nothing about
-    /// keeps its draft, and that is not a failure. If this ever degrades to
-    /// `Unusable`, every healthy batch reports itself as broken and the cost
-    /// win disappears behind a wall of false alarms.
+    /// The heart of the sparse contract: an item the model says nothing about is
+    /// declined, and that is not a failure. If this ever degrades to `Unusable`,
+    /// every healthy batch reports itself as broken and the cost win disappears
+    /// behind a wall of false alarms.
     #[test]
-    fn an_unmentioned_item_keeps_its_draft_and_is_not_a_failure() {
+    fn an_unmentioned_item_is_passed_over_and_is_not_a_failure() {
         let items = bulk_items(3, 20);
         let reply = vec![serde_json::json!({
             "item": 2,
             "destination_kind": "convention",
             "content": "the model's improved wording",
         })];
-        let out = map_bulk_reply(&reply, &items);
+        let out = map_bulk_reply(&reply, &items, &drafts_for(&items));
 
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0], Err(BulkMiss::Unchanged));
-        assert_eq!(out[2], Err(BulkMiss::Unchanged));
+        assert_eq!(out[0], Err(BulkMiss::Passed));
+        assert_eq!(out[2], Err(BulkMiss::Passed));
         let changed = out[1].as_ref().expect("item 2 was answered");
         assert_eq!(changed.content, "the model's improved wording");
         assert_eq!(
@@ -2232,13 +2327,38 @@ mod tests {
         );
     }
 
-    /// An empty reply is the honest answer when every draft was already right,
-    /// and it must cost the run nothing.
+    /// An empty reply means the model found nothing worth keeping in that batch.
+    /// It must stage nothing — not fall back to drafts whose content is the raw
+    /// section text, which is how a review queue fills with unread prose.
     #[test]
-    fn an_empty_reply_leaves_every_draft_standing() {
+    fn an_empty_reply_puts_nothing_forward() {
         let items = bulk_items(4, 20);
-        let out = map_bulk_reply(&[], &items);
-        assert!(out.iter().all(|r| r == &Err(BulkMiss::Unchanged)));
+        let out = map_bulk_reply(&[], &items, &drafts_for(&items));
+        assert!(out.iter().all(|r| r == &Err(BulkMiss::Passed)));
+    }
+
+    /// The regression this pins, and the reason `Passed` exists apart from
+    /// `Unusable`: a declined section must not be staged from its draft. The
+    /// draft's content is `item.raw` — the chunk itself — so filling it in would
+    /// migrate the document verbatim, one heading at a time, with nobody having
+    /// vouched for any of it.
+    #[test]
+    fn a_declined_section_is_dropped_rather_than_staged_from_its_raw_draft() {
+        let c = NoopConnector { items: vec![] };
+        let items = bulk_items(3, 20);
+        let drafts: Vec<Option<CandidatePayload>> = items.iter().map(|i| c.fallback(i)).collect();
+        assert!(
+            drafts.iter().all(|d| d.is_some()),
+            "the premise: every unit does have a draft to fall back on"
+        );
+
+        let out = map_bulk_reply(&[], &items, &drafts_for(&items));
+        let staged = out.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(staged, 0, "a batch nobody vouched for stages nothing");
+        assert!(
+            out.iter().all(|r| matches!(r, Err(BulkMiss::Passed))),
+            "and it is recorded as a decline, not as a failure"
+        );
     }
 
     /// A model that answers about an item outside the batch must not land on
@@ -2250,11 +2370,45 @@ mod tests {
             serde_json::json!({"item": 99, "destination_kind": "memory", "content": "stray"}),
             serde_json::json!({"item": 0, "destination_kind": "memory", "content": "stray"}),
         ];
-        let out = map_bulk_reply(&reply, &items);
+        let out = map_bulk_reply(&reply, &items, &drafts_for(&items));
         assert!(
-            out.iter().all(|r| r == &Err(BulkMiss::Unchanged)),
+            out.iter().all(|r| r == &Err(BulkMiss::Passed)),
             "a stray item number must not overwrite a real one"
         );
+    }
+
+    /// Measured against the real corpus: asked for distilled knowledge, the model
+    /// answers with `item` and `content` and leaves the routing alone. That is
+    /// the right instinct — the draft worked the destination out from the
+    /// document's shape — but it used to be a deserialization failure, and every
+    /// failure fell back to the draft, whose content is the raw section text.
+    /// Seven good answers became seven raw chunks.
+    #[test]
+    fn an_answer_that_gives_only_content_inherits_its_routing_from_the_draft() {
+        let items = bulk_items(2, 20);
+        let drafts = drafts_for(&items);
+        let reply = vec![serde_json::json!({
+            "item": 1,
+            "content": "pnpm is mandatory here; npm's hoisting breaks the two Tailwind majors.",
+        })];
+        let out = map_bulk_reply(&reply, &items, &drafts);
+
+        let kept = out[0].as_ref().expect("an answer with only content is usable");
+        assert_eq!(
+            kept.content,
+            "pnpm is mandatory here; npm's hoisting breaks the two Tailwind majors."
+        );
+        assert_eq!(
+            kept.destination_kind,
+            drafts[0].as_ref().unwrap().destination_kind,
+            "the destination comes from the draft"
+        );
+        assert_eq!(
+            kept.destination_hint.get("title"),
+            drafts[0].as_ref().unwrap().destination_hint.get("title"),
+            "and so does the title"
+        );
+        assert_eq!(out[1], Err(BulkMiss::Passed));
     }
 
     /// A genuinely broken object is `Unusable`, which is what the operator
@@ -2266,7 +2420,7 @@ mod tests {
             serde_json::json!({"item": 1, "destination_kind": "memory", "content": "   "}),
             serde_json::json!({"item": 2, "nonsense": true}),
         ];
-        let out = map_bulk_reply(&reply, &items);
+        let out = map_bulk_reply(&reply, &items, &drafts_for(&items));
         assert!(matches!(out[0], Err(BulkMiss::Unusable(_))), "{:?}", out[0]);
         assert!(matches!(out[1], Err(BulkMiss::Unusable(_))), "{:?}", out[1]);
     }
@@ -2276,8 +2430,11 @@ mod tests {
         assert!(chunk_for_bulk(&[], 20).is_empty());
     }
 
-    /// The prompt must tell the model the two things that make a sparse reply
-    /// mappable: answer only what you are changing, and name the item number.
+    /// The prompt has to establish three things, and each one has a failure it
+    /// prevents: name the item number (or a sparse reply is unmappable), say
+    /// that omission drops the item (or the model assumes silence is assent and
+    /// says nothing about anything), and forbid copying the section back (or
+    /// "content" comes back as the raw chunk the draft already held).
     #[test]
     fn the_bulk_prompt_asks_for_a_sparse_reply_and_carries_the_drafts() {
         let c = NoopConnector { items: vec![] };
@@ -2285,18 +2442,21 @@ mod tests {
         let drafts: Vec<Option<CandidatePayload>> = items.iter().map(|i| c.fallback(i)).collect();
         let prompt = bulk_prompt(&c, &items, &drafts);
 
-        assert!(prompt.contains("ONLY the items you are changing"), "{prompt}");
+        assert!(prompt.contains("ONLY the items worth migrating"), "{prompt}");
         assert!(prompt.contains("\"item\""), "the reply has to name the item number");
         assert!(
-            prompt.contains("Omitting an item is how you approve its draft"),
-            "silence must be spelled out as assent, or the model restates every draft"
+            prompt.contains("dropped and never reaches a human"),
+            "omission must be spelled out as a decline; if the model reads it as \
+             assent it stays silent and the raw drafts ship"
         );
         assert!(
-            prompt.contains("catch the drafts that are WRONG"),
-            "a header that only explains the mechanism gets a rubber stamp — the veto \
-             duty has to come first"
+            prompt.contains("Do not copy the section back"),
+            "without this, content comes back as the chunk the draft already held"
         );
-        assert!(prompt.contains("\"skip\""), "the model must be able to veto a draft");
+        assert!(
+            prompt.contains("its content is the raw section text and is NOT an answer"),
+            "the draft has to be introduced as a hint, not as a floor"
+        );
         assert!(prompt.contains("=== ITEM 1 ==="));
         assert!(prompt.contains("=== ITEM 3 ==="));
         assert!(!prompt.contains("=== ITEM 4 ==="));
