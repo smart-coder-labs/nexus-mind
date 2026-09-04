@@ -40,18 +40,29 @@ RUN apt-get update \
 # Security scanners for the `security_scan` template. The worker runs these on PATH:
 # semgrep (SAST) from pip's prebuilt aarch64 wheel, osv-scanner (SCA) as a pinned
 # static binary. Versions are pinned so findings are reproducible across builds.
+#
+# Gated on INSTALL_SCANNERS for the same reason as nuclei and the browsers: on the
+# 6.7 GB u2s box this layer alone is what a deploy dies on — extracting semgrep's
+# python3.11 dist-packages needs room the box does not have while the previous
+# image is still in use by the running container, and the box does not run
+# security-scan agents. Default true keeps every other target unchanged.
 ARG SEMGREP_VERSION=1.176.0
 ARG OSV_SCANNER_VERSION=2.5.1
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip \
-    && pip3 install --no-cache-dir --break-system-packages "semgrep==${SEMGREP_VERSION}" \
-    && ARCH="$(dpkg --print-architecture)" \
-    && curl -fsSL -o /usr/local/bin/osv-scanner \
-         "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
-    && chmod +x /usr/local/bin/osv-scanner \
-    && semgrep --version \
-    && osv-scanner --version \
-    && rm -rf /var/lib/apt/lists/* /root/.cache
+ARG INSTALL_SCANNERS=true
+RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends python3 python3-pip \
+      && pip3 install --no-cache-dir --break-system-packages "semgrep==${SEMGREP_VERSION}" \
+      && ARCH="$(dpkg --print-architecture)" \
+      && curl -fsSL -o /usr/local/bin/osv-scanner \
+           "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
+      && chmod +x /usr/local/bin/osv-scanner \
+      && semgrep --version \
+      && osv-scanner --version \
+      && rm -rf /var/lib/apt/lists/* /root/.cache ; \
+    else \
+      echo "INSTALL_SCANNERS=false — skipping semgrep + osv-scanner (slim u2s image)" ; \
+    fi
 
 # nuclei (active DAST) for the security_dast template. Templates are baked at build
 # time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime

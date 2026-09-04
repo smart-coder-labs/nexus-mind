@@ -69,11 +69,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Slim backend image for the box's 8 GB disk: no Playwright (npm + chromium
-      # + chrome-for-testing, ~1 GB) and no nuclei (binary + its full template
-      # set). Trade-off: browser-driven QA agents (mcp__playwright__*) and the
-      # security_dast agent won't run on u2s — which is fine, u2s isn't running
-      # those agents yet. u2s-only; main-arm64 (oracle, deploy.yml) keeps both.
-      - name: Build & push backend (slim, no browsers, no nuclei)
+      # + chrome-for-testing, ~1 GB), no nuclei (binary + its full template set)
+      # and no semgrep/osv-scanner (a python3.11 dist-packages tree that a deploy
+      # died extracting, because the previous image is still held by the running
+      # container while the new one unpacks). Trade-off: browser-driven QA agents
+      # (mcp__playwright__*), security_dast and security_scan won't run on u2s —
+      # which is fine, u2s isn't running those agents yet. u2s-only; main-arm64
+      # (oracle, deploy.yml) keeps all of them.
+      - name: Build & push backend (slim, no browsers, no nuclei, no scanners)
         uses: docker/build-push-action@v6
         with:
           context: apps/backend
@@ -81,6 +84,7 @@ jobs:
           build-args: |
             INSTALL_BROWSERS=false
             INSTALL_NUCLEI=false
+            INSTALL_SCANNERS=false
           tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-backend:main
 
       # Admin is built WITHOUT VITE_API_URL on purpose: the client falls back to
