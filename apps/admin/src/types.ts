@@ -672,6 +672,12 @@ export interface UpdateConventionRequest {
   category?: string
   weight?: number
   tags?: string[]
+  /**
+   * Project scope. Three states, and the difference matters: omit the key to
+   * leave the scope untouched, send `null` to make the convention org-wide,
+   * send an id to scope it to that project.
+   */
+  project_id?: string | null
 }
 
 // ── Code Knowledge Graph (v41/v42) ────────────────────────────────────────────

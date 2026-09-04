@@ -15277,10 +15277,24 @@ pub fn update_convention(
     let weight = req.weight.unwrap_or(existing.weight);
     let tags = req.tags.clone().unwrap_or(existing.tags.clone());
     let tags_json = serde_json::to_string(&tags)?;
+    // Absent leaves the scope as it was; `Some(None)` clears it to org-wide;
+    // `Some(Some(id))` scopes it, but only to a project of this same org —
+    // resolving through `get_project_by_id` with `org_id` is what stops a
+    // caller from attaching their convention to another tenant's project.
+    let project_id = match &req.project_id {
+        None => existing.project_id.clone(),
+        Some(None) => None,
+        Some(Some(pid)) => {
+            if get_project_by_id(conn, org_id, pid)?.is_none() {
+                anyhow::bail!("unknown_project: {pid}");
+            }
+            Some(pid.clone())
+        }
+    };
     conn.execute(
-        "UPDATE conventions SET title = ?1, content = ?2, category = ?3, weight = ?4, tags = ?5, updated_at = datetime('now')
-         WHERE org_id = ?6 AND id = ?7",
-        rusqlite::params![title, content, category, weight, tags_json, org_id, id],
+        "UPDATE conventions SET title = ?1, content = ?2, category = ?3, weight = ?4, tags = ?5, project_id = ?6, updated_at = datetime('now')
+         WHERE org_id = ?7 AND id = ?8",
+        rusqlite::params![title, content, category, weight, tags_json, project_id, org_id, id],
     )?;
     get_convention(conn, org_id, id)
 }
@@ -15361,6 +15375,58 @@ mod convention_scope_tests {
             tags: None,
             project_id: project_id.map(|s| s.to_string()),
         }
+    }
+
+    /// The three states of `UpdateConventionRequest::project_id`, which a plain
+    /// `Option<String>` cannot express: absent leaves the scope alone, `null`
+    /// clears it to org-wide, and an id moves it. The middle case is the one
+    /// that silently disappears if the double `Option` is ever flattened —
+    /// unscoping would become unreachable through the API while still looking
+    /// available in the admin UI.
+    #[test]
+    fn updating_a_convention_can_set_clear_or_keep_its_project() {
+        let conn = setup();
+        let org_id = seed_org(&conn);
+        let project_a = create_project(&conn, &org_id, "proj-a", None, None).unwrap();
+        let project_b = create_project(&conn, &org_id, "proj-b", None, None).unwrap();
+
+        let mut req = UpdateConventionRequest {
+            title: None,
+            content: None,
+            category: None,
+            weight: None,
+            tags: None,
+            project_id: None,
+        };
+        let conv =
+            create_convention(&conn, &org_id, &make_req("Rule", Some(&project_a.id))).unwrap();
+
+        // Absent: untouched.
+        let kept = update_convention(&conn, &org_id, conv.id, &req)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.project_id.as_deref(), Some(project_a.id.as_str()));
+
+        // An id: moved.
+        req.project_id = Some(Some(project_b.id.clone()));
+        let moved = update_convention(&conn, &org_id, conv.id, &req)
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.project_id.as_deref(), Some(project_b.id.as_str()));
+
+        // Null: cleared to org-wide.
+        req.project_id = Some(None);
+        let cleared = update_convention(&conn, &org_id, conv.id, &req)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.project_id, None);
+
+        // A project of another org is not a project this org may point at.
+        req.project_id = Some(Some("no-such-project".to_string()));
+        assert!(
+            update_convention(&conn, &org_id, conv.id, &req).is_err(),
+            "an unknown project id must be refused, not written through"
+        );
     }
 
     #[test]

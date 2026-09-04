@@ -500,6 +500,29 @@ pub struct UpdateConventionRequest {
     pub category: Option<String>,
     pub weight: Option<i64>,
     pub tags: Option<Vec<String>>,
+    /// Which project this convention is scoped to, if any.
+    ///
+    /// Doubly wrapped because this field has three states and the other fields
+    /// only have two: absent means "leave the scope alone", `null` means
+    /// "unscope it — make it org-wide", and a string means "scope it to this
+    /// project". A plain `Option<String>` would collapse the first two, and
+    /// unscoping a convention would become impossible through this endpoint.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub project_id: Option<Option<String>>,
+}
+
+/// Deserializes a present-but-null JSON field as `Some(None)`.
+///
+/// Serde maps both an absent field and an explicit `null` to `None` for an
+/// `Option<T>`. With `#[serde(default)]` on an `Option<Option<T>>`, absence
+/// stays `None` while `null` reaches this function and becomes `Some(None)` —
+/// which is what lets a PATCH body distinguish "don't touch" from "clear".
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Request body for `POST /v1/audit/log` — external audit ingest.

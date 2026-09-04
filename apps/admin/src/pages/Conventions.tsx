@@ -485,12 +485,25 @@ function ConventionCard({
   const [editContent, setEditContent] = useState(conv.content)
   const [editCategory, setEditCategory] = useState(conv.category ?? 'general')
   const [editWeight, setEditWeight] = useState(String(conv.weight ?? 100))
+  // '' is the org-wide option, not "unset" — see handleSave.
+  const [editProjectId, setEditProjectId] = useState(conv.project_id ?? '')
+
+  // Shared query key with every other card and page that lists projects, so the
+  // list is fetched once however many conventions are on screen.
+  const { data: projects = [] } = useQuery({
+    queryKey: ['projects', { include_archived: false }],
+    queryFn: () => client.listProjects({ include_archived: false }),
+  })
+  const projectName = conv.project_id
+    ? projects.find(p => p.id === conv.project_id)?.name
+    : undefined
 
   const enterEdit = () => {
     setEditTitle(conv.title ?? '')
     setEditContent(conv.content)
     setEditCategory(conv.category ?? 'general')
     setEditWeight(String(conv.weight ?? 100))
+    setEditProjectId(conv.project_id ?? '')
     setEditing(true)
   }
 
@@ -504,6 +517,10 @@ function ConventionCard({
         content: editContent,
         category: editCategory,
         weight: Number(editWeight) || 100,
+        // Explicit null, not undefined: the API reads a missing key as "leave
+        // the scope alone", so dropping it here would make "Org-wide" a
+        // selection the user could pick but never save.
+        project_id: editProjectId || null,
       })
       onSaved()
       setEditing(false)
@@ -567,6 +584,18 @@ function ConventionCard({
                 onClick={() => !isArchived && setEditingWeight(String(conv.weight))}
               >
                 w:{conv.weight}
+              </span>
+            )}
+            {/* Scope is worth showing on the card: an org-wide convention and a
+                project-scoped one look identical otherwise, and which one it is
+                decides who the convention reaches. The id fallback covers a
+                project that was deleted out from under the link. */}
+            {conv.project_id && (
+              <span
+                className="text-[10px] bg-accent-blue/10 text-accent-blue rounded-[5px] px-1.5 py-0.5 max-w-[180px] truncate"
+                title={projectName ?? conv.project_id}
+              >
+                {projectName ?? conv.project_id}
               </span>
             )}
             {isArchived && (
@@ -643,6 +672,20 @@ function ConventionCard({
               max={10000}
               className="rounded-[5px] border border-border-primary bg-white/[0.04] text-[10px] text-text-secondary px-1.5 py-1 focus:outline-none w-16"
             />
+            <label className="text-[10px] text-text-quaternary">Project</label>
+            <select
+              value={editProjectId}
+              onChange={e => setEditProjectId(e.target.value)}
+              aria-label="Convention project"
+              className="rounded-[5px] border border-border-primary bg-white/[0.04] text-[10px] text-text-secondary px-1.5 py-1 focus:outline-none max-w-[160px]"
+            >
+              {/* Named rather than blank: an empty first option reads as "not
+                  chosen yet", and org-wide is a real, common choice. */}
+              <option value="">Org-wide (no project)</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
           </div>
 
           {/* Content textarea */}
