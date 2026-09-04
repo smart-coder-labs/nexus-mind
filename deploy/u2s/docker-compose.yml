@@ -57,6 +57,12 @@ services:
     mem_reservation: 512m
     volumes:
       - nexusmind_data:/data
+      # The ONNX weights, on a volume rather than in the container's writable
+      # layer. They are ~550 MB, and in the layer that costs twice: the space is
+      # held while the container runs AND the download repeats on every
+      # recreate. On this 6.7 GB box that is what made two deploys fail
+      # mid-pull with "no space left on device".
+      - nexusmind_model_cache:/app/.fastembed_cache
     healthcheck:
       # start_period covers the ~35s embedding-model init before the port listens.
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /v1/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
@@ -75,4 +81,5 @@ services:
         condition: service_healthy
 
 volumes:
+  nexusmind_model_cache:
   nexusmind_data:
