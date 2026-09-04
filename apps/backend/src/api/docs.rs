@@ -89,7 +89,7 @@ pub async fn search(
     // across it would stall every other request for the duration.
     let wants_semantic = params.mode.as_deref() != Some("keyword");
     let query_vector = match (wants_semantic, store.embed_service()) {
-        (true, Some(svc)) => svc.embed_one(query).ok(),
+        (true, Some(svc)) => svc.embed_query(query).ok(),
         _ => None,
     };
 

@@ -21,6 +21,17 @@ services:
     environment:
       DB_PATH: /data/nexusmind.db
       LOG_LEVEL: info
+      # Semantic memory search. Without it every `semantic` or `hybrid` query
+      # silently degrades to keyword — it does not fail, it just answers worse,
+      # which is how this went unnoticed until 2,907 migrated entries were in
+      # and "puedo modificar el modelo Mensaje de prisma" returned "Notas
+      # adicionales" while the memory answering it verbatim ranked nowhere.
+      #
+      # Costs ~550 MB of disk: the nomic-embed-text-v1.5 ONNX weights are
+      # fetched on first start and cached in the container. On this 6.7 GB box
+      # that is worth watching after a deploy — see the prune step in
+      # docs/RUNNING.md.
+      NEXUSMIND_EMBED_ENABLED: "true"
       # Auth for the superuser-only endpoints (POST/GET /v1/orgs). Also gates the
       # one-time single-org bootstrap. Never baked into the image — env only.
       SUPERUSER_KEY: ${SUPERUSER_KEY}

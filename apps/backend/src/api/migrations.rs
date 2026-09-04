@@ -789,7 +789,7 @@ pub async fn commit(
             if candidate.destination_kind != DestinationKind::Memory {
                 continue;
             }
-            match embed.embed_one(&candidate.content) {
+            match embed.embed_document(&candidate.content) {
                 Ok(vector) => {
                     let blob = crate::embed::serialize(&vector);
                     let db = store.conn();

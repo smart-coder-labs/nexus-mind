@@ -70,7 +70,7 @@ impl MemoryStore for SqliteStore {
 
         // Embed the content and persist the vector (best-effort — never fail the store call).
         if let Some(ref svc) = self.embed {
-            match svc.embed_one(&memory.content) {
+            match svc.embed_document(&memory.content) {
                 Ok(vec) => {
                     let blob = embed::serialize(&vec);
                     if let Err(e) = queries::store_embedding(&conn, &memory.id, &blob) {
@@ -262,7 +262,7 @@ impl SqliteStore {
     /// Pure semantic search: embed the query, cosine-rank all org embeddings, return top-K.
     fn search_semantic(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
-        let q_vec = svc.embed_one(query)?;
+        let q_vec = svc.embed_query(query)?;
 
         let pairs = {
             let conn = self.db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
@@ -289,7 +289,7 @@ impl SqliteStore {
     /// Hybrid search: merge FTS5 ranks and cosine ranks via Reciprocal Rank Fusion (k=60).
     fn search_hybrid(&self, org_id: &str, query: &str, limit: i64, viewer_user_id: Option<&str>) -> Result<Vec<Memory>> {
         let svc = self.embed.as_ref().expect("caller verified embed is Some");
-        let q_vec = svc.embed_one(query)?;
+        let q_vec = svc.embed_query(query)?;
 
         // Fetch more candidates than needed before merging
         let fetch_n = (limit * 3).max(30);

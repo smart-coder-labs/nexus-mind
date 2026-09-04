@@ -678,7 +678,7 @@ pub async fn post_search(
     // Embed the query
     let embed_svc = store.embed_service();
     let q_vec = match embed_svc {
-        Some(ref svc) => svc.embed_one(&input.query).map_err(db_err)?,
+        Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
         None => {
             // No embedding service — return empty results gracefully
             return Ok(Json(vec![]));
@@ -811,7 +811,7 @@ pub async fn post_locate(
     // Embed the query (reuse the same plumbing as search — no corpus re-embed).
     let embed_svc = store.embed_service();
     let q_vec = match embed_svc {
-        Some(ref svc) => svc.embed_one(&input.query).map_err(db_err)?,
+        Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
         None => return Ok(Json(LocateCodeResponse { results: vec![] })),
     };
 

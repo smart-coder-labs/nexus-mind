@@ -268,7 +268,7 @@ pub fn index_project(
                     .map(|c| chunker::build_embed_text(c.symbol.as_deref(), &c.content))
                     .collect();
                 let texts: Vec<&str> = embed_texts.iter().map(|s| s.as_str()).collect();
-                match svc.embed_batch(&texts) {
+                match svc.embed_documents(&texts) {
                     Ok(vecs) => vecs.into_iter().map(|v| Some(embed::serialize(&v))).collect(),
                     Err(e) => {
                         tracing::warn!("Failed to embed batch for {rel_path}: {e}");
@@ -415,7 +415,7 @@ pub fn index_documents(
                     crate::db::doc_queries::get_chunk_content(&conn, chunk_id)?
                 };
                 let Some(text) = text else { continue };
-                match svc.embed_one(&text) {
+                match svc.embed_document(&text) {
                     Ok(vector) => {
                         let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
                         if crate::db::doc_queries::store_chunk_embedding(&conn, chunk_id, &vector)

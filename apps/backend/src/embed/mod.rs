@@ -10,6 +10,11 @@ pub struct EmbedService {
     model: TextEmbedding,
 }
 
+/// Task instructions nomic-embed-text-v1.5 is trained with. Stored vectors and
+/// query vectors must be produced with the matching one — see `embed_query`.
+const QUERY_PREFIX: &str = "search_query: ";
+const DOCUMENT_PREFIX: &str = "search_document: ";
+
 impl EmbedService {
     /// Initialize the embedding model. Blocks until the model is loaded.
     /// Returns an error if the model cannot be downloaded or loaded.
@@ -26,8 +31,50 @@ impl EmbedService {
         Ok(EmbedService { model })
     }
 
-    /// Embed a single text. Returns a 768-dimensional vector.
-    pub fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+    /// Embed a search query.
+    ///
+    /// # Why the prefix
+    ///
+    /// nomic-embed-text-v1.5 is trained with task instructions, and a query and
+    /// the document that answers it get different ones. Feeding both the bare
+    /// text still produces usable vectors — which is why this went unnoticed —
+    /// but it collapses the query/document asymmetry the model was trained to
+    /// exploit.
+    ///
+    /// Measured on a real pair from the u2s corpus, a deploy question against
+    /// the convention that answers it and an unrelated CSS note:
+    ///
+    /// ```text
+    /// bare      correct 0.7243   unrelated 0.6838   margin 0.0405
+    /// prefixed  correct 0.7469   unrelated 0.6462   margin 0.1007
+    /// ```
+    ///
+    /// Both orderings are right in isolation; across 2,907 entries a margin of
+    /// 0.04 is noise, and the live search answered "how do I stop a push
+    /// deploying both apps" with a note about a mobile carousel.
+    pub fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_one(&format!("{QUERY_PREFIX}{text}"))
+    }
+
+    /// Embed one text for storage and later retrieval.
+    pub fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_one(&format!("{DOCUMENT_PREFIX}{text}"))
+    }
+
+    /// Embed texts for storage. Order and count are preserved.
+    pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| format!("{DOCUMENT_PREFIX}{t}"))
+            .collect();
+        let refs: Vec<&str> = prefixed.iter().map(String::as_str).collect();
+        self.embed_batch(&refs)
+    }
+
+    /// Embed a single text verbatim. Private: a caller that picks neither
+    /// prefix gets the weaker vectors above, and nothing in the type system
+    /// would say so.
+    fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
         let mut results = self.model.embed(vec![text], None)?;
         results.pop().ok_or_else(|| anyhow::anyhow!("empty embedding result"))
     }
@@ -38,7 +85,7 @@ impl EmbedService {
     /// ONNX runtime never receives a single huge inference batch (a large file can
     /// yield hundreds of chunks — passing them all at once padded to the longest
     /// chunk spikes memory and was an OOM source). Order and count are preserved.
-    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         embed_in_sub_batches(texts, EMBED_BATCH, |batch| {
             // Passing `Some(batch.len())` keeps fastembed's own batch equal to our
             // sub-batch, so no inference call ever exceeds EMBED_BATCH texts.
@@ -171,5 +218,56 @@ mod tests {
         let a = vec![0.0_f32, 0.0];
         let b = vec![1.0_f32, 2.0];
         assert_eq!(cosine(&a, &b), 0.0);
+    }
+}
+
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    /// The measurement that put the prefixes in, kept as a test so removing
+    /// them fails loudly instead of quietly halving retrieval quality.
+    ///
+    /// Ignored because it downloads the model. Run deliberately:
+    /// `cargo test --lib prefix_tests -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn prefixes_widen_the_margin_between_a_right_and_a_wrong_document() {
+        let svc = EmbedService::init().expect("model");
+        let query = "cómo evito que un push despliegue las dos apps";
+        let right = "Sin configuración, cada push despliega ambos proyectos. Pon el \
+                     Ignored Build Step de cada proyecto Vercel en `npx turbo-ignore` \
+                     para evitar despliegues innecesarios.";
+        let wrong = "Categorías: stack vertical de 3 filas en mobile. En mobile (<750px) \
+                     reemplaza el carrusel horizontal de tarjetas verticales por un stack \
+                     de una sola columna.";
+
+        let q = svc.embed_query(query).unwrap();
+        let margin = cosine(&q, &svc.embed_document(right).unwrap())
+            - cosine(&q, &svc.embed_document(wrong).unwrap());
+
+        // Bare text measured 0.0405 on this pair; prefixed measured 0.1007.
+        // The floor sits between them: it catches a regression to bare text
+        // without pinning a model version's exact score.
+        assert!(
+            margin > 0.07,
+            "prefixed retrieval margin collapsed to {margin:.4} — are the task \
+             prefixes still applied on both sides?"
+        );
+    }
+
+    /// The asymmetry itself: the two prefixes must produce different vectors,
+    /// or the whole point is lost and only the cost remains.
+    #[test]
+    #[ignore]
+    fn a_query_and_a_document_embed_differently() {
+        let svc = EmbedService::init().expect("model");
+        let text = "el build usa pnpm, nunca npm";
+        assert!(
+            cosine(&svc.embed_query(text).unwrap(), &svc.embed_document(text).unwrap()) < 0.999,
+            "query and document embeddings of the same text are identical — the \
+             prefixes are not reaching the model"
+        );
     }
 }

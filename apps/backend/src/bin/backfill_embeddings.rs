@@ -19,6 +19,15 @@ struct Args {
 
     #[arg(long, default_value = "32", help = "Batch size for embedding")]
     batch_size: usize,
+
+    /// Re-embed memories that already have a vector.
+    ///
+    /// Needed when the vectors themselves are stale rather than missing — a
+    /// change to the model, or to how text is fed to it. Skipping-by-default is
+    /// right for the ordinary case and silently wrong for that one: the rows
+    /// exist, so nothing looks broken while every search stays degraded.
+    #[arg(long, help = "Re-embed memories that already have an embedding")]
+    force: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -28,12 +37,14 @@ fn main() -> anyhow::Result<()> {
     let conn = connect(&args.db_path)?;
     migrations::run_all(&conn)?;
 
-    // Find memories without an embedding
-    let mut stmt = conn.prepare(
+    let sql = if args.force {
+        "SELECT id, content FROM memories ORDER BY created_at ASC"
+    } else {
         "SELECT id, content FROM memories
          WHERE id NOT IN (SELECT memory_id FROM memory_embeddings)
-         ORDER BY created_at ASC",
-    )?;
+         ORDER BY created_at ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
 
     let rows: Vec<(String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -44,6 +55,9 @@ fn main() -> anyhow::Result<()> {
         eprintln!("✓ All memories already have embeddings.");
         return Ok(());
     }
+    if args.force {
+        eprintln!("→ --force: re-embedding all {total} memories, stale vectors included.");
+    }
 
     eprintln!("→ Loading embedding model (nomic-embed-text-v1.5)…");
     let svc = EmbedService::init()?;
@@ -53,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     let mut done = 0;
     for chunk in rows.chunks(args.batch_size) {
         let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
-        let vecs = svc.embed_batch(&texts)?;
+        let vecs = svc.embed_documents(&texts)?;
 
         for ((id, _), vec) in chunk.iter().zip(vecs.iter()) {
             let blob = embed::serialize(vec);
