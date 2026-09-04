@@ -153,6 +153,14 @@ COPY --from=builder /app/target/release/import-sdd /app/import-sdd
 # Seeder, for bringing a fresh volume up with demo data:
 #   nexusmind-seed /data/nexusmind.db
 COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
+# Embedding backfill. Memories are vectorised as they are stored, so this only
+# matters for the ones that were not: a database written while
+# NEXUSMIND_EMBED_ENABLED was off has no vectors, and semantic search silently
+# degrades to keyword for all of it. Ships here because the box that needs it is
+# the box that has the database:
+#   backfill-embeddings --db-path /data/nexusmind.db
+# Safe to re-run; it skips memories that already have an embedding.
+COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embeddings
 
 RUN mkdir -p /data /claude-home
 
