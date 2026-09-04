@@ -829,18 +829,27 @@ pub fn bulk_prompt(
     out
 }
 
-/// Turns scanned items into candidates, a batch at a time.
+/// Turns scanned items into candidates, a batch at a time, over a worker pool.
 ///
 /// # Why this exists beside `build_candidates`
 ///
-/// One call per unit costs ~34k tokens of system context and about 32 seconds,
-/// whatever the unit's size — so a 249-unit source is over two hours and most
-/// of the spend is the same context loaded 249 times. Batching amortises both.
+/// A call spends ~14k tokens of fixed context before it reads a word of the
+/// prompt, whatever the unit's size, so one call per unit spends a hundred
+/// tokens of overhead for every token of work. Batching amortises that: a
+/// 4,779-unit source is ~120 calls instead of 4,779.
 ///
-/// The deterministic pass runs first and its result is the floor: a batch the
-/// model mangles, truncates or never answers costs the run nothing, because
-/// every item already has a candidate. That is the difference between a faster
-/// mode and a riskier one.
+/// # Why it is also parallel
+///
+/// Batching and a pool used to be alternatives — `--parallel` was ignored here
+/// — and that made sense when a batch held twenty items and the pool's job was
+/// to overlap thousands of single-unit calls. It stopped making sense when
+/// batches became few and large: ~120 calls at ~40 s each is 80 minutes of
+/// almost pure waiting, and the wait is the model's, not the machine's.
+///
+/// The deterministic pass still runs first, single-threaded, and the workers
+/// only ever read its output. That is what lets `Connector` stay non-`Sync` —
+/// the DB connector wraps a reader that is not `Sync`, and requiring it here
+/// would stop that connector compiling.
 pub fn build_candidates_bulk(
     connector: &dyn Connector,
     items: &[SourceItem],
@@ -848,121 +857,174 @@ pub fn build_candidates_bulk(
     budget: &mut Budget,
     sink: &EventSink,
     max_items: usize,
+    workers: usize,
 ) -> (Vec<CandidatePayload>, RunSummary) {
-    let mut summary = RunSummary {
-        scanned: items.len(),
-        ..Default::default()
-    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let total = items.len();
     let drafts: Vec<Option<CandidatePayload>> =
         items.iter().map(|item| connector.fallback(item)).collect();
-    let mut candidates = Vec::new();
-    let total = items.len();
 
-    for range in chunk_for_bulk(items, max_items) {
-        if budget.would_exceed() {
-            summary.aborted_on_budget = true;
-            break;
-        }
-        let slice = &items[range.clone()];
-        let batch_drafts = &drafts[range.clone()];
-        let before = budget.spent;
+    // Built before the pool starts, because building one needs the connector.
+    let ranges = chunk_for_bulk(items, max_items);
+    let prompts: Vec<String> = ranges
+        .iter()
+        .map(|r| bulk_prompt(connector, &items[r.clone()], &drafts[r.clone()]))
+        .collect();
 
-        sink.emit(&RunEvent::Classifying {
-            index: range.start + 1,
-            total,
-            origin: format!(
-                "batch of {} · {} … {}",
-                slice.len(),
-                slice
-                    .first()
-                    .map(|i| i.display_origin.as_str())
-                    .unwrap_or(""),
-                slice
-                    .last()
-                    .map(|i| i.display_origin.as_str())
-                    .unwrap_or("")
-            ),
-        });
+    let budget_m = Mutex::new(std::mem::take(budget));
+    let cursor = AtomicUsize::new(0);
+    let aborted = AtomicBool::new(false);
+    // Collected per batch and folded in order afterwards. Counters assembled
+    // inside the workers would depend on which batch happened to finish first,
+    // and a summary that changes between identical runs is not a summary.
+    let collected: Mutex<Vec<(usize, Vec<Result<CandidatePayload, BulkMiss>>)>> =
+        Mutex::new(Vec::with_capacity(ranges.len()));
 
-        let prompt = bulk_prompt(connector, slice, batch_drafts);
-        let started = std::time::Instant::now();
-        let outcome = classifier.classify_bulk(&prompt, slice, batch_drafts);
-        let (usage, results, answer) = match outcome {
-            Ok(out) => (out.usage, out.candidates, out.raw_response),
-            // The call itself failed, so no item was answered. That is
-            // `Unusable`, not `Unchanged`: nothing was approved here.
-            Err(e) => (
-                None,
-                slice
-                    .iter()
-                    .map(|_| Err(BulkMiss::Unusable(format!("{e:#}"))))
-                    .collect(),
-                String::new(),
-            ),
-        };
-        budget.record(usage);
-        let spent = budget.spent - before;
+    std::thread::scope(|scope| {
+        for _ in 0..workers.max(1) {
+            scope.spawn(|| loop {
+                let b = cursor.fetch_add(1, Ordering::Relaxed);
+                if b >= ranges.len() || aborted.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The budget gate, under the lock. Once the ceiling is reached
+                // no worker takes new work; whatever is already running finishes
+                // and is counted — bounded overshoot, not a hard stop.
+                if budget_m.lock().unwrap().would_exceed() {
+                    aborted.store(true, Ordering::Relaxed);
+                    break;
+                }
 
-        if sink.is_enabled() {
-            // Only genuine failures. Items the model deliberately left alone
-            // are the expected majority of a sparse reply, and counting them
-            // here would mark every healthy batch as broken.
-            let unusable = results
-                .iter()
-                .filter(|r| matches!(r, Err(BulkMiss::Unusable(_))))
-                .count();
-            let changed = results.iter().filter(|r| r.is_ok()).count();
-            sink.emit(&RunEvent::Agent {
-                index: range.start + 1,
-                total,
-                origin: format!("batch of {} · {changed} changed", slice.len()),
-                prompt: clip(&prompt, AGENT_CLIP),
-                response: clip(&answer, AGENT_CLIP),
-                ok: unusable == 0,
-                error: (unusable > 0)
-                    .then(|| format!("{unusable} of {} item(s) unusable", slice.len())),
-                tokens_spent: spent,
-                duration_ms: started.elapsed().as_millis() as u64,
+                let range = ranges[b].clone();
+                let slice = &items[range.clone()];
+                let batch_drafts = &drafts[range.clone()];
+                let prompt = &prompts[b];
+
+                sink.emit(&RunEvent::Classifying {
+                    index: range.start + 1,
+                    total,
+                    origin: format!(
+                        "batch of {} · {} … {}",
+                        slice.len(),
+                        slice.first().map(|i| i.display_origin.as_str()).unwrap_or(""),
+                        slice.last().map(|i| i.display_origin.as_str()).unwrap_or("")
+                    ),
+                });
+
+                let started = std::time::Instant::now();
+                let (usage, results, answer) =
+                    match classifier.classify_bulk(prompt, slice, batch_drafts) {
+                        Ok(out) => (out.usage, out.candidates, out.raw_response),
+                        // The call itself failed, so no item was answered. That
+                        // is `Unusable`, not `Passed`: nothing was declined
+                        // here, nothing was read.
+                        Err(e) => (
+                            None,
+                            slice
+                                .iter()
+                                .map(|_| Err(BulkMiss::Unusable(format!("{e:#}"))))
+                                .collect(),
+                            String::new(),
+                        ),
+                    };
+                // This batch's own tokens, from its own usage rather than a
+                // before/after diff of the shared budget: under concurrency that
+                // diff would fold other workers' spend into this batch's number.
+                let spent = usage.map(|u| u.input + u.output).unwrap_or(0);
+                budget_m.lock().unwrap().record(usage);
+
+                if sink.is_enabled() {
+                    // Only genuine failures. Items the model declined are the
+                    // expected majority, and counting them here would mark every
+                    // healthy batch as broken.
+                    let unusable = results
+                        .iter()
+                        .filter(|r| matches!(r, Err(BulkMiss::Unusable(_))))
+                        .count();
+                    let put_forward = results.iter().filter(|r| r.is_ok()).count();
+                    sink.emit(&RunEvent::Agent {
+                        index: range.start + 1,
+                        total,
+                        origin: format!(
+                            "batch of {} · {put_forward} put forward",
+                            slice.len()
+                        ),
+                        prompt: clip(prompt, AGENT_CLIP),
+                        response: clip(&answer, AGENT_CLIP),
+                        ok: unusable == 0,
+                        error: (unusable > 0)
+                            .then(|| format!("{unusable} of {} item(s) unusable", slice.len())),
+                        tokens_spent: spent,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    });
+
+                    // Per-unit progress is emitted here rather than in the fold
+                    // so the operator sees movement while the run is going. The
+                    // fold below owns the counters; this owns the screen.
+                    for (offset, result) in results.iter().enumerate() {
+                        let index = range.start + offset + 1;
+                        let item = &slice[offset];
+                        match result {
+                            Ok(c) => {
+                                emit_classified(sink, index, total, item, c, "classified", 0)
+                            }
+                            Err(BulkMiss::Passed) => emit_passed(sink, index, total, item),
+                            Err(BulkMiss::Unusable(_)) => match &batch_drafts[offset] {
+                                Some(d) => {
+                                    emit_classified(sink, index, total, item, d, "fallback", 0)
+                                }
+                                None => emit_failed(sink, index, total, item, 0),
+                            },
+                        }
+                    }
+                }
+
+                collected.lock().unwrap().push((b, results));
             });
         }
+    });
 
+    *budget = budget_m.into_inner().unwrap();
+    let mut batches = collected.into_inner().unwrap();
+    batches.sort_by_key(|(b, _)| *b);
+
+    let mut summary = RunSummary {
+        scanned: total,
+        aborted_on_budget: aborted.load(Ordering::Relaxed),
+        tokens_spent: budget.spent,
+        ..Default::default()
+    };
+    let mut candidates = Vec::new();
+    for (b, results) in batches {
+        let range = ranges[b].clone();
         for (offset, result) in results.into_iter().enumerate() {
-            let index = range.start + offset + 1;
-            let item = &slice[offset];
             match result {
                 Ok(candidate) => {
                     summary.classified += 1;
-                    emit_classified(sink, index, total, item, &candidate, "classified", 0);
                     candidates.push(candidate);
                 }
-                // A section the model did not put forward is dropped. It is
-                // NOT filled in from the draft: the draft's content is the raw
+                // A section the model did not put forward is dropped. It is NOT
+                // filled in from the draft: the draft's content is the raw
                 // section text, so doing that would stage the document verbatim
                 // one heading at a time and bury the reviewer in prose nobody
                 // vouched for.
-                Err(BulkMiss::Passed) => {
-                    summary.passed += 1;
-                    emit_passed(sink, index, total, item);
-                }
+                Err(BulkMiss::Passed) => summary.passed += 1,
                 // A broken answer is different: the model tried and we could not
                 // read it, so the deterministic draft is the floor that keeps
                 // the run from losing the unit entirely.
-                Err(BulkMiss::Unusable(_)) => match batch_drafts[offset].clone() {
+                Err(BulkMiss::Unusable(_)) => match drafts[range.start + offset].clone() {
                     Some(draft) => {
                         summary.fallbacks += 1;
-                        emit_classified(sink, index, total, item, &draft, "fallback", 0);
                         candidates.push(draft);
                     }
-                    None => {
-                        summary.failed += 1;
-                        emit_failed(sink, index, total, item, 0);
-                    }
+                    None => summary.failed += 1,
                 },
             }
         }
     }
 
-    summary.tokens_spent = budget.spent;
     (candidates, summary)
 }
 
@@ -1288,8 +1350,10 @@ struct Args {
     /// machine's, so serial buys nothing and costs the operator the difference.
     /// Pass `--parallel 1` to get the old one-at-a-time behaviour back.
     ///
-    /// This does NOT lower token spend: every unit still costs its own call —
-    /// `--bulk` is the mode for that, and this flag is ignored under it. Values
+    /// Applies to both paths: per-unit calls, and — since batches became few
+    /// and large — the batches themselves. It does NOT lower token spend on the
+    /// per-unit path, where every unit still costs its own call; `--bulk` is the
+    /// mode that lowers cost, and this is the one that lowers the clock. Values
     /// much above ~6 risk the provider rate-limiting the concurrent calls.
     #[arg(long, default_value_t = DEFAULT_PARALLEL, value_parser = parse_parallel)]
     parallel: usize,
@@ -1790,6 +1854,7 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
                 &mut budget,
                 sink,
                 args.batch_size.max(1),
+                args.parallel,
             ),
             // Parallel is the per-item path with a worker pool; it remains
             // scoped to the resolved client/project execution group.
@@ -2023,6 +2088,75 @@ mod tests {
             "--no-llm must still produce candidates"
         );
         assert_eq!(summary.classified, 0);
+    }
+
+    /// Batches now run concurrently, so the one thing that can silently break is
+    /// ordering: candidates must come back in item order regardless of which
+    /// worker finished first, or a reviewer's queue no longer matches the
+    /// documents it came from.
+    ///
+    /// Driven through a stub `claude` that endorses the first item of every
+    /// batch, so the expected output is known exactly.
+    #[test]
+    fn parallel_batches_return_candidates_in_item_order() {
+        let dir = std::env::temp_dir().join(format!("nm-bulk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("claude-stub");
+        // Endorses item 1 of whatever batch it is given. Sleeps a little on a
+        // coin flip so batches genuinely finish out of order.
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\n\
+             [ $(( $$ % 2 )) -eq 0 ] && sleep 0.2\n\
+             printf '%s' '{\"result\":\"[{\\\"item\\\":1,\\\"content\\\":\\\"kept\\\"}]\"}'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let c = NoopConnector {
+            items: (0..12)
+                .map(|i| SourceItem {
+                    source_identity: format!("id-{i:02}"),
+                    display_origin: format!("doc-{i:02}.md"),
+                    routing_path: Some(format!("doc-{i:02}.md")),
+                    raw: "body".to_string(),
+                    meta: serde_json::json!({}),
+                })
+                .collect(),
+        };
+        let items = c.scan(&ScanOptions::default()).unwrap();
+        let cli = ClaudeCli {
+            bin: bin.to_string_lossy().to_string(),
+            model: "stub".to_string(),
+        };
+
+        let mut budget = Budget::default();
+        // One item per batch, so every item is the "item 1" the stub endorses.
+        let (candidates, summary) = build_candidates_bulk(
+            &c,
+            &items,
+            &cli,
+            &mut budget,
+            &EventSink::new(false),
+            1,
+            4,
+        );
+
+        assert_eq!(candidates.len(), 12, "every batch contributed its one item");
+        assert_eq!(summary.classified, 12);
+        assert_eq!(summary.passed, 0);
+        let order: Vec<&str> = candidates.iter().map(|c| c.source_identity.as_str()).collect();
+        let expected: Vec<String> = (0..12).map(|i| format!("id-{i:02}")).collect();
+        assert_eq!(
+            order,
+            expected.iter().map(String::as_str).collect::<Vec<_>>(),
+            "concurrency must not reorder the queue"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

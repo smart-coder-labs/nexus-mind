@@ -299,9 +299,8 @@ impl RunConfig {
             if let Ok(n) = self.parallel.trim().parse::<usize>() {
                 push_flag(&mut a, "--parallel", &n.to_string());
             }
-            // Batching and a pool are alternatives, not companions: the runner
-            // ignores `--parallel` under `--bulk`, and emitting both would put a
-            // number on screen that does nothing.
+            // Batching and a pool compose: the pool now runs the batches, which
+            // is what takes a ~120-batch source from 80 minutes to ~20.
             if self.bulk {
                 a.push("--bulk".into());
             }

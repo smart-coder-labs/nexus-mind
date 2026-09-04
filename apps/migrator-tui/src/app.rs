@@ -162,9 +162,9 @@ impl FieldId {
             Attest => "Who authorised this, under which agreement. Recorded on the run.",
             NoLlm => "Uses each connector's deterministic fallback. Costs nothing.",
             MaxTokens => "Stops the run cleanly when reached. Staged work survives.",
-            Parallel => "How many calls run at once. Blank uses the runner's default \
-                         (4); 1 is serial. Ignored while batching is on. It cuts time, \
-                         not tokens — and much higher risks rate-limiting.",
+            Parallel => "How many calls run at once — batches too, when batching is \
+                         on. Blank uses the runner's default (4); 1 is serial. It cuts \
+                         time, not tokens — and much higher risks rate-limiting.",
             Bulk => "Classify many units in one call instead of one call each. A call \
                      costs ~14k tokens of context before it reads anything, so this is \
                      what decides whether a large source takes minutes or hours. Leave \
