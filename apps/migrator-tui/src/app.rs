@@ -160,8 +160,8 @@ impl FieldId {
             Attest => "Who authorised this, under which agreement. Recorded on the run.",
             NoLlm => "Uses each connector's deterministic fallback. Costs nothing.",
             MaxTokens => "Stops the run cleanly when reached. Staged work survives.",
-            Parallel => "How many units to classify at once. Empty or 1 is serial; \
-                         ~6 is a good start. It cuts time, not tokens — and much \
+            Parallel => "How many units to classify at once. Blank uses the runner's \
+                         default (4); 1 is serial. It cuts time, not tokens — and much \
                          higher risks the provider rate-limiting.",
             ClaudeBin => "The headless classifier invoked as `claude -p`.",
             Model => "Haiku by default — this prompt runs once per unit, so a frontier \
@@ -581,24 +581,25 @@ impl Progress {
                 count,
                 sample,
             } => self.excluded.push((reason, count, sample)),
-            RunEvent::Classifying {
-                index,
-                total,
-                origin,
-            } => {
-                self.current = index.saturating_sub(1);
+            // With a pool of workers these events interleave: unit 4 finishes
+            // while unit 2 is still starting. Assigning `current` from the
+            // event's index made the bar walk backwards and the origin line
+            // flicker between workers. `current` is a count of what is done, so
+            // it is counted; the origin shows the most recent start, which is
+            // the honest answer to "what is it working on" when the answer is
+            // several things at once.
+            RunEvent::Classifying { total, origin, .. } => {
                 self.total = total;
                 self.current_origin = origin;
             }
             RunEvent::Classified {
-                index,
                 total,
                 destination_kind,
                 via,
                 tokens_spent,
                 ..
             } => {
-                self.current = index;
+                self.current += 1;
                 self.total = total;
                 self.tokens += tokens_spent;
                 match via.as_str() {
@@ -718,6 +719,11 @@ pub enum ApiMsg {
     PlanExecuted(Result<ExecutedPlan, String>),
     /// The source-code index action finished (or failed).
     Indexed(Result<CodeIndexOutcome, String>),
+    /// One candidate rewritten in place. Carries the candidate back so the row
+    /// on screen shows the edited text without a queue reload — a reload would
+    /// re-sort the queue by confidence and move the cursor off what was just
+    /// edited, which is exactly the wrong moment to lose your place.
+    Edited(Result<Candidate, String>),
     Failed(String),
 }
 
@@ -1277,6 +1283,21 @@ impl App {
                 self.goto(Screen::Summary);
             }
             ApiMsg::Committed(Err(e)) => self.status = format!("commit failed: {e}"),
+            ApiMsg::Edited(Ok(candidate)) => {
+                self.status = format!("edited — {}", candidate.title());
+                // Replace in place by id, not by cursor position: the cursor may
+                // have moved while the request was in flight.
+                if let Some(row) = self.candidates.iter_mut().find(|c| c.id == candidate.id) {
+                    *row = candidate;
+                }
+            }
+            ApiMsg::Edited(Err(e)) => {
+                self.status = format!("edit failed: {e}");
+                // A refused edit means this row is not what we thought it was —
+                // stale, or no longer staged. Re-read rather than leave the
+                // reviewer deciding on a version that does not exist.
+                self.load_candidates();
+            }
             ApiMsg::Cancelled(Ok(n)) => {
                 self.status = format!("{n} pending candidate(s) cancelled");
                 self.candidates.clear();
@@ -1491,6 +1512,47 @@ impl App {
         self.spawn_api(&label, move |c| ApiMsg::Reviewed {
             result: c.review(&run_id, &actions).map_err(|e| e.to_string()),
             verdict,
+        });
+    }
+
+    /// The candidate the review cursor is on, if the queue is showing one.
+    pub fn current_candidate(&self) -> Option<&Candidate> {
+        if self.picking_run() {
+            return None;
+        }
+        self.candidates.get(self.review_cursor)
+    }
+
+    /// Sends a reviewer's rewrite of the candidate under the cursor.
+    ///
+    /// `title` is folded into the destination hint rather than sent separately:
+    /// the hint is what the destination actually reads at commit time, and a
+    /// title stored anywhere else would not survive the trip.
+    pub fn apply_candidate_edit(&mut self, title: String, content: String) {
+        let Some(run_id) = self.active_run() else {
+            return;
+        };
+        let Some(candidate) = self.current_candidate() else {
+            return;
+        };
+        let (id, version) = (candidate.id.clone(), candidate.version);
+        let mut hint = candidate.destination_hint.clone();
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            match hint.as_object_mut() {
+                Some(map) => {
+                    map.insert("title".into(), serde_json::Value::String(trimmed.into()));
+                }
+                // A hint that is not an object (absent, or a bare value from an
+                // older run) is replaced rather than dropped on the floor.
+                None => hint = serde_json::json!({ "title": trimmed }),
+            }
+        }
+        self.spawn_api("saving edit", move |c| {
+            ApiMsg::Edited(
+                c.edit_candidate(&run_id, &id, version, &content, &hint)
+                    .map_err(|e| e.to_string()),
+            )
         });
     }
 

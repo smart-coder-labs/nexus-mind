@@ -82,10 +82,126 @@ fn run(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+            // Editing a finding is the one action that leaves the TUI, so it is
+            // handled here rather than in `handle_key`: it needs the terminal
+            // back, and `handle_key` has no way to give it up.
+            if key.code == KeyCode::Char('E')
+                && app.screen == Screen::Review
+                && app.current_candidate().is_some()
+            {
+                edit_current_candidate(terminal, &mut app);
+                continue;
+            }
             handle_key(&mut app, key.code, key.modifiers);
         }
     }
     Ok(())
+}
+
+/// Hands the candidate under the cursor to `$EDITOR`, then sends back what came
+/// out.
+///
+/// A finding is a paragraph of prose, and correcting one means moving around
+/// inside it. Rather than grow a text editor in here — cursor, wrapping,
+/// selection, undo, all of it worse than what the operator already has — the
+/// TUI steps aside for the editor they configured, the way `git commit` and
+/// `crontab -e` do.
+fn edit_current_candidate(terminal: &mut ratatui::DefaultTerminal, app: &mut App) {
+    let Some(candidate) = app.current_candidate() else {
+        return;
+    };
+    let document = format!(
+        "# Editing a staged migration candidate. Lines starting with '#' are ignored.\n\
+         # Save and quit to apply; quit without saving to leave it as it was.\n\
+         #\n\
+         # Destination: {} · source: {}\n\
+         Title: {}\n\
+         \n\
+         {}\n",
+        candidate.destination_kind,
+        candidate.source_identity,
+        candidate.title(),
+        candidate.content,
+    );
+
+    let path = std::env::temp_dir().join(format!("nexusmind-candidate-{}.md", candidate.id));
+    if let Err(e) = std::fs::write(&path, &document) {
+        app.status = format!("could not open an editor: {e}");
+        return;
+    }
+
+    // Down and back up around the child: the editor needs the real terminal,
+    // and ratatui's alternate screen and raw mode would otherwise still be on.
+    ratatui::restore();
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    // `sh -c` so a configured editor with arguments ("code --wait", "emacs -nw")
+    // works, which is common enough that requiring a bare binary would be a bug.
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\"", editor = editor))
+        .arg("sh")
+        .arg(&path)
+        .status();
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(_) => {
+            app.status = format!("{editor} exited with an error — nothing was changed");
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        Err(e) => {
+            app.status = format!("could not run {editor}: {e}");
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+    }
+
+    let edited = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    let (title, content) = parse_edited_candidate(&edited);
+    if content.trim().is_empty() {
+        app.status = "the edited candidate was empty — nothing was changed".into();
+        return;
+    }
+    if content == app.current_candidate().map(|c| c.content.clone()).unwrap_or_default()
+        && title == app.current_candidate().map(|c| c.title()).unwrap_or_default()
+    {
+        app.status = "unchanged".into();
+        return;
+    }
+    app.apply_candidate_edit(title, content);
+}
+
+/// Splits the edited document back into a title and a body.
+///
+/// Comment lines are dropped, the first `Title:` line is the title, and
+/// everything after it is the content. Only the *first* `Title:` is special, so
+/// a body that happens to contain one survives intact.
+fn parse_edited_candidate(document: &str) -> (String, String) {
+    let mut title = String::new();
+    let mut body: Vec<&str> = Vec::new();
+    let mut seen_title = false;
+    for line in document.lines() {
+        if line.starts_with('#') && !seen_title {
+            continue;
+        }
+        match line.strip_prefix("Title:") {
+            Some(rest) if !seen_title => {
+                title = rest.trim().to_string();
+                seen_title = true;
+            }
+            _ if seen_title => body.push(line),
+            // Anything before the title line in a document whose header was
+            // deleted is still content, not a stray.
+            _ => body.push(line),
+        }
+    }
+    (title, body.join("\n").trim().to_string())
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
@@ -290,6 +406,43 @@ fn next_screen(app: &mut App, delta: isize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The round trip through `$EDITOR`: the header the TUI writes has to come
+    /// back off, and the body has to survive verbatim.
+    #[test]
+    fn the_edited_document_round_trips_title_and_body() {
+        let doc = "# Editing a staged migration candidate.\n\
+                   # Save and quit to apply.\n\
+                   #\n\
+                   # Destination: memory · source: src/a.rs\n\
+                   Title: Corrected title\n\
+                   \n\
+                   First paragraph.\n\
+                   \n\
+                   Second paragraph.\n";
+        let (title, content) = parse_edited_candidate(doc);
+        assert_eq!(title, "Corrected title");
+        assert_eq!(content, "First paragraph.\n\nSecond paragraph.");
+    }
+
+    /// Only the first `Title:` is the title. A body that discusses one — a
+    /// convention about commit messages, say — must not be truncated at it.
+    #[test]
+    fn a_title_line_inside_the_body_is_left_alone() {
+        let doc = "Title: The real title\n\nUse this shape:\nTitle: <what changed>\n";
+        let (title, content) = parse_edited_candidate(doc);
+        assert_eq!(title, "The real title");
+        assert_eq!(content, "Use this shape:\nTitle: <what changed>");
+    }
+
+    /// A reviewer who deletes the whole header still gets their prose sent, not
+    /// silently dropped as "no title line found".
+    #[test]
+    fn a_document_with_no_header_is_all_content() {
+        let (title, content) = parse_edited_candidate("just the prose, rewritten\n");
+        assert_eq!(title, "");
+        assert_eq!(content, "just the prose, rewritten");
+    }
 
     /// The bug this prevents: typing a path with an `r` in it silently starting
     /// a real migration run.

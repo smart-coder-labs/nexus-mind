@@ -173,8 +173,8 @@ fn keys(app: &App) -> String {
             let (n, whole_queue) = app.batch_target();
             let scope = if whole_queue { "queue" } else { "selected" };
             format!(
-                "↑↓ move · Space select · a approve · j reject · s restage · A approve {n} \
-                 ({scope}) · C commit · p other run · {common}"
+                "↑↓ move · Space select · a approve · j reject · E edit · s restage · \
+                 A approve {n} ({scope}) · C commit · p other run · {common}"
             )
         }
         Screen::Projects if app.selecting_for.is_some() => {
@@ -1891,6 +1891,7 @@ fn help_overlay(f: &mut Frame, app: &App) {
         Line::raw("↑ ↓ / f      inspect an exchange / resume following the newest"),
         Line::raw("R            load the review queue"),
         Line::raw("a / j        approve / reject the candidate under the cursor"),
+        Line::raw("E            edit it in $EDITOR before deciding"),
         Line::raw("A            approve everything selected"),
         Line::raw("C            commit approved candidates"),
         Line::raw("t            test the backend connection"),

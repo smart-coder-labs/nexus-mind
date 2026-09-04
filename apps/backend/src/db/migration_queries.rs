@@ -614,6 +614,119 @@ pub fn apply_review_action(conn: &Connection, req: &ReviewRequest) -> Result<Rev
     Ok(ReviewOutcome::Applied { new_version })
 }
 
+/// One reviewer edit. At least one of `content`/`destination_hint` is expected
+/// to be `Some`; the API layer rejects a body that changes nothing rather than
+/// spending a version on it.
+pub struct EditRequest<'a> {
+    pub run_id: &'a str,
+    pub candidate_id: &'a str,
+    pub actor_id: &'a str,
+    pub expected_version: i64,
+    pub content: Option<&'a str>,
+    pub destination_hint: Option<&'a serde_json::Value>,
+    pub reason: Option<&'a str>,
+    pub correlation: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub enum EditOutcome {
+    Applied { new_version: i64 },
+    NotFound,
+    StaleVersion { actual_version: i64 },
+    /// The candidate is past the point where editing it would be honest.
+    NotEditable { status: String },
+}
+
+/// Rewrites a staged candidate's content or destination hint.
+///
+/// The third reviewer verb, alongside approve and reject. A finding that is
+/// mostly right used to have to be rejected whole and re-derived by another
+/// model call; now it can be corrected in place.
+///
+/// Two constraints keep this from undermining the review trail:
+///
+/// - Only a `staged` candidate is editable. Editing an *approved* one would
+///   commit content nobody approved — the approval attaches to a version, and
+///   the whole point of `expected_version` is that a decision names what it
+///   decided on. Rejected and committed are likewise closed.
+/// - The edit takes the same optimistic-concurrency guard as a decision and is
+///   recorded as an `edited` action in the same append-only ledger, with both
+///   version numbers. Committed content that no classifier produced has to be
+///   traceable to the person who wrote it.
+pub fn edit_candidate(conn: &Connection, req: &EditRequest) -> Result<EditOutcome> {
+    let Some(candidate) = get_candidate(conn, req.candidate_id)? else {
+        return Ok(EditOutcome::NotFound);
+    };
+    if candidate.run_id != req.run_id {
+        return Ok(EditOutcome::NotFound);
+    }
+    if candidate.status != "staged" {
+        record_action(
+            conn,
+            &ActionRecord {
+                run_id: req.run_id,
+                candidate_id: Some(req.candidate_id),
+                actor_id: req.actor_id,
+                action: "not_approved",
+                expected: Some(req.expected_version),
+                resulting: Some(candidate.version),
+                reason: Some("only a staged candidate can be edited"),
+                correlation: req.correlation,
+            },
+        )?;
+        return Ok(EditOutcome::NotEditable {
+            status: candidate.status,
+        });
+    }
+
+    let content = req.content.unwrap_or(&candidate.content);
+    let hint = match req.destination_hint {
+        Some(h) => serde_json::to_string(h)?,
+        None => serde_json::to_string(&candidate.destination_hint)?,
+    };
+    let updated = conn.execute(
+        "UPDATE migration_candidates
+            SET content = ?3, destination_hint = ?4,
+                version = version + 1, updated_at = datetime('now')
+          WHERE id = ?1 AND version = ?2",
+        rusqlite::params![req.candidate_id, req.expected_version, content, hint],
+    )?;
+    if updated == 0 {
+        record_action(
+            conn,
+            &ActionRecord {
+                run_id: req.run_id,
+                candidate_id: Some(req.candidate_id),
+                actor_id: req.actor_id,
+                action: "stale_version",
+                expected: Some(req.expected_version),
+                resulting: Some(candidate.version),
+                reason: req.reason,
+                correlation: req.correlation,
+            },
+        )?;
+        return Ok(EditOutcome::StaleVersion {
+            actual_version: candidate.version,
+        });
+    }
+
+    let new_version = req.expected_version + 1;
+    record_action(
+        conn,
+        &ActionRecord {
+            run_id: req.run_id,
+            candidate_id: Some(req.candidate_id),
+            actor_id: req.actor_id,
+            action: "edited",
+            expected: Some(req.expected_version),
+            resulting: Some(new_version),
+            reason: req.reason,
+            correlation: req.correlation,
+        },
+    )?;
+    Ok(EditOutcome::Applied { new_version })
+}
+
 /// Batch approval is allowed only when every candidate carries verified
 /// provenance. A `client_attested` candidate is one whose truthfulness rests on
 /// somebody's word; those get read one at a time.
@@ -783,6 +896,68 @@ mod tests {
             project_id.as_deref(),
             Some("p_a"),
             "the committed memory inherits the run's routed project"
+        );
+    }
+
+    /// The precedence itself, which is the whole of the fix: the classifier's
+    /// hint and the run's routed project both present, and the routed one wins.
+    ///
+    /// Without this the inversion is invisible to the suite — every other
+    /// commit test stages an empty hint, so it passes in both directions.
+    #[test]
+    fn the_runs_project_beats_a_project_named_in_the_hint() {
+        let conn = setup();
+        let run = run_for(&conn, Some("cl_a"), Some("p_a"));
+        let mut memory = input("src:m", DestinationKind::Memory);
+        // What a contaminated or simply guessing classifier writes.
+        memory.destination_hint = serde_json::json!({ "project": "default" });
+        let mut convention = input("src:c", DestinationKind::Convention);
+        convention.destination_hint = serde_json::json!({ "project_id": "p_b" });
+        stage_candidates(&conn, "org1", &run.id, &[memory, convention]).unwrap();
+        let staged = list_candidates(&conn, &run.id, None, None, 10).unwrap();
+
+        let memory_id = write_destination(
+            &conn,
+            &run,
+            staged
+                .iter()
+                .find(|c| c.destination_kind == DestinationKind::Memory)
+                .unwrap(),
+        )
+        .unwrap();
+        let project: Option<String> = conn
+            .query_row(
+                "SELECT project FROM memories WHERE id = ?1",
+                [&memory_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project.as_deref(),
+            Some("acme-billing"),
+            "the run's routed project must beat the hint's 'default'"
+        );
+
+        let convention_id = write_destination(
+            &conn,
+            &run,
+            staged
+                .iter()
+                .find(|c| c.destination_kind == DestinationKind::Convention)
+                .unwrap(),
+        )
+        .unwrap();
+        let scoped: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM conventions WHERE id = ?1",
+                [&convention_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            scoped.as_deref(),
+            Some("p_a"),
+            "the run's routed project must beat the hint's project_id"
         );
     }
 
@@ -1276,6 +1451,148 @@ mod tests {
         let after = get_candidate(&conn, &c[0].id).unwrap().unwrap();
         assert_eq!(after.status, "staged");
         assert_eq!(after.version, 3);
+    }
+
+    /// Editing is the third reviewer verb, and it has to leave the same trail
+    /// the other two do: content that no classifier produced must be traceable
+    /// to the person who wrote it, with the version it was written on top of.
+    #[test]
+    fn editing_a_staged_candidate_rewrites_it_and_is_recorded() {
+        let conn = setup();
+        let run = run_for(&conn, None, None);
+        stage_candidates(
+            &conn,
+            "org1",
+            &run.id,
+            &[input("src:a", DestinationKind::Memory)],
+        )
+        .unwrap();
+        let c = list_candidates(&conn, &run.id, None, None, 10).unwrap();
+
+        let hint = serde_json::json!({ "title": "Corrected title" });
+        let outcome = edit_candidate(
+            &conn,
+            &EditRequest {
+                run_id: &run.id,
+                candidate_id: &c[0].id,
+                actor_id: "admin",
+                expected_version: c[0].version,
+                content: Some("what the reviewer actually meant"),
+                destination_hint: Some(&hint),
+                reason: None,
+                correlation: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, EditOutcome::Applied { .. }));
+
+        let after = get_candidate(&conn, &c[0].id).unwrap().unwrap();
+        assert_eq!(after.content, "what the reviewer actually meant");
+        assert_eq!(after.destination_hint, hint);
+        assert_eq!(after.version, c[0].version + 1);
+        assert_eq!(
+            after.status, "staged",
+            "an edit is not a decision — it must not approve anything"
+        );
+
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migration_review_actions
+                  WHERE candidate_id = ?1 AND action = 'edited'
+                    AND expected_version = ?2 AND resulting_version = ?3",
+                rusqlite::params![&c[0].id, c[0].version, c[0].version + 1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1, "the edit must name both versions in the trail");
+    }
+
+    /// Editing an approved candidate would commit content nobody approved: the
+    /// approval attached to a version, and this would change it underneath.
+    #[test]
+    fn editing_is_refused_once_a_candidate_leaves_staged() {
+        let conn = setup();
+        let run = run_for(&conn, None, None);
+        stage_candidates(
+            &conn,
+            "org1",
+            &run.id,
+            &[input("src:a", DestinationKind::Memory)],
+        )
+        .unwrap();
+        let c = list_candidates(&conn, &run.id, None, None, 10).unwrap();
+        apply_review_action(
+            &conn,
+            &ReviewRequest {
+                run_id: &run.id,
+                candidate_id: &c[0].id,
+                actor_id: "admin",
+                verdict: ReviewVerdict::Approved,
+                expected_version: c[0].version,
+                reason: None,
+                correlation: None,
+            },
+        )
+        .unwrap();
+
+        let outcome = edit_candidate(
+            &conn,
+            &EditRequest {
+                run_id: &run.id,
+                candidate_id: &c[0].id,
+                actor_id: "admin",
+                expected_version: c[0].version + 1,
+                content: Some("sneaking this in after approval"),
+                destination_hint: None,
+                reason: None,
+                correlation: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            EditOutcome::NotEditable { ref status } if status == "approved"
+        ));
+        let after = get_candidate(&conn, &c[0].id).unwrap().unwrap();
+        assert_eq!(after.content, c[0].content, "the content must be untouched");
+    }
+
+    /// The same optimistic-concurrency guard as a decision: an edit written on a
+    /// version somebody already moved past is a conflict, not a last-write-wins.
+    #[test]
+    fn editing_on_a_stale_version_conflicts_instead_of_overwriting() {
+        let conn = setup();
+        let run = run_for(&conn, None, None);
+        stage_candidates(
+            &conn,
+            "org1",
+            &run.id,
+            &[input("src:a", DestinationKind::Memory)],
+        )
+        .unwrap();
+        let c = list_candidates(&conn, &run.id, None, None, 10).unwrap();
+
+        let first = EditRequest {
+            run_id: &run.id,
+            candidate_id: &c[0].id,
+            actor_id: "admin",
+            expected_version: c[0].version,
+            content: Some("first reviewer's wording"),
+            destination_hint: None,
+            reason: None,
+            correlation: None,
+        };
+        edit_candidate(&conn, &first).unwrap();
+
+        // Second reviewer still holds the version they read.
+        let outcome = edit_candidate(&conn, &first).unwrap();
+        assert!(matches!(
+            outcome,
+            EditOutcome::StaleVersion { actual_version } if actual_version == c[0].version + 1
+        ));
+        let after = get_candidate(&conn, &c[0].id).unwrap().unwrap();
+        assert_eq!(after.content, "first reviewer's wording");
+        assert_eq!(after.version, c[0].version + 1);
     }
 
     #[test]

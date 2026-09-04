@@ -1,6 +1,16 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
+/// The `user_version` a fully migrated database ends on.
+///
+/// Bump this in the same commit as a new `run_vNN`. It exists because thirty
+/// tests used to assert the number as a literal — "user_version must be 70
+/// after run_all" — so every migration silently broke all thirty at once, and
+/// the failures were indistinguishable from a real regression. There is now one
+/// place to change and one test, `run_all_ends_on_the_latest_user_version`,
+/// that fails if this and the last migration disagree.
+pub const LATEST_USER_VERSION: i32 = 75;
+
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
     run_v1(conn)?;
@@ -77,6 +87,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     // out-of-tree run_v72, so the security-template CHECK fix is v73 to land above it.
     run_v73(conn)?;
     run_v74(conn)?;
+    run_v75(conn)?;
     Ok(())
 }
 
@@ -142,6 +153,73 @@ pub fn run_v73(conn: &Connection) -> Result<()> {
 /// name and their rows are untouched, so with foreign keys off during the swap
 /// the ids they point at survive the rename. The triggers and indexes are
 /// recreated verbatim; only the connector list changed.
+/// Migration v75: admit `edited` as a review action.
+///
+/// Reviewing a candidate used to mean approving or rejecting it, so a finding
+/// that was 90% right had to be rejected whole and re-derived. Editing it is a
+/// third decision, and it belongs in the same append-only ledger as the other
+/// two — an edited candidate is committed content nobody classified, and the
+/// audit trail has to say who changed it and from which version.
+///
+/// SQLite cannot ALTER a CHECK, so the table is rebuilt. `DROP TABLE` does not
+/// fire row triggers, which is the only reason this is possible at all: the
+/// append-only DELETE trigger would otherwise abort its own table's migration.
+/// Both triggers are recreated below, so the guarantee survives.
+pub fn run_v75(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 75 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE migration_review_actions_new (
+            id                     TEXT PRIMARY KEY,
+            run_id                 TEXT NOT NULL REFERENCES migration_runs(id) ON DELETE CASCADE,
+            candidate_id           TEXT REFERENCES migration_candidates(id) ON DELETE CASCADE,
+            actor_id               TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            actor_authorization    TEXT NOT NULL DEFAULT '{}',
+            action                 TEXT NOT NULL CHECK(action IN
+                                     ('approved','rejected','cancelled','restaged','stale_version',
+                                      'permission_denied','not_approved','stale_approval','edited')),
+            expected_version       INTEGER,
+            resulting_version      INTEGER,
+            reason                 TEXT,
+            request_correlation_id TEXT,
+            created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO migration_review_actions_new
+            (id,run_id,candidate_id,actor_id,actor_authorization,action,expected_version,
+             resulting_version,reason,request_correlation_id,created_at)
+        SELECT id,run_id,candidate_id,actor_id,actor_authorization,action,expected_version,
+               resulting_version,reason,request_correlation_id,created_at
+        FROM migration_review_actions;
+
+        DROP TABLE migration_review_actions;
+        ALTER TABLE migration_review_actions_new RENAME TO migration_review_actions;
+
+        CREATE INDEX idx_migration_review_actions_candidate
+            ON migration_review_actions(candidate_id, created_at);
+        CREATE TRIGGER migration_review_actions_no_update
+        BEFORE UPDATE ON migration_review_actions
+        BEGIN
+            SELECT RAISE(ABORT, 'migration review actions are append-only');
+        END;
+        CREATE TRIGGER migration_review_actions_no_delete
+        BEFORE DELETE ON migration_review_actions
+        BEGIN
+            SELECT RAISE(ABORT, 'migration review actions are append-only');
+        END;
+
+        PRAGMA foreign_keys = ON;
+        PRAGMA user_version = 75;
+        ",
+    )?;
+    Ok(())
+}
+
 pub fn run_v74(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 74 {
@@ -986,7 +1064,7 @@ pub fn run_v60(conn: &Connection) -> Result<()> {
             actor_authorization    TEXT NOT NULL DEFAULT '{}',
             action                 TEXT NOT NULL CHECK(action IN
                                      ('approved','rejected','cancelled','restaged','stale_version',
-                                      'permission_denied','not_approved','stale_approval')),
+                                      'permission_denied','not_approved','stale_approval','edited')),
             expected_version       INTEGER,
             resulting_version      INTEGER,
             reason                 TEXT,
@@ -3840,9 +3918,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4376,9 +4453,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4393,8 +4469,7 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "user_version must remain 70 after re-running v20 on already-migrated db"
         );
     }
@@ -4562,9 +4637,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4605,9 +4679,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4616,9 +4689,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4761,9 +4833,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4790,9 +4861,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4801,9 +4871,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4895,9 +4964,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -4906,9 +4974,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5004,9 +5071,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5271,9 +5337,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5282,9 +5347,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5333,9 +5397,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5344,9 +5407,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5394,9 +5456,8 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5405,9 +5466,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must be 70 after run_all"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5576,8 +5636,7 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "user_version must remain 70 (run_all already applied v41-v70)"
         );
     }
@@ -5589,8 +5648,7 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "user_version must be 70 after v41-v70 are included in run_all"
         );
         assert!(
@@ -5731,8 +5789,7 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "version must remain 67 on second run_all"
         );
     }
@@ -5875,9 +5932,8 @@ mod tests {
             "agent_assignments table must exist after the backfill migration runs on a db stuck at v44"
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "user_version must reach 70 after the backfill migration"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -5892,8 +5948,7 @@ mod tests {
             result.err()
         );
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "user_version must remain 70 on second run_all"
         );
     }
@@ -5919,8 +5974,7 @@ mod tests {
             );
         }
         assert_eq!(
-            get_user_version(&conn),
-            70,
+            get_user_version(&conn), LATEST_USER_VERSION,
             "user_version must reach 70 on a fresh db"
         );
     }
@@ -6965,9 +7019,8 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert_eq!(
-            get_user_version(&conn),
-            70,
-            "run_all must leave user_version at 67"
+            get_user_version(&conn), LATEST_USER_VERSION,
+            "run_all must end on LATEST_USER_VERSION"
         );
     }
 
@@ -7243,7 +7296,7 @@ mod tests {
         run_all(&conn).unwrap();
         run_v55(&conn).expect("run_v55 must be idempotent");
         run_all(&conn).expect("run_all must be idempotent");
-        assert_eq!(get_user_version(&conn), 70, "user_version must remain 70");
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION, "run_all must end on LATEST_USER_VERSION");
     }
 
     // ── v56 migration tests (knowledge migration durable review foundation) ─────
@@ -7513,7 +7566,7 @@ mod tests {
         std::env::remove_var("NEXUSMIND_TOKEN_ENCRYPTION_KEY");
         let conn = in_memory_db();
         run_all(&conn).expect("a fresh database has no credentials to protect");
-        assert_eq!(get_user_version(&conn), 70);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
     }
 
     /// The new primary key is what lets a consultancy hold one GitHub account
@@ -7599,7 +7652,7 @@ mod tests {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
         assert!(table_exists(&conn, "usage_events"), "missing: usage_events");
-        assert_eq!(get_user_version(&conn), 70);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
         assert!(index_exists(
             &conn,
             "usage_events",
@@ -8112,7 +8165,7 @@ mod tests {
             "organizations",
             "autonomous_agent_retention_days"
         ));
-        assert_eq!(get_user_version(&conn), 70);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
     }
 
     #[test]
@@ -8150,7 +8203,7 @@ mod tests {
     fn run_v73_allows_security_scan_and_dast_templates() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 74);
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
         seed_org(&conn, "org1", "acme");
         conn.execute(
             "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
@@ -8178,10 +8231,76 @@ mod tests {
     /// v74 admits the `source-code` connector into the `migration_runs`
     /// source_kind CHECK, and the rebuild preserves the scope triggers.
     #[test]
+    /// The one place the end-state version is checked against reality.
+    ///
+    /// Every other test compares against `LATEST_USER_VERSION` rather than a
+    /// literal, so adding a migration without bumping the constant fails here
+    /// — once, with a message that says what to do — instead of failing thirty
+    /// unrelated tests that look like a regression.
+    #[test]
+    fn run_all_ends_on_the_latest_user_version() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(
+            get_user_version(&conn),
+            LATEST_USER_VERSION,
+            "a migration was added without bumping LATEST_USER_VERSION"
+        );
+        run_all(&conn).expect("run_all must be idempotent");
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+    }
+
+    /// The rebuild in v75 has to widen the CHECK without losing the append-only
+    /// triggers — which is the whole risk of rebuilding *that* table, since
+    /// dropping them silently would make the review ledger editable.
+    #[test]
+    fn run_v75_admits_edited_and_keeps_the_ledger_append_only() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+        seed_org(&conn, "org1", "acme");
+        conn.execute(
+            "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO migration_runs (id,org_id,source_kind,created_by) VALUES ('r1','org1','repo-docs','u1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO migration_review_actions (id,run_id,actor_id,action)
+             VALUES ('a1','r1','u1','edited')",
+            [],
+        )
+        .expect("edited must be accepted by the widened CHECK");
+        assert!(
+            conn.execute(
+                "INSERT INTO migration_review_actions (id,run_id,actor_id,action)
+                 VALUES ('a2','r1','u1','bogus')",
+                [],
+            )
+            .is_err(),
+            "an unknown action is still refused"
+        );
+        assert!(
+            conn.execute("UPDATE migration_review_actions SET reason='x' WHERE id='a1'", [])
+                .is_err(),
+            "the append-only UPDATE trigger must survive the rebuild"
+        );
+        assert!(
+            conn.execute("DELETE FROM migration_review_actions WHERE id='a1'", [])
+                .is_err(),
+            "the append-only DELETE trigger must survive the rebuild"
+        );
+    }
+
+    #[test]
     fn run_v74_admits_the_source_code_connector() {
         let conn = in_memory_db();
         run_all(&conn).unwrap();
-        assert_eq!(get_user_version(&conn), 74);
         seed_org(&conn, "org1", "acme");
         conn.execute(
             "INSERT INTO users (id, org_id, email, name) VALUES ('u1','org1','a@b.com','A')",

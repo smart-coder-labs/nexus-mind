@@ -282,6 +282,50 @@ impl Client {
             .json()?)
     }
 
+    /// Rewrites a staged candidate before anyone decides on it.
+    ///
+    /// The third verb in the queue, alongside approve and reject: a finding
+    /// that is mostly right no longer has to be thrown away and re-derived by
+    /// another model call. `expected_version` carries the same guarantee it
+    /// does for a decision — an edit written on a version somebody already
+    /// moved past comes back as a conflict rather than overwriting their work.
+    pub fn edit_candidate(
+        &self,
+        run_id: &str,
+        candidate_id: &str,
+        expected_version: i64,
+        content: &str,
+        destination_hint: &serde_json::Value,
+    ) -> Result<Candidate> {
+        let resp = self
+            .http
+            .patch(self.url(&format!(
+                "/v1/migrations/{run_id}/candidates/{candidate_id}"
+            )))
+            .bearer_auth(&self.key)
+            .json(&serde_json::json!({
+                "expected_version": expected_version,
+                "content": content,
+                "destination_hint": destination_hint,
+            }))
+            .send()?;
+        // A refused edit has a reason worth reading — "moved under you", "no
+        // longer editable" — and `error_for_status` would replace all of them
+        // with the number 409.
+        if resp.status() == reqwest::StatusCode::CONFLICT
+            || resp.status() == reqwest::StatusCode::BAD_REQUEST
+        {
+            let body: serde_json::Value = resp.json().unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                body.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("this candidate could not be edited")
+            );
+        }
+        Ok(resp.error_for_status()?.json()?)
+    }
+
     /// Cancels a run's pending candidates.
     ///
     /// This is the safe way to retire a run. There is deliberately no delete:

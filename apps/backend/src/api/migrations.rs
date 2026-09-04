@@ -549,6 +549,123 @@ pub async fn review(
     }))
 }
 
+// ── Edit ─────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct EditCandidateBody {
+    /// The version the reviewer was looking at. Mandatory for the same reason it
+    /// is on a decision: an edit written on top of somebody else's edit is a
+    /// silent overwrite, and this is the only thing that turns it into a 409.
+    pub expected_version: i64,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub destination_hint: Option<serde_json::Value>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub request_correlation_id: Option<String>,
+}
+
+/// Rewrites a staged candidate. Gated on `migration:review`, not
+/// `migration:read`: changing what will be committed is a reviewer's decision,
+/// the same authority as approving it.
+pub async fn edit_candidate(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path((run_id, candidate_id)): Path<(String, String)>,
+    AppJson(body): AppJson<EditCandidateBody>,
+) -> Result<Json<MigrationCandidate>, (StatusCode, Json<ApiError>)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+
+    if let Err(denied) = require_permission(&conn, &auth, None, "migration:review") {
+        if mq::get_run(&conn, &auth.org_id, &run_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = mq::record_permission_denied(
+                &conn,
+                &run_id,
+                Some(&candidate_id),
+                &auth.user_id,
+                None,
+            );
+        }
+        return Err(denied);
+    }
+    let run = load_visible_run(&conn, &auth, &run_id, "PATCH")?;
+
+    // An edit that changes nothing would still burn a version and land in the
+    // audit trail, making a later stale-version conflict look like somebody
+    // else's work when it was an empty PATCH.
+    if body.content.is_none() && body.destination_hint.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "an edit must change content or destination_hint".to_string(),
+                code: "no_changes".to_string(),
+            }),
+        ));
+    }
+
+    let outcome = mq::edit_candidate(
+        &conn,
+        &mq::EditRequest {
+            run_id: &run.id,
+            candidate_id: &candidate_id,
+            actor_id: &auth.user_id,
+            expected_version: body.expected_version,
+            content: body.content.as_deref(),
+            destination_hint: body.destination_hint.as_ref(),
+            reason: body.reason.as_deref(),
+            correlation: body.request_correlation_id.as_deref(),
+        },
+    )
+    .map_err(db_err)?;
+
+    match outcome {
+        mq::EditOutcome::Applied { .. } => {
+            let candidate = mq::get_candidate(&conn, &candidate_id)
+                .map_err(db_err)?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError {
+                            error: "candidate not found".to_string(),
+                            code: "not_found".to_string(),
+                        }),
+                    )
+                })?;
+            Ok(Json(candidate))
+        }
+        mq::EditOutcome::NotFound => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "candidate not found".to_string(),
+                code: "not_found".to_string(),
+            }),
+        )),
+        mq::EditOutcome::StaleVersion { actual_version } => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!(
+                    "candidate moved under you — it is now at version {actual_version}"
+                ),
+                code: "stale_version".to_string(),
+            }),
+        )),
+        mq::EditOutcome::NotEditable { status } => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: format!("a {status} candidate can no longer be edited"),
+                code: "not_editable".to_string(),
+            }),
+        )),
+    }
+}
+
 // ── Commit ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

@@ -141,6 +141,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             "/v1/migrations/:id/candidates",
             get(migrations_api::list_candidates).post(migrations_api::stage_candidates),
         )
+        .route(
+            "/v1/migrations/:id/candidates/:candidate_id",
+            patch(migrations_api::edit_candidate),
+        )
         .route("/v1/migrations/:id/review", post(migrations_api::review))
         .route("/v1/migrations/:id/commit", post(migrations_api::commit))
         .route(
