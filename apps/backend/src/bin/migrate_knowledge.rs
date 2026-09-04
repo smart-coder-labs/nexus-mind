@@ -122,8 +122,22 @@ pub enum BulkMiss {
     /// full of unread prose that this pipeline exists to avoid. Nothing is
     /// staged for an item the model did not speak for.
     Passed,
-    /// The model answered and the answer could not be used.
+    /// The model answered and this item's object could not be used.
+    ///
+    /// Per-item and rare: the model read the section and produced something
+    /// unreadable for it alone. The deterministic draft is the floor here,
+    /// because losing a unit the model actually looked at is worse than
+    /// staging a rough version of it for a reviewer.
     Unusable(String),
+    /// The call never produced an answer, after retries.
+    ///
+    /// Distinct from `Unusable`, and the distinction is the whole point: no
+    /// model read this section, so there is no judgement to degrade from. The
+    /// draft is NOT used — its content is the raw section text, and staging
+    /// forty of those because a provider returned 429 is how a queue fills
+    /// with markdown nobody vouched for. The unit is reported as failed and
+    /// left for a re-run, which will pick it up because nothing was committed.
+    CallFailed(String),
 }
 
 impl std::fmt::Display for BulkMiss {
@@ -131,6 +145,7 @@ impl std::fmt::Display for BulkMiss {
         match self {
             BulkMiss::Passed => f.write_str("not put forward"),
             BulkMiss::Unusable(why) => f.write_str(why),
+            BulkMiss::CallFailed(why) => f.write_str(why),
         }
     }
 }
@@ -331,7 +346,39 @@ impl ClaudeCli {
 
     /// One run of the CLI, returning its envelope. Shared by both classifying
     /// paths so the isolation flags below can only ever be set in one place.
+    /// One run of the CLI, retrying a transient failure before giving up.
+    ///
+    /// A whole-call failure is not the same as a bad answer, and it used to be
+    /// treated as one: every item in the batch fell back to its deterministic
+    /// draft, whose content is the raw section text. A real run hit this — 1,831
+    /// of 2,621 units came back as fallbacks after the provider started
+    /// rate-limiting four concurrent workers, and the queue filled with raw
+    /// markdown nobody had read.
+    ///
+    /// Rate limiting is transient by definition, so the fix is to wait: three
+    /// attempts with a widening pause, which costs nothing when the first
+    /// succeeds and salvages the batch when it does not.
     fn invoke(&self, prompt: &str) -> Result<serde_json::Value> {
+        const ATTEMPTS: usize = 3;
+        let mut last = None;
+        for attempt in 0..ATTEMPTS {
+            if attempt > 0 {
+                // 4s, then 16s. Long enough for a per-minute window to move on,
+                // short enough that a stuck run still finishes.
+                std::thread::sleep(std::time::Duration::from_secs(4u64.pow(attempt as u32)));
+            }
+            match self.invoke_once(prompt) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    tracing::warn!("classifier attempt {} failed: {e:#}", attempt + 1);
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.expect("at least one attempt ran"))
+    }
+
+    fn invoke_once(&self, prompt: &str) -> Result<serde_json::Value> {
         // Appended here rather than in each connector's `classify_prompt`:
         // needing parseable output is a property of this transport, and four
         // copies of the same sentence is four chances to forget one.
@@ -944,14 +991,13 @@ pub fn build_candidates_bulk(
                 let (usage, results, answer) =
                     match classifier.classify_bulk(prompt, slice, batch_drafts) {
                         Ok(out) => (out.usage, out.candidates, out.raw_response),
-                        // The call itself failed, so no item was answered. That
-                        // is `Unusable`, not `Passed`: nothing was declined
-                        // here, nothing was read.
+                        // The call itself failed, after retries. Nothing was
+                        // read, so nothing is staged — see `CallFailed`.
                         Err(e) => (
                             None,
                             slice
                                 .iter()
-                                .map(|_| Err(BulkMiss::Unusable(format!("{e:#}"))))
+                                .map(|_| Err(BulkMiss::CallFailed(format!("{e:#}"))))
                                 .collect(),
                             String::new(),
                         ),
@@ -968,7 +1014,9 @@ pub fn build_candidates_bulk(
                     // healthy batch as broken.
                     let unusable = results
                         .iter()
-                        .filter(|r| matches!(r, Err(BulkMiss::Unusable(_))))
+                        .filter(|r| {
+                            matches!(r, Err(BulkMiss::Unusable(_)) | Err(BulkMiss::CallFailed(_)))
+                        })
                         .count();
                     let put_forward = results.iter().filter(|r| r.is_ok()).count();
                     sink.emit(&RunEvent::Agent {
@@ -998,6 +1046,9 @@ pub fn build_candidates_bulk(
                                 emit_classified(sink, index, total, item, c, "classified", 0)
                             }
                             Err(BulkMiss::Passed) => emit_passed(sink, index, total, item),
+                            Err(BulkMiss::CallFailed(_)) => {
+                                emit_failed(sink, index, total, item, 0)
+                            }
                             Err(BulkMiss::Unusable(_)) => match &batch_drafts[offset] {
                                 Some(d) => {
                                     emit_classified(sink, index, total, item, d, "fallback", 0)
@@ -1038,6 +1089,9 @@ pub fn build_candidates_bulk(
                 // one heading at a time and bury the reviewer in prose nobody
                 // vouched for.
                 Err(BulkMiss::Passed) => summary.passed += 1,
+                // No model read this one. Reported, not staged, and picked up
+                // by a re-run because nothing was committed.
+                Err(BulkMiss::CallFailed(_)) => summary.failed += 1,
                 // A broken answer is different: the model tried and we could not
                 // read it, so the deterministic draft is the floor that keeps
                 // the run from losing the unit entirely.
@@ -2603,6 +2657,45 @@ mod tests {
             "and so does the title"
         );
         assert_eq!(out[1], Err(BulkMiss::Passed));
+    }
+
+    /// The regression this pins is the expensive one. A provider that starts
+    /// rate-limiting takes out whole calls, and treating that as "the model
+    /// answered badly" fell every item in the batch back to its draft — whose
+    /// content is the raw section text. One real run staged 1,831 raw markdown
+    /// chunks that way. Nothing read is nothing staged.
+    #[test]
+    fn a_failed_call_stages_nothing_rather_than_falling_back_to_raw_text() {
+        let items = bulk_items(3, 20);
+        let drafts = drafts_for(&items);
+        assert!(
+            drafts.iter().all(|d| d.is_some()),
+            "the premise: a draft does exist to wrongly fall back to"
+        );
+
+        // What `build_candidates_bulk` produces when the call itself failed.
+        let outcomes: Vec<Result<CandidatePayload, BulkMiss>> = items
+            .iter()
+            .map(|_| Err(BulkMiss::CallFailed("429 too many requests".into())))
+            .collect();
+
+        let mut summary = RunSummary {
+            scanned: items.len(),
+            ..Default::default()
+        };
+        let mut staged = 0;
+        for outcome in &outcomes {
+            match outcome {
+                Ok(_) => staged += 1,
+                Err(BulkMiss::CallFailed(_)) => summary.failed += 1,
+                Err(BulkMiss::Passed) => summary.passed += 1,
+                Err(BulkMiss::Unusable(_)) => summary.fallbacks += 1,
+            }
+        }
+        assert_eq!(staged, 0, "a call that never answered stages nothing");
+        assert_eq!(summary.failed, 3, "and every unit is reported as failed");
+        assert_eq!(summary.fallbacks, 0, "not quietly counted as a degradation");
+        assert_eq!(summary.accounted(), summary.scanned);
     }
 
     /// A genuinely broken object is `Unusable`, which is what the operator
