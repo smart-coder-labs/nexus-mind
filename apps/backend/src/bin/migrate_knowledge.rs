@@ -508,6 +508,33 @@ pub struct RunSummary {
     pub tokens_spent: i64,
 }
 
+impl RunSummary {
+    /// Folds one execution group's counters into the run's.
+    ///
+    /// A method rather than four lines at the call site because that is exactly
+    /// how `passed` went missing: it was added to the struct and to the
+    /// producer, and the loop that merges groups kept summing the three
+    /// counters it already knew. The run reported 62 classified out of 92
+    /// scanned with nothing accounting for the other 30 — the migration was
+    /// correct and the summary was not, which is the worse of the two. Adding a
+    /// counter now means changing this, next to the fields.
+    ///
+    /// `scanned` is deliberately not merged: it is the scan's total, set once
+    /// before the groups are walked, not a per-group figure to accumulate.
+    pub fn absorb(&mut self, group: &RunSummary) {
+        self.classified += group.classified;
+        self.fallbacks += group.fallbacks;
+        self.failed += group.failed;
+        self.passed += group.passed;
+        self.aborted_on_budget |= group.aborted_on_budget;
+    }
+
+    /// Units with an outcome. Equals `scanned` for a run that finished.
+    pub fn accounted(&self) -> usize {
+        self.classified + self.fallbacks + self.failed + self.passed
+    }
+}
+
 /// Emits the per-unit outcome.
 ///
 /// Its own function because the same event is produced from three arms of the
@@ -1874,11 +1901,8 @@ fn execute(args: &Args, sink: &Arc<EventSink>, summary: &mut RunSummary) -> Resu
                 sink,
             ),
         };
-        summary.classified += built.classified;
-        summary.fallbacks += built.fallbacks;
-        summary.failed += built.failed;
+        summary.absorb(&built);
         summary.tokens_spent = budget.spent;
-        summary.aborted_on_budget |= built.aborted_on_budget;
         candidate_groups.push((group.clone(), candidates));
         if summary.aborted_on_budget {
             break;
@@ -2157,6 +2181,42 @@ mod tests {
             "concurrency must not reorder the queue"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every scanned unit must end up in exactly one counter. The run that
+    /// exposed this reported 62 classified of 92 scanned with nothing
+    /// accounting for the other 30 — a migration that was actually correct,
+    /// described by a summary that was not.
+    #[test]
+    fn merging_a_group_accounts_for_every_unit_it_scanned() {
+        let group = RunSummary {
+            scanned: 92,
+            classified: 62,
+            passed: 26,
+            fallbacks: 3,
+            failed: 1,
+            tokens_spent: 27_007,
+            aborted_on_budget: false,
+        };
+        assert_eq!(
+            group.accounted(),
+            group.scanned,
+            "the producer's own numbers must close"
+        );
+
+        let mut run = RunSummary {
+            scanned: 92,
+            ..Default::default()
+        };
+        run.absorb(&group);
+        assert_eq!(
+            run.accounted(),
+            run.scanned,
+            "and they must survive the merge — a counter the merge forgets is a \
+             counter that silently reads zero"
+        );
+        assert_eq!(run.passed, 26);
+        assert_eq!(run.classified, 62);
     }
 
     #[test]
