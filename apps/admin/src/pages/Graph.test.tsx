@@ -10,14 +10,24 @@ vi.mock('react-force-graph-3d', () => ({
 
 const mockListProjects = vi.fn()
 const mockGetMemoryGraphForFamily = vi.fn()
+const mockListCodeProjects = vi.fn()
+const mockGetCodeGraph = vi.fn()
 
 vi.mock('../api/client', () => ({
   createClient: vi.fn(() => ({
     listProjects: mockListProjects,
     getMemoryGraphForFamily: mockGetMemoryGraphForFamily,
     getMemory: vi.fn(),
+    listCodeProjects: mockListCodeProjects,
+    getCodeGraph: mockGetCodeGraph,
+    getCodeSnippet: vi.fn(),
   })),
 }))
+
+const codeRepos = [
+  { id: 'c1', org_id: 'org-test-1', name: 'beta',  root_path: '/beta',  repo_url: null, file_count: 3, chunk_count: 9,  last_indexed: '2026-06-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
+  { id: 'c2', org_id: 'org-test-1', name: 'other', root_path: '/other', repo_url: null, file_count: 1, chunk_count: 2,  last_indexed: '2026-06-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
+]
 
 const projects = [
   { id: 'p1', org_id: 'org-test-1', name: 'alpha', description: null, parent_id: null,   created_at: '2026-01-01T00:00:00Z', archived_at: null },
@@ -46,6 +56,10 @@ describe('Graph page', () => {
     localStorage.clear()
     mockListProjects.mockResolvedValue(projects)
     mockGetMemoryGraphForFamily.mockImplementation((id: string) => Promise.resolve(familyResponse(id)))
+    mockListCodeProjects.mockResolvedValue(codeRepos)
+    mockGetCodeGraph.mockResolvedValue({
+      project: 'beta', node_count: 0, edge_count: 0, nodes: [], edges: [],
+    })
   })
 
   it('auto-selects a project and renders the graph instead of a blank prompt', async () => {
@@ -102,6 +116,45 @@ describe('Graph page', () => {
       const value = stored && typeof stored === 'object' && '__v' in stored ? stored.value : stored
       expect(value).toBe('p3')
     })
+  })
+
+  // ── Code graph tab ──────────────────────────────────────────────────────
+  //
+  // `/graph` is NOT behind AdminRoute (unlike `/code`), so the code tab must be
+  // gated on `code:read` by the page itself.
+
+  it('hides the code graph tab from a user without code:read', async () => {
+    renderWithProviders(<Graph />)
+    await screen.findByLabelText('Select project', {}, { timeout: 5000 })
+    expect(screen.queryByRole('button', { name: 'Code' })).not.toBeInTheDocument()
+    expect(mockListCodeProjects).not.toHaveBeenCalled()
+  })
+
+  it('does not resurrect a persisted code tab for a user who lost code:read', async () => {
+    localStorage.setItem('nexusmind-graph-page-tab', JSON.stringify({ __v: 1, value: 'code' }))
+    renderWithProviders(<Graph />)
+
+    // Falls back to the knowledge graph — its project selector, not the
+    // repository selector, is what renders.
+    expect(await screen.findByLabelText('Select project', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Select repository')).not.toBeInTheDocument()
+    expect(mockListCodeProjects).not.toHaveBeenCalled()
+  })
+
+  it('shows the code graph tab to a user with code:read', async () => {
+    renderWithProviders(<Graph />, { permissions: ['code:read'] })
+    expect(await screen.findByRole('button', { name: 'Code' }, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument()
+  })
+
+  it('preselects the repository whose name matches the active project', async () => {
+    // Project p2 is named "beta", and so is one of the indexed repositories.
+    localStorage.setItem('nexusmind-graph-page-project', JSON.stringify({ __v: 1, value: 'p2' }))
+    localStorage.setItem('nexusmind-graph-page-tab', JSON.stringify({ __v: 1, value: 'code' }))
+    renderWithProviders(<Graph />, { permissions: ['code:read'] })
+
+    const select = (await screen.findByLabelText('Select repository', {}, { timeout: 5000 })) as HTMLSelectElement
+    await waitFor(() => expect(select.value).toBe('beta'))
   })
 
   it('renders the empty state when the selected project has no data', async () => {

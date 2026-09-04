@@ -23,7 +23,23 @@ const mockAdminSession: AuthSession = {
   },
 }
 
-export function renderWithProviders(ui: ReactElement): RenderResult {
+export interface RenderOptions {
+  /**
+   * Permissions carried by the mocked session's user. Defaults to none, so a
+   * permission-gated feature stays hidden unless a test opts into it —
+   * mirroring how `/me` returns permissions derived from the user's role.
+   */
+  permissions?: string[]
+}
+
+export function renderWithProviders(
+  ui: ReactElement,
+  { permissions }: RenderOptions = {},
+): RenderResult {
+  const session: AuthSession = permissions
+    ? { ...mockAdminSession, user: { ...mockAdminSession.user, permissions } }
+    : mockAdminSession
+
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -36,7 +52,7 @@ export function renderWithProviders(ui: ReactElement): RenderResult {
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider
           value={{
-            session: mockAdminSession,
+            session,
             loading: false,
             setSession: () => undefined,
             logout: () => undefined,

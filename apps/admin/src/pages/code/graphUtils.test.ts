@@ -1,25 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
-import { renderWithProviders } from '../../test/render'
-import type { CodeProject } from '../../types'
-
-// Mock WebGL-based library — jsdom has no real canvas/WebGL
-vi.mock('react-force-graph-3d', () => ({
-  default: vi.fn(() => <div data-testid="force-graph" />),
-}))
-
-// Mock the API client
-const mockGetCodeGraph = vi.fn()
-const mockGetCodeSnippet = vi.fn()
-
-vi.mock('../../api/client', () => ({
-  createClient: vi.fn(() => ({
-    getCodeGraph: mockGetCodeGraph,
-    getCodeSnippet: mockGetCodeSnippet,
-  })),
-}))
-
-// Import pure functions after mocks are established
+import { describe, it, expect } from 'vitest'
 import {
   mapGraphData,
   filterNodesByTypes,
@@ -27,7 +6,6 @@ import {
   DEFAULT_VISIBLE_TYPES,
   EXTERNAL_COLLAPSE_THRESHOLD,
 } from './graphUtils'
-import GraphTab from './GraphTab'
 import type { CodeGraph, GraphNode, GraphEdge } from '../../types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -42,18 +20,6 @@ function makeEdge(id: number, from_id: number, to_id: number, type = 'defines'):
 
 function makeGraph(nodes: GraphNode[], edges: GraphEdge[]): CodeGraph {
   return { project: 'test', node_count: nodes.length, edge_count: edges.length, nodes, edges }
-}
-
-const mockProject: CodeProject = {
-  id: 'p1',
-  org_id: 'org1',
-  name: 'my-project',
-  root_path: '/repo',
-  repo_url: null,
-  file_count: 10,
-  chunk_count: 100,
-  last_indexed: '2026-06-29T00:00:00Z',
-  created_at: '2026-01-01T00:00:00Z',
 }
 
 // ── Pure-function tests ───────────────────────────────────────────────────────
@@ -174,33 +140,5 @@ describe('computeExternalAggregate — external-node volume control', () => {
     const { links: remapped } = computeExternalAggregate([fileNode, ...externalNodes], links, false)
     // All links must point to the aggregate (id = -1)
     expect(remapped.every(l => l.target === -1)).toBe(true)
-  })
-})
-
-// ── Rendering test ────────────────────────────────────────────────────────────
-
-describe('GraphTab rendering', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('renders "No graph data" when API returns node_count=0, without JS error', async () => {
-    mockGetCodeGraph.mockResolvedValue({
-      project: 'my-project',
-      node_count: 0,
-      edge_count: 0,
-      nodes: [],
-      edges: [],
-    })
-
-    renderWithProviders(<GraphTab projects={[mockProject]} />)
-
-    // Select the project to trigger the query
-    const select = screen.getByRole('combobox')
-    fireEvent.change(select, { target: { value: 'my-project' } })
-
-    await waitFor(() => {
-      expect(screen.getByText(/No graph data/i)).toBeInTheDocument()
-    })
   })
 })

@@ -4,7 +4,8 @@ import type { CodeGraph } from '../../types'
 
 /**
  * Node types visible by default (LOD filter).
- * Folder and External are hidden until the user explicitly enables them.
+ * Every type except External, which stays hidden until the user enables it —
+ * a large repo can carry thousands of external-dependency nodes.
  */
 export const DEFAULT_VISIBLE_TYPES = new Set<string>([
   'Project',

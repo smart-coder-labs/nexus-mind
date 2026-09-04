@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
+import { useMemo, useState, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Search, ChevronDown, ChevronRight, Bookmark, BookmarkCheck, Trash2, X, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw, ArchiveX, Download, Copy, Check, Plus, FileText, Lock, Eye, EyeOff, Code2, GitBranch, MapPin } from 'lucide-react'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
@@ -7,10 +7,6 @@ import type { CodeProject, CodeSearchResult, LocateResult } from '../types'
 import { StatTile } from './dashboard/StatTile'
 import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
-
-// Lazy-load the graph tab to avoid bundling react-force-graph-2d (~400 KB)
-// into the initial admin chunk.
-const GraphTab = lazy(() => import('./code/GraphTab'))
 
 // ── Saved searches ─────────────────────────────────────────────────────────────
 
@@ -1437,7 +1433,7 @@ function RepositoriesTab({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'repositories' | 'search' | 'graph'
+type Tab = 'repositories' | 'search'
 
 export default function Code() {
   const { session } = useAuth()
@@ -1508,7 +1504,6 @@ export default function Code() {
   const TABS: { id: Tab; label: string; icon?: React.ReactNode }[] = [
     { id: 'repositories', label: 'Repositories' },
     { id: 'search', label: 'Search', icon: <Search className="w-3 h-3" /> },
-    { id: 'graph', label: 'Graph' },
   ]
 
   return (
@@ -1583,17 +1578,6 @@ export default function Code() {
       )}
       {activeTab === 'search' && (
         <CodeSearchTab projects={projects} />
-      )}
-      {activeTab === 'graph' && (
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
-            </div>
-          }
-        >
-          <GraphTab projects={projects} />
-        </Suspense>
       )}
     </div>
   )

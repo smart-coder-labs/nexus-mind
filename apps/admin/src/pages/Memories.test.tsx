@@ -44,7 +44,7 @@ const searchMemoriesMock = vi.fn().mockResolvedValue([])
 // react-force-graph-3d needs WebGL — stub it so the lazily-loaded
 // MemoryBackgroundGraph (rendered as a fixed background layer behind the
 // page, see Memories.tsx) never touches a real canvas in jsdom. Same
-// convention as Graph.test.tsx / OrgMemoryGraph.test.tsx / GraphTab.test.tsx.
+// convention as Graph.test.tsx / OrgMemoryGraph.test.tsx / CodeGraph.test.tsx.
 vi.mock('react-force-graph-3d', () => ({
   default: () => <div data-testid="force-graph" />,
 }))

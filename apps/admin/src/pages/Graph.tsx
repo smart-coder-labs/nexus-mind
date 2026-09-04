@@ -4,12 +4,19 @@ import { Loader2, Network } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import { usePersistedGraphState } from '../hooks/usePersistedGraphState'
-import type { Project, ProjectGraphInfo } from '../types'
+import { GraphTabs } from '../components/graph/chrome'
+import type { CodeProject, Project, ProjectGraphInfo } from '../types'
 
 const OrgMemoryGraph = lazy(() => import('../components/OrgMemoryGraph'))
+const CodeGraph = lazy(() => import('../components/CodeGraph'))
 
 const SELECTED_PROJECT_KEY = 'nexusmind-graph-page-project'
+const SELECTED_REPO_KEY = 'nexusmind-graph-page-repo'
+const ACTIVE_TAB_KEY = 'nexusmind-graph-page-tab'
 const STORAGE_VERSION = 1
+
+/** Graph sources exposed by the page. */
+type GraphSource = 'knowledge' | 'code'
 
 /**
  * BFS walk that collects the full connected family of a project: the root
@@ -54,12 +61,30 @@ export default function Graph() {
   const client = useMemo(() => createClient(), [session])
   const isAdmin = (session?.user.role === 'admin' || session?.user.role === 'super_user')
 
+  // The code graph exposes repository structure, which lives behind the same
+  // permission as the Code page — `/graph` itself is open to every member, so
+  // the tab must be gated explicitly rather than inherited from the route.
+  const canReadCode = (session?.user.permissions ?? []).includes('code:read')
+
   const [selectedProjectId, setSelectedProjectId, resetSelectedProject] = usePersistedGraphState<string>(
     SELECTED_PROJECT_KEY,
     '',
     { version: STORAGE_VERSION },
   )
+  const [selectedRepo, setSelectedRepo] = usePersistedGraphState<string>(
+    SELECTED_REPO_KEY,
+    '',
+    { version: STORAGE_VERSION },
+  )
+  const [storedTab, setStoredTab] = usePersistedGraphState<GraphSource>(
+    ACTIVE_TAB_KEY,
+    'knowledge',
+    { version: STORAGE_VERSION },
+  )
   const [graphFocused, setGraphFocused] = useState(false)
+
+  // A persisted 'code' tab must not resurrect for a user who lost `code:read`.
+  const activeTab: GraphSource = canReadCode ? storedTab : 'knowledge'
 
   const { data: projects, isLoading: projectsLoading } = useQuery({
     queryKey: ['projects'],
@@ -67,9 +92,25 @@ export default function Graph() {
     staleTime: 60_000,
   })
 
+  // Fetched as soon as the user can read code — not only on the Code tab — so
+  // switching tabs is instant and the repo auto-match below has data to work
+  // with. Same key + params as the Code page's non-archived query, so
+  // navigating between the two reuses one cache entry instead of refetching.
+  const { data: codeProjects, isLoading: codeProjectsLoading, isError: codeProjectsError } = useQuery({
+    queryKey: ['code-projects', false],
+    queryFn: () => client.listCodeProjects({ include_archived: false }),
+    enabled: canReadCode,
+    staleTime: 60_000,
+  })
+
   const activeProjects = useMemo(
     () => projects?.filter(p => !p.archived_at) ?? [],
     [projects],
+  )
+
+  const indexedRepos = useMemo(
+    () => codeProjects?.filter((p: CodeProject) => p.last_indexed != null && !p.archived_at) ?? [],
+    [codeProjects],
   )
 
   // Default the selection to the first non-archived project on first load,
@@ -88,6 +129,19 @@ export default function Graph() {
     }
   }, [projects, projectsLoading, selectedProjectId, resetSelectedProject])
 
+  // Repository selection is independent of the project selection (code_projects
+  // is a separate table keyed by name, with no FK to projects). On first entry
+  // to the Code tab — or when the stored repo no longer exists — preselect the
+  // repo that shares the active project's name, else the first indexed one.
+  useEffect(() => {
+    if (activeTab !== 'code' || indexedRepos.length === 0) return
+    if (selectedRepo && indexedRepos.some(r => r.name === selectedRepo)) return
+    const projectName = activeProjects.find(p => p.id === selectedProjectId)?.name
+    const match = projectName ? indexedRepos.find(r => r.name === projectName) : undefined
+    setSelectedRepo((match ?? indexedRepos[0]).name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, indexedRepos, selectedProjectId, activeProjects])
+
   const family = useMemo(() => {
     if (!selectedProjectId || activeProjects.length === 0) return []
     return buildProjectFamily(selectedProjectId, activeProjects)
@@ -103,16 +157,31 @@ export default function Graph() {
     [family],
   )
 
-  const subtitle = isAdmin
+  const knowledgeSubtitle = isAdmin
     ? 'Project-scoped knowledge graph — memories, sessions, users, collections, tags, and audit events.'
     : `${session?.org.name ?? 'Organization'} — project-scoped knowledge graph.`
 
-  // No projects at all → dedicated guidance (no dropdown to offer).
-  if (!projectsLoading && activeProjects.length === 0) {
+  // Only rendered when the user can read code, so it never leaks the tab.
+  const tabs = canReadCode ? (
+    <GraphTabs<GraphSource>
+      value={activeTab}
+      onChange={setStoredTab}
+      label="Graph source"
+      tabs={[
+        { id: 'knowledge', label: 'Knowledge' },
+        { id: 'code', label: 'Code' },
+      ]}
+    />
+  ) : undefined
+
+  // No projects at all → dedicated guidance (no dropdown to offer). The Code
+  // tab is unaffected: repositories don't depend on knowledge projects.
+  if (!projectsLoading && activeProjects.length === 0 && activeTab === 'knowledge') {
     return (
       <div className="p-8 max-w-6xl mx-auto">
         <h1 className="text-[22px] font-semibold tracking-[-0.3px] leading-[1.2] text-text-primary">Graph</h1>
         <p className="text-[13px] text-text-secondary mt-1">Project-scoped knowledge graph.</p>
+        {tabs && <div className="mt-4 w-fit">{tabs}</div>}
         <div className="mt-10 border border-border-primary rounded-[18px] p-10 text-center space-y-2">
           <Network className="w-6 h-6 text-text-quaternary/40 mx-auto" />
           <p className="text-xs font-semibold text-text-secondary">No projects yet</p>
@@ -133,22 +202,38 @@ export default function Graph() {
           <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
         </div>
       }>
-        <OrgMemoryGraph
-          family={familyInfo}
-          familyId={selectedProjectId}
-          storageKey="page"
-          title="Graph"
-          subtitle={subtitle}
-          projects={activeProjects}
-          selectedProjectId={selectedProjectId}
-          onSelectProject={setSelectedProjectId}
-          projectsLoading={projectsLoading}
-          onFocusedChange={setGraphFocused}
-          emptyTitle={selectedProjectId ? 'No data for this project' : 'Select a project'}
-          emptyDescription={selectedProjectId
-            ? 'This project family has no memories, code, or audit events yet.'
-            : 'Choose a project from the dropdown to explore its knowledge graph.'}
-        />
+        {activeTab === 'knowledge' ? (
+          <OrgMemoryGraph
+            family={familyInfo}
+            familyId={selectedProjectId}
+            storageKey="page"
+            title="Graph"
+            subtitle={knowledgeSubtitle}
+            projects={activeProjects}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={setSelectedProjectId}
+            projectsLoading={projectsLoading}
+            tabs={tabs}
+            onFocusedChange={setGraphFocused}
+            emptyTitle={selectedProjectId ? 'No data for this project' : 'Select a project'}
+            emptyDescription={selectedProjectId
+              ? 'This project family has no memories, code, or audit events yet.'
+              : 'Choose a project from the dropdown to explore its knowledge graph.'}
+          />
+        ) : (
+          <CodeGraph
+            projects={codeProjects}
+            projectsLoading={codeProjectsLoading}
+            projectsError={codeProjectsError}
+            selectedRepo={selectedRepo}
+            onSelectRepo={setSelectedRepo}
+            storageKey="page"
+            title="Graph"
+            subtitle="Repository code graph — files, modules, and the symbols they define."
+            tabs={tabs}
+            onFocusedChange={setGraphFocused}
+          />
+        )}
       </Suspense>
     </div>
   )
