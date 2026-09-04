@@ -55,6 +55,16 @@ pub struct SourceItem {
 /// backend's internal shapes beyond the JSON contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandidatePayload {
+    /// Always supplied by the pipeline, never read from the model.
+    ///
+    /// Every path overwrites this with the `SourceItem`'s own identity before
+    /// the candidate is used, because provenance is the connector's to decide.
+    /// It defaults on the way in for that reason: requiring the model to echo a
+    /// hash it must not choose rejected otherwise-valid answers outright —
+    /// "classifier output is not a valid candidate: missing field
+    /// `source_identity`" was a real and frequent failure — and every echoed
+    /// copy was output tokens spent to be discarded.
+    #[serde(default)]
     pub source_identity: String,
     pub destination_kind: String,
     pub content: String,

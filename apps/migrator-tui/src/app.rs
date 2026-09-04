@@ -88,6 +88,7 @@ pub enum FieldId {
     NoLlm,
     MaxTokens,
     Parallel,
+    Bulk,
     ClaudeBin,
     Model,
 }
@@ -127,6 +128,7 @@ impl FieldId {
             NoLlm => "Skip the LLM (deterministic only)",
             MaxTokens => "Token budget",
             Parallel => "Parallel classifier calls",
+            Bulk => "Batch units per call",
             ClaudeBin => "claude binary",
             Model => "Classifier model",
         }
@@ -160,9 +162,13 @@ impl FieldId {
             Attest => "Who authorised this, under which agreement. Recorded on the run.",
             NoLlm => "Uses each connector's deterministic fallback. Costs nothing.",
             MaxTokens => "Stops the run cleanly when reached. Staged work survives.",
-            Parallel => "How many units to classify at once. Blank uses the runner's \
-                         default (4); 1 is serial. It cuts time, not tokens — and much \
-                         higher risks the provider rate-limiting.",
+            Parallel => "How many calls run at once. Blank uses the runner's default \
+                         (4); 1 is serial. Ignored while batching is on. It cuts time, \
+                         not tokens — and much higher risks rate-limiting.",
+            Bulk => "Classify many units in one call instead of one call each. A call \
+                     costs ~14k tokens of context before it reads anything, so this is \
+                     what decides whether a large source takes minutes or hours. Leave \
+                     it on unless you are debugging one unit.",
             ClaudeBin => "The headless classifier invoked as `claude -p`.",
             Model => "Haiku by default — this prompt runs once per unit, so a frontier \
                       model multiplies the bill without improving the answer.",
@@ -185,6 +191,7 @@ impl FieldId {
             Attest => c.attest.clone(),
             MaxTokens => c.max_tokens.clone(),
             Parallel => c.parallel.clone(),
+            Bulk => c.bulk.to_string(),
             ClaudeBin => c.claude_bin.clone(),
             Model => c.model.clone(),
             IncludeSdd => c.include_sdd.to_string(),
@@ -252,6 +259,7 @@ impl FieldId {
             Supabase => c.supabase = !c.supabase,
             RedactPii => c.redact_pii = !c.redact_pii,
             NoLlm => c.no_llm = !c.no_llm,
+            Bulk => c.bulk = !c.bulk,
             IncludeData => {
                 c.include_data = !c.include_data;
                 // Turning sampling back off clears the answers that only exist
@@ -293,7 +301,7 @@ pub fn fields_for(screen: Screen, source: Source) -> Vec<FieldId> {
                     f.extend([Tables, SampleLimit, RedactPii, Attest]);
                 }
             }
-            f.extend([NoLlm, MaxTokens, Parallel, ClaudeBin, Model]);
+            f.extend([NoLlm, Bulk, MaxTokens, Parallel, ClaudeBin, Model]);
             f
         }
         _ => Vec::new(),
@@ -308,7 +316,7 @@ pub fn is_active(field: FieldId, c: &RunConfig) -> bool {
     use FieldId::*;
     match field {
         Tables | SampleLimit | RedactPii | Attest => c.include_data,
-        MaxTokens | ClaudeBin | Model | Parallel => !c.no_llm,
+        MaxTokens | ClaudeBin | Model | Parallel | Bulk => !c.no_llm,
         _ => true,
     }
 }

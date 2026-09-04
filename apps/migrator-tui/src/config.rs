@@ -137,6 +137,15 @@ pub struct RunConfig {
     /// with "1" meaning serial. Kept as a string like the other typed fields so
     /// an in-progress edit is never a parse error.
     pub parallel: String,
+    /// Classify many units per call instead of one call per unit.
+    ///
+    /// On by default, and the single biggest thing this screen controls. A call
+    /// costs ~14k tokens of fixed context before it reads the prompt, so a
+    /// 500-byte section classified alone spends a hundred tokens of overhead
+    /// per token of work. The runner has supported this since the beginning;
+    /// the TUI simply never asked for it, which is why a 4,987-unit source took
+    /// hours and thousands of calls.
+    pub bulk: bool,
 }
 
 impl Default for RunConfig {
@@ -176,6 +185,7 @@ impl Default for RunConfig {
             claude_bin: "claude".to_string(),
             model: "claude-haiku-4-5".to_string(),
             parallel: String::new(),
+            bulk: true,
         }
     }
 }
@@ -288,6 +298,12 @@ impl RunConfig {
         if !self.no_llm {
             if let Ok(n) = self.parallel.trim().parse::<usize>() {
                 push_flag(&mut a, "--parallel", &n.to_string());
+            }
+            // Batching and a pool are alternatives, not companions: the runner
+            // ignores `--parallel` under `--bulk`, and emitting both would put a
+            // number on screen that does nothing.
+            if self.bulk {
+                a.push("--bulk".into());
             }
         }
 
@@ -688,6 +704,28 @@ mod tests {
         assert!(args.contains(&"--include-sdd".to_string()));
         assert!(!args.contains(&"--host-scope".to_string()));
         assert!(!args.contains(&"--supabase".to_string()));
+    }
+
+    /// The regression this pins: the runner has supported `--bulk` since the
+    /// beginning and the TUI never emitted it, so every run made one call per
+    /// unit — thousands of calls, each paying ~14k tokens of fixed context, for
+    /// a source that fits in a few dozen batched calls.
+    #[test]
+    fn batching_is_on_by_default_and_reaches_argv() {
+        let cfg = RunConfig {
+            api_url: "http://localhost:8080".into(),
+            api_key: "nm_x".into(),
+            ..Default::default()
+        };
+        assert!(cfg.bulk, "batching must be the default, not an expert option");
+        assert!(cfg.to_args(false).contains(&"--bulk".to_string()));
+
+        let off = RunConfig { bulk: false, ..cfg.clone() };
+        assert!(!off.to_args(false).contains(&"--bulk".to_string()));
+
+        // Nothing to batch without a model to call.
+        let no_llm = RunConfig { no_llm: true, ..cfg };
+        assert!(!no_llm.to_args(false).contains(&"--bulk".to_string()));
     }
 
     /// The pool is a per-item, model-only concern: blank defers to the runner,

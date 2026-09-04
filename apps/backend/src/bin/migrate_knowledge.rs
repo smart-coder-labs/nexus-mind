@@ -106,10 +106,36 @@ pub struct TokenUsage {
     pub output: i64,
 }
 
+/// Why an item in a batch carries no candidate from the model.
+///
+/// The two cases look identical to the caller — the deterministic draft is used
+/// either way — but they mean opposite things and must not share a counter. A
+/// sparse reply leaves most items `Unchanged` by design; reporting those as
+/// failures would put "112 of 120 item(s) unusable" on screen for a batch that
+/// went perfectly, and would train the operator to ignore the number that
+/// actually matters.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BulkMiss {
+    /// The model said nothing about this item, which is how it approves the
+    /// draft.
+    Unchanged,
+    /// The model answered and the answer could not be used.
+    Unusable(String),
+}
+
+impl std::fmt::Display for BulkMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BulkMiss::Unchanged => f.write_str("draft kept"),
+            BulkMiss::Unusable(why) => f.write_str(why),
+        }
+    }
+}
+
 /// The result of one batch call: one outcome per item, in order.
 #[derive(Debug, Clone)]
 pub struct BulkOutput {
-    pub candidates: Vec<Result<CandidatePayload, String>>,
+    pub candidates: Vec<Result<CandidatePayload, BulkMiss>>,
     pub usage: Option<TokenUsage>,
     pub raw_response: String,
 }
@@ -415,28 +441,7 @@ impl ClaudeCli {
             .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(json).ok())
             .unwrap_or_default();
 
-        let candidates = items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                let value = parsed.get(i).ok_or_else(|| {
-                    format!(
-                        "the batch reply held {} object(s) for {} item(s)",
-                        parsed.len(),
-                        items.len()
-                    )
-                })?;
-                let mut candidate: CandidatePayload = serde_json::from_value(value.clone())
-                    .map_err(|e| format!("item {}: {e}", i + 1))?;
-                if candidate.content.trim().is_empty() {
-                    return Err(format!("item {}: no content", i + 1));
-                }
-                // Provenance is the connector's to decide, never the model's —
-                // the same rule as the single-item path.
-                candidate.source_identity = item.source_identity.clone();
-                Ok(candidate)
-            })
-            .collect();
+        let candidates = map_bulk_reply(&parsed, items);
 
         Ok(BulkOutput {
             candidates,
@@ -529,9 +534,22 @@ fn emit_failed(sink: &EventSink, index: usize, total: usize, item: &SourceItem, 
 /// How many items a bulk prompt may carry, and how many bytes of them.
 ///
 /// The byte cap matters more than the count: units carry their content, and a
-/// batch of twenty large documents is a prompt nobody should send. Whichever
-/// limit is reached first closes the batch.
-pub const BULK_MAX_ITEMS: usize = 20;
+/// batch of large documents is a prompt nobody should send. Whichever limit is
+/// reached first closes the batch.
+///
+/// Both were raised sharply — 20 items and 60 KB — once the reply became sparse
+/// (see [`bulk_prompt`]). The old count existed to bound the *output*: a reply
+/// that had to carry one full object per item, content included, runs out of
+/// output tokens long before the input runs out of context. A reply that names
+/// only what it changes does not, so the cap that matters is now the input, and
+/// 200 KB leaves ample room in a 200k-token context.
+///
+/// This is the whole cost story. A call carries ~14k tokens of fixed context
+/// before it reads a word of the prompt, so classifying a 500-byte section on
+/// its own spends a hundred tokens of overhead for every token of work. Nothing
+/// about the classification is expensive; calling is. Batching is not a
+/// nice-to-have here, it is the only lever that matters.
+pub const BULK_MAX_ITEMS: usize = 120;
 
 /// Rejects `--parallel 0` instead of quietly treating it as serial.
 ///
@@ -554,18 +572,34 @@ fn parse_parallel(raw: &str) -> Result<usize, String> {
 /// with whatever else the operator is running, and past ~6 the provider starts
 /// rate-limiting — which costs more wall clock than it saves.
 pub const DEFAULT_PARALLEL: usize = 4;
-pub const BULK_MAX_BYTES: usize = 60_000;
+pub const BULK_MAX_BYTES: usize = 200_000;
 
 /// Groups items into batches the classifier can be asked about in one call.
+///
+/// Batches never split a source document. A unit is a *section*, and asking
+/// "is this section stating a rule?" about a fragment with the rest of its
+/// document in another call is asking a worse question — the surrounding
+/// headings are most of what makes a section legible. Keeping a document whole
+/// costs nothing, because the limits below are reached by many documents, not
+/// by one.
+///
+/// A single document larger than the byte budget is still sent whole rather
+/// than split: it is one call either way, and splitting it would only trade the
+/// context away for nothing.
 pub fn chunk_for_bulk(items: &[SourceItem], max_items: usize) -> Vec<std::ops::Range<usize>> {
     let mut batches = Vec::new();
     let (mut start, mut bytes) = (0usize, 0usize);
-    for (i, item) in items.iter().enumerate() {
-        let size = item.raw.len();
-        let full = i > start && (i - start >= max_items || bytes + size > BULK_MAX_BYTES);
+
+    for group in document_groups(items) {
+        let size: usize = items[group.clone()].iter().map(|i| i.raw.len()).sum();
+        let count = group.end - start;
+        // Close the batch *before* this document when adding it would go over,
+        // so the document lands whole at the head of the next one.
+        let full = group.start > start
+            && (count > max_items || bytes + size > BULK_MAX_BYTES);
         if full {
-            batches.push(start..i);
-            start = i;
+            batches.push(start..group.start);
+            start = group.start;
             bytes = 0;
         }
         bytes += size;
@@ -576,28 +610,132 @@ pub fn chunk_for_bulk(items: &[SourceItem], max_items: usize) -> Vec<std::ops::R
     batches
 }
 
+/// Consecutive runs of items belonging to the same source document.
+///
+/// Connectors emit a document's units together, so grouping consecutive equal
+/// paths is enough — and an item with no routing path (a connector whose units
+/// have no document, like a database schema) is its own group, which degrades
+/// to the old per-item packing rather than lumping unrelated units together.
+fn document_groups(items: &[SourceItem]) -> Vec<std::ops::Range<usize>> {
+    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let same = match (groups.last(), item.routing_path.as_deref()) {
+            (Some(last), Some(path)) => {
+                items[last.start].routing_path.as_deref() == Some(path)
+            }
+            _ => false,
+        };
+        match (same, groups.last_mut()) {
+            (true, Some(last)) => last.end = i + 1,
+            _ => groups.push(i..i + 1),
+        }
+    }
+    groups
+}
+
+/// Pairs a sparse batch reply back to the items it answers.
+///
+/// Split out of [`ClaudeCli::classify_bulk`] so it can be tested without a
+/// subprocess: this is where a model's freedom to answer badly meets the run's
+/// need to keep going, and every branch here is one a real reply has taken.
+///
+/// Keyed by each object's own `item` number rather than by position, because a
+/// sparse reply carries no positional meaning. An item nobody mentions is
+/// `Unchanged` — that is how the model approves the deterministic draft, and it
+/// is the expected answer for most items.
+pub fn map_bulk_reply(
+    parsed: &[serde_json::Value],
+    items: &[SourceItem],
+) -> Vec<Result<CandidatePayload, BulkMiss>> {
+    let mut answers: std::collections::HashMap<usize, &serde_json::Value> =
+        std::collections::HashMap::new();
+    for value in parsed {
+        match value.get("item").and_then(|v| v.as_u64()) {
+            // Out-of-range numbers are dropped rather than clamped: a model
+            // inventing item 300 of a 120-item batch must not silently
+            // overwrite somebody else's unit.
+            Some(n) if (1..=items.len() as u64).contains(&n) => {
+                answers.insert(n as usize, value);
+            }
+            _ => {}
+        }
+    }
+
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let value = answers.get(&(i + 1)).ok_or(BulkMiss::Unchanged)?;
+            let mut candidate: CandidatePayload = serde_json::from_value((*value).clone())
+                .map_err(|e| BulkMiss::Unusable(format!("item {}: {e}", i + 1)))?;
+            if candidate.content.trim().is_empty() {
+                return Err(BulkMiss::Unusable(format!("item {}: no content", i + 1)));
+            }
+            // Provenance is the connector's to decide, never the model's — the
+            // same rule as the single-item path.
+            candidate.source_identity = item.source_identity.clone();
+            Ok(candidate)
+        })
+        .collect()
+}
+
 /// The prompt for one batch.
 ///
 /// Each item carries the connector's own per-item instructions verbatim. That
-/// repeats them, which looks wasteful until you price it: the measured cost of
-/// a single call is ~34k tokens of system context before the prompt is even
-/// read, so twenty repeats of a few hundred tokens is far cheaper than twenty
-/// calls. The draft from the deterministic pass goes in beside each item, so
-/// the model has a floor to improve on rather than a blank page.
+/// repeats them, which looks wasteful until you price it: a single call spends
+/// ~14k tokens of fixed context before it reads a word of the prompt, so a
+/// hundred repeats of a few hundred tokens is still far cheaper than a hundred
+/// calls.
+///
+/// # Why the reply is sparse
+///
+/// The batch used to demand one full object per item, in order, "do not skip".
+/// That made the *output* the binding constraint — a hundred objects carrying
+/// their own content exhausts the output budget long before the input exhausts
+/// the context — which is why the batch was capped at twenty items and a
+/// 4,987-unit source still took 250 calls.
+///
+/// Most items do not need the model at all: the deterministic pass has already
+/// produced a correct draft, and the honest answer is "yes, that one is fine".
+/// Making silence mean assent turns those into zero output tokens instead of a
+/// restated object, and the batch can then be sized by input alone.
+///
+/// The safety property is unchanged and is what makes this affordable: every
+/// item already holds a candidate before the call, so a reply that is empty,
+/// truncated, mangled or never arrives costs the run nothing.
+///
+/// # Why the header is about vetoing
+///
+/// Sparseness moves the model's job. When it had to answer for every item it
+/// was improving drafts; when silence means assent it is vetoing them, and a
+/// header that only explains the mechanism gets a rubber stamp. Measured on
+/// Haiku with five items — three good drafts, one navigation stub, one
+/// changelog line — a mechanism-only header returned `[]`, approving all five.
+/// The same items with the veto duty stated first returned exactly the two
+/// skips and stayed silent on the three good ones.
 pub fn bulk_prompt(
     connector: &dyn Connector,
     items: &[SourceItem],
     drafts: &[Option<CandidatePayload>],
 ) -> String {
     let mut out = format!(
-        "You will classify {} items in one go.\n\n\
-         Reply with a JSON array of exactly {} objects, in the same order as the items \
-         below. Object N is the answer for item N. Do not merge, reorder, skip or add \
-         items — if an item is not worth migrating, still return its object and say so in \
-         its own fields.\n\n\
-         Each item carries a DRAFT produced without a model. Improve it where you can and \
-         keep it where you cannot; a draft returned unchanged is a valid answer.\n",
-        items.len(),
+        "You are reviewing {} items in one go.\n\n\
+         Every item below already has a DRAFT produced without a model, by rules that \
+         cannot read. The draft stands unless you say otherwise.\n\n\
+         Your job is to catch the drafts that are WRONG. Two things go wrong far more \
+         often than anything else:\n\
+         - The draft proposes migrating something with no durable value — a table of \
+         contents, a heading with nothing under it, navigation text, a changelog \
+         fragment, boilerplate. Answer with \"destination_kind\": \"skip\" and say why in \
+         \"content\". Migrating these is what turns review into a job nobody does.\n\
+         - The draft picked the wrong destination_kind. Follow each item's own rules \
+         below for what each kind means.\n\n\
+         Reply with a JSON array holding ONLY the items you are changing. Each object \
+         must carry an \"item\" field with that item's number, plus the fields you want \
+         instead. Omitting an item is how you approve its draft, and for a genuinely good \
+         draft that is the right answer. An empty array [] is valid.\n\n\
+         Do not restate a draft you agree with, and do not invent items that are not \
+         listed.\n",
         items.len()
     );
     for (i, item) in items.iter().enumerate() {
@@ -673,9 +811,14 @@ pub fn build_candidates_bulk(
         let outcome = classifier.classify_bulk(&prompt, slice);
         let (usage, results, answer) = match outcome {
             Ok(out) => (out.usage, out.candidates, out.raw_response),
+            // The call itself failed, so no item was answered. That is
+            // `Unusable`, not `Unchanged`: nothing was approved here.
             Err(e) => (
                 None,
-                slice.iter().map(|_| Err(format!("{e:#}"))).collect(),
+                slice
+                    .iter()
+                    .map(|_| Err(BulkMiss::Unusable(format!("{e:#}"))))
+                    .collect(),
                 String::new(),
             ),
         };
@@ -683,16 +826,23 @@ pub fn build_candidates_bulk(
         let spent = budget.spent - before;
 
         if sink.is_enabled() {
-            let failed = results.iter().filter(|r| r.is_err()).count();
+            // Only genuine failures. Items the model deliberately left alone
+            // are the expected majority of a sparse reply, and counting them
+            // here would mark every healthy batch as broken.
+            let unusable = results
+                .iter()
+                .filter(|r| matches!(r, Err(BulkMiss::Unusable(_))))
+                .count();
+            let changed = results.iter().filter(|r| r.is_ok()).count();
             sink.emit(&RunEvent::Agent {
                 index: range.start + 1,
                 total,
-                origin: format!("batch of {}", slice.len()),
+                origin: format!("batch of {} · {changed} changed", slice.len()),
                 prompt: clip(&prompt, AGENT_CLIP),
                 response: clip(&answer, AGENT_CLIP),
-                ok: failed == 0,
-                error: (failed > 0)
-                    .then(|| format!("{failed} of {} item(s) unusable", slice.len())),
+                ok: unusable == 0,
+                error: (unusable > 0)
+                    .then(|| format!("{unusable} of {} item(s) unusable", slice.len())),
                 tokens_spent: spent,
                 duration_ms: started.elapsed().as_millis() as u64,
             });
@@ -1984,11 +2134,15 @@ mod tests {
     /// twenty large documents is a prompt nobody should send.
     #[test]
     fn batches_are_capped_by_bytes_before_count() {
-        let items = bulk_items(10, 20_000);
+        // Sized off the budget, not off a number that was true when the budget
+        // was 60 KB: this test exists to prove bytes close a batch before the
+        // count does, and it must keep proving that when the budget moves.
+        let items = bulk_items(10, BULK_MAX_BYTES / 4);
         let batches = chunk_for_bulk(&items, 20);
         assert!(
             batches.len() > 1,
-            "60 KB of content cannot ride in one prompt"
+            "{} bytes cannot ride in one prompt",
+            BULK_MAX_BYTES * 10 / 4
         );
         for range in &batches {
             let bytes: usize = items[range.clone()].iter().map(|i| i.raw.len()).sum();
@@ -2011,22 +2165,138 @@ mod tests {
         assert!(batches.iter().any(|r| r.len() == 1 && r.start == 1));
     }
 
+    /// A document's sections travel together. Judging "is this section a rule?"
+    /// without the rest of its document in the same call is a worse question,
+    /// and the batch limits are reached by many documents rather than by one.
+    #[test]
+    fn a_documents_sections_are_never_split_across_batches() {
+        // Three documents of four sections each, with a count cap that would
+        // cut straight through the middle of the second one.
+        let mut items = Vec::new();
+        for doc in 0..3 {
+            for sec in 0..4 {
+                items.push(SourceItem {
+                    source_identity: format!("id-{doc}-{sec}"),
+                    display_origin: format!("doc-{doc}.md > s{sec}"),
+                    routing_path: Some(format!("doc-{doc}.md")),
+                    raw: "x".repeat(50),
+                    meta: serde_json::json!({}),
+                });
+            }
+        }
+        let batches = chunk_for_bulk(&items, 5);
+
+        let flat: Vec<usize> = batches.iter().flat_map(|r| r.clone()).collect();
+        assert_eq!(flat, (0..12).collect::<Vec<_>>(), "nothing lost or reordered");
+        for range in &batches {
+            let docs: std::collections::BTreeSet<&str> = items[range.clone()]
+                .iter()
+                .map(|i| i.routing_path.as_deref().unwrap())
+                .collect();
+            for doc in docs {
+                let in_batch = items[range.clone()]
+                    .iter()
+                    .filter(|i| i.routing_path.as_deref() == Some(doc))
+                    .count();
+                let total = items
+                    .iter()
+                    .filter(|i| i.routing_path.as_deref() == Some(doc))
+                    .count();
+                assert_eq!(in_batch, total, "{doc} was split across batches");
+            }
+        }
+    }
+
+    /// The heart of the sparse contract: an item the model says nothing about
+    /// keeps its draft, and that is not a failure. If this ever degrades to
+    /// `Unusable`, every healthy batch reports itself as broken and the cost
+    /// win disappears behind a wall of false alarms.
+    #[test]
+    fn an_unmentioned_item_keeps_its_draft_and_is_not_a_failure() {
+        let items = bulk_items(3, 20);
+        let reply = vec![serde_json::json!({
+            "item": 2,
+            "destination_kind": "convention",
+            "content": "the model's improved wording",
+        })];
+        let out = map_bulk_reply(&reply, &items);
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], Err(BulkMiss::Unchanged));
+        assert_eq!(out[2], Err(BulkMiss::Unchanged));
+        let changed = out[1].as_ref().expect("item 2 was answered");
+        assert_eq!(changed.content, "the model's improved wording");
+        assert_eq!(
+            changed.source_identity, items[1].source_identity,
+            "identity is the connector's, never the model's"
+        );
+    }
+
+    /// An empty reply is the honest answer when every draft was already right,
+    /// and it must cost the run nothing.
+    #[test]
+    fn an_empty_reply_leaves_every_draft_standing() {
+        let items = bulk_items(4, 20);
+        let out = map_bulk_reply(&[], &items);
+        assert!(out.iter().all(|r| r == &Err(BulkMiss::Unchanged)));
+    }
+
+    /// A model that answers about an item outside the batch must not land on
+    /// somebody else's unit. Dropping it leaves that item on its draft.
+    #[test]
+    fn an_out_of_range_item_number_is_dropped_not_clamped() {
+        let items = bulk_items(2, 20);
+        let reply = vec![
+            serde_json::json!({"item": 99, "destination_kind": "memory", "content": "stray"}),
+            serde_json::json!({"item": 0, "destination_kind": "memory", "content": "stray"}),
+        ];
+        let out = map_bulk_reply(&reply, &items);
+        assert!(
+            out.iter().all(|r| r == &Err(BulkMiss::Unchanged)),
+            "a stray item number must not overwrite a real one"
+        );
+    }
+
+    /// A genuinely broken object is `Unusable`, which is what the operator
+    /// needs to see — separate from the silence that means assent.
+    #[test]
+    fn a_malformed_answer_is_unusable_rather_than_silent() {
+        let items = bulk_items(2, 20);
+        let reply = vec![
+            serde_json::json!({"item": 1, "destination_kind": "memory", "content": "   "}),
+            serde_json::json!({"item": 2, "nonsense": true}),
+        ];
+        let out = map_bulk_reply(&reply, &items);
+        assert!(matches!(out[0], Err(BulkMiss::Unusable(_))), "{:?}", out[0]);
+        assert!(matches!(out[1], Err(BulkMiss::Unusable(_))), "{:?}", out[1]);
+    }
+
     #[test]
     fn no_items_means_no_batches() {
         assert!(chunk_for_bulk(&[], 20).is_empty());
     }
 
-    /// The prompt must tell the model the one thing that makes the reply
-    /// mappable: same order, same count, no merging.
+    /// The prompt must tell the model the two things that make a sparse reply
+    /// mappable: answer only what you are changing, and name the item number.
     #[test]
-    fn the_bulk_prompt_pins_the_ordering_contract_and_carries_the_drafts() {
+    fn the_bulk_prompt_asks_for_a_sparse_reply_and_carries_the_drafts() {
         let c = NoopConnector { items: vec![] };
         let items = bulk_items(3, 20);
         let drafts: Vec<Option<CandidatePayload>> = items.iter().map(|i| c.fallback(i)).collect();
         let prompt = bulk_prompt(&c, &items, &drafts);
 
-        assert!(prompt.contains("exactly 3 objects"), "{prompt}");
-        assert!(prompt.contains("same order"));
+        assert!(prompt.contains("ONLY the items you are changing"), "{prompt}");
+        assert!(prompt.contains("\"item\""), "the reply has to name the item number");
+        assert!(
+            prompt.contains("Omitting an item is how you approve its draft"),
+            "silence must be spelled out as assent, or the model restates every draft"
+        );
+        assert!(
+            prompt.contains("catch the drafts that are WRONG"),
+            "a header that only explains the mechanism gets a rubber stamp — the veto \
+             duty has to come first"
+        );
+        assert!(prompt.contains("\"skip\""), "the model must be able to veto a draft");
         assert!(prompt.contains("=== ITEM 1 ==="));
         assert!(prompt.contains("=== ITEM 3 ==="));
         assert!(!prompt.contains("=== ITEM 4 ==="));
