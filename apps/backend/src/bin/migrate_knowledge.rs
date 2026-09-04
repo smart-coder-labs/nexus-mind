@@ -321,8 +321,10 @@ impl ClaudeCli {
             // was to propose migration content…" instead of emitting a
             // candidate, and every unit fell back while still being billed.
             //
-            // The user-level config still loads; isolating it via
-            // CLAUDE_CONFIG_DIR would take the credentials with it.
+            // Isolating via CLAUDE_CONFIG_DIR is not an option: it takes the
+            // credentials with it and every call answers "Not logged in".
+            // `--setting-sources ""` below is what actually keeps the
+            // operator's config out.
             .current_dir(std::env::temp_dir())
             .args([
                 "-p",
@@ -347,6 +349,28 @@ impl ClaudeCli {
                 "--system-prompt",
                 CLASSIFIER_SYSTEM_PROMPT,
                 "--exclude-dynamic-system-prompt-sections",
+                // The two flags above are not enough on their own, and the gap
+                // is expensive. `--exclude-dynamic-system-prompt-sections`
+                // drops CLAUDE.md, but the operator's `settings.json` still
+                // loads — and with it every enabled plugin, which means that
+                // plugin's skills and its SessionStart hooks. Measured against
+                // a real CSS unit with NexusMind's own plugin installed: the
+                // classifier replied "The NexusMind protocol requires
+                // `project`… I can't call `store_memory`" instead of a
+                // candidate. 42 of 56 units failed that way in one run, all of
+                // them billed. Loading no setting sources at all fixes it (and
+                // cuts the call from ~46s to ~16s, since none of that context
+                // is assembled or sent). Auth is not a setting source, so the
+                // operator stays logged in.
+                "--setting-sources",
+                "",
+                // Same reasoning for MCP: the servers configured for the
+                // operator's coding sessions would otherwise hand the
+                // classifier tools like `store_memory`, and a model given a
+                // tool tends to reach for it instead of answering.
+                "--strict-mcp-config",
+                "--mcp-config",
+                r#"{"mcpServers":{}}"#,
             ])
             .output()
             .with_context(|| format!("could not run `{}`", self.bin))?;
@@ -509,6 +533,15 @@ fn emit_failed(sink: &EventSink, index: usize, total: usize, item: &SourceItem, 
 /// batch of twenty large documents is a prompt nobody should send. Whichever
 /// limit is reached first closes the batch.
 pub const BULK_MAX_ITEMS: usize = 20;
+
+/// Concurrent classifier calls when `--parallel` is not given.
+///
+/// Four, not one: a classifier call is ~16 s of waiting on the model, so
+/// running them one at a time leaves the wall clock proportional to the source
+/// size for no benefit. Four, not eight: the calls share one provider account
+/// with whatever else the operator is running, and past ~6 the provider starts
+/// rate-limiting — which costs more wall clock than it saves.
+pub const DEFAULT_PARALLEL: usize = 4;
 pub const BULK_MAX_BYTES: usize = 60_000;
 
 /// Groups items into batches the classifier can be asked about in one call.
@@ -995,15 +1028,19 @@ struct Args {
 
     /// Classify this many units at once, each in its own `claude` call.
     ///
-    /// The per-item path is otherwise one call at a time, and each call is ~30 s
-    /// of mostly waiting on the model — so a 249-unit source spends over two
-    /// hours almost entirely idle. A small pool cuts the wall clock by roughly
-    /// this factor. Default 1 (serial, unchanged).
+    /// The per-item path is otherwise one call at a time, and each call is ~16 s
+    /// of mostly waiting on the model — so a 249-unit source spends over an
+    /// hour almost entirely idle. A small pool cuts the wall clock by roughly
+    /// this factor.
+    ///
+    /// Defaults to a pool rather than serial: the wait is the model's, not the
+    /// machine's, so serial buys nothing and costs the operator the difference.
+    /// Pass `--parallel 1` to get the old one-at-a-time behaviour back.
     ///
     /// This does NOT lower token spend: every unit still costs its own call —
     /// `--bulk` is the mode for that, and this flag is ignored under it. Values
     /// much above ~6 risk the provider rate-limiting the concurrent calls.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = DEFAULT_PARALLEL)]
     parallel: usize,
 
     /// Emit NDJSON progress events on stdout instead of prose.

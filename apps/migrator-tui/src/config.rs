@@ -132,10 +132,10 @@ pub struct RunConfig {
     /// unit, so a frontier model here multiplies the bill of a large source
     /// without improving a short, structured judgement.
     pub model: String,
-    /// How many classifier calls run at once. Empty or "1" means serial (the
-    /// runner's default); a value above 1 becomes `--parallel N`. Kept as a
-    /// string like the other typed fields so an in-progress edit is never a
-    /// parse error.
+    /// How many classifier calls run at once. Empty defers to the runner's
+    /// default (a small pool); any number typed here becomes `--parallel N`,
+    /// with "1" meaning serial. Kept as a string like the other typed fields so
+    /// an in-progress edit is never a parse error.
     pub parallel: String,
 }
 
@@ -279,15 +279,15 @@ impl RunConfig {
         push_flag(&mut a, "--max-tokens", &self.max_tokens);
         push_flag(&mut a, "--claude-bin", &self.claude_bin);
         push_flag(&mut a, "--model", &self.model);
-        // A pool only makes sense with a model to wait on, and only above 1.
-        // "1" and blank are the serial default and emit no flag; an invalid
-        // value is caught by `blockers`, so parsing failures are simply not
-        // emitted rather than passed through.
+        // A pool only makes sense with a model to wait on. Blank defers to the
+        // runner's own default; any number the operator typed is passed through
+        // verbatim — including "1", which is how serial is asked for now that
+        // the runner defaults to a pool. An invalid value is caught by
+        // `blockers`, so parsing failures are simply not emitted rather than
+        // passed through.
         if !self.no_llm {
             if let Ok(n) = self.parallel.trim().parse::<usize>() {
-                if n > 1 {
-                    push_flag(&mut a, "--parallel", &n.to_string());
-                }
+                push_flag(&mut a, "--parallel", &n.to_string());
             }
         }
 
@@ -690,8 +690,11 @@ mod tests {
         assert!(!args.contains(&"--supabase".to_string()));
     }
 
-    /// The pool is a per-item, model-only concern: it reaches argv only above 1
-    /// and never under `--no-llm`, where there is no model call to parallelise.
+    /// The pool is a per-item, model-only concern: blank defers to the runner,
+    /// a typed value is passed through — "1" included, since that is the only
+    /// way to ask for serial now that the runner defaults to a pool — and
+    /// nothing reaches argv under `--no-llm`, where there is no model call to
+    /// parallelise.
     #[test]
     fn parallel_reaches_argv_only_above_one_and_never_under_no_llm() {
         let mut cfg = RunConfig {
@@ -701,13 +704,15 @@ mod tests {
         };
         assert!(
             !cfg.to_args(false).contains(&"--parallel".to_string()),
-            "serial by default emits no flag"
+            "blank defers to the runner's default and emits no flag"
         );
         cfg.parallel = "1".into();
-        assert!(
-            !cfg.to_args(false).contains(&"--parallel".to_string()),
-            "1 is serial, not a flag"
-        );
+        let args = cfg.to_args(false);
+        let i = args
+            .iter()
+            .position(|a| a == "--parallel")
+            .expect("serial must be requestable now that the default is a pool");
+        assert_eq!(args[i + 1], "1");
 
         cfg.parallel = "6".into();
         let args = cfg.to_args(false);
