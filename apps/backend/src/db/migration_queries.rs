@@ -1455,6 +1455,16 @@ fn hint_str<'a>(hint: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 /// committed memory to the project the run was routed to; without it the memory
 /// falls back to the org default and looks unlinked. Returns `None` for an
 /// internal run (no project) or an id that no longer resolves.
+///
+/// This is deliberately consulted BEFORE any `project` in the candidate's
+/// destination hint. A run's `project_id` is an operator decision — either the
+/// path the `.nexusmind.yaml` resolver routed this execution group to, or an
+/// explicit `--project` — while the hint's `project` is whatever the classifier
+/// model inferred from the file it was reading. Letting the inference win is
+/// how a monorepo run started for a named project still filed its memories
+/// under `default`: the model, having no idea which project it was reading,
+/// guessed. Routing beats guessing; the hint stays as the fallback for runs
+/// with no project at all, which is the only case where nothing was routed.
 fn run_project_name(conn: &Connection, run: &MigrationRun) -> Option<String> {
     run.project_id
         .as_deref()
@@ -1471,10 +1481,10 @@ pub fn write_destination(
     match candidate.destination_kind {
         DestinationKind::Memory => {
             let req = StoreMemoryRequest {
-                // Scope to the run's project unless the candidate named its own.
-                project: hint_str(hint, "project")
-                    .map(str::to_string)
-                    .or_else(|| run_project_name(conn, run)),
+                // Scope to the run's routed project; the hint only fills in for
+                // a run that has none. See `run_project_name`.
+                project: run_project_name(conn, run)
+                    .or_else(|| hint_str(hint, "project").map(str::to_string)),
                 tool: hint_str(hint, "tool").unwrap_or("migration").to_string(),
                 content: candidate.content.clone(),
                 tags: hint.get("tags").and_then(|t| {
@@ -1500,21 +1510,22 @@ pub fn write_destination(
                 tags: hint
                     .get("tags")
                     .and_then(|t| serde_json::from_value::<Vec<String>>(t.clone()).ok()),
-                // A convention inherits the run's project scope unless the hint
-                // overrides it. v56 forbade project-scoped conventions; v60
-                // allows them, because `conventions.project_id` always did.
-                project_id: hint_str(hint, "project_id")
-                    .map(str::to_string)
-                    .or_else(|| run.project_id.clone()),
+                // A convention inherits the run's routed project scope; the hint
+                // only fills in for a run that has none. v56 forbade
+                // project-scoped conventions; v60 allows them, because
+                // `conventions.project_id` always did.
+                project_id: run
+                    .project_id
+                    .clone()
+                    .or_else(|| hint_str(hint, "project_id").map(str::to_string)),
             };
             let convention = queries::create_convention(conn, &run.org_id, &req)?;
             Ok(convention.id.to_string())
         }
         DestinationKind::Task => {
             let req = CreateTaskRequest {
-                project: hint_str(hint, "project")
-                    .map(str::to_string)
-                    .or_else(|| run_project_name(conn, run))
+                project: run_project_name(conn, run)
+                    .or_else(|| hint_str(hint, "project").map(str::to_string))
                     .unwrap_or_else(|| "default".to_string()),
                 title: hint_str(hint, "title")
                     .unwrap_or_else(|| first_line(&candidate.content))
@@ -1541,9 +1552,8 @@ pub fn write_destination(
                 anyhow::bail!("missing_capability");
             }
             let req = SaveArtifactRequest {
-                project: hint_str(hint, "project")
-                    .map(str::to_string)
-                    .or_else(|| run_project_name(conn, run))
+                project: run_project_name(conn, run)
+                    .or_else(|| hint_str(hint, "project").map(str::to_string))
                     .unwrap_or_else(|| "default".to_string()),
                 change_name: hint_str(hint, "change_name")
                     .unwrap_or("migrated")
