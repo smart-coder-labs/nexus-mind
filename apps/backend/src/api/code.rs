@@ -766,7 +766,106 @@ pub async fn post_search(
         }
     }
 
+    trim_to_budget(&mut results);
     Ok(Json(results))
+}
+
+/// Per-hit and per-response ceilings on returned code.
+///
+/// Measured on a real agent session: five `search_code` calls returned 125,540
+/// characters — about 31k tokens, more than twice what the same session spent
+/// reading files directly — and one call alone returned 40,334. A chunk is a
+/// whole function or class, so a top-5 of large symbols is a very large reply.
+///
+/// The ceilings are not a quality tradeoff, because every hit still carries
+/// `file_path`, `start_line` and `end_line`: an agent that needs the rest knows
+/// exactly where it is and can read it. What the ceiling removes is the code the
+/// agent did not ask for and mostly did not use — in that same session it went
+/// on to read 13 files anyway.
+const MAX_HIT_CHARS: usize = 1_600;
+const MAX_RESPONSE_CHARS: usize = 8_000;
+
+/// Trims hit bodies to the budget, truncating on line boundaries.
+///
+/// Ranked order is preserved and no hit is dropped: a caller asking for five
+/// results gets five, because losing the fifth path silently is worse than
+/// shortening its body visibly.
+fn trim_to_budget(results: &mut [SearchCodeHit]) {
+    let mut spent = 0usize;
+    for hit in results.iter_mut() {
+        // The skeleton is what was embedded — a signature, not a body — and is
+        // what makes a trimmed hit still legible. It stays whole.
+        let remaining = MAX_RESPONSE_CHARS.saturating_sub(spent);
+        let allowance = MAX_HIT_CHARS.min(remaining.max(240));
+        if hit.result.content.len() > allowance {
+            let cut = hit.result.content[..allowance]
+                .rfind('\n')
+                .unwrap_or(allowance);
+            hit.result.content.truncate(cut);
+            hit.result.content.push_str(&format!(
+                "\n… truncado — {} líneas {}-{}, léelo si necesitas el resto",
+                hit.result.file_path, hit.result.start_line, hit.result.end_line
+            ));
+        }
+        spent += hit.result.content.len();
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn hit(path: &str, body: &str) -> SearchCodeHit {
+        SearchCodeHit {
+            result: SearchCodeResult {
+                file_path: path.to_string(),
+                symbol: Some("f".into()),
+                start_line: 1,
+                end_line: 400,
+                content: body.to_string(),
+                score: 1.0,
+            },
+            skeleton: "fn f()".into(),
+        }
+    }
+
+    /// The measured failure: one call returned 40,334 characters because a chunk
+    /// is a whole symbol and five large symbols is a very large reply.
+    #[test]
+    fn a_long_hit_is_trimmed_and_says_where_the_rest_is() {
+        let body = (0..500).map(|i| format!("linea {i}")).collect::<Vec<_>>().join("\n");
+        let mut hits = vec![hit("src/a.rs", &body)];
+        trim_to_budget(&mut hits);
+        let out = &hits[0].result.content;
+        assert!(out.len() < MAX_HIT_CHARS + 200, "trimmed to the per-hit ceiling");
+        assert!(out.contains("src/a.rs"), "the reader must know which file to open");
+        assert!(out.contains("1-400"), "and which lines");
+    }
+
+    /// Ranked order and count survive. Dropping the fifth path silently is worse
+    /// than shortening its body visibly — the path is the part the agent needs.
+    #[test]
+    fn no_hit_is_dropped_to_meet_the_budget() {
+        let body = "x".repeat(9_000);
+        let mut hits: Vec<SearchCodeHit> =
+            (0..5).map(|i| hit(&format!("src/{i}.rs"), &body)).collect();
+        trim_to_budget(&mut hits);
+        assert_eq!(hits.len(), 5);
+        for (i, h) in hits.iter().enumerate() {
+            assert_eq!(h.result.file_path, format!("src/{i}.rs"));
+            assert!(!h.result.content.is_empty(), "every hit keeps something readable");
+        }
+        let total: usize = hits.iter().map(|h| h.result.content.len()).sum();
+        assert!(total < 5 * MAX_HIT_CHARS + 2_000, "total stays bounded, got {total}");
+    }
+
+    /// A short hit is left exactly as it was.
+    #[test]
+    fn a_short_hit_is_untouched() {
+        let mut hits = vec![hit("src/a.rs", "fn f() {}\n")];
+        trim_to_budget(&mut hits);
+        assert_eq!(hits[0].result.content, "fn f() {}\n");
+    }
 }
 
 /// `POST /v1/code/locate`
