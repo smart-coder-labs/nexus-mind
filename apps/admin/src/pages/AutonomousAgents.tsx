@@ -950,6 +950,29 @@ export default function AutonomousAgents() {
                   <p className="text-sm text-text-tertiary mt-2 leading-relaxed">{finding.summary}</p>
 
                   {(() => {
+                    // Imagery generated for this post under the agent's design
+                    // system. Shown before publishing so the image can be judged
+                    // together with the copy, which is the only review that matters
+                    // for a post that is about to go out.
+                    const images = (asArr(asDict(ev.post)?.images) ?? []).map(asDict).filter(Boolean) as Dict[]
+                    if (!images.length) return null
+                    return (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {images.map((image, index) => {
+                          const url = asStr(image.url)
+                          if (!url) return null
+                          const alt = asStr(image.alt_text) ?? `Generated image ${index + 1} for this post`
+                          return (
+                            <a key={url} href={url} target="_blank" rel="noreferrer" title={alt}>
+                              <img src={url} alt={alt} className="h-28 w-28 rounded-[8px] border border-border-primary object-cover" loading="lazy" />
+                            </a>
+                          )
+                        })}
+                      </div>
+                    )
+                  })()}
+
+                  {(() => {
                     const lead = asDict(ev.lead)
                     if (!lead) return null
                     const execs = (asArr(lead.executives) ?? []).map(asDict).filter(Boolean) as Dict[]

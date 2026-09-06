@@ -296,6 +296,99 @@ async fn run_allowlisted_commands(
     Ok(receipts)
 }
 
+/// How long one image generation may run before it is killed. Generous because it
+/// covers queueing on the provider's side as well as the render itself; the CLI is
+/// also given its own `--wait-timeout` below this so it exits cleanly first.
+const IMAGE_GENERATION_TIMEOUT_SECS: u64 = 780;
+
+/// Ceiling on the time ALL of a run's image generation may take.
+///
+/// The per-job timeout alone is not a bound on the run: twelve jobs each taking
+/// the full 780s is over two hours. Image generation happens after the agent
+/// process exits, so it is outside the template's `wall_time_seconds`, and the
+/// worker awaits it inline in its claim loop — so without this ceiling one content
+/// agent with a wedged CLI stalls every other agent in the deployment, and outlives
+/// the run's lease. Posts left without an image still publish.
+const IMAGE_TOTAL_BUDGET_SECS: u64 = 900;
+
+/// Environment for the image generator.
+///
+/// Unlike `restrict_test_environment`, this inherits the real `HOME` (and
+/// `XDG_CONFIG_HOME`) instead of pointing at a throwaway sandbox home. That is
+/// deliberate and load-bearing: the Higgsfield CLI authenticates through a browser
+/// OAuth flow and keeps its tokens in `$HOME/.config/higgsfield/credentials.json`,
+/// so a sandboxed HOME would make every run look unauthenticated. The operator
+/// logs the CLI in once on the server; the worker only calls it.
+///
+/// It follows that the generator runs with the operator's Higgsfield session — it
+/// spends that account's credits and is not isolated from it. That is the same
+/// trust level the server already grants `gh`, and it is why the program allowlist
+/// for this runner has exactly one entry.
+fn restrict_image_environment(command: &mut Command, workdir: &Path) {
+    let inherited = [
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "NODE_EXTRA_CA_CERTS",
+        "HOME",
+        "XDG_CONFIG_HOME",
+    ]
+    .iter()
+    .filter_map(|key| std::env::var_os(key).map(|value| (*key, value)))
+    .collect::<Vec<_>>();
+    command.env_clear();
+    for (key, value) in inherited {
+        command.env(key, value);
+    }
+    // Pointing TMPDIR at a directory that does not exist makes the CLI fail in
+    // ways that look like an auth or network problem, so the caller creates it.
+    command.env("TMPDIR", workdir.join("tmp"));
+}
+
+/// Run the image generator. `argv[0]` MUST be an allowlisted program (built by
+/// `image_gen::build_higgsfield_argv`, the only place the flags live).
+///
+/// A missing binary is reported as `image_generator_unavailable` rather than a
+/// generic failure, because it is the expected state on a server where the
+/// operator has not set the CLI up — and the caller turns it into "post without an
+/// image" instead of a failed run.
+async fn run_image_generator(argv: &[String], workdir: &Path) -> anyhow::Result<String> {
+    let Some((program, rest)) = argv.split_first() else {
+        anyhow::bail!("empty_command")
+    };
+    if !super::image_gen::is_allowlisted_program(program) {
+        anyhow::bail!("command_not_allowlisted")
+    }
+    let mut command = Command::new(program);
+    command.current_dir(workdir).args(rest);
+    restrict_image_environment(&mut command, workdir);
+    let output = match timeout(
+        Duration::from_secs(IMAGE_GENERATION_TIMEOUT_SECS),
+        command.kill_on_drop(true).output(),
+    )
+    .await
+    {
+        Err(_) => anyhow::bail!("image_generation_timeout"),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("image_generator_unavailable")
+        }
+        Ok(Err(error)) => return Err(error.into()),
+        Ok(Ok(output)) => output,
+    };
+    if !output.status.success() {
+        // The CLI reports an expired session and an out-of-credits workspace on
+        // stderr; surfacing it verbatim (truncated) is what makes those two very
+        // likely failures diagnosable from the run record.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "image_generator_failed: {}",
+            stderr.trim().chars().take(300).collect::<String>()
+        )
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// How long a single security scanner may run before it is killed.
 const SECURITY_SCANNER_TIMEOUT_SECS: u64 = 900;
 
@@ -2167,8 +2260,22 @@ fn fixed_prompt(
                 .and_then(|value| value.as_u64())
                 .unwrap_or(3)
                 .clamp(1, 10);
+            // Imagery is produced by the worker, not the agent: it has no shell and
+            // no image tool. So the agent only says WHAT each image should show, and
+            // is explicitly kept away from styling — the design system captured when
+            // the agent was created is what makes every image look like one brand,
+            // and a per-post style note would be exactly what breaks that.
+            let image_clause = if config
+                .pointer("/images/enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                " Each post also needs an illustration, which a separate image generator will produce from your description under a fixed brand design system. So for every post add `image_prompt`: one or two sentences describing ONLY the SUBJECT and composition of the image — the concrete thing it depicts and how it is arranged. Do NOT describe colours, fonts, art style, mood, lighting, or rendering technique: those come from the brand's design system and your version would fight it. Describe something concrete and visual that carries the post's central idea; never ask for text, words, letters, numbers, charts with labels, logos, or user-interface screenshots, because the generator cannot render legible type. Also add `image_alt`: a plain one-sentence description of the finished image for screen-reader users."
+            } else {
+                ""
+            };
             format!(
-                "You are a LinkedIn content strategist and copywriter for the account owner. Read the configuration: `topics` to write about, the target `audience` (ICP) to attract and convert into leads, the `language` to write in, the brand `tone`, the optional `cta`/lead magnet to drive toward, and any preferred `hashtags`. Write {count} distinct, ready-to-publish LinkedIn posts (TEXT ONLY) that give the audience genuine value, establish the author's authority, and naturally move the reader toward the CTA so the account captures leads and grows. Rules: each post is original and specific (never generic filler); open with a strong first-line hook that stops the scroll; use short lines and line breaks for skimmability; sound authentic and human, never spammy or clickbait; do NOT fabricate statistics, testimonials, client names, results, or credentials — if you would cite data you cannot verify, speak generally instead; weave in the CTA naturally at most once (near the end) only when one is configured; add 3-6 relevant hashtags. Write from expertise. You MAY consult the `nexusmind` MCP (get_context, search_memories, list_conventions) for the brand's voice, prior posts and conventions before writing; do not use any other tools.{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<the themes you covered this run>\",\"findings\":[{{\"title\":\"<short internal label / the hook line>\",\"severity\":\"info\",\"summary\":\"<the FULL post text, ready to publish>\",\"fingerprint\":\"<stable-kebab-case id from topic + angle>\",\"kind\":\"post\",\"post\":{{\"body\":\"<the full post text, ready to publish>\",\"hashtags\":[\"#Example\"],\"cta\":\"<the exact CTA used, or empty>\",\"topic\":\"<which configured topic this addresses>\",\"destination\":\"<personal|organization, or empty>\"}}}}]}}. Never return an empty findings array."
+                "You are a LinkedIn content strategist and copywriter for the account owner. Read the configuration: `topics` to write about, the target `audience` (ICP) to attract and convert into leads, the `language` to write in, the brand `tone`, the optional `cta`/lead magnet to drive toward, and any preferred `hashtags`. Write {count} distinct, ready-to-publish LinkedIn posts that give the audience genuine value, establish the author's authority, and naturally move the reader toward the CTA so the account captures leads and grows. Rules: each post is original and specific (never generic filler); open with a strong first-line hook that stops the scroll; use short lines and line breaks for skimmability; sound authentic and human, never spammy or clickbait; do NOT fabricate statistics, testimonials, client names, results, or credentials — if you would cite data you cannot verify, speak generally instead; weave in the CTA naturally at most once (near the end) only when one is configured; add 3-6 relevant hashtags. Write from expertise. You MAY consult the `nexusmind` MCP (get_context, search_memories, list_conventions) for the brand's voice, prior posts and conventions before writing; do not use any other tools.{image_clause}{custom_clause} Your final message MUST be exactly one JSON object and nothing else — no prose, no markdown fences — of the form {{\"summary\":\"<the themes you covered this run>\",\"findings\":[{{\"title\":\"<short internal label / the hook line>\",\"severity\":\"info\",\"summary\":\"<the FULL post text, ready to publish>\",\"fingerprint\":\"<stable-kebab-case id from topic + angle>\",\"kind\":\"post\",\"image_prompt\":\"<subject of the illustration, or omit when images are not requested>\",\"image_alt\":\"<one-sentence description of the image for screen readers, or omit>\",\"post\":{{\"body\":\"<the full post text, ready to publish>\",\"hashtags\":[\"#Example\"],\"cta\":\"<the exact CTA used, or empty>\",\"topic\":\"<which configured topic this addresses>\",\"destination\":\"<personal|organization, or empty>\"}}}}]}}. Never return an empty findings array."
             )
         }
         "security_scan" => {
@@ -3944,6 +4051,18 @@ async fn execute_claim(
             outcome.1["screenshots"] = serde_json::Value::Object(shots);
         }
     }
+    // Generate this run's post imagery while the sandbox still exists (the CLI
+    // writes references there), and attach it to the outcome so delivery can put
+    // the URLs on each finding.
+    if claim.template_key == "ai_content_manager" && outcome.0 == "succeeded" {
+        let (images, image_errors) = generate_post_images(claim, &outcome.1, &workdir).await;
+        if !images.is_empty() {
+            outcome.1["post_images"] = serde_json::Value::Object(images);
+        }
+        if !image_errors.is_empty() {
+            outcome.1["image_errors"] = json!(image_errors);
+        }
+    }
     let _ = tokio::fs::remove_dir_all(&workdir).await;
     outcome
 }
@@ -4030,6 +4149,206 @@ async fn upload_qa_screenshots(
     map
 }
 
+/// Generate the post imagery for an AI Content Manager run.
+///
+/// Returns a map keyed by each post's index in the agent's `findings` array →
+/// the images produced for it. Index rather than fingerprint because
+/// `deliver_findings` walks the same array in the same order, and the agent's
+/// fingerprint is optional (it derives one when absent), so an index cannot drift
+/// out of sync the way a re-derived key could.
+///
+/// Every failure here is soft. A post with no image is still a post worth
+/// publishing, so a missing CLI, an expired session, an empty credit balance or a
+/// single bad render degrades to text-only and is recorded on the run, never
+/// failing it.
+async fn generate_post_images(
+    claim: &queries::ClaimedAutonomousRun,
+    result: &serde_json::Value,
+    workdir: &Path,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+    let mut images_by_index = serde_json::Map::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    let config = &claim.config;
+    let enabled = config
+        .pointer("/images/enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return (images_by_index, errors);
+    }
+    let per_post = config
+        .pointer("/images/per_post")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1) as usize;
+    let system = super::image_gen::design_system_from_config(config);
+    if !super::image_gen::design_system_is_usable(&system) {
+        errors.push("design_system_missing".into());
+        return (images_by_index, errors);
+    }
+
+    let structured = structured_result(result);
+    let Some(findings) = structured.get("findings").and_then(|v| v.as_array()) else {
+        return (images_by_index, errors);
+    };
+
+    let media_dir = workdir.join("post-images");
+    if let Err(error) = tokio::fs::create_dir_all(&media_dir).await {
+        errors.push(format!("media_dir: {error}"));
+        return (images_by_index, errors);
+    }
+    // `restrict_image_environment` points TMPDIR here; the generator uploads
+    // reference files through it, so it has to exist before the first spawn.
+    if let Err(error) = tokio::fs::create_dir_all(media_dir.join("tmp")).await {
+        errors.push(format!("tmp_dir: {error}"));
+        return (images_by_index, errors);
+    }
+    // The brand logo is fetched once and reused as a reference on every image, so
+    // the mark's geometry carries across the whole set rather than being
+    // re-invented per render.
+    let mut reference_paths: Vec<String> = Vec::new();
+    if !system.logo_url.is_empty() {
+        match fetch_image_bytes(&system.logo_url).await {
+            Ok((bytes, content_type)) => {
+                // The extension has to match the bytes: the CLI uploads the file by
+                // path and the provider sniffs the type from it, so a JPEG or SVG
+                // written as `.png` is rejected rather than used as a reference.
+                let extension = match content_type.as_str() {
+                    "image/jpeg" => "jpg",
+                    "image/webp" => "webp",
+                    "image/svg+xml" => "svg",
+                    _ => "png",
+                };
+                let path = media_dir.join(format!("brand-logo.{extension}"));
+                match tokio::fs::write(&path, &bytes).await {
+                    Ok(()) => {
+                        if let Some(text) = path.to_str() {
+                            reference_paths.push(text.to_string());
+                        }
+                    }
+                    Err(error) => errors.push(format!("logo_write: {error}")),
+                }
+            }
+            Err(error) => errors.push(format!("logo_fetch: {error}")),
+        }
+    }
+
+    let r2 = super::r2::R2Config::from_env();
+    let mut budget = super::image_gen::MAX_IMAGE_JOBS_PER_RUN;
+    let started = std::time::Instant::now();
+    let out_of_time = |errors: &mut Vec<String>| {
+        if started.elapsed().as_secs() >= IMAGE_TOTAL_BUDGET_SECS {
+            errors.push("image_budget_exhausted".into());
+            true
+        } else {
+            false
+        }
+    };
+    for (index, finding) in findings.iter().enumerate().take(100) {
+        if budget == 0 || out_of_time(&mut errors) {
+            break;
+        }
+        let Some(image_prompt) = finding
+            .get("image_prompt")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let alt_text = finding
+            .get("image_alt")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| finding.get("title").and_then(|value| value.as_str()))
+            .unwrap_or("Illustration for this post")
+            .chars()
+            .take(300)
+            .collect::<String>();
+        let wanted = super::image_gen::images_for_post(per_post, budget);
+        let prompt = super::image_gen::compose_image_prompt(&system, image_prompt);
+        let mut produced = Vec::new();
+        for shot in 0..wanted {
+            if out_of_time(&mut errors) {
+                budget = 0;
+                break;
+            }
+            let argv = match super::image_gen::build_higgsfield_argv(
+                &prompt,
+                &system.aspect_ratio,
+                &reference_paths,
+            ) {
+                Ok(argv) => argv,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    break;
+                }
+            };
+            budget -= 1;
+            let stdout = match run_image_generator(&argv, &media_dir).await {
+                Ok(stdout) => stdout,
+                Err(error) => {
+                    let message = error.to_string();
+                    let unavailable = message.contains("image_generator_unavailable");
+                    errors.push(message);
+                    // A missing or unusable CLI will fail identically for every
+                    // remaining post, so stop rather than burning the run's wall
+                    // clock rediscovering it.
+                    if unavailable {
+                        budget = 0;
+                    }
+                    break;
+                }
+            };
+            let source_url = match super::image_gen::parse_higgsfield_result(&stdout) {
+                Ok(url) => url,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            // Re-host on R2: the provider's CDN URL is not a durable reference,
+            // and a draft may sit unpublished for days before anyone approves it.
+            // Only fetch when there is somewhere to re-host it: with no object
+            // storage the provider URL is what gets stored either way, so
+            // downloading megabytes to discard them is pure waste.
+            let hosted = match &r2 {
+                None => source_url.clone(),
+                Some(cfg) => match fetch_image_bytes(&source_url).await {
+                    Ok((bytes, content_type)) => {
+                        let extension = match content_type.as_str() {
+                            "image/jpeg" => "jpg",
+                            "image/webp" => "webp",
+                            _ => "png",
+                        };
+                        let key = format!(
+                            "post-images/{}/{}/{index}-{shot}.{extension}",
+                            claim.org_id, claim.run.id
+                        );
+                        match super::r2::put_object(cfg, &key, &bytes, &content_type).await {
+                            Ok(stored) => super::r2::object_url(cfg, &stored, 604_800),
+                            Err(error) => {
+                                errors.push(format!("r2_upload: {error}"));
+                                source_url.clone()
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(format!("image_fetch: {error}"));
+                        source_url.clone()
+                    }
+                },
+            };
+            produced.push(json!({"url": hosted, "alt_text": alt_text}));
+        }
+        if !produced.is_empty() {
+            images_by_index.insert(index.to_string(), json!(produced));
+        }
+    }
+    (images_by_index, errors)
+}
+
 fn structured_result(result: &serde_json::Value) -> serde_json::Value {
     let inner = result
         .get("result")
@@ -4074,6 +4393,575 @@ fn parse_lenient_json(text: &str) -> Option<serde_json::Value> {
 /// action for findings the agent did not file itself. Reuses the QA issue
 /// structure + fingerprint dedup, records a `github_issue` delivery on the
 /// finding (so the UI links it), and returns the created/existing issue JSON.
+/// Default ceiling on posts an agent may publish to LinkedIn per rolling day.
+///
+/// Three is a deliberate product choice, not a technical one: an account that
+/// posts more than a few times a day reads as automated, which is the outcome this
+/// agent exists to avoid. It is configurable, but the default protects the account
+/// of an operator who enables auto-publish without thinking about cadence.
+const DEFAULT_AUTO_PUBLISH_DAILY_LIMIT: i64 = 3;
+const MAX_AUTO_PUBLISH_DAILY_LIMIT: i64 = 10;
+
+/// Publish this run's post drafts to LinkedIn with no human approval.
+///
+/// Opt-in per agent (`auto_publish`), off by default, so every agent created
+/// before this existed keeps behaving as it did: drafts wait for a human.
+///
+/// Returns `null` when the agent has not opted in, so the run record only carries
+/// an `auto_published` key for runs that actually tried to publish.
+async fn auto_publish_posts(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    finding_ids: &[String],
+) -> serde_json::Value {
+    if claim.template_key != "ai_content_manager" {
+        return serde_json::Value::Null;
+    }
+    let enabled = claim
+        .config
+        .get("auto_publish")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !enabled || finding_ids.is_empty() {
+        return serde_json::Value::Null;
+    }
+    let limit = claim
+        .config
+        .get("auto_publish_daily_limit")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(DEFAULT_AUTO_PUBLISH_DAILY_LIMIT)
+        .clamp(1, MAX_AUTO_PUBLISH_DAILY_LIMIT);
+    // Every other delivery channel goes through this gate; auto-publish is the one
+    // that acts on the public internet with no human, so it must not be the one
+    // that skips it. It re-checks that the definition is still enabled, the run is
+    // on the current revision, the revision validated clean, the org is still
+    // enabled and the lease is live — which is also what stops an agent saved with
+    // validation errors (the scheduler does not filter on validation status) from
+    // publishing anyway.
+    let authorized = {
+        let db = store.conn();
+        let allowed = match db.lock() {
+            Ok(conn) => queries::autonomous_agent_run_publish_authorized(
+                &conn,
+                &claim.org_id,
+                &claim.run.id,
+            )
+            .unwrap_or(false),
+            Err(_) => false,
+        };
+        allowed
+    };
+    if !authorized {
+        tracing::warn!(
+            "auto-publish refused for run {}: publish authorization denied",
+            claim.run.id
+        );
+        return json!({"published": [], "failed": [], "refused": "publish_not_authorized"});
+    }
+    // Rolling 24 hours rather than a calendar day: a calendar reset would let an
+    // agent scheduled near midnight publish twice its allowance within an hour.
+    let since = (chrono::Utc::now() - chrono::Duration::hours(24))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    let already_count = {
+        let db = store.conn();
+        // Bound to a statement, not the block's tail: the lock guard is a
+        // temporary that would otherwise outlive `db`.
+        let counted = match db.lock() {
+            Ok(conn) => queries::count_recent_linkedin_deliveries(
+                &conn,
+                &claim.org_id,
+                &claim.run.definition_id,
+                &since,
+            )
+            .unwrap_or(limit),
+            // A database that cannot be read cannot prove the cap is respected,
+            // so it fails closed: publish nothing.
+            Err(_) => limit,
+        };
+        counted
+    };
+    let mut remaining = (limit - already_count).max(0);
+    let mut published = Vec::new();
+    let mut already = Vec::new();
+    let mut failures = Vec::new();
+    let mut skipped_over_limit = 0usize;
+
+    for finding_id in finding_ids {
+        // Only publishable if it is a post draft AND still open. The status check
+        // is what respects a human's decision: findings dedupe by fingerprint and
+        // an upsert deliberately does not reset status, so a post the operator
+        // archived would otherwise be re-emitted next run and auto-published — the
+        // exact content a person had just rejected.
+        let publishable = {
+            let db = store.conn();
+            let matched = match db.lock() {
+                Ok(conn) => queries::get_autonomous_agent_finding(&conn, &claim.org_id, finding_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|finding| {
+                        let is_post = finding.evidence.get("post").is_some()
+                            || finding.evidence.get("kind").and_then(|v| v.as_str()) == Some("post");
+                        is_post && finding.status == "open"
+                    }),
+                Err(_) => false,
+            };
+            matched
+        };
+        if !publishable {
+            continue;
+        }
+        if remaining == 0 {
+            skipped_over_limit += 1;
+            continue;
+        }
+        match publish_finding_to_linkedin(store, &claim.org_id, finding_id, None, None).await {
+            Ok(outcome) => {
+                if outcome.get("already_published").and_then(|v| v.as_bool()) == Some(true) {
+                    // Reported apart from `published` on purpose. Findings dedupe by
+                    // fingerprint, so a re-run of the same angle reuses the row whose
+                    // post is already live — while the upsert has just replaced its
+                    // text. Counting that as "published" would claim the NEW copy went
+                    // out when what exists on LinkedIn is the old one.
+                    already.push(outcome);
+                } else {
+                    remaining -= 1;
+                    published.push(outcome);
+                }
+            }
+            Err(error) => failures.push(json!({
+                "finding_id": finding_id,
+                "error": error.to_string(),
+            })),
+        }
+    }
+    if !failures.is_empty() {
+        tracing::warn!(
+            "auto-publish: {} of {} post(s) failed for run {}",
+            failures.len(),
+            published.len() + failures.len(),
+            claim.run.id
+        );
+    }
+    json!({
+        "published": published,
+        "already_published": already,
+        "failed": failures,
+        "skipped_over_daily_limit": skipped_over_limit,
+        "daily_limit": limit,
+        "published_in_last_24h": already_count,
+    })
+}
+
+/// Publish one AI Content Manager post finding to LinkedIn.
+///
+/// Shared by the admin's manual "Publish" button and the worker's auto-publish so
+/// both paths get the same guarantees, above all the same duplicate guard: a
+/// LinkedIn post is public and irreversible, and the two callers must not be able
+/// to race each other into posting the same content twice.
+///
+/// The guard is the delivery row keyed `(org, "linkedin", finding_id)`. It is
+/// claimed *before* anything is sent, so a concurrent caller sees an existing row;
+/// if that row is already `delivered` this returns the original post instead of
+/// publishing again. A row left `pending` by a failed attempt lets a later retry
+/// proceed, which is the behaviour we want — the failure means nothing was posted.
+pub async fn publish_finding_to_linkedin(
+    store: &SqliteStore,
+    org_id: &str,
+    finding_id: &str,
+    destination_override: Option<String>,
+    text_override: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    let (finding, destination) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let finding = queries::get_autonomous_agent_finding(&conn, org_id, finding_id)?
+            .ok_or_else(|| anyhow::anyhow!("finding_not_found"))?;
+        // Destinations the operator authorized on the agent itself.
+        let allowed = queries::get_autonomous_agent_detail(&conn, org_id, &finding.definition_id)
+            .ok()
+            .flatten()
+            .and_then(|detail| {
+                detail
+                    .revision
+                    .config
+                    .get("destinations")
+                    .and_then(|value| value.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str())
+                            .filter(|item| matches!(*item, "personal" | "organization"))
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .unwrap_or_default();
+        // Precedence: an explicit caller override (a human choosing in the admin)
+        // wins outright. Otherwise the agent's own tag is honoured ONLY if the
+        // operator authorized that destination — the tag is model-written text and
+        // reaches the model through topics, custom instructions and stored
+        // memories, so an unconstrained tag is a path to posting on the company
+        // page from an agent that was only ever approved for a personal profile.
+        let destination = match destination_override {
+            Some(value) => normalize_linkedin_destination(&value),
+            None => {
+                let tagged = finding
+                    .evidence
+                    .pointer("/post/destination")
+                    .and_then(|v| v.as_str())
+                    .map(normalize_linkedin_destination);
+                match tagged {
+                    Some(value) if allowed.iter().any(|item| *item == value) => value,
+                    _ => allowed
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "personal".to_string()),
+                }
+            }
+        };
+        (finding, destination)
+    };
+
+    // Claim the delivery first: this is the duplicate guard, so it has to happen
+    // before a single byte reaches LinkedIn.
+    let delivery = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        queries::create_autonomous_agent_delivery(
+            &conn,
+            org_id,
+            &finding.run_id,
+            Some(&finding.id),
+            "linkedin",
+            &finding.id,
+        )?
+    };
+    if delivery.status == "delivered" {
+        return Ok(json!({
+            "url": delivery.external_url,
+            "urn": delivery.external_id,
+            "already_published": true,
+        }));
+    }
+    // Reading the row is not the same as owning it: every concurrent caller sees
+    // the same `pending`. Only the one that wins this compare-and-swap may send.
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        if !queries::claim_autonomous_agent_delivery(&conn, org_id, &delivery.id)? {
+            anyhow::bail!("publish_already_in_progress")
+        }
+    }
+    // From here on the claim is held, so any early return has to release it or the
+    // post can never be retried.
+    let release_claim = |code: &str| {
+        let db = store.conn();
+        let released = match db.lock() {
+            Ok(conn) => queries::fail_autonomous_agent_delivery(&conn, org_id, &delivery.id, code),
+            Err(_) => Ok(()),
+        };
+        if let Err(error) = released {
+            tracing::warn!("linkedin claim not released for {}: {error:#}", delivery.id);
+        }
+    };
+
+    let text = text_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            finding
+                .evidence
+                .pointer("/post/body")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| finding.summary.clone());
+
+    let access_token = match linkedin_access_token(store, org_id, &destination).await {
+        Ok(token) => token,
+        Err(error) => {
+            release_claim("linkedin_token_unavailable");
+            return Err(error);
+        }
+    };
+    let author_urn = {
+        let db = store.conn();
+        let resolved = db
+            .lock()
+            .ok()
+            .and_then(|conn| queries::get_linkedin_connector(&conn, org_id, &destination).ok())
+            .flatten()
+            .and_then(|(metadata, _)| {
+                metadata
+                    .get("author_urn")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|value| !value.is_empty());
+        match resolved {
+            Some(urn) => urn,
+            None => {
+                release_claim("linkedin_not_connected");
+                anyhow::bail!("linkedin_not_connected")
+            }
+        }
+    };
+
+    // Attach whatever imagery the run generated. An image that fails to upload is
+    // dropped rather than failing the publish: the post's value is its copy, and
+    // losing the whole post over one image would be the worse outcome.
+    let mut images = Vec::new();
+    let mut image_errors = Vec::new();
+    if let Some(entries) = finding
+        .evidence
+        .pointer("/post/images")
+        .and_then(|v| v.as_array())
+    {
+        for entry in entries.iter().take(super::image_gen::MAX_IMAGES_PER_POST) {
+            let Some(url) = entry.get("url").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let alt_text = entry
+                .get("alt_text")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(finding.title.as_str())
+                .chars()
+                .take(300)
+                .collect::<String>();
+            match fetch_image_bytes(url).await {
+                Ok((bytes, content_type)) => {
+                    match super::linkedin::upload_image(
+                        &access_token,
+                        &author_urn,
+                        bytes,
+                        &content_type,
+                    )
+                    .await
+                    {
+                        Ok(urn) => images.push(super::linkedin::PostImage { urn, alt_text }),
+                        Err(error) => image_errors.push(error.to_string()),
+                    }
+                }
+                Err(error) => image_errors.push(error.to_string()),
+            }
+        }
+    }
+
+    let (urn, url) = match super::linkedin::create_post(&access_token, &author_urn, &text, &images)
+        .await
+    {
+        Ok(created) => created,
+        Err(error) => {
+            // Nothing was published, so the claim is released and a later attempt
+            // may try again.
+            release_claim("linkedin_post_failed");
+            return Err(error);
+        }
+    };
+
+    // The post is LIVE from here. Nothing below may return early: leaving the
+    // delivery unfinished is what lets a retry publish it a second time, so a
+    // poisoned mutex is recovered rather than propagated.
+    {
+        let db = store.conn();
+        let conn = match db.lock() {
+            Ok(conn) => conn,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Err(error) = queries::create_autonomous_output_link(
+            &conn,
+            org_id,
+            &finding.run_id,
+            "linkedin_post",
+            &urn,
+            Some(&url),
+        ) {
+            tracing::warn!("linkedin output link not recorded for {}: {error:#}", finding.id);
+        }
+        if let Err(error) = queries::complete_autonomous_agent_delivery(
+            &conn,
+            org_id,
+            &delivery.id,
+            Some(&urn),
+            Some(&url),
+        ) {
+            // The post is already public; failing to mark the delivery delivered
+            // would let a retry publish it a second time, so it is loud.
+            tracing::error!(
+                "linkedin post {urn} published but the delivery was not completed: {error:#}"
+            );
+        }
+        let _ = queries::patch_autonomous_agent_finding(&conn, org_id, &finding.id, "resolved");
+    }
+    Ok(json!({
+        "url": url,
+        "urn": urn,
+        "destination": destination,
+        "images": images.len(),
+        "image_errors": image_errors,
+    }))
+}
+
+/// `personal` unless the caller explicitly asked for the company page.
+pub fn normalize_linkedin_destination(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("organization") {
+        "organization".to_string()
+    } else {
+        "personal".to_string()
+    }
+}
+
+/// A usable access token for a destination, refreshing and re-storing it when it
+/// is expired or within five minutes of expiring.
+async fn linkedin_access_token(
+    store: &SqliteStore,
+    org_id: &str,
+    destination: &str,
+) -> anyhow::Result<String> {
+    let (access_token, refresh_token, expires_at) = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        let (_, bundle) = queries::get_linkedin_connector(&conn, org_id, destination)?
+            .ok_or_else(|| anyhow::anyhow!("linkedin_not_connected"))?;
+        (
+            bundle
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            bundle
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            bundle.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0),
+        )
+    };
+    let stale = expires_at > 0 && chrono::Utc::now().timestamp() > expires_at - 300;
+    if !stale {
+        return Ok(access_token);
+    }
+    let Some(refresh_token) = refresh_token else {
+        // Nothing to refresh with; the stored token is the only chance, and if it
+        // is genuinely expired LinkedIn will say so.
+        return Ok(access_token);
+    };
+    let app = super::linkedin::app_from_env()?;
+    let fresh = super::linkedin::refresh(&app, &refresh_token).await?;
+    let bundle = json!({
+        "access_token": fresh.access_token,
+        "refresh_token": fresh.refresh_token.unwrap_or(refresh_token),
+        "expires_at": chrono::Utc::now().timestamp() + fresh.expires_in.unwrap_or(0).max(0),
+    });
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        queries::update_linkedin_connector_secret(
+            &conn,
+            org_id,
+            destination,
+            &bundle.to_string(),
+        )?;
+    }
+    Ok(fresh.access_token)
+}
+
+/// Reject a host that resolves to an address inside the deployment.
+///
+/// This runs on URLs that ultimately come from configuration and from the image
+/// provider, and the fetched bytes are then uploaded to a public LinkedIn account
+/// — which makes an unguarded fetch a way to read the cloud metadata service or an
+/// internal service and publish the result. Resolution happens here, before the
+/// request, so a hostname that points at a private address is caught too.
+async fn is_public_http_url(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addresses: Vec<IpAddr> = match tokio::net::lookup_host((host, port)).await {
+        Ok(resolved) => resolved.map(|socket| socket.ip()).collect(),
+        Err(_) => return false,
+    };
+    if addresses.is_empty() {
+        return false;
+    }
+    addresses.iter().all(|address| match address {
+        IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                // 169.254.169.254 is link-local and already covered; 100.64/10
+                // (carrier-grade NAT) is not, and is routable inside some VPCs.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                // Unique-local (fc00::/7) and link-local (fe80::/10).
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80)
+        }
+    })
+}
+
+/// Download an image so it can be re-uploaded to LinkedIn or handed to the image
+/// generator as a reference.
+///
+/// The body is read in chunks and abandoned the moment it crosses the ceiling:
+/// buffering the whole response first and measuring afterwards is not a ceiling at
+/// all, it is an out-of-memory waiting for a large URL. Redirects are disabled so
+/// a public host cannot bounce the request to an internal one after the check.
+async fn fetch_image_bytes(url: &str) -> anyhow::Result<(Vec<u8>, String)> {
+    const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+    const FETCH_TIMEOUT_SECS: u64 = 60;
+    let parsed = reqwest::Url::parse(url)?;
+    if !is_public_http_url(&parsed).await {
+        anyhow::bail!("image_url_not_public")
+    }
+    let mut response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .build()?
+        .get(parsed)
+        .send()
+        .await?
+        .error_for_status()?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("image/png")
+        .split(';')
+        .next()
+        .unwrap_or("image/png")
+        .trim()
+        .to_string();
+    // A declared length past the ceiling is refused without reading a byte.
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_IMAGE_BYTES as u64)
+    {
+        anyhow::bail!("image_too_large")
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+            anyhow::bail!("image_too_large")
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((bytes, content_type))
+}
+
 pub async fn create_issue_for_finding(
     store: &SqliteStore,
     org_id: &str,
@@ -4299,12 +5187,15 @@ fn finding_issue_markup(finding: &serde_json::Value) -> (String, String) {
     (title, body)
 }
 
+/// Persist and fan out the agent's findings. Returns the persisted finding ids in
+/// the agent's own order, which the AI Content Manager's auto-publish then walks.
 async fn deliver_findings(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
     result: &serde_json::Value,
-) {
+) -> Vec<String> {
+    let mut persisted: Vec<String> = Vec::new();
     if !matches!(
         claim.template_key.as_str(),
         "qa" | "github_pr_reviewer"
@@ -4314,14 +5205,16 @@ async fn deliver_findings(
             | "security_scan"
             | "security_dast"
     ) {
-        return;
+        return persisted;
     }
     let structured = structured_result(result);
     let Some(findings) = structured.get("findings").and_then(|v| v.as_array()) else {
-        return;
+        return persisted;
     };
     // {filename: url} map of screenshots the worker uploaded to R2 for this run.
     let screenshots = result.get("screenshots").and_then(|v| v.as_object());
+    // {finding index: [{url, alt_text}]} map of generated post imagery.
+    let post_images = result.get("post_images").and_then(|v| v.as_object());
     let outputs = if matches!(
         claim.template_key.as_str(),
         "qa" | "lead_generation"
@@ -4339,7 +5232,7 @@ async fn deliver_findings(
     } else {
         vec![json!("nexusmind")]
     };
-    for value in findings.iter().take(100) {
+    for (index, value) in findings.iter().enumerate().take(100) {
         let title = value
             .get("title")
             .and_then(|v| v.as_str())
@@ -4389,6 +5282,24 @@ async fn deliver_findings(
         if let (Some(url), Some(object)) = (&shot_url, evidence.as_object_mut()) {
             object.insert("screenshot_url".into(), json!(url));
         }
+        // Post imagery for this finding, keyed by its index in the agent's findings
+        // array. `post.images` is what publish reads and then fetches server-side,
+        // so it is rewritten from worker-generated data ONLY and any value the model
+        // put there is discarded first. Without that removal the model could name
+        // arbitrary URLs — internal addresses included — that the server would fetch
+        // and upload to the operator's live LinkedIn account.
+        if claim.template_key == "ai_content_manager" {
+            if let Some(object) = evidence.as_object_mut() {
+                let mut post = object.get("post").cloned().unwrap_or_else(|| json!({}));
+                if let Some(post_object) = post.as_object_mut() {
+                    post_object.remove("images");
+                    if let Some(images) = post_images.and_then(|map| map.get(&index.to_string())) {
+                        post_object.insert("images".into(), images.clone());
+                    }
+                    object.insert("post".into(), post);
+                }
+            }
+        }
         let finding = {
             let db = store.conn();
             let Ok(conn) = db.lock() else { continue };
@@ -4407,6 +5318,7 @@ async fn deliver_findings(
                 Err(_) => continue,
             }
         };
+        persisted.push(finding.id.clone());
         let key = format!("{}:nexusmind", finding.fingerprint);
         if let Ok(conn) = store.conn().lock() {
             if let Ok(delivery) = queries::create_autonomous_agent_delivery(
@@ -4694,6 +5606,7 @@ async fn deliver_findings(
             }
         }
     }
+    persisted
 }
 
 async fn retry_one_delivery(store: &SqliteStore, config: &Config) {
@@ -5024,9 +5937,16 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     &json!({"worker":"local"}),
                 );
             }
-            let (mut status, result) = execute_claim(&store, &config, &claim).await;
+            let (mut status, mut result) = execute_claim(&store, &config, &claim).await;
             if status == "succeeded" {
-                deliver_findings(&store, &config, &claim, &result).await;
+                let persisted = deliver_findings(&store, &config, &claim, &result).await;
+                // Auto-publish runs only after the drafts are safely persisted, so a
+                // post that reaches LinkedIn always has a finding behind it to audit
+                // and a delivery row to stop it going out twice.
+                let published = auto_publish_posts(&store, &claim, &persisted).await;
+                if !published.is_null() {
+                    result["auto_published"] = published;
+                }
                 let db = store.conn();
                 if let Ok(conn) = db.lock() {
                     if queries::autonomous_agent_run_has_failed_deliveries(
@@ -5045,7 +5965,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                 // the Findings tab (and configured outputs), keeping the
                 // budget_exhausted status. deliver_findings no-ops when the outcome
                 // carries no result/findings (e.g. a bare wall-time timeout).
-                deliver_findings(&store, &config, &claim, &result).await;
+                // No auto-publish here: a run that ran out of budget mid-way is not
+                // a run whose output should go public unreviewed.
+                let _ = deliver_findings(&store, &config, &claim, &result).await;
             }
             if status == "blocked_runtime"
                 && matches!(

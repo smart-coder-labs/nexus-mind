@@ -16744,6 +16744,99 @@ pub fn validate_autonomous_agent_definition(
                     errors.push("invalid_posts_per_run")
                 }
             }
+            // Imagery: a design system is what makes every generated image look
+            // like the same brand, so turning images on without one is rejected
+            // here rather than producing a differently-styled picture every run.
+            let images_enabled = current
+                .revision
+                .config
+                .pointer("/images/enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if images_enabled {
+                let system = crate::automation::image_gen::design_system_from_config(
+                    &current.revision.config,
+                );
+                if !crate::automation::image_gen::design_system_is_usable(&system) {
+                    errors.push("design_system_required")
+                }
+                if let Some(per_post) = current
+                    .revision
+                    .config
+                    .pointer("/images/per_post")
+                    .and_then(|v| v.as_i64())
+                {
+                    let max = crate::automation::image_gen::MAX_IMAGES_PER_POST as i64;
+                    if !(1..=max).contains(&per_post) {
+                        errors.push("invalid_images_per_post")
+                    }
+                }
+            }
+            // A logo that is not a fetchable http(s) URL would be silently dropped
+            // at generation time, so it is caught at save time instead.
+            if let Some(logo) = current
+                .revision
+                .config
+                .pointer("/design_system/logo_url")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if !crate::automation::image_gen::is_http_url(logo) {
+                    errors.push("invalid_logo_url")
+                }
+            }
+            // Every palette entry must be a hex colour; prose reaching the image
+            // model as a colour skews the render.
+            if let Some(palette) = current
+                .revision
+                .config
+                .pointer("/design_system/palette")
+                .and_then(|v| v.as_array())
+            {
+                if palette.iter().any(|item| {
+                    !item
+                        .as_str()
+                        .map(str::trim)
+                        .is_some_and(crate::automation::image_gen::is_hex_colour)
+                }) {
+                    errors.push("invalid_palette_colour")
+                }
+            }
+            // Auto-publish posts to a public feed with no human in the loop, so its
+            // two preconditions are enforced at save time: somewhere to publish,
+            // and a cadence ceiling.
+            if current
+                .revision
+                .config
+                .get("auto_publish")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                let has_destination = current
+                    .revision
+                    .config
+                    .get("destinations")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|items| {
+                        items.iter().any(|item| {
+                            matches!(item.as_str(), Some("personal" | "organization"))
+                        })
+                    });
+                if !has_destination {
+                    errors.push("auto_publish_destination_required")
+                }
+            }
+            if let Some(limit) = current
+                .revision
+                .config
+                .get("auto_publish_daily_limit")
+                .and_then(|v| v.as_i64())
+            {
+                if !(1..=10).contains(&limit) {
+                    errors.push("invalid_auto_publish_daily_limit")
+                }
+            }
         }
         "security_scan" => {
             // SAST/SCA runs over a repository checkout, so a valid repo is required.
@@ -17834,6 +17927,28 @@ pub fn upsert_linkedin_connector(
     Ok(())
 }
 
+/// Replace only the stored OAuth token bundle for a LinkedIn destination.
+///
+/// Separate from `upsert_linkedin_connector` because a token refresh is not a
+/// reconnection: it must not need a `user_id` (the worker's auto-publish has no
+/// acting user) and it must not bump `revocation_generation`, which exists to
+/// invalidate leases when an operator actually re-authorizes the connector.
+pub fn update_linkedin_connector_secret(
+    conn: &Connection,
+    org_id: &str,
+    destination: &str,
+    token_bundle_json: &str,
+) -> Result<()> {
+    let ciphertext = crate::crypto::encrypt(token_bundle_json)
+        .ok_or_else(|| anyhow::anyhow!("encryption_required"))?;
+    conn.execute(
+        "UPDATE autonomous_agent_connectors SET secret_ciphertext=?3, health='ready', updated_at=datetime('now')
+         WHERE org_id=?1 AND kind='linkedin' AND name=?2",
+        rusqlite::params![org_id, destination, ciphertext],
+    )?;
+    Ok(())
+}
+
 /// Fetch a LinkedIn connection's metadata + decrypted token bundle for a
 /// destination, or None if not connected.
 pub fn get_linkedin_connector(
@@ -18162,6 +18277,30 @@ pub fn list_autonomous_agent_findings(
         .map_err(Into::into)
 }
 
+/// How many posts this agent has actually published to LinkedIn since `since`
+/// (an ISO-8601 UTC timestamp). Backs the AI Content Manager's daily publish cap:
+/// auto-publish is the one path that takes a public, irreversible action with no
+/// human in the loop, so it needs a ceiling that survives a restart — which a
+/// counter held in the worker's memory would not.
+///
+/// Counts only `delivered` rows, so failed attempts do not consume the budget.
+pub fn count_recent_linkedin_deliveries(
+    conn: &Connection,
+    org_id: &str,
+    definition_id: &str,
+    since: &str,
+) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM autonomous_agent_deliveries d
+         JOIN autonomous_agent_findings f ON f.id = d.finding_id
+         WHERE d.org_id=?1 AND d.channel='linkedin' AND d.status='delivered'
+           AND f.definition_id=?2 AND d.updated_at >= ?3",
+        rusqlite::params![org_id, definition_id, since],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub fn patch_autonomous_agent_finding(
     conn: &Connection,
     org_id: &str,
@@ -18362,6 +18501,32 @@ pub fn complete_autonomous_agent_delivery(
 ) -> Result<()> {
     conn.execute("UPDATE autonomous_agent_deliveries SET status='delivered',external_id=?3,external_url=?4,attempts=attempts+1,last_error_code=NULL,next_attempt_at=NULL,updated_at=datetime('now') WHERE org_id=?1 AND id=?2",rusqlite::params![org_id,id,external_id,external_url])?;
     Ok(())
+}
+
+/// Take exclusive ownership of a delivery before it is sent, returning true only
+/// for the caller that won.
+///
+/// `create_autonomous_agent_delivery` is not a claim: its `ON CONFLICT DO NOTHING`
+/// followed by a `SELECT` hands every concurrent caller the same `pending` row, so
+/// two of them (the operator's Publish button and the worker's auto-publish, or one
+/// double-click) would both decide to send. For LinkedIn that means two identical
+/// public posts, which cannot be undone. This is the compare-and-swap that makes
+/// the decision exclusive: exactly one caller can move the row out of `attempts=0`.
+///
+/// A row previously marked `failed` is claimable again — nothing was published, so
+/// retrying is correct. A row left `pending` with `attempts>0` is NOT: that is a
+/// caller that claimed and then died, and we cannot tell whether LinkedIn accepted
+/// the post before it did. It stays stuck until a human looks, which is the right
+/// direction to fail for an irreversible public action.
+pub fn claim_autonomous_agent_delivery(conn: &Connection, org_id: &str, id: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE autonomous_agent_deliveries
+         SET attempts=attempts+1, next_attempt_at=NULL, updated_at=datetime('now')
+         WHERE org_id=?1 AND id=?2
+           AND ((status='pending' AND attempts=0) OR status='failed')",
+        rusqlite::params![org_id, id],
+    )?;
+    Ok(changed == 1)
 }
 
 pub fn fail_autonomous_agent_delivery(

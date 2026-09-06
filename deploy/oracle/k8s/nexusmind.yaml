@@ -126,6 +126,19 @@ spec:
               value: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
             - name: HOME
               value: /claude-home
+            # The AI Content Manager generates post imagery by shelling out to the
+            # Higgsfield CLI. That CLI keeps a browser-OAuth session in
+            # $HOME/.config/higgsfield, so it is installed into the PVC (which HOME
+            # points at) rather than baked into the image — a login inside the image
+            # would be lost on every deploy. The npm prefix used is
+            # /claude-home/.npm-global, so its bin directory has to be on PATH here:
+            # the image's own PATH does not include it, and the worker passes its
+            # PATH straight through to the generator.
+            #   npm i -g --prefix /claude-home/.npm-global @higgsfield/cli
+            #   higgsfield auth login   (interactive, once, inside the container)
+            # Without the CLI, content agents still run and simply post text only.
+            - name: PATH
+              value: /claude-home/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             # Absolute base the Judge template uses to embed durable evidence image
             # URLs (the public /evidence re-signing endpoint) in GitHub comments.
             - name: PUBLIC_API_BASE_URL

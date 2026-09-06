@@ -180,14 +180,84 @@ pub async fn admin_organizations(access_token: &str) -> Result<Vec<(String, Stri
     Ok(orgs)
 }
 
-/// Publish a text post as `author_urn` (a person or organization URN). Returns
-/// the created post's URN and a best-effort public URL.
-pub async fn create_text_post(
+/// An image already uploaded to LinkedIn, ready to attach to a post.
+#[derive(Debug, Clone)]
+pub struct PostImage {
+    /// `urn:li:image:…`, returned by [`upload_image`].
+    pub urn: String,
+    /// Alt text. LinkedIn requires it on every image in a multi-image post, and
+    /// a post that reaches a screen reader with no description is a defect on a
+    /// professional network, so it is required here rather than optional.
+    pub alt_text: String,
+}
+
+/// Upload image bytes and return the resulting `urn:li:image:…`.
+///
+/// Two steps, per the Images API: `initializeUpload` hands back a single-use
+/// `uploadUrl` plus the URN the post will reference, then the bytes go to that
+/// URL. The URN is usable immediately; LinkedIn finishes processing
+/// asynchronously and serves the image once the post is live.
+pub async fn upload_image(
+    access_token: &str,
+    owner_urn: &str,
+    bytes: Vec<u8>,
+    content_type: &str,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let init: serde_json::Value = client
+        .post("https://api.linkedin.com/rest/images?action=initializeUpload")
+        .bearer_auth(access_token)
+        .header("LinkedIn-Version", api_version())
+        .header("X-Restli-Protocol-Version", "2.0.0")
+        .json(&json!({"initializeUploadRequest": {"owner": owner_urn}}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let upload_url = init
+        .pointer("/value/uploadUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("linkedin_image_upload_url_missing"))?
+        .to_string();
+    let image_urn = init
+        .pointer("/value/image")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("linkedin_image_urn_missing"))?
+        .to_string();
+    let response = client
+        .put(&upload_url)
+        .bearer_auth(access_token)
+        .header("Content-Type", content_type)
+        .body(bytes)
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "linkedin_image_upload_{}: {}",
+            status.as_u16(),
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(image_urn)
+}
+
+/// Publish a post as `author_urn` (a person or organization URN), optionally
+/// carrying images. Returns the created post's URN and a best-effort public URL.
+///
+/// The `content` shape is dictated by how many images there are: none omits the
+/// field entirely, one uses `media`, and several use `multiImage`. Passing a
+/// single image as a one-element `multiImage` is rejected by the API, which is
+/// why the split is explicit here rather than left to the caller.
+pub async fn create_post(
     access_token: &str,
     author_urn: &str,
     text: &str,
+    images: &[PostImage],
 ) -> Result<(String, String)> {
-    let body = json!({
+    let mut body = json!({
         "author": author_urn,
         "commentary": text,
         "visibility": "PUBLIC",
@@ -199,6 +269,30 @@ pub async fn create_text_post(
         "lifecycleState": "PUBLISHED",
         "isReshareDisabledByAuthor": false
     });
+    // LinkedIn caps a multi-image post at 20; anything beyond is dropped rather
+    // than failing the whole publish over a surplus image.
+    match images.len() {
+        0 => {}
+        1 => {
+            body["content"] = json!({
+                "media": {
+                    "id": images[0].urn,
+                    "altText": images[0].alt_text,
+                }
+            });
+        }
+        _ => {
+            body["content"] = json!({
+                "multiImage": {
+                    "images": images
+                        .iter()
+                        .take(20)
+                        .map(|image| json!({"id": image.urn, "altText": image.alt_text}))
+                        .collect::<Vec<_>>()
+                }
+            });
+        }
+    }
     let response = reqwest::Client::new()
         .post("https://api.linkedin.com/rest/posts")
         .bearer_auth(access_token)

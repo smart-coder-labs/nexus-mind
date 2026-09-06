@@ -679,6 +679,14 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             post(autonomous_agents::publish_finding_linkedin),
         )
         .route(
+            "/v1/autonomous-agents/brand-assets",
+            // axum's default body limit is 2 MiB, below the 4 MiB the handler
+            // accepts — without this a 3 MB logo fails as a malformed upload
+            // rather than with the handler's own "too large" message.
+            post(autonomous_agents::upload_brand_asset)
+                .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024)),
+        )
+        .route(
             "/v1/autonomous-agents/linkedin/authorize",
             get(autonomous_agents::linkedin_authorize),
         )

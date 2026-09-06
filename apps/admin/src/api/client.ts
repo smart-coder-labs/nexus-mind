@@ -130,11 +130,15 @@ export class NexusMindClient {
   constructor(private readonly baseUrl: string) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    // A FormData body must NOT carry a hand-written Content-Type: only the
+    // browser can add the multipart boundary, and a bare `multipart/form-data`
+    // header makes the server unable to parse the parts.
+    const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
     const res = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       credentials: 'include',
       headers: {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...init?.headers,
       },
     })
@@ -1379,7 +1383,14 @@ export class NexusMindClient {
   createFindingIssue(id:string, repository?:string): Promise<Record<string, unknown>> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/github-issue`,{method:'POST', ...(repository ? {body:JSON.stringify({repository})} : {})}) }
   linkedinAuthorize(destination:'personal'|'organization'): Promise<{url:string}> { return this.request(`/v1/autonomous-agents/linkedin/authorize?destination=${destination}`) }
   listLinkedinConnections(): Promise<Array<{destination:string;metadata:Record<string,unknown>;connected_at:string}>> { return this.request('/v1/autonomous-agent-linkedin-connections') }
-  publishFindingLinkedin(id:string, body:{destination:'personal'|'organization';text?:string}): Promise<{url:string;urn:string}> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/publish-linkedin`,{method:'POST',body:JSON.stringify(body)}) }
+  publishFindingLinkedin(id:string, body:{destination:'personal'|'organization';text?:string}): Promise<{url:string;urn:string;already_published?:boolean}> { return this.request(`/v1/autonomous-agent-findings/${encodeURIComponent(id)}/publish-linkedin`,{method:'POST',body:JSON.stringify(body)}) }
+  /** Upload a brand asset (the design system's logo) and get back a URL to store in the agent config. */
+  async uploadBrandAsset(file: File): Promise<{url:string}> {
+    const form = new FormData()
+    form.append('file', file)
+    // No Content-Type header: the browser must set the multipart boundary itself.
+    return this.request('/v1/autonomous-agents/brand-assets', { method: 'POST', body: form })
+  }
   getAutonomousAgentSchedule(id:string): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`) }
   putAutonomousAgentSchedule(id:string,data:{kind:string;expression?:string;timezone:string;misfire_policy:string;enabled:boolean}): Promise<AutonomousAgentSchedule> { return this.request(`/v1/autonomous-agents/${encodeURIComponent(id)}/schedule`,{method:'PUT',body:JSON.stringify(data)}) }
   listAutonomousAgentRuns(definitionId?:string): Promise<AutonomousAgentRun[]> { return this.request(`/v1/autonomous-agent-runs${definitionId?`?definition_id=${encodeURIComponent(definitionId)}`:''}`) }

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 75;
+pub const LATEST_USER_VERSION: i32 = 76;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -88,8 +88,141 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v73(conn)?;
     run_v74(conn)?;
     run_v75(conn)?;
+    run_v76(conn)?;
     Ok(())
 }
+
+/// Migration v76: allow the `linkedin` delivery channel.
+///
+/// `publish_finding_linkedin` records each published post as a delivery on channel
+/// `linkedin` — that row's `UNIQUE(org_id, channel, idempotency_key)` (key = the
+/// finding id) is what stops the same post being published to LinkedIn twice. But
+/// the channel CHECK never listed `linkedin`, so the INSERT violated it and the
+/// caller swallowed the error (`if let Ok(delivery)`), leaving the guard inert and
+/// published posts looking unpublished on any database built from this tree.
+///
+/// Production does not show the bug because its shared DB was advanced to
+/// user_version 72 by an out-of-tree `autonomous_agent_deliveries` rebuild that
+/// never landed on main (see run_v73). This migration reconciles that drift: it
+/// rebuilds the table to the canonical shape on every database, so prod and a
+/// fresh install end up identical. The copy names its columns explicitly rather
+/// than `SELECT *` so it cannot silently mis-map a differently-ordered prod table.
+///
+/// The guard matters more now than before: the AI Content Manager can publish to
+/// LinkedIn without human approval, and a LinkedIn post is public and irreversible.
+pub fn run_v76(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 76 {
+        return Ok(());
+    }
+    // Production's copy of this table was rebuilt out of tree, so its exact columns
+    // are not knowable from this repository, and a blind rebuild that names columns
+    // it does not have would abort on boot. If the CHECK already admits `linkedin`
+    // the rebuild has nothing to do: record the version and leave the table alone.
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='autonomous_agent_deliveries'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(existing) = existing else {
+        // No table at all: nothing this migration can or should do.
+        conn.execute_batch("PRAGMA user_version = 76;")?;
+        return Ok(());
+    };
+    if existing.contains("'linkedin'") {
+        conn.execute_batch("PRAGMA user_version = 76;")?;
+        return Ok(());
+    }
+    // The copy below names its columns, so it can only run against a table that
+    // actually has them. Rather than discover a mismatch halfway through — after
+    // the DROP, with the data gone and the backend unable to boot — compare the
+    // column set up front and leave an unrecognised table untouched. Shipping
+    // without the widened CHECK degrades to "publishes are not deduplicated",
+    // which is recoverable; a database that cannot open is not.
+    let mut columns: Vec<String> = {
+        let mut statement = conn.prepare("PRAGMA table_info(autonomous_agent_deliveries)")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    columns.sort();
+    let mut expected: Vec<String> = COPIED_DELIVERY_COLUMNS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    expected.sort();
+    if columns != expected {
+        tracing::warn!(
+            "run_v76: autonomous_agent_deliveries has an unexpected column set ({columns:?}); \
+             leaving it untouched. LinkedIn publishes will not be deduplicated until the \
+             channel CHECK is widened by hand."
+        );
+        conn.execute_batch("PRAGMA user_version = 76;")?;
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+        BEGIN IMMEDIATE;
+
+        -- Re-runnable: a previous attempt that died after the CREATE would
+        -- otherwise fail here forever with \"table already exists\", turning one
+        -- bad migration into a permanent boot failure.
+        DROP TABLE IF EXISTS autonomous_agent_deliveries_new;
+
+        CREATE TABLE autonomous_agent_deliveries_new (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL REFERENCES autonomous_agent_runs(id) ON DELETE RESTRICT,
+            finding_id TEXT REFERENCES autonomous_agent_findings(id) ON DELETE RESTRICT,
+            channel TEXT NOT NULL CHECK(channel IN ('nexusmind','github_issue','github_issue_comment','github_review','github_pr','slack','linkedin')),
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','failed','dead_letter')),
+            external_id TEXT,
+            external_url TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            last_error_code TEXT,
+            next_attempt_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(org_id, channel, idempotency_key)
+        );
+
+        INSERT INTO autonomous_agent_deliveries_new
+            (id,org_id,run_id,finding_id,channel,idempotency_key,status,external_id,external_url,attempts,last_error_code,next_attempt_at,created_at,updated_at)
+        SELECT id,org_id,run_id,finding_id,channel,idempotency_key,status,external_id,external_url,attempts,last_error_code,next_attempt_at,created_at,updated_at
+        FROM autonomous_agent_deliveries;
+
+        DROP TABLE autonomous_agent_deliveries;
+        ALTER TABLE autonomous_agent_deliveries_new RENAME TO autonomous_agent_deliveries;
+
+        PRAGMA user_version = 76;
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+        ",
+    )?;
+    Ok(())
+}
+
+/// The columns the v76 rebuild copies. Also the shape it requires the existing
+/// table to have before it will touch it at all.
+const COPIED_DELIVERY_COLUMNS: [&str; 14] = [
+    "id",
+    "org_id",
+    "run_id",
+    "finding_id",
+    "channel",
+    "idempotency_key",
+    "status",
+    "external_id",
+    "external_url",
+    "attempts",
+    "last_error_code",
+    "next_attempt_at",
+    "created_at",
+    "updated_at",
+];
 
 /// Migration v73: allow the `security_scan` and `security_dast` agent templates. The
 /// template_key CHECK on autonomous_agent_definitions did not list them, so creating
@@ -8197,6 +8330,129 @@ mod tests {
         assert!(conn
             .execute("DELETE FROM autonomous_agent_revisions WHERE id='r1'", [])
             .is_err());
+    }
+
+    /// v76 admits the `linkedin` delivery channel — the row whose
+    /// UNIQUE(org_id, channel, idempotency_key) is the only thing stopping the AI
+    /// Content Manager from publishing the same post to LinkedIn twice.
+    #[test]
+    fn run_v76_allows_the_linkedin_delivery_channel() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        assert_eq!(get_user_version(&conn), LATEST_USER_VERSION);
+        // The CHECK is what is under test; the delivery's run/finding foreign keys
+        // are a deep chain (automation_runs -> definitions -> revisions -> runs)
+        // that says nothing about the constraint.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO autonomous_agent_deliveries (id,org_id,run_id,finding_id,channel,idempotency_key) VALUES ('dl1','org1','run1','f1','linkedin','f1')",
+            [],
+        )
+        .expect("linkedin must be accepted by the channel CHECK");
+        // The idempotency key (the finding id) makes a second publish a no-op
+        // rather than a second public LinkedIn post.
+        conn.execute(
+            "INSERT INTO autonomous_agent_deliveries (id,org_id,run_id,finding_id,channel,idempotency_key) VALUES ('dl2','org1','run1','f1','linkedin','f1') ON CONFLICT(org_id,channel,idempotency_key) DO NOTHING",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM autonomous_agent_deliveries WHERE channel='linkedin'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "the same finding must not publish twice");
+        // An unknown channel is still rejected.
+        assert!(conn
+            .execute(
+                "INSERT INTO autonomous_agent_deliveries (id,org_id,run_id,finding_id,channel,idempotency_key) VALUES ('dl3','org1','run1','f1','mastodon','f1')",
+                [],
+            )
+            .is_err());
+    }
+
+    /// A table this repository does not recognise must be left untouched rather
+    /// than rebuilt from a column list it does not match — a mismatch would abort
+    /// the copy after the DROP, losing the data and stopping the backend booting.
+    #[test]
+    fn run_v76_refuses_to_rebuild_a_table_it_does_not_recognise() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE autonomous_agent_deliveries;
+             CREATE TABLE autonomous_agent_deliveries (
+                id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL,
+                channel TEXT NOT NULL CHECK(channel IN ('nexusmind','slack')),
+                idempotency_key TEXT NOT NULL,
+                UNIQUE(org_id, channel, idempotency_key)
+             );
+             PRAGMA user_version = 75;",
+        )
+        .unwrap();
+        run_v76(&conn).expect("an unrecognised table must not abort the migration");
+        assert_eq!(get_user_version(&conn), 76);
+        // Still the caller's table, with its rows intact — nothing was dropped.
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='autonomous_agent_deliveries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!sql.contains("run_id"), "the table must be left exactly as found");
+        // And re-running is still safe.
+        run_v76(&conn).unwrap();
+    }
+
+    /// A database whose table already admits `linkedin` — production, rebuilt out
+    /// of tree — must be left alone rather than rebuilt from column names this
+    /// repository cannot verify. The migration only records the version.
+    #[test]
+    fn run_v76_skips_the_rebuild_when_the_channel_is_already_allowed() {
+        let conn = in_memory_db();
+        run_all(&conn).unwrap();
+        // Stand in for prod: an already-widened table carrying an extra column
+        // that a blind rebuild would not know to copy.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE autonomous_agent_deliveries;
+             CREATE TABLE autonomous_agent_deliveries (
+                id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                finding_id TEXT,
+                channel TEXT NOT NULL CHECK(channel IN ('nexusmind','slack','linkedin')),
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                external_id TEXT,
+                external_url TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error_code TEXT,
+                next_attempt_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                out_of_tree_column TEXT,
+                UNIQUE(org_id, channel, idempotency_key)
+             );
+             PRAGMA user_version = 75;",
+        )
+        .unwrap();
+        run_v76(&conn).expect("v76 must not abort on a table it did not create");
+        assert_eq!(get_user_version(&conn), 76);
+        // The out-of-tree column survives, which it would not have if the table
+        // had been rebuilt from this file's column list.
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='autonomous_agent_deliveries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("out_of_tree_column"), "the existing table must be left intact");
     }
 
     #[test]

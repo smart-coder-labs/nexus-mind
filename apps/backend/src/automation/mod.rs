@@ -1,4 +1,5 @@
 pub mod connectors;
+pub mod image_gen;
 pub mod linkedin;
 pub mod policy;
 pub mod r2;

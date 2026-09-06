@@ -261,7 +261,7 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
             key: "ai_content_manager".into(),
             version: 1,
             name: "AI Content Manager".into(),
-            description: "Writes LinkedIn posts about the topics you set — tuned to your voice and audience — to capture leads and grow your presence. Posts are generated as drafts for your review before publishing.".into(),
+            description: "Writes LinkedIn posts about the topics you set — tuned to your voice and audience — and illustrates each one under your brand's design system. Posts wait for your approval by default; turn on auto-publish and the agent posts them itself, within a daily cap.".into(),
             capabilities: vec!["content:write".into(), "delivery:write".into()],
             default_budgets: serde_json::json!({"wall_time_seconds": 600, "max_attempts": 1, "max_cost_usd": 4, "max_definition_concurrency": 1, "max_repository_concurrency": 1, "max_organization_concurrency": 4}),
             config_schema: serde_json::json!({
@@ -272,15 +272,21 @@ pub fn managed_templates() -> Vec<AutonomousAgentTemplate> {
                 "cta":{"type":"string","description":"Call to action / lead magnet URL to weave in"},
                 "hashtags":{"type":"array","items":{"type":"string"},"description":"Preferred hashtags (the agent may add relevant ones)"},
                 "posts_per_run":{"type":"number","default":3,"description":"How many post drafts to generate per run (1-10)"},
-                "destinations":{"type":"array","items":["personal","organization"],"description":"Intended LinkedIn destinations (publishing is a later step; drafts are reviewed first)"},
+                "destinations":{"type":"array","items":["personal","organization"],"description":"LinkedIn destinations these posts are for"},
+                "auto_publish":{"type":"boolean","default":false,"description":"Publish each generated post to LinkedIn automatically, with no human approval. Off by default; a published post is public and cannot be unpublished from here."},
+                "auto_publish_daily_limit":{"type":"number","default":3,"description":"Ceiling on posts auto-published per rolling 24 hours (1-10)"},
+                "images":{"type":"object","description":"Post imagery","properties":{"enabled":{"type":"boolean","default":false},"per_post":{"type":"number","default":1,"description":"Images generated per post (1-4)"}}},
+                "design_system":{"type":"object","required_when":"images.enabled","description":"The brand contract applied unchanged to every generated image, so the whole feed looks like one brand","properties":{"palette":{"type":"array","items":{"type":"hex colour"}},"typography":{"type":"string"},"visual_style":{"type":"string"},"imagery_rules":{"type":"string"},"avoid":{"type":"string"},"aspect_ratio":{"enum":["auto","1:1","4:3","3:4","16:9","21:9","9:16","3:2","2:3"],"default":"1:1"},"logo_url":{"type":"string","description":"Public URL of the logo, used as a visual reference on every image"}}},
                 "outputs":{"type":"array","items":["nexusmind","slack"]},
                 "custom_instructions":{"type":"string","description":"Optional extra guidance; cannot expand scope"}
             }),
             workflow: vec![
                 "plan_topics".into(),
                 "draft_posts".into(),
+                "generate_images".into(),
                 "record_drafts".into(),
                 "deliver".into(),
+                "auto_publish".into(),
             ],
         },
     ]
@@ -1031,6 +1037,116 @@ fn normalize_destination(value: Option<&str>) -> String {
     }
 }
 
+/// Upload a brand asset (today: the design system's logo) and return its URL.
+///
+/// The image generator takes references as files it can fetch, and a logo
+/// normally lives on the designer's laptop rather than on a public URL, so the
+/// wizard needs somewhere to put it. R2 already backs the agents' other media, so
+/// the asset lands beside it rather than introducing new storage.
+///
+/// The returned URL goes straight into `design_system.logo_url`, which validation
+/// requires to be http(s) — so this endpoint returning a URL is what makes the
+/// upload and the paste-a-link path interchangeable.
+pub async fn upload_brand_asset(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    mut multipart: axum::extract::Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_error())?;
+        require_explicit_permission(&conn, &auth, None, "autonomous_agent:create")?;
+    }
+    // Well under R2's limits and far above any real logo: the ceiling exists so a
+    // large upload cannot be used to fill the bucket.
+    const MAX_ASSET_BYTES: usize = 4 * 1024 * 1024;
+    let allowed: [(&str, &str); 4] = [
+        ("image/png", "png"),
+        ("image/jpeg", "jpg"),
+        ("image/webp", "webp"),
+        ("image/svg+xml", "svg"),
+    ];
+
+    let mut found: Option<(Vec<u8>, String, String)> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|source| {
+        error(StatusCode::BAD_REQUEST, "invalid_upload", &source.to_string())
+    })? {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let content_type = field
+            .content_type()
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let Some((mime, extension)) = allowed
+            .iter()
+            .find(|(mime, _)| *mime == content_type)
+            .copied()
+        else {
+            return Err(error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_image_type",
+                "Upload a PNG, JPEG, WebP or SVG image.",
+            ));
+        };
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_upload", "Could not read the uploaded file."))?;
+        if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
+            return Err(error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "image_too_large",
+                "The image must be between 1 byte and 4 MB.",
+            ));
+        }
+        found = Some((bytes.to_vec(), mime.to_string(), extension.to_string()));
+        break;
+    }
+    let Some((bytes, mime, extension)) = found else {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "file_required",
+            "Attach the image as the `file` field.",
+        ));
+    };
+    let Some(cfg) = crate::automation::r2::R2Config::from_env() else {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "object_storage_not_configured",
+            "Object storage is not configured on this server; paste a public image URL instead.",
+        ));
+    };
+    // Without a permanent public base, the only URL we could hand back is a
+    // presigned one, and SigV4 caps those at seven days. A logo is stored in the
+    // agent's config and fetched on every run from then on, so that URL would
+    // quietly stop resolving and the images would silently lose the brand mark.
+    // Better to refuse than to hand over a link with a hidden expiry date.
+    if cfg.public_base_url.is_none() {
+        return Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "public_asset_url_unavailable",
+            "This server has no public object-storage base URL (R2_PUBLIC_BASE_URL), so an uploaded logo would stop resolving after seven days. Paste a public image URL instead, or ask an operator to configure one.",
+        ));
+    }
+    let key = format!(
+        "brand-assets/{}/{}.{extension}",
+        auth.org_id,
+        uuid::Uuid::new_v4()
+    );
+    let stored = crate::automation::r2::put_object(&cfg, &key, &bytes, &mime)
+        .await
+        .map_err(|source| error(StatusCode::BAD_GATEWAY, "upload_failed", &source.to_string()))?;
+    // A permanent public base is guaranteed above, so this returns a stable URL
+    // and the expiry argument is never used.
+    let url = crate::automation::r2::object_url(&cfg, &stored, crate::automation::r2::MAX_PRESIGN_EXPIRY_SECS);
+    Ok(Json(serde_json::json!({ "url": url })))
+}
+
 fn linkedin_error(err: anyhow::Error) -> (StatusCode, Json<ApiError>) {
     let message = err.to_string();
     if message.contains("linkedin_not_configured")
@@ -1228,130 +1344,35 @@ pub async fn publish_finding_linkedin(
         require_explicit_permission(&conn, &auth, None, "autonomous_agent:run")?;
     }
     let body = body.map(|Json(value)| value).unwrap_or_default();
-    let destination = normalize_destination(body.destination.as_deref());
-    let (finding, metadata, mut bundle) = {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| lock_error())?;
-        let finding = queries::get_autonomous_agent_finding(&conn, &auth.org_id, &id)
-            .map_err(store_error)?
-            .ok_or_else(not_found)?;
-        let (metadata, bundle) = queries::get_linkedin_connector(&conn, &auth.org_id, &destination)
-            .map_err(store_error)?
-            .ok_or_else(|| {
-                error(
-                    StatusCode::BAD_REQUEST,
-                    "linkedin_not_connected",
-                    "This LinkedIn destination is not connected yet.",
-                )
-            })?;
-        (finding, metadata, bundle)
-    };
-    let text = body
-        .text
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            finding
-                .evidence
-                .pointer("/post/body")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| finding.summary.clone());
-    let author_urn = metadata
-        .get("author_urn")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if author_urn.is_empty() {
-        return Err(error(
+    // The publish itself — token refresh, image upload, the duplicate guard and
+    // the delivery bookkeeping — lives in the worker so this manual path and the
+    // agent's auto-publish cannot drift apart or race each other into a double post.
+    crate::automation::worker::publish_finding_to_linkedin(
+        &store,
+        &auth.org_id,
+        &id,
+        body.destination,
+        body.text,
+    )
+    .await
+    .map(Json)
+    .map_err(publish_linkedin_error)
+}
+
+/// Map a publish failure onto a status the admin can act on.
+fn publish_linkedin_error(err: anyhow::Error) -> (StatusCode, Json<ApiError>) {
+    let message = err.to_string();
+    if message.contains("finding_not_found") {
+        return not_found();
+    }
+    if message.contains("linkedin_not_connected") {
+        return error(
             StatusCode::BAD_REQUEST,
             "linkedin_not_connected",
-            "Missing author URN; reconnect LinkedIn.",
-        ));
-    }
-    let app = crate::automation::linkedin::app_from_env().map_err(linkedin_error)?;
-    // Refresh the token when it is expired (or within 5 minutes of expiring).
-    let mut access_token = bundle
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let expires_at = bundle.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
-    if expires_at > 0 && chrono::Utc::now().timestamp() > expires_at - 300 {
-        if let Some(refresh_token) = bundle
-            .get("refresh_token")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        {
-            if let Ok(fresh) = crate::automation::linkedin::refresh(&app, &refresh_token).await {
-                access_token = fresh.access_token.clone();
-                let new_expires =
-                    chrono::Utc::now().timestamp() + fresh.expires_in.unwrap_or(0).max(0);
-                bundle = serde_json::json!({
-                    "access_token": fresh.access_token,
-                    "refresh_token": fresh.refresh_token.unwrap_or(refresh_token),
-                    "expires_at": new_expires,
-                });
-                let display_name = metadata
-                    .get("display_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("LinkedIn member")
-                    .to_string();
-                let bundle_json = bundle.to_string();
-                let db = store.conn();
-                if let Ok(conn) = db.lock() {
-                    let _ = queries::upsert_linkedin_connector(
-                        &conn,
-                        &auth.org_id,
-                        &auth.user_id,
-                        &destination,
-                        &author_urn,
-                        &display_name,
-                        &bundle_json,
-                    );
-                }
-                drop(db);
-            }
-        }
-    }
-    let (urn, url) =
-        crate::automation::linkedin::create_text_post(&access_token, &author_urn, &text)
-            .await
-            .map_err(linkedin_error)?;
-    {
-        let db = store.conn();
-        let conn = db.lock().map_err(|_| lock_error())?;
-        let _ = queries::create_autonomous_output_link(
-            &conn,
-            &auth.org_id,
-            &finding.run_id,
-            "linkedin_post",
-            &urn,
-            Some(&url),
+            "This LinkedIn destination is not connected yet.",
         );
-        // Record the publication as a first-class delivery so the UI can show it as
-        // "published" (with a link to the post) and prevent a duplicate re-publish.
-        // The finding id is the idempotency key: one LinkedIn delivery per finding.
-        if let Ok(delivery) = queries::create_autonomous_agent_delivery(
-            &conn,
-            &auth.org_id,
-            &finding.run_id,
-            Some(&finding.id),
-            "linkedin",
-            &finding.id,
-        ) {
-            let _ = queries::complete_autonomous_agent_delivery(
-                &conn,
-                &auth.org_id,
-                &delivery.id,
-                Some(&urn),
-                Some(&url),
-            );
-        }
-        let _ = queries::patch_autonomous_agent_finding(&conn, &auth.org_id, &finding.id, "resolved");
     }
-    Ok(Json(serde_json::json!({ "url": url, "urn": urn })))
+    linkedin_error(err)
 }
 
 pub async fn list_deliveries(
@@ -1476,6 +1497,190 @@ mod tests {
             config: serde_json::json!({"outputs": ["nexusmind"]}),
             budgets: serde_json::json!({"wall_time_seconds": 300}),
         }
+    }
+
+    /// Create an AI Content Manager with `config` and return its validation errors.
+    fn content_manager_errors(
+        conn: &rusqlite::Connection,
+        org_id: &str,
+        user_id: &str,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Vec<String> {
+        let created = queries::create_autonomous_agent_definition(
+            conn,
+            org_id,
+            user_id,
+            &CreateAutonomousAgentRequest {
+                name: name.into(),
+                description: None,
+                template_key: "ai_content_manager".into(),
+                config,
+                budgets: serde_json::json!({"wall_time_seconds": 300}),
+            },
+        )
+        .unwrap();
+        let validated =
+            queries::validate_autonomous_agent_definition(conn, org_id, user_id, &created.definition.id)
+                .unwrap()
+                .unwrap();
+        validated
+            .revision
+            .validation
+            .and_then(|value| {
+                value.get("errors").and_then(|errors| {
+                    errors.as_array().map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn base_content_config() -> serde_json::Value {
+        serde_json::json!({
+            "outputs": ["nexusmind"],
+            "topics": ["AI agents"],
+            "audience": "CTOs at dev-tool startups",
+            "destinations": ["personal"],
+        })
+    }
+
+    /// Turning images on without a design system is the failure this feature
+    /// exists to prevent: every run would render in a different style.
+    #[test]
+    fn images_without_a_design_system_are_rejected() {
+        let (conn, org_id, user_id) = fixture();
+        let mut config = base_content_config();
+        config["images"] = serde_json::json!({"enabled": true});
+        let errors = content_manager_errors(&conn, &org_id, &user_id, "No system", config);
+        assert!(
+            errors.iter().any(|e| e == "design_system_required"),
+            "expected design_system_required, got {errors:?}"
+        );
+
+        let mut ok_config = base_content_config();
+        ok_config["images"] = serde_json::json!({"enabled": true, "per_post": 2});
+        ok_config["design_system"] = serde_json::json!({
+            "palette": ["#0B0B0F", "#3B82F6"],
+            "visual_style": "editorial dark-tech",
+        });
+        let errors = content_manager_errors(&conn, &org_id, &user_id, "With system", ok_config);
+        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+    }
+
+    /// A malformed design system reaches the image model as prose and skews the
+    /// render, so it is caught at save time rather than at generation time.
+    #[test]
+    fn a_malformed_design_system_is_rejected_at_save_time() {
+        let (conn, org_id, user_id) = fixture();
+        let mut config = base_content_config();
+        config["images"] = serde_json::json!({"enabled": true, "per_post": 9});
+        config["design_system"] = serde_json::json!({
+            "visual_style": "minimal",
+            "palette": ["#0B0B0F", "corporate blue"],
+            "logo_url": "not-a-url",
+        });
+        let errors = content_manager_errors(&conn, &org_id, &user_id, "Bad system", config);
+        for expected in [
+            "invalid_images_per_post",
+            "invalid_palette_colour",
+            "invalid_logo_url",
+        ] {
+            assert!(
+                errors.iter().any(|e| e == expected),
+                "expected {expected}, got {errors:?}"
+            );
+        }
+    }
+
+    /// Auto-publish takes a public, irreversible action with no human in the loop,
+    /// so it must say where it is publishing and stay under a sane cadence.
+    #[test]
+    fn auto_publish_requires_a_destination_and_a_sane_limit() {
+        let (conn, org_id, user_id) = fixture();
+        let mut config = base_content_config();
+        config["destinations"] = serde_json::json!([]);
+        config["auto_publish"] = serde_json::json!(true);
+        config["auto_publish_daily_limit"] = serde_json::json!(50);
+        let errors = content_manager_errors(&conn, &org_id, &user_id, "Unbounded", config);
+        for expected in [
+            "auto_publish_destination_required",
+            "invalid_auto_publish_daily_limit",
+        ] {
+            assert!(
+                errors.iter().any(|e| e == expected),
+                "expected {expected}, got {errors:?}"
+            );
+        }
+    }
+
+    /// The default has to stay "drafts wait for a human", or every agent created
+    /// before auto-publish existed would start posting on its own.
+    #[test]
+    fn auto_publish_is_off_unless_explicitly_enabled() {
+        let (conn, org_id, user_id) = fixture();
+        let errors =
+            content_manager_errors(&conn, &org_id, &user_id, "Default", base_content_config());
+        assert!(errors.is_empty(), "expected a clean validation, got {errors:?}");
+        let template = managed_templates()
+            .into_iter()
+            .find(|t| t.key == "ai_content_manager")
+            .expect("ai_content_manager template must be registered");
+        assert_eq!(
+            template.config_schema.pointer("/auto_publish/default"),
+            Some(&serde_json::json!(false))
+        );
+    }
+
+    /// The whole safety of auto-publish rests on exactly one caller being allowed
+    /// to send. Creating the delivery row is NOT that guarantee — every concurrent
+    /// caller reads the same `pending` — so the claim is tested directly.
+    #[test]
+    fn only_one_caller_can_claim_a_linkedin_delivery() {
+        let (conn, org_id, _user_id) = fixture();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        let delivery = queries::create_autonomous_agent_delivery(
+            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+        )
+        .unwrap();
+        // Creating it twice returns the same row, which is why the row alone
+        // cannot decide who sends.
+        let again = queries::create_autonomous_agent_delivery(
+            &conn, &org_id, "run1", Some("f1"), "linkedin", "f1",
+        )
+        .unwrap();
+        assert_eq!(delivery.id, again.id);
+        assert_eq!(again.status, "pending");
+
+        // Exactly one winner.
+        assert!(queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap());
+        assert!(
+            !queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap(),
+            "a second caller must not be allowed to publish the same post"
+        );
+
+        // A failed attempt published nothing, so it becomes claimable again.
+        queries::fail_autonomous_agent_delivery(&conn, &org_id, &delivery.id, "linkedin_post_failed")
+            .unwrap();
+        assert!(queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap());
+
+        // Once delivered, nothing can claim it again.
+        queries::complete_autonomous_agent_delivery(
+            &conn,
+            &org_id,
+            &delivery.id,
+            Some("urn:li:share:1"),
+            Some("https://www.linkedin.com/feed/update/urn:li:share:1"),
+        )
+        .unwrap();
+        assert!(
+            !queries::claim_autonomous_agent_delivery(&conn, &org_id, &delivery.id).unwrap(),
+            "a delivered post must never be republished"
+        );
     }
 
     #[test]

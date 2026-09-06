@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Bot, Target, SlidersHorizontal, CalendarClock, ClipboardCheck } from 'lucide-react'
 import { createClient } from '../api/client'
@@ -76,6 +76,18 @@ interface FormState {
   postsPerRun: string
   destPersonal: boolean
   destOrganization: boolean
+  autoPublish: boolean
+  autoPublishDailyLimit: string
+  // post imagery + the brand design system every image is generated under
+  imagesEnabled: boolean
+  imagesPerPost: string
+  dsPalette: string // comma-separated hex colours
+  dsTypography: string
+  dsVisualStyle: string
+  dsImageryRules: string
+  dsAvoid: string
+  dsAspectRatio: string
+  dsLogoUrl: string
   // judge
   repositories: string // comma-separated owner/repo the judge may target
   publishComment: boolean
@@ -134,6 +146,17 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     postsPerRun: '3',
     destPersonal: true,
     destOrganization: false,
+    autoPublish: false,
+    autoPublishDailyLimit: '3',
+    imagesEnabled: false,
+    imagesPerPost: '1',
+    dsPalette: '',
+    dsTypography: '',
+    dsVisualStyle: '',
+    dsImageryRules: '',
+    dsAvoid: '',
+    dsAspectRatio: '1:1',
+    dsLogoUrl: '',
     repositories: '',
     publishComment: false,
     loginUser: '',
@@ -220,6 +243,26 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.cta.trim()) config.cta = state.cta.trim()
     if (csv(state.hashtags).length) config.hashtags = csv(state.hashtags)
     if (state.customInstructions.trim()) config.custom_instructions = state.customInstructions.trim()
+    // Auto-publish is only ever written when it is on, so an agent that never
+    // touched the toggle keeps no trace of it and stays approval-first.
+    if (state.autoPublish) {
+      config.auto_publish = true
+      config.auto_publish_daily_limit = Math.max(1, Math.min(10, Number(state.autoPublishDailyLimit) || 3))
+    }
+    if (state.imagesEnabled) {
+      config.images = { enabled: true, per_post: Math.max(1, Math.min(4, Number(state.imagesPerPost) || 1)) }
+    }
+    // The design system is kept even with images off, so turning them back on
+    // does not lose the brand the user already described.
+    const designSystem: Record<string, unknown> = {}
+    if (csv(state.dsPalette).length) designSystem.palette = csv(state.dsPalette).map(value => value.toUpperCase())
+    if (state.dsTypography.trim()) designSystem.typography = state.dsTypography.trim()
+    if (state.dsVisualStyle.trim()) designSystem.visual_style = state.dsVisualStyle.trim()
+    if (state.dsImageryRules.trim()) designSystem.imagery_rules = state.dsImageryRules.trim()
+    if (state.dsAvoid.trim()) designSystem.avoid = state.dsAvoid.trim()
+    if (state.dsLogoUrl.trim()) designSystem.logo_url = state.dsLogoUrl.trim()
+    if (state.dsAspectRatio.trim()) designSystem.aspect_ratio = state.dsAspectRatio.trim()
+    if (Object.keys(designSystem).length) config.design_system = designSystem
   } else {
     config = { github_auth: 'server_gh_cli', publish: 'comment_or_request_changes', include_drafts: state.includeDrafts }
     if (state.repository.trim()) config.repository = state.repository.trim()
@@ -258,6 +301,8 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
   const outputs = Array.isArray(config.outputs) ? (config.outputs as string[]) : []
   const commands = Array.isArray(config.test_commands) ? (config.test_commands as unknown[]) : []
   const firstCommand = Array.isArray(commands[0]) ? (commands[0] as string[]).join(' ') : ''
+  const images = (config.images ?? {}) as Record<string, unknown>
+  const designSystem = (config.design_system ?? {}) as Record<string, unknown>
   return {
     ...base,
     name: agent.name,
@@ -294,6 +339,17 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     postsPerRun: typeof config.posts_per_run === 'number' ? String(config.posts_per_run) : '3',
     destPersonal: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('personal') : true,
     destOrganization: Array.isArray(config.destinations) ? (config.destinations as string[]).includes('organization') : false,
+    autoPublish: config.auto_publish === true,
+    autoPublishDailyLimit: typeof config.auto_publish_daily_limit === 'number' ? String(config.auto_publish_daily_limit) : '3',
+    imagesEnabled: images.enabled === true,
+    imagesPerPost: typeof images.per_post === 'number' ? String(images.per_post) : '1',
+    dsPalette: Array.isArray(designSystem.palette) ? (designSystem.palette as string[]).join(', ') : '',
+    dsTypography: typeof designSystem.typography === 'string' ? designSystem.typography : '',
+    dsVisualStyle: typeof designSystem.visual_style === 'string' ? designSystem.visual_style : '',
+    dsImageryRules: typeof designSystem.imagery_rules === 'string' ? designSystem.imagery_rules : '',
+    dsAvoid: typeof designSystem.avoid === 'string' ? designSystem.avoid : '',
+    dsAspectRatio: typeof designSystem.aspect_ratio === 'string' ? designSystem.aspect_ratio : '1:1',
+    dsLogoUrl: typeof designSystem.logo_url === 'string' ? designSystem.logo_url : '',
     budgets: JSON.stringify(agent.revision.budgets ?? {}, null, 2),
   }
 }
@@ -462,7 +518,18 @@ function validateStep(id: StepId, state: FormState): boolean {
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
-      if (state.template === 'ai_content_manager') return csv(state.topics).length > 0 && state.audience.trim().length > 0
+      if (state.template === 'ai_content_manager') {
+        if (csv(state.topics).length === 0 || state.audience.trim().length === 0) return false
+        // Mirror the backend's rules so the user is blocked here rather than by a
+        // validation failure after the agent is already created.
+        if (state.imagesEnabled) {
+          const hasDesignSystem = [state.dsPalette, state.dsVisualStyle, state.dsImageryRules, state.dsTypography].some(value => value.trim().length > 0)
+          const paletteValid = state.dsPalette.split(',').map(value => value.trim()).filter(Boolean).every(value => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value))
+          if (!hasDesignSystem || !paletteValid) return false
+        }
+        if (state.autoPublish && !state.destPersonal && !state.destOrganization) return false
+        return true
+      }
       if (state.template === 'github_issue_resolver' && state.reviewAfterDeploy) return state.judgeAgentId.trim().length > 0
       return true
     case 'schedule':
@@ -577,6 +644,30 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
       if (url) window.open(url, '_blank', 'width=600,height=760')
     } catch (err) {
       window.alert(`LinkedIn is not configured on the server yet: ${(err as { message?: string })?.message ?? 'error'}`)
+    }
+  }
+  // Palette feedback: the backend rejects a non-hex entry on save, so the same
+  // rule is shown here while the user types rather than after they submit.
+  const paletteEntries = state.dsPalette.split(',').map(value => value.trim()).filter(Boolean)
+  const isHexColour = (value: string) => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)
+  const paletteSwatches = paletteEntries.filter(isHexColour)
+  const invalidPaletteEntries = paletteEntries.filter(value => !isHexColour(value))
+  const logoInputRef = useRef<HTMLInputElement>(null)
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [logoError, setLogoError] = useState('')
+  const uploadLogo = async (file: File) => {
+    setLogoUploading(true)
+    setLogoError('')
+    try {
+      const { url } = await client.uploadBrandAsset(file)
+      set('dsLogoUrl', url)
+    } catch (err) {
+      // Object storage is optional on a self-hosted server, so the failure has to
+      // point at the alternative rather than look like a bug.
+      const message = (err as { message?: string })?.message ?? 'Upload failed'
+      setLogoError(`${message}. You can paste a public image URL instead.`)
+    } finally {
+      setLogoUploading(false)
     }
   }
   return (
@@ -724,19 +815,119 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             <Textarea className="text-sm" rows={2} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Prefer short posts; open with a contrarian take; no emojis." />
           </Field>
           <div className="rounded-[12px] border border-border-primary p-3">
-            <p className="text-xs font-medium text-text-secondary">Intended destinations</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for. Nothing is published automatically — you approve each post before it goes out.</p>
+            <p className="text-xs font-medium text-text-secondary">Destinations</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Which LinkedIn destinations these posts are for.</p>
             <div className="mt-3 space-y-2.5">
               <Switch checked={state.destPersonal} onCheckedChange={value => set('destPersonal', value)} size="sm" label="Personal profile" />
               <Switch checked={state.destOrganization} onCheckedChange={value => set('destOrganization', value)} size="sm" label="Company page" />
             </div>
+          </div>
+
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Post images</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Generates an illustration for each post from the design system below, so the whole feed looks like one brand. Needs the Higgsfield CLI installed and signed in on the server; without it posts still go out, as text only.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked={state.imagesEnabled} onCheckedChange={value => set('imagesEnabled', value)} size="sm" label="Generate an image for each post" />
+            </div>
+            {state.imagesEnabled && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Field label="Images per post" hint="1–4. More than one becomes a carousel.">
+                  <Input inputSize="sm" type="number" min={1} max={4} value={state.imagesPerPost} onChange={event => set('imagesPerPost', event.target.value)} />
+                </Field>
+                <Field label="Aspect ratio">
+                  <NativeSelect value={state.dsAspectRatio} onChange={value => set('dsAspectRatio', value)}>
+                    {['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9', 'auto'].map(ratio => <option key={ratio} value={ratio}>{ratio}</option>)}
+                  </NativeSelect>
+                </Field>
+              </div>
+            )}
+          </div>
+
+          {state.imagesEnabled && (
+            <div className="rounded-[12px] border border-border-primary p-3 space-y-3">
+              <div>
+                <p className="text-xs font-medium text-text-secondary">Design system</p>
+                <p className="mt-0.5 text-[11px] text-text-tertiary">Applied unchanged to every image the agent ever generates — that is what keeps them consistent instead of a different look each run. Fill in at least one field. Images never contain readable text: generators garble type, and the post already carries its own copy.</p>
+              </div>
+              <Field label="Palette (comma-separated hex)" hint="Only these colours are used. e.g. #0B0B0F, #E8E8EA, #3B82F6">
+                <Input inputSize="sm" value={state.dsPalette} onChange={event => set('dsPalette', event.target.value)} placeholder="#0B0B0F, #E8E8EA, #3B82F6" />
+              </Field>
+              {paletteSwatches.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {paletteSwatches.map(colour => (
+                    <span key={colour} className="h-5 w-5 rounded-[4px] border border-border-primary" style={{ backgroundColor: colour }} title={colour} />
+                  ))}
+                </div>
+              )}
+              {invalidPaletteEntries.length > 0 && (
+                <p className="text-[11px] text-accent-red">Not valid hex colours: {invalidPaletteEntries.join(', ')}. Use #RGB or #RRGGBB.</p>
+              )}
+              <Field label="Visual style" hint="The overall look — medium, treatment, mood.">
+                <Input inputSize="sm" value={state.dsVisualStyle} onChange={event => set('dsVisualStyle', event.target.value)} placeholder="editorial dark-tech, minimal, high contrast, shallow depth of field" />
+              </Field>
+              <Field label="Typography (optional)" hint="Shapes the geometry and weight of forms; never rendered as letters.">
+                <Input inputSize="sm" value={state.dsTypography} onChange={event => set('dsTypography', event.target.value)} placeholder="geometric sans-serif, tight tracking" />
+              </Field>
+              <Field label="Imagery rules (optional)" hint="What the pictures should be of.">
+                <Textarea className="text-sm" rows={2} value={state.dsImageryRules} onChange={event => set('dsImageryRules', event.target.value)} placeholder="abstract 3D renders and structural forms; never stock-photo people or office scenes" />
+              </Field>
+              <Field label="Avoid (optional)" hint="Added to the built-in ban on text, logos and watermarks.">
+                <Input inputSize="sm" value={state.dsAvoid} onChange={event => set('dsAvoid', event.target.value)} placeholder="gradients, neon, clip-art" />
+              </Field>
+              <Field label="Logo (optional)" hint="Used as a visual reference on every image so the mark's geometry carries across the set.">
+                <div className="space-y-2">
+                  <Input inputSize="sm" value={state.dsLogoUrl} onChange={event => set('dsLogoUrl', event.target.value)} placeholder="https://… or upload a file" />
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={logoInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      className="hidden"
+                      onChange={event => {
+                        const file = event.target.files?.[0]
+                        if (file) uploadLogo(file)
+                        event.target.value = ''
+                      }}
+                    />
+                    <Button size="sm" variant="secondary" disabled={logoUploading} onClick={() => logoInputRef.current?.click()}>
+                      {logoUploading ? 'Uploading…' : 'Upload logo'}
+                    </Button>
+                    {state.dsLogoUrl.trim() && (
+                      <img src={state.dsLogoUrl} alt="Brand logo" className="h-8 w-8 rounded-[4px] border border-border-primary object-contain" />
+                    )}
+                  </div>
+                  {logoError && <p className="text-[11px] text-accent-red">{logoError}</p>}
+                </div>
+              </Field>
+            </div>
+          )}
+
+          <div className="rounded-[12px] border border-border-primary p-3">
+            <p className="text-xs font-medium text-text-secondary">Publishing</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">By default the agent writes drafts and you approve each one from the Findings tab.</p>
+            <div className="mt-3 space-y-2.5">
+              <Switch checked={state.autoPublish} onCheckedChange={value => set('autoPublish', value)} size="sm" label="Publish to LinkedIn automatically, without my approval" />
+            </div>
+            {state.autoPublish && (
+              <div className="mt-3 space-y-3">
+                <p className="rounded-[8px] border border-accent-amber/40 bg-accent-amber/10 p-2 text-[11px] text-text-secondary">
+                  Each generated post goes straight to your live LinkedIn feed. A published post is public immediately and cannot be withdrawn from here — only from LinkedIn. Review the topics, tone and custom instructions before enabling this.
+                </p>
+                <Field label="Maximum posts published per day" hint="1–10. Rolling 24 hours, counted per agent. Extra drafts wait for approval.">
+                  <Input inputSize="sm" type="number" min={1} max={10} value={state.autoPublishDailyLimit} onChange={event => set('autoPublishDailyLimit', event.target.value)} />
+                </Field>
+                {!state.destPersonal && !state.destOrganization && (
+                  <p className="text-[11px] text-accent-red">Pick at least one destination above — the agent needs to know where to publish.</p>
+                )}
+              </div>
+            )}
           </div>
           <div className="rounded-[12px] border border-border-primary p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-text-secondary">Connect LinkedIn</p>
               <button type="button" onClick={() => linkedinQuery.refetch()} className="text-[11px] text-accent-blue">Refresh</button>
             </div>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Connect the account(s) once (shared by all content agents). A window opens to authorize on LinkedIn; approved posts publish from the Findings tab.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Connect the account(s) once (shared by all content agents). A window opens to authorize on LinkedIn. Without a connection nothing can be published — automatically or by hand.</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant={linkedinConnected.has('personal') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('personal')}>{linkedinConnected.has('personal') ? '✓ Personal connected — reconnect' : 'Connect personal'}</Button>
               <Button size="sm" variant={linkedinConnected.has('organization') ? 'ghost' : 'secondary'} onClick={() => connectLinkedin('organization')}>{linkedinConnected.has('organization') ? '✓ Company connected — reconnect' : 'Connect company page'}</Button>
@@ -745,7 +936,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           </div>
           <div className="rounded-[12px] border border-border-primary p-3">
             <p className="text-xs font-medium text-text-secondary">Outputs</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">Generated post drafts are stored in NexusMind for your review. This agent never posts to LinkedIn on its own.</p>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">Every generated post is stored in NexusMind, whether it is published automatically or waits for your approval.</p>
             <div className="mt-3 space-y-2.5">
               <Switch checked disabled size="sm" label="NexusMind (canonical)" />
               <Switch checked={state.outputSlack} onCheckedChange={value => set('outputSlack', value)} size="sm" label="Slack summary" />

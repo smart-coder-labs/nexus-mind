@@ -132,13 +132,23 @@ pub async fn put_object(
     Ok(key)
 }
 
+/// The longest life a SigV4 presigned URL may declare. Asking for more does not
+/// produce a longer-lived link — it produces one the service rejects outright — so
+/// the ceiling is enforced here rather than trusted to every caller.
+pub const MAX_PRESIGN_EXPIRY_SECS: u64 = 604_800;
+
 /// A viewable URL for a key: the permanent public base when configured, else a
 /// time-limited SigV4 presigned GET URL.
+///
+/// Note the consequence of that fallback: without `R2_PUBLIC_BASE_URL` every URL
+/// this returns dies within a week. That is fine for run evidence, and wrong for
+/// anything stored in an agent's configuration and re-read on later runs.
 pub fn object_url(cfg: &R2Config, key: &str, expiry_secs: u64) -> String {
     let key = safe_key(key);
     if let Some(base) = &cfg.public_base_url {
         return format!("{}/{}", base.trim_end_matches('/'), key);
     }
+    let expiry_secs = expiry_secs.clamp(1, MAX_PRESIGN_EXPIRY_SECS);
     let now = Utc::now();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let date = now.format("%Y%m%d").to_string();
@@ -182,6 +192,44 @@ fn uri_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn presign_config() -> R2Config {
+        R2Config {
+            account_id: "acct".into(),
+            bucket: "bucket".into(),
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+            public_base_url: None,
+        }
+    }
+
+    /// SigV4 rejects a presigned URL that declares more than seven days, so an
+    /// over-long request must be clamped rather than signed and handed out — the
+    /// failure would otherwise only show up when someone opened the link.
+    #[test]
+    fn presigned_expiry_is_clamped_to_the_sigv4_maximum() {
+        let cfg = presign_config();
+        let url = object_url(&cfg, "brand-assets/org/logo.png", 31_536_000);
+        assert!(
+            url.contains(&format!("X-Amz-Expires={MAX_PRESIGN_EXPIRY_SECS}")),
+            "expiry should be clamped, got {url}"
+        );
+        let short = object_url(&cfg, "brand-assets/org/logo.png", 600);
+        assert!(short.contains("X-Amz-Expires=600"));
+    }
+
+    /// With a public base there is no signature and therefore no expiry at all.
+    #[test]
+    fn a_public_base_returns_a_stable_url() {
+        let cfg = R2Config {
+            public_base_url: Some("https://cdn.example.com/".into()),
+            ..presign_config()
+        };
+        assert_eq!(
+            object_url(&cfg, "brand-assets/org/logo.png", 600),
+            "https://cdn.example.com/brand-assets/org/logo.png"
+        );
+    }
 
     // Live round-trip against real R2. Ignored by default; run with:
     //   R2_ACCOUNT_ID=.. R2_BUCKET=.. R2_ACCESS_KEY_ID=.. R2_SECRET_ACCESS_KEY=.. \
