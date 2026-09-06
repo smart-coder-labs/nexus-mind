@@ -81,6 +81,8 @@ interface FormState {
   // post imagery + the brand design system every image is generated under
   imagesEnabled: boolean
   imagesPerPost: string
+  imagesProvider: string
+  imagesModel: string
   dsPalette: string // comma-separated hex colours
   dsTypography: string
   dsVisualStyle: string
@@ -150,6 +152,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     autoPublishDailyLimit: '3',
     imagesEnabled: false,
     imagesPerPost: '1',
+    imagesProvider: 'higgsfield',
+    imagesModel: 'gpt_image_2',
     dsPalette: '',
     dsTypography: '',
     dsVisualStyle: '',
@@ -250,7 +254,14 @@ function buildConfig(state: FormState): Record<string, unknown> {
       config.auto_publish_daily_limit = Math.max(1, Math.min(10, Number(state.autoPublishDailyLimit) || 3))
     }
     if (state.imagesEnabled) {
-      config.images = { enabled: true, per_post: Math.max(1, Math.min(4, Number(state.imagesPerPost) || 1)) }
+      const images: Record<string, unknown> = {
+        enabled: true,
+        per_post: Math.max(1, Math.min(4, Number(state.imagesPerPost) || 1)),
+        provider: state.imagesProvider === 'cloudflare' ? 'cloudflare' : 'higgsfield',
+      }
+      // The model is Higgsfield-specific; Cloudflare exposes a single model.
+      if (images.provider === 'higgsfield') images.model = state.imagesModel
+      config.images = images
     }
     // The design system is kept even with images off, so turning them back on
     // does not lose the brand the user already described.
@@ -343,6 +354,8 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     autoPublishDailyLimit: typeof config.auto_publish_daily_limit === 'number' ? String(config.auto_publish_daily_limit) : '3',
     imagesEnabled: images.enabled === true,
     imagesPerPost: typeof images.per_post === 'number' ? String(images.per_post) : '1',
+    imagesProvider: typeof images.provider === 'string' ? images.provider : 'higgsfield',
+    imagesModel: typeof images.model === 'string' ? images.model : 'gpt_image_2',
     dsPalette: Array.isArray(designSystem.palette) ? (designSystem.palette as string[]).join(', ') : '',
     dsTypography: typeof designSystem.typography === 'string' ? designSystem.typography : '',
     dsVisualStyle: typeof designSystem.visual_style === 'string' ? designSystem.visual_style : '',
@@ -830,15 +843,38 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Switch checked={state.imagesEnabled} onCheckedChange={value => set('imagesEnabled', value)} size="sm" label="Generate an image for each post" />
             </div>
             {state.imagesEnabled && (
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <Field label="Images per post" hint="1–4. More than one becomes a carousel.">
-                  <Input inputSize="sm" type="number" min={1} max={4} value={state.imagesPerPost} onChange={event => set('imagesPerPost', event.target.value)} />
-                </Field>
-                <Field label="Aspect ratio">
-                  <NativeSelect value={state.dsAspectRatio} onChange={value => set('dsAspectRatio', value)}>
-                    {['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9', 'auto'].map(ratio => <option key={ratio} value={ratio}>{ratio}</option>)}
+              <div className="mt-3 space-y-3">
+                <Field label="Provider" hint="Chosen explicitly, never mixed: two providers render the same design system differently, so switching mid-feed changes how your posts look.">
+                  <NativeSelect value={state.imagesProvider} onChange={value => set('imagesProvider', value)}>
+                    <option value="higgsfield">Higgsfield — higher quality, paid credits</option>
+                    <option value="cloudflare">Cloudflare Workers AI — FLUX.1 schnell, free daily allowance</option>
                   </NativeSelect>
                 </Field>
+                {state.imagesProvider === 'higgsfield' ? (
+                  <Field label="Model" hint="Credit cost per image. With 3 posts per run, the difference is roughly 20 credits a run against 3.">
+                    <NativeSelect value={state.imagesModel} onChange={value => set('imagesModel', value)}>
+                      <option value="gpt_image_2">GPT Image 2 — 6.5 credits (best composition)</option>
+                      <option value="nano_banana_flash">Nano Banana 2 — 1.5 credits</option>
+                      <option value="nano_banana_2_lite">Nano Banana 2 Lite — 1 credit</option>
+                      <option value="seedream_v5_lite">Seedream 5.0 Lite — 1 credit</option>
+                      <option value="flux_2">FLUX.2 — 1 credit</option>
+                    </NativeSelect>
+                  </Field>
+                ) : (
+                  <p className="rounded-[8px] border border-border-primary p-2 text-[11px] text-text-tertiary">
+                    Uses FLUX.1 schnell. Needs <code>CLOUDFLARE_AI_TOKEN</code> on the server and object storage configured. Two limits worth knowing: it takes no logo reference, and it ignores the aspect ratio below — the model accepts only a prompt and a step count, so images come back square.
+                  </p>
+                )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Images per post" hint="1–4. More than one becomes a carousel.">
+                    <Input inputSize="sm" type="number" min={1} max={4} value={state.imagesPerPost} onChange={event => set('imagesPerPost', event.target.value)} />
+                  </Field>
+                  <Field label="Aspect ratio" hint={state.imagesProvider === 'cloudflare' ? 'Not supported by FLUX.1 schnell.' : undefined}>
+                    <NativeSelect value={state.dsAspectRatio} onChange={value => set('dsAspectRatio', value)}>
+                      {['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9', 'auto'].map(ratio => <option key={ratio} value={ratio}>{ratio}</option>)}
+                    </NativeSelect>
+                  </Field>
+                </div>
               </div>
             )}
           </div>
@@ -874,7 +910,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
               <Field label="Avoid (optional)" hint="Added to the built-in ban on text, logos and watermarks.">
                 <Input inputSize="sm" value={state.dsAvoid} onChange={event => set('dsAvoid', event.target.value)} placeholder="gradients, neon, clip-art" />
               </Field>
-              <Field label="Logo (optional)" hint="Used as a visual reference on every image so the mark's geometry carries across the set.">
+              <Field label="Logo (optional)" hint={state.imagesProvider === 'cloudflare' ? 'Ignored by Cloudflare Workers AI, which takes no reference images.' : "Used as a visual reference on every image so the mark's geometry carries across the set."}>
                 <div className="space-y-2">
                   <Input inputSize="sm" value={state.dsLogoUrl} onChange={event => set('dsLogoUrl', event.target.value)} placeholder="https://… or upload a file" />
                   <div className="flex items-center gap-2">

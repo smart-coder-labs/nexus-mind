@@ -14,7 +14,7 @@
 //! the worker produces it under a fixed argv, exactly like the security scanners.
 
 use anyhow::{bail, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// The only program this module's runner may spawn. Deliberately separate from
 /// both the package-manager allowlist (`run_allowlisted_commands`) and the
@@ -22,9 +22,43 @@ use serde_json::Value;
 pub const HIGGSFIELD: &str = "higgsfield";
 pub const IMAGE_PROGRAM_ALLOWLIST: [&str; 1] = [HIGGSFIELD];
 
-/// Higgsfield job type used for post imagery. `higgsfield model get gpt_image_2`
-/// reports `prompt` as the only required param, plus the enums mirrored below.
+/// Higgsfield job type used for post imagery when the agent does not pick one.
+/// `higgsfield model get gpt_image_2` reports `prompt` as the only required param,
+/// plus the enums mirrored below. It stays the default so agents created before
+/// the model became configurable keep rendering identically — but it is by far the
+/// most expensive of the options (6.5 credits against 1 for the lite models), so
+/// the wizard shows the cost and lets an operator trade quality for spend.
 pub const DEFAULT_JOB_TYPE: &str = "gpt_image_2";
+
+/// Higgsfield job types an agent may choose, with their credit cost per image as
+/// reported by `higgsfield generate cost`. An allowlist rather than free text: the
+/// value reaches a command line, and an unknown job type is a failed run and spent
+/// wall-clock rather than a helpful error.
+pub const HIGGSFIELD_MODELS: [(&str, f32); 5] = [
+    ("gpt_image_2", 6.5),
+    ("nano_banana_flash", 1.5),
+    ("nano_banana_2_lite", 1.0),
+    ("seedream_v5_lite", 1.0),
+    ("flux_2", 1.0),
+];
+
+/// The Cloudflare Workers AI model used for post imagery.
+///
+/// Only one for now, deliberately: Workers AI meters image models very
+/// differently from one another, and this is the one whose cost fits inside the
+/// free daily allocation for this workload.
+pub const CLOUDFLARE_MODEL: &str = "@cf/black-forest-labs/flux-1-schnell";
+
+/// Diffusion steps for the Cloudflare model. The API documents a default of 4 and
+/// a maximum of 8; steps are the dominant term in its price, so the default stays.
+pub const CLOUDFLARE_STEPS: u32 = 4;
+
+/// Hard limit the Workers AI API places on `prompt` (1..=2048 characters).
+///
+/// A composed brand prompt gets close to this: a palette, a style paragraph and a
+/// block of imagery rules add up. Exceeding it is a rejected request, so the
+/// prompt is trimmed to fit rather than sent and refused.
+pub const CLOUDFLARE_PROMPT_LIMIT: usize = 2048;
 
 /// Accepted `--aspect-ratio` values for `gpt_image_2`.
 pub const ASPECT_RATIOS: [&str; 9] = [
@@ -51,6 +85,60 @@ pub const WAIT_TIMEOUT: &str = "10m";
 
 pub fn is_allowlisted_program(program: &str) -> bool {
     IMAGE_PROGRAM_ALLOWLIST.contains(&program)
+}
+
+// ── Provider selection ───────────────────────────────────────────────────────
+
+/// Where a run's images are generated.
+///
+/// Selected explicitly per agent, never chained automatically. A silent fallback
+/// between providers would undo the point of the design system: two models read
+/// the same brand differently, so the feed's look would drift with whichever
+/// provider happened to answer. When the chosen provider cannot produce an image
+/// the post goes out without one, which is consistent, rather than with one that
+/// does not look like the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageProvider {
+    Higgsfield,
+    Cloudflare,
+}
+
+impl ImageProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageProvider::Higgsfield => "higgsfield",
+            ImageProvider::Cloudflare => "cloudflare",
+        }
+    }
+}
+
+/// Higgsfield unless the agent explicitly asks for another provider, so an agent
+/// created before this existed keeps its behaviour.
+pub fn provider_from_config(config: &Value) -> ImageProvider {
+    match config
+        .pointer("/images/provider")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+    {
+        Some("cloudflare") => ImageProvider::Cloudflare,
+        _ => ImageProvider::Higgsfield,
+    }
+}
+
+/// The Higgsfield job type this agent uses, falling back to the default when the
+/// configured value is not on the allowlist.
+pub fn higgsfield_model_from_config(config: &Value) -> String {
+    config
+        .pointer("/images/model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| HIGGSFIELD_MODELS.iter().any(|(name, _)| name == value))
+        .unwrap_or(DEFAULT_JOB_TYPE)
+        .to_string()
+}
+
+pub fn is_known_higgsfield_model(model: &str) -> bool {
+    HIGGSFIELD_MODELS.iter().any(|(name, _)| *name == model)
 }
 
 // ── Design system ────────────────────────────────────────────────────────────
@@ -216,6 +304,7 @@ pub fn compose_image_prompt(system: &DesignSystem, post_prompt: &str) -> String 
 /// `--wait` makes the CLI block until the job finishes and emit the terminal job
 /// JSON, which avoids a create/poll pair and keeps the runner a single spawn.
 pub fn build_higgsfield_argv(
+    model: &str,
     prompt: &str,
     aspect_ratio: &str,
     reference_paths: &[String],
@@ -226,11 +315,16 @@ pub fn build_higgsfield_argv(
     if !ASPECT_RATIOS.contains(&aspect_ratio) {
         bail!("invalid_aspect_ratio")
     }
+    // The job type is a command-line argument, so it comes from the allowlist and
+    // never straight from configuration.
+    if !is_known_higgsfield_model(model) {
+        bail!("invalid_image_model")
+    }
     let mut argv = vec![
         HIGGSFIELD.to_string(),
         "generate".to_string(),
         "create".to_string(),
-        DEFAULT_JOB_TYPE.to_string(),
+        model.to_string(),
         "--prompt".to_string(),
         prompt.to_string(),
         "--aspect-ratio".to_string(),
@@ -354,6 +448,86 @@ fn balanced_end(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+// ── Cloudflare Workers AI ────────────────────────────────────────────────────
+
+/// Account id and API token for Workers AI.
+///
+/// The account id falls back to `R2_ACCOUNT_ID`: object storage and Workers AI
+/// live on the same Cloudflare account, and a deployment that already stores
+/// evidence in R2 has it configured. That leaves exactly one new secret to add,
+/// which is the difference between "set a token" and "onboard a vendor".
+pub struct CloudflareAi {
+    pub account_id: String,
+    pub api_token: String,
+}
+
+impl CloudflareAi {
+    pub fn from_env() -> Option<Self> {
+        let get = |key: &str| std::env::var(key).ok().filter(|value| !value.is_empty());
+        let api_token = get("CLOUDFLARE_AI_TOKEN")?;
+        let account_id = get("CLOUDFLARE_ACCOUNT_ID").or_else(|| get("R2_ACCOUNT_ID"))?;
+        Some(Self {
+            account_id,
+            api_token,
+        })
+    }
+}
+
+pub fn cloudflare_endpoint(account_id: &str, model: &str) -> String {
+    format!("https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}")
+}
+
+/// Trim a prompt to the API's character limit on a word boundary.
+///
+/// Cutting mid-word leaves a fragment the model reads as a real token, which is a
+/// worse instruction than simply stopping early.
+pub fn clamp_prompt(prompt: &str, limit: usize) -> String {
+    if prompt.chars().count() <= limit {
+        return prompt.to_string();
+    }
+    let truncated: String = prompt.chars().take(limit).collect();
+    match truncated.rfind(char::is_whitespace) {
+        Some(index) if index > limit / 2 => truncated[..index].trim_end().to_string(),
+        _ => truncated.trim_end().to_string(),
+    }
+}
+
+pub fn cloudflare_body(prompt: &str) -> Value {
+    json!({
+        "prompt": clamp_prompt(prompt, CLOUDFLARE_PROMPT_LIMIT),
+        "steps": CLOUDFLARE_STEPS,
+    })
+}
+
+/// Decode the generated image out of a Workers AI response.
+///
+/// The image comes back base64-encoded inside JSON. The REST wrapper nests the
+/// model output under `result`, while the docs' own example shows the bare object,
+/// so both shapes are accepted rather than betting on one. A non-success envelope
+/// is surfaced with Cloudflare's own error text, which is what distinguishes "no
+/// token permission" from "daily allocation exhausted" in a run record.
+pub fn parse_cloudflare_result(payload: &Value) -> Result<Vec<u8>> {
+    use base64::Engine;
+    if payload.get("success").and_then(|v| v.as_bool()) == Some(false) {
+        let detail = payload
+            .get("errors")
+            .map(|errors| errors.to_string())
+            .unwrap_or_else(|| "unknown_error".to_string());
+        bail!(
+            "cloudflare_ai_error: {}",
+            detail.chars().take(300).collect::<String>()
+        )
+    }
+    let encoded = payload
+        .pointer("/result/image")
+        .or_else(|| payload.pointer("/image"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("cloudflare_image_missing"))?;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| anyhow::anyhow!("cloudflare_image_not_base64"))
+}
+
 // ── Per-post plan ────────────────────────────────────────────────────────────
 
 /// How many images to generate for one post, clamped to the template's caps and
@@ -365,7 +539,6 @@ pub fn images_for_post(configured: usize, remaining_budget: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn only_higgsfield_is_allowlisted() {
@@ -459,23 +632,23 @@ mod tests {
 
     #[test]
     fn argv_pins_every_flag_and_rejects_bad_input() {
-        let argv = build_higgsfield_argv("a prompt", "1:1", &["/tmp/logo.png".into()]).unwrap();
+        let argv = build_higgsfield_argv(DEFAULT_JOB_TYPE, "a prompt", "1:1", &["/tmp/logo.png".into()]).unwrap();
         assert_eq!(argv[0], HIGGSFIELD);
         assert_eq!(argv[3], DEFAULT_JOB_TYPE);
         assert!(argv.contains(&"--wait".to_string()));
         assert!(argv.contains(&"--json".to_string()));
         assert!(argv.contains(&"/tmp/logo.png".to_string()));
         assert_eq!(
-            build_higgsfield_argv("", "1:1", &[]).unwrap_err().to_string(),
+            build_higgsfield_argv(DEFAULT_JOB_TYPE, "", "1:1", &[]).unwrap_err().to_string(),
             "empty_image_prompt"
         );
         assert_eq!(
-            build_higgsfield_argv("p", "5:4", &[]).unwrap_err().to_string(),
+            build_higgsfield_argv(DEFAULT_JOB_TYPE, "p", "5:4", &[]).unwrap_err().to_string(),
             "invalid_aspect_ratio"
         );
         // A dash-leading path would be parsed as a flag by the CLI.
         assert_eq!(
-            build_higgsfield_argv("p", "1:1", &["--json".into()])
+            build_higgsfield_argv(DEFAULT_JOB_TYPE, "p", "1:1", &["--json".into()])
                 .unwrap_err()
                 .to_string(),
             "invalid_reference_path"
@@ -513,6 +686,107 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "image_result_not_json"
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_never_reaches_the_command_line() {
+        assert_eq!(
+            build_higgsfield_argv("rm -rf /", "p", "1:1", &[])
+                .unwrap_err()
+                .to_string(),
+            "invalid_image_model"
+        );
+        // Every allowlisted model is accepted and lands in the argv verbatim.
+        for (model, _) in HIGGSFIELD_MODELS {
+            let argv = build_higgsfield_argv(model, "p", "1:1", &[]).unwrap();
+            assert_eq!(argv[3], model);
+        }
+    }
+
+    #[test]
+    fn the_provider_is_higgsfield_unless_asked_otherwise() {
+        assert_eq!(
+            provider_from_config(&json!({})),
+            ImageProvider::Higgsfield,
+            "an agent created before providers existed must not change behaviour"
+        );
+        assert_eq!(
+            provider_from_config(&json!({"images":{"provider":"cloudflare"}})),
+            ImageProvider::Cloudflare
+        );
+        // An unknown provider falls back rather than failing the run.
+        assert_eq!(
+            provider_from_config(&json!({"images":{"provider":"midjourney"}})),
+            ImageProvider::Higgsfield
+        );
+    }
+
+    #[test]
+    fn an_unknown_configured_model_falls_back_to_the_default() {
+        assert_eq!(
+            higgsfield_model_from_config(&json!({"images":{"model":"seedream_v5_lite"}})),
+            "seedream_v5_lite"
+        );
+        assert_eq!(
+            higgsfield_model_from_config(&json!({"images":{"model":"nope"}})),
+            DEFAULT_JOB_TYPE
+        );
+        assert_eq!(higgsfield_model_from_config(&json!({})), DEFAULT_JOB_TYPE);
+    }
+
+    #[test]
+    fn a_long_brand_prompt_is_trimmed_to_the_api_limit_on_a_word_boundary() {
+        let long = "matte black surfaces ".repeat(300);
+        let clamped = clamp_prompt(&long, CLOUDFLARE_PROMPT_LIMIT);
+        assert!(clamped.chars().count() <= CLOUDFLARE_PROMPT_LIMIT);
+        assert!(!clamped.ends_with(' '));
+        // A mid-word fragment would read as a real instruction to the model, so
+        // whatever word the cut lands on must be a whole one.
+        let last = clamped.split_whitespace().last().unwrap();
+        assert!(
+            ["matte", "black", "surfaces"].contains(&last),
+            "cut mid-word: ended on {last:?}"
+        );
+        // A short prompt is untouched.
+        assert_eq!(clamp_prompt("a short prompt", 2048), "a short prompt");
+    }
+
+    #[test]
+    fn the_cloudflare_body_carries_the_prompt_and_step_count() {
+        let body = cloudflare_body("a subject");
+        assert_eq!(body["prompt"], json!("a subject"));
+        assert_eq!(body["steps"], json!(CLOUDFLARE_STEPS));
+        assert_eq!(
+            cloudflare_endpoint("acct123", CLOUDFLARE_MODEL),
+            "https://api.cloudflare.com/client/v4/accounts/acct123/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        );
+    }
+
+    #[test]
+    fn the_cloudflare_image_is_decoded_from_either_response_shape() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"PNGDATA");
+        // The REST wrapper nests the model output under `result`.
+        let wrapped = json!({"success": true, "result": {"image": encoded}});
+        assert_eq!(parse_cloudflare_result(&wrapped).unwrap(), b"PNGDATA");
+        // The docs' own example shows the bare object.
+        let bare = json!({"image": encoded});
+        assert_eq!(parse_cloudflare_result(&bare).unwrap(), b"PNGDATA");
+    }
+
+    #[test]
+    fn a_cloudflare_failure_surfaces_its_own_error_text() {
+        let payload = json!({"success": false, "errors": [{"code": 10000, "message": "Authentication error"}]});
+        let error = parse_cloudflare_result(&payload).unwrap_err().to_string();
+        assert!(error.starts_with("cloudflare_ai_error"));
+        // The operator needs to tell a bad token from an exhausted allocation.
+        assert!(error.contains("Authentication error"));
+        assert_eq!(
+            parse_cloudflare_result(&json!({"success": true, "result": {}}))
+                .unwrap_err()
+                .to_string(),
+            "cloudflare_image_missing"
         );
     }
 

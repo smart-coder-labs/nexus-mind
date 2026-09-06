@@ -16771,6 +16771,37 @@ pub fn validate_autonomous_agent_definition(
                         errors.push("invalid_images_per_post")
                     }
                 }
+                if current
+                    .revision
+                    .config
+                    .pointer("/images/provider")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|value| !matches!(value, "higgsfield" | "cloudflare"))
+                {
+                    errors.push("invalid_image_provider")
+                }
+                // The Higgsfield job type becomes a command-line argument, so an
+                // unknown one is rejected here rather than discovered as a failed
+                // generation after the run has already spent its time.
+                if current
+                    .revision
+                    .config
+                    .pointer("/images/provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("higgsfield")
+                    == "higgsfield"
+                {
+                    if let Some(model) = current
+                        .revision
+                        .config
+                        .pointer("/images/model")
+                        .and_then(|v| v.as_str())
+                    {
+                        if !crate::automation::image_gen::is_known_higgsfield_model(model) {
+                            errors.push("invalid_image_model")
+                        }
+                    }
+                }
             }
             // A logo that is not a fetchable http(s) URL would be silently dropped
             // at generation time, so it is caught at save time instead.

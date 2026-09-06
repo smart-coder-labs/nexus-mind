@@ -4149,6 +4149,50 @@ async fn upload_qa_screenshots(
     map
 }
 
+/// One image from Cloudflare Workers AI, returned as bytes.
+///
+/// No CLI and no session: an API token, one request, base64 back. That is the
+/// whole reason this provider exists as the cheap option — nothing to install on
+/// the node, nothing to log in, nothing to expire.
+async fn generate_cloudflare_image(
+    account: &super::image_gen::CloudflareAi,
+    prompt: &str,
+) -> anyhow::Result<Vec<u8>> {
+    const CLOUDFLARE_TIMEOUT_SECS: u64 = 120;
+    let endpoint = super::image_gen::cloudflare_endpoint(
+        &account.account_id,
+        super::image_gen::CLOUDFLARE_MODEL,
+    );
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(CLOUDFLARE_TIMEOUT_SECS))
+        .build()?
+        .post(endpoint)
+        .bearer_auth(&account.api_token)
+        .json(&super::image_gen::cloudflare_body(prompt))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    // Workers AI reports quota and permission problems in the body, so the body is
+    // what gets surfaced — a bare status code cannot tell those two apart.
+    let payload: serde_json::Value = serde_json::from_str(&body).unwrap_or(json!({
+        "success": false,
+        "errors": body.chars().take(300).collect::<String>(),
+    }));
+    if !status.is_success() {
+        let detail = payload
+            .get("errors")
+            .map(|errors| errors.to_string())
+            .unwrap_or_default();
+        anyhow::bail!(
+            "cloudflare_ai_{}: {}",
+            status.as_u16(),
+            detail.chars().take(300).collect::<String>()
+        )
+    }
+    super::image_gen::parse_cloudflare_result(&payload)
+}
+
 /// Generate the post imagery for an AI Content Manager run.
 ///
 /// Returns a map keyed by each post's index in the agent's `findings` array →
@@ -4186,6 +4230,22 @@ async fn generate_post_images(
         errors.push("design_system_missing".into());
         return (images_by_index, errors);
     }
+    let provider = super::image_gen::provider_from_config(config);
+    let higgsfield_model = super::image_gen::higgsfield_model_from_config(config);
+    // Resolved once: a missing token is the same failure for every post, and
+    // discovering it twelve times only burns the run's clock.
+    let cloudflare = match provider {
+        super::image_gen::ImageProvider::Cloudflare => {
+            match super::image_gen::CloudflareAi::from_env() {
+                Some(config) => Some(config),
+                None => {
+                    errors.push("cloudflare_ai_not_configured".into());
+                    return (images_by_index, errors);
+                }
+            }
+        }
+        super::image_gen::ImageProvider::Higgsfield => None,
+    };
 
     let structured = structured_result(result);
     let Some(findings) = structured.get("findings").and_then(|v| v.as_array()) else {
@@ -4206,8 +4266,11 @@ async fn generate_post_images(
     // The brand logo is fetched once and reused as a reference on every image, so
     // the mark's geometry carries across the whole set rather than being
     // re-invented per render.
+    // Reference images are a Higgsfield feature; the Workers AI model accepts a
+    // prompt and a step count and nothing else, so fetching the logo for it would
+    // be pure cost.
     let mut reference_paths: Vec<String> = Vec::new();
-    if !system.logo_url.is_empty() {
+    if !system.logo_url.is_empty() && provider == super::image_gen::ImageProvider::Higgsfield {
         match fetch_image_bytes(&system.logo_url).await {
             Ok((bytes, content_type)) => {
                 // The extension has to match the bytes: the CLI uploads the file by
@@ -4274,71 +4337,119 @@ async fn generate_post_images(
                 budget = 0;
                 break;
             }
-            let argv = match super::image_gen::build_higgsfield_argv(
-                &prompt,
-                &system.aspect_ratio,
-                &reference_paths,
-            ) {
-                Ok(argv) => argv,
-                Err(error) => {
-                    errors.push(error.to_string());
-                    break;
-                }
-            };
             budget -= 1;
-            let stdout = match run_image_generator(&argv, &media_dir).await {
-                Ok(stdout) => stdout,
-                Err(error) => {
-                    let message = error.to_string();
-                    let unavailable = message.contains("image_generator_unavailable");
-                    errors.push(message);
-                    // A missing or unusable CLI will fail identically for every
-                    // remaining post, so stop rather than burning the run's wall
-                    // clock rediscovering it.
-                    if unavailable {
-                        budget = 0;
-                    }
-                    break;
-                }
-            };
-            let source_url = match super::image_gen::parse_higgsfield_result(&stdout) {
-                Ok(url) => url,
-                Err(error) => {
-                    errors.push(error.to_string());
-                    continue;
-                }
-            };
-            // Re-host on R2: the provider's CDN URL is not a durable reference,
-            // and a draft may sit unpublished for days before anyone approves it.
-            // Only fetch when there is somewhere to re-host it: with no object
-            // storage the provider URL is what gets stored either way, so
-            // downloading megabytes to discard them is pure waste.
-            let hosted = match &r2 {
-                None => source_url.clone(),
-                Some(cfg) => match fetch_image_bytes(&source_url).await {
-                    Ok((bytes, content_type)) => {
-                        let extension = match content_type.as_str() {
-                            "image/jpeg" => "jpg",
-                            "image/webp" => "webp",
-                            _ => "png",
-                        };
-                        let key = format!(
-                            "post-images/{}/{}/{index}-{shot}.{extension}",
-                            claim.org_id, claim.run.id
-                        );
-                        match super::r2::put_object(cfg, &key, &bytes, &content_type).await {
-                            Ok(stored) => super::r2::object_url(cfg, &stored, 604_800),
-                            Err(error) => {
-                                errors.push(format!("r2_upload: {error}"));
-                                source_url.clone()
-                            }
+            // Cloudflare hands back the image bytes directly; Higgsfield hands back
+            // a URL the worker still has to fetch. Keeping the two shapes explicit
+            // here is what lets the Cloudflare path skip the download entirely.
+            let produced_bytes: Option<(Vec<u8>, String)>;
+            let source_url: Option<String>;
+            match (&cloudflare, provider) {
+                (Some(account), _) => {
+                    match generate_cloudflare_image(account, &prompt).await {
+                        Ok(bytes) => {
+                            produced_bytes = Some((bytes, "image/jpeg".to_string()));
+                            source_url = None;
+                        }
+                        Err(error) => {
+                            errors.push(error.to_string());
+                            // A bad token or an exhausted daily allocation fails the
+                            // same way for every remaining post.
+                            budget = 0;
+                            break;
                         }
                     }
+                }
+                (None, _) => {
+                    let argv = match super::image_gen::build_higgsfield_argv(
+                        &higgsfield_model,
+                        &prompt,
+                        &system.aspect_ratio,
+                        &reference_paths,
+                    ) {
+                        Ok(argv) => argv,
+                        Err(error) => {
+                            errors.push(error.to_string());
+                            break;
+                        }
+                    };
+                    let stdout = match run_image_generator(&argv, &media_dir).await {
+                        Ok(stdout) => stdout,
+                        Err(error) => {
+                            let message = error.to_string();
+                            let unavailable = message.contains("image_generator_unavailable");
+                            errors.push(message);
+                            // A missing or unusable CLI will fail identically for
+                            // every remaining post, so stop rather than burning the
+                            // run's wall clock rediscovering it.
+                            if unavailable {
+                                budget = 0;
+                            }
+                            break;
+                        }
+                    };
+                    match super::image_gen::parse_higgsfield_result(&stdout) {
+                        Ok(url) => {
+                            produced_bytes = None;
+                            source_url = Some(url);
+                        }
+                        Err(error) => {
+                            errors.push(error.to_string());
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Re-host on R2: the provider's CDN URL is not a durable reference,
+            // and a draft may sit unpublished for days before anyone approves it.
+            // Resolve to bytes: already in hand for Cloudflare, one fetch away for
+            // Higgsfield. The fetch only happens when there is somewhere to re-host
+            // them — with no object storage the provider URL is what gets stored
+            // either way, so downloading megabytes to discard them is pure waste.
+            let bytes = match (produced_bytes, &source_url, &r2) {
+                (Some(pair), _, _) => Some(pair),
+                (None, Some(url), Some(_)) => match fetch_image_bytes(url).await {
+                    Ok(pair) => Some(pair),
                     Err(error) => {
                         errors.push(format!("image_fetch: {error}"));
-                        source_url.clone()
+                        None
                     }
                 },
+                (None, _, _) => None,
+            };
+            let hosted = match (&r2, bytes) {
+                (Some(cfg), Some((bytes, content_type))) => {
+                    let extension = match content_type.as_str() {
+                        "image/jpeg" => "jpg",
+                        "image/webp" => "webp",
+                        _ => "png",
+                    };
+                    let key = format!(
+                        "post-images/{}/{}/{index}-{shot}.{extension}",
+                        claim.org_id, claim.run.id
+                    );
+                    match super::r2::put_object(cfg, &key, &bytes, &content_type).await {
+                        Ok(stored) => Some(super::r2::object_url(cfg, &stored, 604_800)),
+                        Err(error) => {
+                            errors.push(format!("r2_upload: {error}"));
+                            source_url.clone()
+                        }
+                    }
+                }
+                // No object storage: a provider URL can still be stored, but bytes
+                // with nowhere to live cannot — the Cloudflare path therefore needs
+                // R2 configured, and says so instead of silently producing nothing.
+                (None, _) => {
+                    if source_url.is_none() {
+                        errors.push("object_storage_required_for_cloudflare".into());
+                        budget = 0;
+                        break;
+                    }
+                    source_url.clone()
+                }
+                (Some(_), None) => source_url.clone(),
+            };
+            let Some(hosted) = hosted else {
+                continue;
             };
             produced.push(json!({"url": hosted, "alt_text": alt_text}));
         }
