@@ -29,11 +29,16 @@
 
   /* Text — neutral ladder; violet is reserved for links/emphasis (accent-violet).
      Values chosen for AA contrast on the near-black canvas (#060509):
-     secondary 9.6:1, tertiary 5.8:1; quaternary is dim/decorative only. */
+     secondary 9.6:1, tertiary 5.8:1, quaternary 4.76:1.
+     Quaternary was #6b6676 (3.66:1) and documented as "decorative only", but a
+     live audit found it carrying real information — organisation names on
+     /users and audit ids on /audit — in ~48 places. It is the least-emphasis
+     *text* step, so it has to clear 4.5:1 (WCAG 1.4.3) rather than be excused
+     as decoration. */
   --color-text-primary: #faf5ff;
   --color-text-secondary: #b5b0c4;
   --color-text-tertiary: #8b8698;
-  --color-text-quaternary: #6b6676;
+  --color-text-quaternary: #7d7889;
   --color-text-inverse: #060509;
 
   /* Border */
@@ -204,3 +209,23 @@
 .animate-fade-in  { animation: fadeIn  220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .animate-slide-up { animation: slideUp 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .animate-scale-in { animation: scaleIn 220ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+
+/* ========================================
+   REDUCED MOTION
+   ======================================== */
+
+/* Accessibility floor (WCAG 2.3.3): honour the OS "reduce motion" setting.
+   This app ships fadeIn / slideUp / scaleIn and had no guard at all, so those
+   ran for every user regardless of the preference. Mirrors the guard already
+   in apps/admin. No framer-motion here, so CSS alone covers the surface. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

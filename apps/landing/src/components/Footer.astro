@@ -1,24 +1,51 @@
 ---
 // Footer
+import Icon from './ui/Icon/Icon.astro';
 ---
 
 <footer class="py-12 px-4" style="border-top: 1px solid var(--color-border-primary);">
   <div class="max-w-6xl mx-auto text-center">
     <div class="text-lg font-bold tracking-tight text-text-primary mb-4">
-      Nexus<span class="text-accent">Mind</span>
+      Nexus<span class="text-accent-on-dark">Mind</span>
     </div>
-    <div class="flex justify-center gap-6 text-sm mb-5" style="color: var(--color-text-tertiary);">
-      {['Producto', 'Docs', 'Blog', 'GitHub'].map(item => (
-        <a class="transition-colors duration-200 cursor-pointer hover:opacity-80">{item}</a>
+    <nav class="flex justify-center flex-wrap gap-x-4 gap-y-1 text-sm mb-5" style="color: var(--color-text-tertiary);" aria-label="Enlaces del pie">
+      {[
+        { label: 'Producto', href: '#features' },
+        { label: 'Docs', href: 'https://github.com/smart-coder-labs/nexus-mind/tree/main/docs' },
+        { label: 'GitHub', href: 'https://github.com/smart-coder-labs/nexus-mind' },
+      ].map(({ label, href }) => (
+        <a
+          href={href}
+          class="footer-link transition-colors duration-200 hover:text-text-primary"
+        >{label}</a>
       ))}
-    </div>
+      {/* "Blog" removed: it had no destination. A bare <a> with no href is not
+          focusable and is not exposed as a link, so it failed WCAG 2.1.1 and
+          4.1.2 while looking clickable. Re-add it with a real URL when one exists. */}
+    </nav>
     <div class="flex items-center justify-center gap-3 mb-3">
       <span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border"
         style="border-color: var(--color-border-primary); color: var(--color-text-tertiary);">
-        <span style="color: #ce422b;">⬡</span> Built with Rust
+        <span class="inline-flex items-center gap-1.5"><Icon name="hexagon" size={13} /> Built with Rust</span>
       </span>
     </div>
-    <p class="text-xs" style="color: var(--color-text-tertiary);">Construido con ❤️ por Smart Coder Labs y Cesar Ruiz</p>
+    <p class="text-xs" style="color: var(--color-text-tertiary);">Construido con <span class="inline-flex align-middle"><Icon name="heart" size={13} /></span> por Smart Coder Labs y Cesar Ruiz</p>
     <p class="text-xs mt-1" style="color: var(--color-text-tertiary);">2026 NexusMind. Todos los derechos reservados.</p>
   </div>
 </footer>
+
+<style>
+  /* WCAG 2.2 AA 2.5.8 Target Size (Minimum): 24x24 CSS px. The links sat at
+     20px tall, so the padding is what makes them conformant, not decoration. */
+  .footer-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 2px 8px;
+    border-radius: 8px;
+  }
+  .footer-link:focus-visible {
+    outline: 2px solid var(--color-accent-blue-hover);
+    outline-offset: 2px;
+  }
+</style>

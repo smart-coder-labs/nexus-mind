@@ -5,7 +5,6 @@ import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient } from '../api/client'
 import type { CodeProject, CodeSearchResult, LocateResult } from '../types'
 import { StatTile } from './dashboard/StatTile'
-import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 
 // ── Saved searches ─────────────────────────────────────────────────────────────
@@ -1539,9 +1538,9 @@ export default function Code() {
 
       {/* Stats */}
       <KpiMarquee role="list" aria-label="Code repository statistics">
-        {statTiles.map((tile, i) => (
+        {statTiles.map((tile) => (
           <div key={tile.label} className="w-[232px] flex-none">
-            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} />
           </div>
         ))}
       </KpiMarquee>

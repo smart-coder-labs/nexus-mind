@@ -439,7 +439,6 @@ export default function Usage() {
                           value={tile.value}
                           sub={tile.sub}
                           icon={tile.icon}
-                          accent={tile.accent}
                           sparkline={tile.sparkline}
                         />
                       </div>

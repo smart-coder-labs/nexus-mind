@@ -12,7 +12,6 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/Select/Select'
 import { StatTile } from './dashboard/StatTile'
-import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { CLIENT_STATUSES } from '../types'
 import type { Client, ClientMember, ClientStatus, Project, User as UserType } from '../types'
@@ -472,9 +471,9 @@ export default function Clients() {
       </div>
 
       <KpiMarquee role="list" aria-label="Client statistics">
-        {statTiles.map((tile, i) => (
+        {statTiles.map((tile) => (
           <div key={tile.label} className="w-[232px] flex-none">
-            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+            <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} />
           </div>
         ))}
       </KpiMarquee>

@@ -36,7 +36,7 @@
   /* Text ladder */
   --color-text-primary: #f4f6fa;    /* headings, near-white */
   --color-text-secondary: #98a0b1;  /* body / secondary copy */
-  --color-text-tertiary: #5b6373;   /* muted */
+  --color-text-tertiary: #737c8b;   /* muted — 4.75:1 on #07080c (WCAG 1.4.3 AA) */
   --color-text-quaternary: #3d4350; /* least emphasis */
   --color-text-inverse: #07080c;
 
@@ -51,6 +51,11 @@
   --color-accent-blue-hover: #0071e3;
   --color-accent-blue-active: #0058a8;
   --color-accent-blue-tint: rgba(0, 102, 204, 0.12);
+  /* Action Blue is a FILL colour: white on #0066cc is 5.56:1, fine for the
+     primary button. As TEXT on the near-black canvas it is only 3.6:1, which
+     fails WCAG 1.4.3. Sky Link Blue is the system's documented on-dark sibling
+     (6.64:1 on #07080c) — use it whenever the accent is type, not a surface. */
+  --color-accent-on-dark: #2997ff;
   /* Alias so pre-existing `text-accent` / `bg-accent` / `border-accent`
      utility classes (used across Navbar/Solution/EarlyAdopters/Pricing/
      Features) resolve to the same single accent instead of staying
@@ -105,6 +110,7 @@
   --color-accent-blue-hover: var(--color-accent-blue-hover);
   --color-accent-blue-active: var(--color-accent-blue-active);
   --color-accent-blue-tint: var(--color-accent-blue-tint);
+  --color-accent-on-dark: var(--color-accent-on-dark);
 
   --color-status-success: var(--color-status-success);
   --color-status-warning: var(--color-status-warning);
@@ -264,6 +270,20 @@
     opacity: 0.18;
     filter: blur(30px);
     pointer-events: none;
+  }
+
+  /* Icon tile — the single treatment behind every card icon. One accent
+     (Action Blue at 12%), never a per-card hue: colour encodes state in this
+     system, never identity. */
+  .icon-tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.75rem;
+    background: var(--color-accent-blue-tint);
+    color: var(--color-accent-blue);
   }
 
   .tile-label {

@@ -213,7 +213,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 
         return (
           <div key={group.label} className="flex flex-col gap-0.5">
-            <p className="px-2.5 pt-2 pb-1.5 text-[10.5px] font-bold uppercase tracking-[0.12em] text-[#5b6373]">
+            <p className="px-2.5 pt-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
               {group.label}
             </p>
             {items.map(({ href, label, icon: Icon }) => {
@@ -233,7 +233,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
                     FOCUS_RING,
                     isActive
                       ? 'bg-white/[0.08] text-[#f2f4f8] font-semibold'
-                      : 'text-[#9aa2b2] hover:text-[#e7eaf0] hover:bg-white/[0.05] font-normal',
+                      : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.05] font-normal',
                   )}
                 >
                   <Icon
@@ -423,7 +423,7 @@ function SidebarContent({ onNavigate, onOpenShortcuts, orgSettings }: { onNaviga
         <div className="flex items-center gap-1">
           <button
             onClick={handleLogout}
-            className={cn('flex flex-1 items-center gap-3 px-2.5 py-[9px] rounded-[10px] text-[14px] text-[#9aa2b2] hover:text-[#e7eaf0] hover:bg-white/[0.05] transition-colors duration-150', FOCUS_RING)}
+            className={cn('flex flex-1 items-center gap-3 px-2.5 py-[9px] rounded-[10px] text-[14px] text-text-secondary hover:text-text-primary hover:bg-white/[0.05] transition-colors duration-150', FOCUS_RING)}
           >
             <LogOut className="w-[18px] h-[18px] flex-shrink-0" />
             Sign out
@@ -565,7 +565,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <p className="text-[13px] font-semibold text-text-primary truncate leading-tight">
               {session?.org.name ?? 'NexusMind'}
             </p>
-            <p className="text-[10px] text-text-tertiary leading-tight flex items-center gap-1">
+            <p className="text-[11px] text-text-tertiary leading-tight flex items-center gap-1">
               <Brain className="w-3 h-3 text-accent-blue flex-shrink-0" />
               nexusmind
             </p>

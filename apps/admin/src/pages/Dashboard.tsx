@@ -21,7 +21,6 @@ import { GettingStartedPopover } from './dashboard/GettingStartedPopover'
 import { MemoryHealthCard } from './dashboard/MemoryHealthCard'
 import { MemoryTypesCard } from './dashboard/MemoryTypesCard'
 import { TopProjectsCard } from './dashboard/TopProjectsCard'
-import { accentFor } from './dashboard/colors'
 
 type CardKey =
   | 'onboarding' | 'quick-actions' | 'recent-activity' | 'memory-trends' | 'memory-types'
@@ -421,14 +420,13 @@ export default function Dashboard() {
             </div>
           ) : (
             <KpiMarquee role="list" aria-label="Key statistics">
-              {statTiles.map((tile, i) => (
+              {statTiles.map((tile) => (
                 <div key={tile.id} className="w-[232px] flex-none">
                   <StatTile
                     label={tile.label}
                     value={tile.value}
                     sub={tile.sub}
                     icon={tile.icon}
-                    accent={accentFor(i)}
                     sparkline={tile.sparkline}
                   />
                 </div>

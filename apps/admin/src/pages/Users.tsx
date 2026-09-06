@@ -315,9 +315,9 @@ export default function Users() {
 
       {users && (
         <KpiMarquee role="list" aria-label="User statistics">
-          {statTiles.map((t, i) => (
+          {statTiles.map((t) => (
             <div key={t.label} className="w-[232px] flex-none">
-              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
+              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} />
             </div>
           ))}
         </KpiMarquee>

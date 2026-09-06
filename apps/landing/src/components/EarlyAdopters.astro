@@ -1,4 +1,5 @@
 ---
+import Icon from './ui/Icon/Icon.astro';
 const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY || '';
 const TOTAL = 100;
@@ -27,7 +28,7 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
 <section id="early" class="py-20 px-4" style="background: var(--color-bg-secondary);">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14 reveal" data-reveal>
-      <span class="tile-label text-accent">Programa Early Adopter</span>
+      <span class="tile-label text-accent-on-dark">Programa Early Adopter</span>
       <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-text-primary">Sabemos lo que duele.<br/>Lo vivimos también.</h2>
       <p class="mt-3 max-w-xl mx-auto" style="color: var(--color-text-secondary);">Construimos NexusMind porque enfrentamos los mismos problemas. Si los vivís también — este programa es para ti.</p>
     </div>
@@ -35,27 +36,27 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
     <div class="grid md:grid-cols-3 gap-6 mb-14">
       <div class="ds-surface p-7 flex flex-col justify-between h-full" data-reveal>
         <div>
-          <div class="text-3xl mb-4">🎯</div>
+          <div class="icon-tile mb-4"><Icon name="target" size={22} /></div>
           <h3 class="text-lg font-semibold text-text-primary mb-2">"Todo el mundo usa una herramienta distinta"</h3>
           <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">Un equipo elige Cursor, otro Copilot, otro Claude Code. Ningún contexto se comparte. Cada developer empieza desde cero.</p>
         </div>
-        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-status-success);">→ Memoria que persiste entre herramientas.</div>
+        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-accent-on-dark);">→ Memoria que persiste entre herramientas.</div>
       </div>
       <div class="ds-surface p-7 flex flex-col justify-between h-full" data-reveal data-reveal-delay="150">
         <div>
-          <div class="text-3xl mb-4">🔒</div>
+          <div class="icon-tile mb-4"><Icon name="lock" size={22} /></div>
           <h3 class="text-lg font-semibold text-text-primary mb-2">"No sé qué datos ven los agentes"</h3>
           <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">Sin audit trails. No sabés si Claude Code o Cursor están mandando código sensible a modelos externos.</p>
         </div>
-        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-status-success);">→ Trazabilidad total + on-prem option.</div>
+        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-accent-on-dark);">→ Trazabilidad total + on-prem option.</div>
       </div>
       <div class="ds-surface p-7 flex flex-col justify-between h-full" data-reveal data-reveal-delay="300">
         <div>
-          <div class="text-3xl mb-4">💸</div>
+          <div class="icon-tile mb-4"><Icon name="banknote" size={22} /></div>
           <h3 class="text-lg font-semibold text-text-primary mb-2">"No tengo control sobre las políticas"</h3>
           <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">Cada herramienta tiene su propia config. No hay forma centralizada de decir "esto no puede pasar" sin importar qué agente use cada uno.</p>
         </div>
-        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-status-success);">→ Policy engine centralizado para todas.</div>
+        <div class="mt-4 pt-4 border-t text-sm font-medium" style="border-color: var(--color-border-secondary); color: var(--color-accent-on-dark);">→ Policy engine centralizado para todas.</div>
       </div>
     </div>
 
@@ -63,27 +64,27 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
     <div class="ds-surface-elevated p-8 md:p-10 max-w-4xl mx-auto" data-reveal>
       <div class="flex flex-col md:flex-row items-start gap-8">
         <div class="flex-1">
-          <span class="tile-label text-accent">Paquete Early Adopter</span>
+          <span class="tile-label text-accent-on-dark">Paquete Early Adopter</span>
           <h3 class="text-2xl font-bold mt-2 mb-4 text-text-primary">Tu empresa primero. Siempre.</h3>
           <ul class="space-y-3 text-sm">
             <li class="flex items-start gap-3">
-              <span class="mt-0.5" style="color: var(--color-status-success);">🎁</span>
+              <span class="mt-0.5 shrink-0" style="color: var(--color-accent-on-dark);"><Icon name="gift" size={16} /></span>
               <div><strong class="text-text-primary">Precio de fundador:</strong> Tarifa preferencial bloqueada por 12 meses.</div>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-0.5" style="color: var(--color-status-success);">🎁</span>
+              <span class="mt-0.5 shrink-0" style="color: var(--color-accent-on-dark);"><Icon name="gift" size={16} /></span>
               <div><strong class="text-text-primary">Onboarding VIP:</strong> Setup asistido por nuestro CTO. SSO listo en 24h.</div>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-0.5" style="color: var(--color-status-success);">🎁</span>
+              <span class="mt-0.5 shrink-0" style="color: var(--color-accent-on-dark);"><Icon name="gift" size={16} /></span>
               <div><strong class="text-text-primary">Shape the roadmap:</strong> Votación prioritaria. Canal privado con founders.</div>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-0.5" style="color: var(--color-status-success);">🎁</span>
+              <span class="mt-0.5 shrink-0" style="color: var(--color-accent-on-dark);"><Icon name="gift" size={16} /></span>
               <div><strong class="text-text-primary">3 meses gratis:</strong> Control plane completo. Sin compromiso.</div>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-0.5" style="color: var(--color-status-success);">🎁</span>
+              <span class="mt-0.5 shrink-0" style="color: var(--color-accent-on-dark);"><Icon name="gift" size={16} /></span>
               <div><strong class="text-text-primary">Certified Early Adopter:</strong> Badge público para tu empresa.</div>
             </li>
           </ul>
@@ -92,7 +93,7 @@ const pct = Math.min(Math.round((reserved / TOTAL) * 100), 100);
           <div class="ds-surface p-5 text-center relative overflow-hidden">
             <span class="tile-glow" style="background: var(--color-accent-blue);" aria-hidden="true"></span>
             <div class="tile-label relative">Slots reserved</div>
-            <div class="text-3xl font-bold text-accent mt-1 relative">{reserved}<span class="text-base font-medium" style="color: var(--color-text-tertiary);"> / {TOTAL}</span></div>
+            <div class="text-3xl font-bold text-accent-on-dark mt-1 relative">{reserved}<span class="text-base font-medium" style="color: var(--color-text-tertiary);"> / {TOTAL}</span></div>
             <div class="mt-3 h-2 rounded-full overflow-hidden relative" style="background: var(--color-border-secondary);">
               <div class="h-full bg-accent rounded-full" style={`width: ${pct}%`}></div>
             </div>

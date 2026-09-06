@@ -6,7 +6,6 @@ import { Markdown } from '../components/ui/Markdown'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { StatTile } from './dashboard/StatTile'
-import { accentFor } from './dashboard/colors'
 import type { Convention, CreateConventionRequest } from '../types'
 
 const client = createClient()
@@ -977,7 +976,7 @@ export default function Conventions() {
         <div className="mb-5">
           <KpiMarquee>
             <div key="conventions" className="w-[232px] flex-none">
-              <StatTile label="Conventions" value={String(stats.total)} sub="active rules" icon={BookMarked} accent={accentFor(0)} />
+              <StatTile label="Conventions" value={String(stats.total)} sub="active rules" icon={BookMarked} />
             </div>
             <div key="top-category" className="w-[232px] flex-none">
               <StatTile
@@ -985,11 +984,10 @@ export default function Conventions() {
                 value={stats.topCategory ? stats.topCategory.name : '—'}
                 sub={stats.topCategory ? `${stats.topCategory.count} rule${stats.topCategory.count === 1 ? '' : 's'}` : undefined}
                 icon={LayoutGrid}
-                accent={accentFor(1)}
               />
             </div>
             <div key="injected" className="w-[232px] flex-none">
-              <StatTile label="Injected" value={String(stats.total)} sub="into every agent context" icon={Zap} accent={accentFor(2)} />
+              <StatTile label="Injected" value={String(stats.total)} sub="into every agent context" icon={Zap} />
             </div>
             <div key="last-updated" className="w-[232px] flex-none">
               <StatTile
@@ -997,7 +995,6 @@ export default function Conventions() {
                 value={stats.lastUpdated ? new Date(stats.lastUpdated.updated_at ?? stats.lastUpdated.created_at).toLocaleDateString() : '—'}
                 sub={stats.lastUpdated?.title}
                 icon={Clock}
-                accent={accentFor(3)}
               />
             </div>
           </KpiMarquee>

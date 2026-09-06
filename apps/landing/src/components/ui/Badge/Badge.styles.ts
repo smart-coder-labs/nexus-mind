@@ -41,7 +41,7 @@ export const badgeVariantStyles: Record<BadgeVariant, string> = {
   `,
   info: `
     bg-accent-blue/10
-    text-accent-blue-hover
+    text-accent-on-dark
     border border-accent-blue/20
   `,
 };

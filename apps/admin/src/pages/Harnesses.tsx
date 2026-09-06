@@ -964,9 +964,9 @@ export default function Harnesses() {
 
       {!isLoading && (
         <KpiMarquee role="list" aria-label="Harness stats">
-          {stats.map((tile, i) => (
+          {stats.map((tile) => (
             <div key={tile.label} className="w-[232px] flex-none">
-              <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} accent={accentFor(i)} />
+              <StatTile label={tile.label} value={tile.value} sub={tile.sub} icon={tile.icon} />
             </div>
           ))}
         </KpiMarquee>
