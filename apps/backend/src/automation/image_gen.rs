@@ -69,6 +69,13 @@ pub const ASPECT_RATIOS: [&str; 9] = [
 /// default when the design system does not pin one.
 pub const DEFAULT_ASPECT_RATIO: &str = "1:1";
 
+/// How many palette colours reach the prompt.
+///
+/// A brand may legitimately document thirty swatches; a generator reads a list
+/// that long as the subject matter. Six is enough to carry a palette's character
+/// while leaving the post's actual subject dominant.
+pub const MAX_PALETTE_IN_PROMPT: usize = 6;
+
 /// Hard cap on images per post. LinkedIn's multi-image post accepts 2..=20, but
 /// each image is a paid generation and a carousel beyond a handful reads as
 /// filler, so the template caps it far lower than the API does.
@@ -255,23 +262,47 @@ pub fn design_system_is_usable(system: &DesignSystem) -> bool {
 /// failure mode. `avoid` in the design system extends this, never replaces it.
 const UNIVERSAL_CONSTRAINTS: &str = "no text, no words, no letters, no numbers, no watermarks, no signatures, no user-interface chrome";
 
-/// Build the final generator prompt: the brand contract first and identical on
-/// every call, the post's own angle last.
+/// Build the final generator prompt: the post's subject first, the brand contract
+/// after it, identical on every call.
 ///
-/// The order matters. Brand lines lead so they anchor the composition, and the
-/// per-post request is scoped to the subject rather than the look — which is why
-/// the agent is told to describe *what* the image shows, not how it is styled.
+/// The subject leads deliberately, and this was measured rather than assumed. An
+/// earlier version led with the brand block on the theory that it would "anchor
+/// the composition". What it anchored was the darkness: against a brand whose
+/// style says matte black surfaces and dark backgrounds, ~1,500 characters of
+/// styling ahead of ~130 characters of subject produced images that were 95%
+/// pure black — a usable picture of nothing. Putting the subject first, capping
+/// the palette and asking explicitly for a visible subject took the same brand
+/// and the same model from an unusable black rectangle to a correctly dark,
+/// on-brand image.
+///
+/// So the ordering here is load-bearing, not cosmetic: a diffusion model weights
+/// a long prompt by what dominates it, and the subject is the one part that must
+/// not be drowned out.
 pub fn compose_image_prompt(system: &DesignSystem, post_prompt: &str) -> String {
     let subject: String = post_prompt.trim().chars().take(1200).collect();
-    let mut lines = Vec::new();
-    lines.push("Brand image for a LinkedIn post. Follow the brand system exactly; it is identical for every image in this brand.".to_string());
+    let mut lines = vec![subject];
+    // The subject has to survive as the picture's actual content, so it is
+    // followed by an explicit legibility instruction before any styling.
+    lines.push(
+        "The subject above must be clearly visible, in focus, and well separated from the background."
+            .to_string(),
+    );
     if !system.visual_style.is_empty() {
-        lines.push(format!("Visual style: {}", system.visual_style));
+        lines.push(format!("Style: {}", system.visual_style));
     }
     if !system.palette.is_empty() {
+        // Capped: a long colour list reads as the instruction rather than as a
+        // constraint, and a palette of mostly-black swatches will happily become
+        // the whole image.
         lines.push(format!(
-            "Colour palette (use only these): {}",
-            system.palette.join(", ")
+            "Accent colours: {}",
+            system
+                .palette
+                .iter()
+                .take(MAX_PALETTE_IN_PROMPT)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !system.typography.is_empty() {
@@ -285,7 +316,6 @@ pub fn compose_image_prompt(system: &DesignSystem, post_prompt: &str) -> String 
     if !system.imagery_rules.is_empty() {
         lines.push(format!("Imagery rules: {}", system.imagery_rules));
     }
-    lines.push(format!("Subject of this image: {subject}"));
     let avoid = if system.avoid.is_empty() {
         UNIVERSAL_CONSTRAINTS.to_string()
     } else {
@@ -601,19 +631,35 @@ mod tests {
         };
         let first = compose_image_prompt(&system, "a memory graph forming");
         let second = compose_image_prompt(&system, "an agent handing off work");
-        let prefix_of = |text: &str| {
-            text.lines()
-                .take_while(|line| !line.starts_with("Subject of this image:"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        // The subject leads, so the brand contract is everything after the first
+        // line — and it must still be byte-identical from one post to the next.
+        let brand_of = |text: &str| text.split_once('\n').map(|(_, rest)| rest.to_string());
         assert_eq!(
-            prefix_of(&first),
-            prefix_of(&second),
+            brand_of(&first),
+            brand_of(&second),
             "the brand contract must not vary between posts"
         );
-        assert!(first.contains("a memory graph forming"));
-        assert!(second.contains("an agent handing off work"));
+        // The subject is what leads, because a long brand block ahead of it
+        // dominates the render (a dark brand produced a near-black image).
+        assert!(first.starts_with("a memory graph forming"));
+        assert!(second.starts_with("an agent handing off work"));
+    }
+
+    /// A brand may document thirty swatches; a generator reads a list that long
+    /// as the subject matter rather than as a constraint.
+    #[test]
+    fn only_a_handful_of_palette_colours_reach_the_prompt() {
+        let palette: Vec<String> = (0..20).map(|i| format!("#{i:02X}{i:02X}{i:02X}")).collect();
+        let system = DesignSystem {
+            palette: palette.clone(),
+            ..Default::default()
+        };
+        let prompt = compose_image_prompt(&system, "a subject");
+        let mentioned = palette
+            .iter()
+            .filter(|colour| prompt.contains(colour.as_str()))
+            .count();
+        assert_eq!(mentioned, MAX_PALETTE_IN_PROMPT);
     }
 
     #[test]

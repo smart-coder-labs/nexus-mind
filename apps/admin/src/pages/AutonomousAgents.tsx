@@ -33,6 +33,20 @@ type BV = 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple' | 'pri
 type Dict = Record<string, unknown>
 
 const asDict = (v: unknown): Dict | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Dict) : undefined)
+
+/**
+ * Whether a finding is a LinkedIn post draft.
+ *
+ * The agent is asked for `kind: "post"` but the field is model-written and it
+ * does omit it, while the `post` object it also emits is what actually carries
+ * the body, destination and images. The backend already treats either as a post
+ * (worker.rs `auto_publish_posts`), so a post could be published and still render
+ * here as a generic bug — no `post` badge, no Published link, and "Create issue"
+ * offered instead. Both sides must answer this question the same way.
+ */
+function isPostEvidence(ev: Dict): boolean {
+  return asStr(ev.kind) === 'post' || !!asDict(ev.post)
+}
 const asNum = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 const asArr = (v: unknown): unknown[] | undefined => (Array.isArray(v) ? v : undefined)
@@ -780,7 +794,7 @@ export default function AutonomousAgents() {
         const findingType = (f: typeof allFindings[number]): 'bug' | 'post' | 'feedback' | 'lead' => {
           const ev = asDict(f.evidence) ?? {}
           const kind = asStr(ev.kind)
-          if (kind === 'post') return 'post'
+          if (isPostEvidence(ev)) return 'post'
           if (kind === 'feedback') return 'feedback'
           if (asDict(ev.lead)) return 'lead'
           return 'bug'
@@ -869,7 +883,7 @@ export default function AutonomousAgents() {
             </div>
           )}
           {(() => {
-            const hasPosts = allFindings.some(f => asStr((f.evidence as Dict)?.kind) === 'post')
+            const hasPosts = allFindings.some(f => isPostEvidence(asDict(f.evidence) ?? {}))
             if (!hasPosts) return null
             const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
             return (
@@ -916,26 +930,26 @@ export default function AutonomousAgents() {
                     <h2 className="text-sm font-semibold text-text-primary">{finding.title}</h2>
                     <div className="flex items-center gap-2">
                       {asStr(ev.kind) === 'feedback' && <Badge size="sm" variant="info">feedback</Badge>}
-                      {asStr(ev.kind) === 'post' && <Badge size="sm" variant="info">post</Badge>}
+                      {isPostEvidence(ev) && <Badge size="sm" variant="info">post</Badge>}
                       <Badge size="sm" variant={sevVariant(finding.severity)} dot>{finding.severity}</Badge>
                       <Badge size="sm" variant={finding.status === 'resolved' ? 'success' : finding.status === 'ignored' ? 'warning' : 'default'}>{finding.status === 'ignored' ? 'archived' : finding.status}</Badge>
-                      {asStr(ev.kind) === 'post' && linkedinDelivery && (
+                      {isPostEvidence(ev) && linkedinDelivery && (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-status-success">
                           Published
                           {linkedinDelivery.external_url && <a href={linkedinDelivery.external_url} target="_blank" rel="noreferrer" className="text-accent-blue inline-flex"><ExternalLink className="w-3 h-3" /></a>}
                         </span>
                       )}
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) === 'post' && !linkedinDelivery && (() => {
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && isPostEvidence(ev) && !linkedinDelivery && (() => {
                         const connected = new Set((linkedinConnections.data ?? []).map(c => c.destination))
                         const postDest = asStr(asDict(ev.post)?.destination)
                         const dest = (postDest === 'organization' || postDest === 'personal') && connected.has(postDest) ? postDest : connected.has('personal') ? 'personal' : connected.has('organization') ? 'organization' : null
                         if (!dest) return null
                         return <button type="button" disabled={publishPost.isPending} onClick={() => { if (window.confirm(`Publish this post to LinkedIn (${dest})?`)) publishPost.mutate({ id: finding.id, destination: dest as 'personal' | 'organization' }) }} className="text-xs text-accent-blue font-medium disabled:opacity-50">Publish to LinkedIn</button>
                       })()}
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && asStr(ev.kind) !== 'post' && !linkedIssue && (
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !asDict(ev.lead) && !isPostEvidence(ev) && !linkedIssue && (
                         <button type="button" disabled={createFindingIssue.isPending} onClick={() => createFindingIssue.mutate({ findingId: finding.id })} className="text-xs text-accent-blue font-medium disabled:opacity-50">Create issue</button>
                       )}
-                      {can('autonomous_agent:run') && finding.status !== 'ignored' && asStr(ev.kind) !== 'post' && !asDict(ev.lead) && (() => {
+                      {can('autonomous_agent:run') && finding.status !== 'ignored' && !isPostEvidence(ev) && !asDict(ev.lead) && (() => {
                         // Link the GitHub issue this finding was filed as (if any), so
                         // the resolver both fixes the finding and closes the issue.
                         const parsed = linkedIssue?.external_url?.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/)
