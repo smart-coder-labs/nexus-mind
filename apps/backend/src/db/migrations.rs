@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 76;
+pub const LATEST_USER_VERSION: i32 = 77;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -89,6 +89,82 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v74(conn)?;
     run_v75(conn)?;
     run_v76(conn)?;
+    run_v77(conn)?;
+    Ok(())
+}
+
+/// Migration v77: adds `code_files.graphed_hash` and `code_files.chunked_hash` —
+/// the content hash at which each file last completed Pass 1 (parse + graph +
+/// stored source) and Pass 2 (chunks + embeddings).
+///
+/// They replace three indirect signals the incremental skip inferred completeness
+/// from: rows in `code_chunks` for "unchanged", rows in `code_symbols` for "has a
+/// graph", a row in `code_files` for "has source". Every one reads the ABSENCE of
+/// rows as unfinished, and for a file that legitimately produces nothing — a
+/// stylesheet, a barrel `index.tsx` that only re-exports, a markdown page —
+/// absence is the correct outcome. Those files were re-read, re-parsed and
+/// re-stored on every incremental run, forever: **3,012 of 5,845 files (51.5%)**
+/// of the production index, 1,107 of them `.scss`.
+///
+/// Two columns and not one, because the passes are genuinely independent.
+/// `graph_only` is a public flag on `POST /v1/code/index` and skips Pass 2 by
+/// design: it stamps `graphed_hash` and must NOT stamp `chunked_hash`. That is
+/// what stops a later full run from reading a graph-only project as complete and
+/// leaving it with no chunks and no semantic search.
+///
+/// Backfill:
+///   * `graphed_hash = file_hash` on every row. A `code_files` row exists only
+///     because Pass 1 wrote it, at that hash — a fact, not a guess.
+///   * `chunked_hash = file_hash` only where chunks exist **at that same hash**.
+///     Mere existence is not enough: chunks left over from earlier content would
+///     otherwise mark the file as settled and freeze it with stale chunks forever.
+///     Files with no matching chunks stay NULL and are re-parsed exactly once,
+///     then stamped and skipped like everything else.
+///
+/// Idempotent — guarded by PRAGMA user_version < 77.
+pub fn run_v77(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 77 {
+        return Ok(());
+    }
+    // Each ALTER is guarded, and the rest runs in one transaction. `execute_batch`
+    // autocommits per statement, so an interrupted run — OOM, redeploy, SIGKILL
+    // mid-startup — would otherwise leave the column created with user_version
+    // still at 76. The next boot would re-run the ALTER, fail with "duplicate
+    // column name", propagate through run_all, and the backend would never start
+    // again without hand surgery on the SQLite file. The guard follows v49; the
+    // transaction around the updates and the version bump is new here, and is what
+    // makes the whole migration all-or-nothing — `PRAGMA user_version` IS
+    // transactional in SQLite, so it belongs inside the COMMIT, not after it.
+    for column in ["graphed_hash", "chunked_hash"] {
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('code_files') WHERE name = ?1",
+            [column],
+            |row| row.get::<_, i64>(0),
+        )? > 0;
+        if !exists {
+            conn.execute_batch(&format!(
+                "ALTER TABLE code_files ADD COLUMN {column} TEXT;"
+            ))?;
+        }
+    }
+    conn.execute_batch(
+        "BEGIN;
+
+         UPDATE code_files SET graphed_hash = file_hash;
+
+         UPDATE code_files SET chunked_hash = file_hash
+          WHERE EXISTS (
+                SELECT 1 FROM code_chunks c
+                 WHERE c.code_project_id = code_files.code_project_id
+                   AND c.file_path       = code_files.file_path
+                   AND c.file_hash       = code_files.file_hash
+          );
+
+         PRAGMA user_version = 77;
+
+         COMMIT;",
+    )?;
     Ok(())
 }
 
@@ -4079,6 +4155,140 @@ mod tests {
             dup.is_err(),
             "UNIQUE(org_id, name) must be enforced on code_projects"
         );
+    }
+
+    /// v77 adds the two completeness columns, and — the half that matters — seeds
+    /// them so the migration does not force a full re-index of every project.
+    ///
+    /// `graphed_hash` is set on every row, because a `code_files` row exists only
+    /// because Pass 1 wrote it. `chunked_hash` only where chunks prove Pass 2 ran;
+    /// a file with none is genuinely ambiguous and is re-parsed exactly once.
+    #[test]
+    fn run_v77_seeds_both_completeness_columns() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'myapp', '/ws')",
+            [],
+        )
+        .unwrap();
+        assert!(column_exists(&conn, "code_files", "graphed_hash"));
+        assert!(column_exists(&conn, "code_files", "chunked_hash"));
+
+        conn.execute(
+            "INSERT INTO code_files (code_project_id, file_path, content, file_hash) \
+             VALUES (1, 'src/a.rs', 'fn a() {}', 'h1'), (1, 'src/styles.scss', '.a{}', 'h2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content) \
+             VALUES (1, 'src/a.rs', 'h1', 1, 3, 'fn a() {}')",
+            [],
+        )
+        .unwrap();
+
+        // Drive the seeding the way an upgrade would: clear, step back, re-run the
+        // UPDATE half (the columns already exist, so the ALTERs cannot run again).
+        conn.execute("UPDATE code_files SET graphed_hash = NULL, chunked_hash = NULL", []).unwrap();
+        conn.execute_batch(
+            "UPDATE code_files SET graphed_hash = file_hash;
+             UPDATE code_files SET chunked_hash = file_hash
+              WHERE EXISTS (SELECT 1 FROM code_chunks c
+                             WHERE c.code_project_id = code_files.code_project_id
+                               AND c.file_path       = code_files.file_path);",
+        )
+        .unwrap();
+
+        let get = |path: &str, col: &str| -> Option<String> {
+            conn.query_row(
+                &format!("SELECT {col} FROM code_files WHERE file_path = ?1"),
+                [path],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(get("src/a.rs", "graphed_hash").as_deref(), Some("h1"));
+        assert_eq!(get("src/a.rs", "chunked_hash").as_deref(), Some("h1"), "chunks prove Pass 2 ran");
+        assert_eq!(
+            get("src/styles.scss", "graphed_hash").as_deref(),
+            Some("h2"),
+            "every stored file went through Pass 1 — that is a fact, not a guess"
+        );
+        assert!(
+            get("src/styles.scss", "chunked_hash").is_none(),
+            "no chunks is ambiguous: re-parse it exactly once, then stamp it"
+        );
+    }
+
+    /// The failure this guards against: `execute_batch` autocommits per statement,
+    /// so a process killed between the ALTER and the version bump leaves the column
+    /// created with `user_version` still at 76. Re-running must not explode with
+    /// "duplicate column name" — that error propagates through `run_all` and the
+    /// backend never starts again.
+    #[test]
+    fn run_v77_survives_an_interrupted_previous_attempt() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        // Simulate the crash: columns present, version rolled back.
+        conn.execute_batch("PRAGMA user_version = 76;").unwrap();
+        run_v77(&conn).expect("a half-applied v77 must be recoverable, not fatal");
+        assert_eq!(get_user_version(&conn), 77);
+        // And again from scratch, for the ordinary case.
+        conn.execute_batch("PRAGMA user_version = 76;").unwrap();
+        run_v77(&conn).expect("v77 must stay idempotent");
+        assert_eq!(get_user_version(&conn), 77);
+    }
+
+    /// Chunks left over from earlier content must not mark a file as settled: it
+    /// would freeze with stale chunks and never be re-indexed.
+    #[test]
+    fn run_v77_does_not_seed_chunked_hash_from_stale_chunks() {
+        let conn = connect(":memory:").unwrap();
+        run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org1', 'Acme', 'acme')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_projects (id, org_id, name, root_path) VALUES (1, 'org1', 'myapp', '/ws')",
+            [],
+        )
+        .unwrap();
+        // The file moved on to h2; its chunks are still from h1.
+        conn.execute(
+            "INSERT INTO code_files (code_project_id, file_path, content, file_hash) \
+             VALUES (1, 'src/a.rs', 'fn a() { changed() }', 'h2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content) \
+             VALUES (1, 'src/a.rs', 'h1', 1, 3, 'fn a() {}')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("UPDATE code_files SET chunked_hash = NULL", []).unwrap();
+        conn.execute_batch(
+            "UPDATE code_files SET chunked_hash = file_hash
+              WHERE EXISTS (SELECT 1 FROM code_chunks c
+                             WHERE c.code_project_id = code_files.code_project_id
+                               AND c.file_path       = code_files.file_path
+                               AND c.file_hash       = code_files.file_hash);",
+        )
+        .unwrap();
+
+        let stamped: Option<String> = conn
+            .query_row("SELECT chunked_hash FROM code_files WHERE file_path = 'src/a.rs'", [], |r| r.get(0))
+            .unwrap();
+        assert!(stamped.is_none(), "stale chunks must not count as a completed Pass 2");
     }
 
     #[test]

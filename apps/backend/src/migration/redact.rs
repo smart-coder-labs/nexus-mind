@@ -413,8 +413,14 @@ mod tests {
     /// The first draft rebuilt the remaining text as a fresh `String` and
     /// lowercased it once per character. That is O(n²): 64 KB took 72 seconds,
     /// and a real `~/.claude/` scan would have been unusable. One megabyte here
-    /// takes milliseconds; a quadratic implementation would take hours, so the
+    /// takes a few seconds; a quadratic implementation would take hours, so the
     /// generous bound catches the regression without flaking on a slow runner.
+    ///
+    /// The bound is 60s, not 5s. Measured at ~3.5s on an idle machine, a 5s
+    /// ceiling left 30% headroom and failed whenever the box was busy — a red
+    /// suite that says nothing about the code. The signal being pinned is
+    /// seconds-versus-hours, so two orders of magnitude of slack cost nothing
+    /// and the assertion still catches the only regression it is looking for.
     #[test]
     fn redaction_is_linear_not_quadratic() {
         let big = "The team always writes the failing test first. ".repeat(22_000);
@@ -427,7 +433,7 @@ mod tests {
         assert_eq!(out.len(), big.len(), "clean text is returned unchanged");
         assert!(report.is_empty());
         assert!(
-            elapsed.as_secs() < 5,
+            elapsed.as_secs() < 60,
             "1 MB took {elapsed:?} — that is quadratic behaviour returning"
         );
     }
