@@ -2372,7 +2372,7 @@ mod tests {
         )
         .await;
         approve_all(&store, &run.id).await;
-        commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
+        let _ = commit(State(store.clone()), Extension(admin()), Path(run.id.clone()))
             .await
             .expect("commit succeeds");
 

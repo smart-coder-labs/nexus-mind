@@ -12954,7 +12954,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// The crash window O-2c would otherwise open: between deleting a file's
     /// chunks and re-inserting them, a surviving `chunked_hash` would declare an
     /// empty file complete, and the next run would skip it out of semantic search
@@ -15642,6 +15641,7 @@ mod memory_project_scope_tests {
     }
 }
 
+#[cfg(test)]
 mod convention_scope_tests {
     use super::*;
     use crate::db::{connection, migrations};

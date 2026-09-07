@@ -94,6 +94,52 @@ const RESULT_CODE: Record<string, string> = {
   claude_auth_required: 'needs Claude Code re-authentication',
   claude_runtime_unavailable: 'could not reach the Claude Code runtime',
   unsupported_template: 'used an unsupported template',
+  // Publish-step failures. These used to arrive as a single opaque
+  // `command_failed` (or, on a fan-out run, as `fanout_completed`), which told an
+  // operator nothing about which step broke or why.
+  push_failed: 'could not push its branch to GitHub',
+  commit_failed: 'could not commit its changes',
+  stage_changes_failed: 'could not stage its changes',
+  stage_new_files_failed: 'could not record the files it created',
+  branch_create_failed: 'could not create its branch',
+  verification_command_failed: 'failed one of its verification commands',
+  wip_push_failed: 'could not push its work-in-progress snapshot',
+  wip_stage_failed: 'could not stage its work-in-progress snapshot',
+  repository_clone_failed: 'could not clone the repository',
+  repository_fetch_failed: 'could not fetch from the repository',
+  repository_checkout_failed: 'could not check out the repository',
+  command_failed: 'failed while running a command',
+  // Policy / publish gates.
+  stale_base_branch: 'was rejected because the base branch moved while it ran',
+  change_limit_exceeded: 'produced a change larger than the configured limit',
+  excluded_path_changed: 'touched a path the agent is not allowed to change',
+  publish_authority_revoked: 'lost its publish authority before publishing',
+  cancelled_before_publish: 'was cancelled before it could publish',
+  secret_canary_detected: 'was blocked because its output contained a secret',
+  github_connector_required: 'has no GitHub connector configured',
+  github_cli_auth_required: 'needs the GitHub CLI to be re-authenticated',
+  diff_inspection_failed: 'could not inspect its own diff',
+  base_snapshot_missing: 'has no pinned base snapshot',
+  worktree_setup_failed: 'could not set up its git worktree',
+  issue_listing_failed: 'could not list the eligible issues',
+  no_eligible_issue: 'found no eligible issue to work on',
+  no_resumable_work: 'found no work-in-progress branch to resume',
+  // Claude Code stream problems.
+  claude_event_malformed: 'could not read the agent output stream',
+  claude_event_stream_noisy: 'produced an output stream that was mostly not readable events',
+  claude_event_type_missing: 'produced an output event with no type',
+  claude_result_event_missing: 'produced no final result event',
+  claude_event_stream_too_large: 'produced an output stream that was too large',
+  claude_event_stream_limit_exceeded: 'produced an output stream past its line limits',
+  // Agent output-contract rejections.
+  result_not_object: 'returned something other than the required JSON object',
+  result_summary_missing: 'returned no summary',
+  result_findings_missing: 'returned no findings array',
+  invalid_finding: 'returned a malformed finding',
+  too_many_findings: 'returned too many findings',
+  evaluator_context_missing: 'lost its context manifest before evaluation',
+  // Fan-out aggregate: only surfaces now when at least one issue DID resolve.
+  fanout_completed: 'finished its fan-out',
 }
 
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -253,6 +299,11 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
   // payload; fall back to top-level for QA/older runs that don't nest.
   const pub = asDict(payload.published) ?? payload
   const code = asStr(payload.code)
+  // The sanitized reason the failing step gave (a rejected push, a failing test
+  // command) and, for a fan-out resolver run, the per-issue outcomes. Without
+  // these the operator only ever saw an opaque code.
+  const detail = asStr(payload.detail)
+  const issueOutcomes = (asArr(payload.issues) ?? []).map(asDict).filter(Boolean) as Dict[]
   const cost = asNum(result.total_cost_usd)
   const turns = asNum(result.num_turns)
   // Findings come from the parsed model message (see parseLenient), falling back
@@ -357,6 +408,45 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
         <span className="text-text-primary font-semibold">{lead}</span> {phrase}
         {bits.length ? <> — used {bits.join(' · ')}</> : null}. {tail.join(' ')}
       </div>
+
+      {/* why it stopped — the specific step and reason, not just a code */}
+      {meta.tone !== 'ok' && (detail || issueOutcomes.some(i => asStr(i.status) !== 'succeeded')) && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">Why it stopped</p>
+          <div className="space-y-3 rounded-[12px] border border-status-error/25 bg-status-error/[0.06] p-4">
+            <div className="flex items-start gap-2 text-[13px] text-text-primary">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-error" />
+              <span>
+                {code && RESULT_CODE[code] ? <>The agent {RESULT_CODE[code]}.</> : <>The agent stopped.</>}
+                {code && <> <span className="font-mono text-text-tertiary">{code}</span></>}
+              </span>
+            </div>
+            {detail && <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-black/30 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{detail}</pre>}
+            {issueOutcomes.length > 0 && (
+              <ul className="m-0 list-none space-y-2 p-0">
+                {issueOutcomes.map((issue, index) => {
+                  const number = asNum(issue.issue)
+                  const issueStatus = asStr(issue.status)
+                  const issueCode = asStr(issue.code)
+                  const issueDetail = asStr(issue.detail)
+                  const ok = issueStatus === 'succeeded'
+                  return (
+                    <li key={number ?? index} className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+                      <div className="flex items-baseline gap-2 flex-wrap text-[12.5px]">
+                        <span className="font-semibold text-text-primary">Issue #{number ?? '—'}</span>
+                        <Badge size="sm" variant={ok ? 'success' : 'error'}>{issueStatus ?? 'unknown'}</Badge>
+                        {issueCode && <span className="text-text-tertiary">{RESULT_CODE[issueCode] ? `the agent ${RESULT_CODE[issueCode]}` : issueCode}</span>}
+                        {issueCode && <span className="font-mono text-[11px] text-text-quaternary">{issueCode}</span>}
+                      </div>
+                      {issueDetail && <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-text-tertiary">{issueDetail}</pre>}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* budget gauges */}
       {meters.length > 0 && (

@@ -14,6 +14,9 @@ fn sanitize_output(value: &[u8], limit: usize) -> String {
         r"gh[pousr]_[A-Za-z0-9_]{20,}",
         r"github_pat_[A-Za-z0-9_]{20,}",
         r"https://hooks\.slack\.com/services/\S+",
+        r"xox[baprs]-[A-Za-z0-9-]{10,}",
+        r"AKIA[0-9A-Z]{16}",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
         r"(?i)(token|secret|password|api[_-]?key)\s*[=:]\s*\S+",
     ];
     patterns.iter().fold(text, |current, pattern| {
@@ -42,31 +45,54 @@ fn parse_claude_event_stream(
     if value.len() > MAX_STREAM_BYTES {
         anyhow::bail!("claude_event_stream_too_large")
     }
+    // A line that is not a machine-readable event is NOISE, not a failure: the
+    // child's stdout also carries library chatter (an MCP client warning such as
+    // "Client.listTools() called but server does not advertise tools capability"
+    // is printed there), and rejecting the whole stream over one such line threw
+    // away completed runs — the agent's work, its cost, and its pull request.
+    // The guarantee that matters is unchanged and enforced below: the stream must
+    // still carry a parseable `result` event. Noise is counted and capped so a
+    // stream that is ONLY garbage is still rejected.
+    const MAX_NOISE_LINES: usize = 100;
     let sanitized = sanitize_output(value, MAX_STREAM_BYTES);
     let mut result = None;
     let mut event_counts = std::collections::BTreeMap::<String, usize>::new();
     let mut lines = 0usize;
+    let mut noise = 0usize;
     for line in sanitized.lines().filter(|line| !line.trim().is_empty()) {
         lines += 1;
         if lines > 100_000 || line.len() > MAX_LINE_BYTES {
             anyhow::bail!("claude_event_stream_limit_exceeded")
         }
-        let event: serde_json::Value =
-            serde_json::from_str(line).map_err(|_| anyhow::anyhow!("claude_event_malformed"))?;
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            noise += 1;
+            continue;
+        };
         let kind = event
             .get("type")
             .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("claude_event_type_missing"))?;
+            .filter(|value| !value.is_empty());
+        let Some(kind) = kind else {
+            noise += 1;
+            continue;
+        };
         *event_counts.entry(kind.to_string()).or_default() += 1;
         if kind == "result" {
             result = Some(event);
         }
     }
-    let result = result.ok_or_else(|| anyhow::anyhow!("claude_result_event_missing"))?;
+    // The cap only sharpens the error for an all-garbage stream; it must never
+    // reject a run that DID emit its result, which is the failure this change
+    // exists to stop.
+    let Some(result) = result else {
+        if noise > MAX_NOISE_LINES {
+            anyhow::bail!("claude_event_stream_noisy")
+        }
+        anyhow::bail!("claude_result_event_missing")
+    };
     Ok((
         result,
-        json!({"format":"stream-json","events":event_counts,"line_count":lines}),
+        json!({"format":"stream-json","events":event_counts,"line_count":lines,"noise_lines":noise}),
     ))
 }
 
@@ -215,14 +241,68 @@ fn restrict_claude_environment(command: &mut Command) {
     command.env("NEXUSMIND_MCP_TOOL_PROFILE", "essential");
 }
 
-async fn command_ok(mut command: Command) -> anyhow::Result<()> {
-    let output = timeout(
+/// A failed sub-command: a STABLE slug the run payload keys on, plus the tail of
+/// the command's own stderr. Every call site used to bail with a bare
+/// `command_failed`, so a `git push` rejected for lack of write access and a
+/// failing test command were indistinguishable in the payload — the operator had
+/// to guess. `Display` is the slug alone, so the existing
+/// `json!({"code":error.to_string()})` sites keep emitting a code (now a specific
+/// one) and `failure_payload` puts the reason next to it.
+#[derive(Debug)]
+struct CommandFailure {
+    code: &'static str,
+    detail: String,
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code)
+    }
+}
+
+impl std::error::Error for CommandFailure {}
+
+/// The `{code, detail}` pair a run payload should carry for a failure: the stable
+/// slug plus, when the error has one, the sanitized reason the command gave.
+fn failure_payload(error: &anyhow::Error) -> serde_json::Value {
+    match error.downcast_ref::<CommandFailure>() {
+        Some(failure) if !failure.detail.is_empty() => {
+            json!({"code": failure.code, "detail": failure.detail})
+        }
+        _ => json!({"code": error.to_string()}),
+    }
+}
+
+async fn command_ok(command: Command) -> anyhow::Result<()> {
+    command_ok_as(command, "command_failed").await
+}
+
+/// `command_ok` with the failure attributed to a named step, so the payload says
+/// WHICH command failed and what it printed.
+async fn command_ok_as(mut command: Command, code: &'static str) -> anyhow::Result<()> {
+    let output = match timeout(
         Duration::from_secs(300),
         command.kill_on_drop(true).output(),
     )
-    .await??;
+    .await
+    {
+        Ok(output) => output?,
+        Err(_) => {
+            return Err(CommandFailure {
+                code,
+                detail: "timed out after 300s".into(),
+            }
+            .into())
+        }
+    };
     if !output.status.success() {
-        anyhow::bail!("command_failed")
+        // stderr is where git and the package managers explain themselves; fall
+        // back to stdout for the tools that report their failure there.
+        let mut detail = sanitize_output(&output.stderr, 800).trim().to_string();
+        if detail.is_empty() {
+            detail = sanitize_output(&output.stdout, 800).trim().to_string();
+        }
+        return Err(CommandFailure { code, detail }.into());
     }
     Ok(())
 }
@@ -290,7 +370,7 @@ async fn run_allowlisted_commands(
         command.current_dir(workdir).args(rest);
         restrict_test_environment(&mut command, workdir, &[]);
         let started = chrono::Utc::now();
-        command_ok(command).await?;
+        command_ok_as(command, "verification_command_failed").await?;
         receipts.push(json!({"argv":args,"status":"passed","started_at":started.to_rfc3339()}));
     }
     Ok(receipts)
@@ -1212,7 +1292,7 @@ async fn prepare_repository(
     }
     clone_args.extend(["--", url.as_str(), destination]);
     clone.args(clone_args);
-    command_ok(clone).await?;
+    command_ok_as(clone, "repository_clone_failed").await?;
     let head = Command::new("git")
         .current_dir(workdir)
         .args(["rev-parse", "HEAD"])
@@ -1247,12 +1327,12 @@ async fn prepare_repository(
             "origin",
             &format!("pull/{number}/head"),
         ]);
-        command_ok(fetch).await?;
+        command_ok_as(fetch, "repository_fetch_failed").await?;
         let mut checkout = Command::new("git");
         checkout
             .current_dir(workdir)
             .args(["checkout", "--detach", "FETCH_HEAD"]);
-        command_ok(checkout).await?;
+        command_ok_as(checkout, "repository_checkout_failed").await?;
         if let Some(expected) = claim
             .config
             .pointer("/trigger/head_sha")
@@ -1378,6 +1458,17 @@ async fn bounded_review_diff(
     Ok(sanitize_output(diff.as_bytes(), max_bytes))
 }
 
+/// Record untracked files in the index as intent-to-add, so `git diff` reports
+/// them as additions. Without this every gate that reads `git diff` — the secret
+/// scan and the changed-files/lines limits — is blind to files the agent created.
+/// `git add -N` writes no content, so the working tree and the later
+/// `git add --all` commit are unaffected, and ignored paths stay ignored.
+async fn mark_new_files_for_diff(workdir: &Path) -> anyhow::Result<()> {
+    let mut add = Command::new("git");
+    add.current_dir(workdir).args(["add", "--intent-to-add", "--", "."]);
+    command_ok_as(add, "stage_new_files_failed").await
+}
+
 async fn ensure_diff_has_no_secrets(workdir: &Path) -> anyhow::Result<()> {
     let output = Command::new("git")
         .current_dir(workdir)
@@ -1454,6 +1545,22 @@ async fn publish_template_output(
             // and the budget-exhausted partial PR). It must never land in a finished
             // PR, so drop it from the working tree before we diff and commit.
             let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
+            // `git diff` only reports TRACKED files, so a fix delivered as new
+            // files was invisible below: the change measured zero, the run took
+            // the "no code change required" path, and the agent's work was
+            // discarded with a comment saying nothing was needed. Worse, those
+            // files skipped the secret scan and were still committed by the
+            // `git add --all` further down. Recording them as intent-to-add makes
+            // both the scan and the size gate see the whole change.
+            //
+            // This runs BEFORE the verification commands on purpose. Those run
+            // with the repository as their working directory and drop build
+            // artifacts in it (coverage/, playwright-report/, …); counting those
+            // would let a run that changed NOTHING measure non-zero and open a
+            // pull request made only of artifacts, and would blow the size limit
+            // on a legitimate small fix. Anything verification creates stays
+            // untracked here, exactly as before this change.
+            mark_new_files_for_diff(workdir).await?;
             let verification =
                 run_allowlisted_commands(workdir, claim.config.get("verification_commands"))
                     .await?;
@@ -1657,10 +1764,10 @@ async fn publish_template_output(
             checkout
                 .current_dir(workdir)
                 .args(["checkout", "-b", &branch]);
-            command_ok(checkout).await?;
+            command_ok_as(checkout, "branch_create_failed").await?;
             let mut add = Command::new("git");
             add.current_dir(workdir).args(["add", "--all"]);
-            command_ok(add).await?;
+            command_ok_as(add, "stage_changes_failed").await?;
             let mut commit = Command::new("git");
             commit
                 .current_dir(workdir)
@@ -1676,7 +1783,7 @@ async fn publish_template_output(
                         None => "NexusMind: resolve QA finding".to_string(),
                     },
                 ]);
-            command_ok(commit).await?;
+            command_ok_as(commit, "commit_failed").await?;
             let mut push = authenticated_git(&token);
             require_publish_authority(store, claim)?;
             push.current_dir(workdir).args([
@@ -1684,7 +1791,7 @@ async fn publish_template_output(
                 "origin",
                 &format!("HEAD:refs/heads/{branch}"),
             ]);
-            command_ok(push).await?;
+            command_ok_as(push, "push_failed").await?;
             // Title precedence: the agent's title -> the live issue title (fetched
             // only on the fallback path) -> a static default. A missing title never
             // blocks the PR; the diff is what matters.
@@ -2579,7 +2686,7 @@ async fn checkpoint_wip_push(
         add.current_dir(workdir)
             .env("GIT_INDEX_FILE", &alt_index)
             .args(["add", "-A"]);
-        command_ok(add).await?;
+        command_ok_as(add, "wip_stage_failed").await?;
     }
     let tree = {
         let out = Command::new("git")
@@ -2628,7 +2735,7 @@ async fn checkpoint_wip_push(
             "origin",
             &format!("{commit}:refs/heads/{branch}"),
         ]);
-        command_ok(push).await?;
+        command_ok_as(push, "wip_push_failed").await?;
     }
     Ok(true)
 }
@@ -2645,6 +2752,11 @@ async fn open_partial_pr(
     number: i64,
     branch: &str,
 ) -> anyhow::Result<serde_json::Value> {
+    // Same blind spot as the success path had: without this the scan below only
+    // sees TRACKED edits, while the checkpoint that produced this branch staged
+    // everything with `git add -A`. New files would reach the pull request
+    // unscanned.
+    mark_new_files_for_diff(workdir).await?;
     ensure_diff_has_no_secrets(workdir).await?;
     let base = claim
         .config
@@ -2866,7 +2978,12 @@ async fn resolve_issue_worktree(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(180)).await;
-                let _ = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await;
+                // Log the reason: a checkpoint that can never push (no write
+                // access to the repository, say) used to fail silently every 3
+                // minutes and the run only surfaced it much later, at publish.
+                if let Err(error) = checkpoint_wip_push(&workdir, &checkpoint_token, &branch, &base).await {
+                    tracing::warn!(%branch, %error, "resolver: work-in-progress checkpoint push failed");
+                }
             }
         })
     });
@@ -2911,9 +3028,15 @@ async fn resolve_issue_worktree(
         // Resume mode: never open a new PR. Push the latest work onto the existing
         // WIP branch so its partial draft PR is updated in place with the progress.
         if let Some(ref checkpoint_token) = token {
-            let pushed = checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
-                .await
-                .unwrap_or(false);
+            let pushed =
+                match checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha).await
+                {
+                    Ok(pushed) => pushed,
+                    Err(error) => {
+                        outcome.1["continued_push_error"] = failure_payload(&error);
+                        false
+                    }
+                };
             outcome.1["continued_pushed"] = json!(pushed);
         }
         outcome.1["continued_branch"] = json!(wip_branch);
@@ -2921,21 +3044,26 @@ async fn resolve_issue_worktree(
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result("github_issue_resolver", &outcome.1) {
             Ok(value) => outcome.1["evaluation"] = value,
-            Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            Err(error) => outcome = ("blocked_policy".into(), failure_payload(&error)),
         }
         if outcome.0 == "succeeded" {
             match publish_template_output(&store, &claim, &workdir, &outcome.1).await {
                 Ok(published) => outcome.1["published"] = published,
-                Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+                Err(error) => outcome = ("blocked_policy".into(), failure_payload(&error)),
             }
         }
     } else if let Some(ref checkpoint_token) = token {
         // The attempt didn't finish. Snapshot the latest work; if there is any,
         // surface it as a resumable partial draft PR instead of discarding it.
-        if checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha)
-            .await
-            .unwrap_or(false)
-        {
+        let snapshotted =
+            match checkpoint_wip_push(&workdir, checkpoint_token, &wip_branch, &base_sha).await {
+                Ok(pushed) => pushed,
+                Err(error) => {
+                    outcome.1["wip_push_error"] = failure_payload(&error);
+                    false
+                }
+            };
+        if snapshotted {
             outcome.1["resumable"] = json!(true);
             outcome.1["wip_branch"] = json!(wip_branch);
             match open_partial_pr(
@@ -2996,6 +3124,46 @@ async fn discover_resumable_wip(
         }
     }
     result
+}
+
+/// Aggregate the per-issue outcomes into the run's `(status, code, detail)`.
+///
+/// When NOTHING was resolved, the old constant `fanout_completed` told the
+/// operator only that the fan-out ran — the actual reason sits on the issue. So
+/// the first failing issue's code and detail are lifted to the top level and the
+/// run timeline names the real cause (a rejected push, an exhausted budget); the
+/// aggregate stays available under `fanout`. Once at least one issue DID resolve
+/// the run is no longer explained by a single failure, so the aggregate stands.
+fn fanout_outcome(
+    results: &[(i64, String, serde_json::Value)],
+) -> (&'static str, String, Option<serde_json::Value>) {
+    const AGGREGATE: &str = "fanout_completed";
+    let resolved = results
+        .iter()
+        .filter(|(_, status, _)| status.as_str() == "succeeded")
+        .count();
+    let failed = results.len() - resolved;
+    let status = if resolved > 0 && failed == 0 {
+        "succeeded"
+    } else if resolved > 0 {
+        "partial"
+    } else {
+        "blocked_policy"
+    };
+    if resolved > 0 {
+        return (status, AGGREGATE.to_string(), None);
+    }
+    let failure = results
+        .iter()
+        .find(|(_, status, _)| status.as_str() != "succeeded")
+        .map(|(_, _, payload)| payload);
+    let code = failure
+        .and_then(|payload| payload.get("code"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(AGGREGATE)
+        .to_string();
+    let detail = failure.and_then(|payload| payload.get("detail")).cloned();
+    (status, code, detail)
 }
 
 async fn execute_resolver_fanout(
@@ -3200,16 +3368,15 @@ async fn execute_resolver_fanout(
     let issue_outcomes: Vec<serde_json::Value> = results
         .iter()
         .map(|(number, status, payload)| {
-            json!({"issue":number,"status":status,"code":payload.get("code")})
+            json!({
+                "issue":number,
+                "status":status,
+                "code":payload.get("code"),
+                "detail":payload.get("detail"),
+            })
         })
         .collect();
-    let status = if resolved > 0 && failed == 0 {
-        "succeeded"
-    } else if resolved > 0 {
-        "partial"
-    } else {
-        "blocked_policy"
-    };
+    let (status, code, detail) = fanout_outcome(&results);
     // Keep the sandbox on any non-clean outcome so the work can be inspected/resumed
     // locally; only fully-successful runs are torn down. `gc_stale_sandboxes` reaps
     // leaked ones later so disk doesn't grow unbounded. (The durable copy is the
@@ -3220,7 +3387,9 @@ async fn execute_resolver_fanout(
     (
         status.into(),
         json!({
-            "code":"fanout_completed",
+            "code":code,
+            "detail":detail,
+            "fanout":"fanout_completed",
             "resolved":resolved,
             "failed":failed,
             "pull_requests":pull_requests,
@@ -3982,7 +4151,7 @@ async fn execute_claim(
     {
         match publish_template_output(store, claim, &workdir, &outcome.1).await {
             Ok(published) => outcome.1["published"] = published,
-            Err(error) => outcome = ("blocked_policy".into(), json!({"code":error.to_string()})),
+            Err(error) => outcome = ("blocked_policy".into(), failure_payload(&error)),
         }
     } else if outcome.0 == "succeeded" {
         match evaluate_structured_result(&claim.template_key, &outcome.1) {
@@ -4723,7 +4892,7 @@ pub async fn publish_finding_to_linkedin(
                     .and_then(|v| v.as_str())
                     .map(normalize_linkedin_destination);
                 match tagged {
-                    Some(value) if allowed.iter().any(|item| *item == value) => value,
+                    Some(value) if allowed.contains(&value) => value,
                     _ => allowed
                         .first()
                         .cloned()
@@ -6271,6 +6440,236 @@ async fn maybe_trigger_next_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn git(workdir: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        command.current_dir(workdir).args(args);
+        command_ok(command).await.expect("git command");
+    }
+
+    /// A repository with one committed file, ready for a working-tree change.
+    async fn repository_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        git(path, &["init", "--initial-branch=main"]).await;
+        git(path, &["config", "user.email", "test@nexusmind.local"]).await;
+        git(path, &["config", "user.name", "Test"]).await;
+        // A global commit.gpgsign / core.hooksPath in the developer's ~/.gitconfig
+        // would otherwise fail these commits.
+        git(path, &["config", "commit.gpgsign", "false"]).await;
+        git(path, &["config", "core.hooksPath", ""]).await;
+        tokio::fs::write(path.join("existing.txt"), "base\n")
+            .await
+            .unwrap();
+        git(path, &["add", "--all"]).await;
+        git(path, &["commit", "-m", "base"]).await;
+        dir
+    }
+
+    async fn numstat(workdir: &Path) -> String {
+        let output = Command::new("git")
+            .current_dir(workdir)
+            .args(["diff", "--numstat"])
+            .output()
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    #[tokio::test]
+    async fn new_files_are_visible_to_the_change_gates() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::create_dir_all(path.join("components"))
+            .await
+            .unwrap();
+        tokio::fs::write(path.join("components/Button.stories.tsx"), "export const a = 1\n")
+            .await
+            .unwrap();
+
+        // The old behaviour: a change made entirely of new files measured zero,
+        // so the run reported "no code change required" and opened no PR.
+        assert_eq!(numstat(path).await, "");
+
+        mark_new_files_for_diff(path).await.unwrap();
+        assert!(numstat(path)
+            .await
+            .contains("components/Button.stories.tsx"));
+    }
+
+    #[tokio::test]
+    async fn ignored_paths_stay_invisible_to_the_change_gates() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::write(path.join(".gitignore"), "node_modules/\ncoverage/\n")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(path.join("coverage")).await.unwrap();
+        tokio::fs::write(path.join("coverage/report.json"), "{}\n")
+            .await
+            .unwrap();
+        tokio::fs::write(path.join("real.ts"), "export const a = 1\n")
+            .await
+            .unwrap();
+
+        mark_new_files_for_diff(path).await.unwrap();
+
+        let diff = numstat(path).await;
+        assert!(diff.contains("real.ts"));
+        assert!(!diff.contains("coverage/"), "ignored paths must not be staged: {diff}");
+    }
+
+    /// The real publish sequence. A `git commit` aborts on an intent-to-add entry
+    /// that was never filled in, so this pins that `add --all` resolves them.
+    #[tokio::test]
+    async fn intent_to_add_entries_can_still_be_committed() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::write(path.join("new.ts"), "export const a = 1\n")
+            .await
+            .unwrap();
+
+        mark_new_files_for_diff(path).await.unwrap();
+        git(path, &["add", "--all"]).await;
+        git(path, &["commit", "-m", "NexusMind: resolve issue #1"]).await;
+
+        let listed = Command::new("git")
+            .current_dir(path)
+            .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+            .output()
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&listed.stdout).contains("new.ts"));
+    }
+
+    #[test]
+    fn fanout_lifts_the_real_reason_only_when_nothing_resolved() {
+        let failure = |code: &str| {
+            (
+                7i64,
+                "blocked_policy".to_string(),
+                json!({"code": code, "detail": "remote: Permission denied"}),
+            )
+        };
+        let success = || (8i64, "succeeded".to_string(), json!({"code":"completed"}));
+
+        // Nothing resolved: the issue's own reason becomes the run's reason.
+        let (status, code, detail) = fanout_outcome(&[failure("push_failed")]);
+        assert_eq!(status, "blocked_policy");
+        assert_eq!(code, "push_failed");
+        assert_eq!(detail, Some(json!("remote: Permission denied")));
+
+        // Something resolved: no single failure explains the run any more.
+        let (status, code, detail) = fanout_outcome(&[success(), failure("push_failed")]);
+        assert_eq!(status, "partial");
+        assert_eq!(code, "fanout_completed");
+        assert_eq!(detail, None);
+
+        let (status, code, _) = fanout_outcome(&[success()]);
+        assert_eq!(status, "succeeded");
+        assert_eq!(code, "fanout_completed");
+
+        // A failing issue with no code at all still yields the aggregate.
+        let (_, code, detail) = fanout_outcome(&[(9, "failed".to_string(), json!({}))]);
+        assert_eq!(code, "fanout_completed");
+        assert_eq!(detail, None);
+
+        // No results at all (every task lost) must not panic.
+        let (status, code, _) = fanout_outcome(&[]);
+        assert_eq!(status, "blocked_policy");
+        assert_eq!(code, "fanout_completed");
+    }
+
+    #[tokio::test]
+    async fn secret_scan_covers_a_newly_created_file() {
+        let dir = repository_fixture().await;
+        let path = dir.path();
+        tokio::fs::write(
+            path.join("config.ts"),
+            "export const t = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'\n",
+        )
+        .await
+        .unwrap();
+
+        // Untracked, the secret was invisible to the scan yet still committed by
+        // the publish step's `git add --all`.
+        ensure_diff_has_no_secrets(path).await.unwrap();
+
+        mark_new_files_for_diff(path).await.unwrap();
+        assert!(ensure_diff_has_no_secrets(path).await.is_err());
+    }
+
+    #[test]
+    fn claude_stream_parser_survives_library_noise_on_stdout() {
+        // The exact line that discarded a completed resolver run: an MCP client
+        // warning printed to stdout, after the result event.
+        let stream = br#"{"type":"system","subtype":"init"}
+{"type":"result","result":"{\"title\":\"t\",\"summary\":\"s\"}","total_cost_usd":0.1}
+Client.listTools() called but server does not advertise tools capability - returning empty list
+"#;
+        let (result, receipt) = parse_claude_event_stream(stream).unwrap();
+        assert_eq!(
+            result.get("type").and_then(|value| value.as_str()),
+            Some("result")
+        );
+        assert_eq!(
+            receipt.get("noise_lines").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+
+        // A completed run is kept even when the noise is heavy.
+        let mut noisy = String::from(
+            "{\"type\":\"result\",\"result\":\"{}\",\"total_cost_usd\":0.1}\n",
+        );
+        noisy.push_str(&"Client.listTools() warning\n".repeat(300));
+        assert!(parse_claude_event_stream(noisy.as_bytes()).is_ok());
+
+        // A stream that is only noise is still rejected.
+        let garbage = "not-json\n".repeat(200);
+        assert_eq!(
+            parse_claude_event_stream(garbage.as_bytes())
+                .unwrap_err()
+                .to_string(),
+            "claude_event_stream_noisy"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_command_reports_its_step_and_reason() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo 'remote: Permission to acme/repo.git denied' >&2; exit 1"]);
+        let error = command_ok_as(command, "push_failed")
+            .await
+            .expect_err("a non-zero exit must fail");
+
+        // The slug stays the code the UI keys on; the reason rides alongside it
+        // instead of being discarded as it was with the old `command_failed`.
+        assert_eq!(error.to_string(), "push_failed");
+        let payload = failure_payload(&error);
+        assert_eq!(payload["code"], json!("push_failed"));
+        assert!(payload["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Permission to acme/repo.git denied")));
+    }
+
+    #[tokio::test]
+    async fn command_failure_detail_is_redacted() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo 'fatal: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rejected' >&2; exit 1"]);
+        let error = command_ok_as(command, "push_failed").await.unwrap_err();
+
+        let detail = failure_payload(&error)["detail"].as_str().unwrap().to_string();
+        assert!(detail.contains("[REDACTED]"));
+        assert!(!detail.contains("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    }
+
+    #[test]
+    fn failure_payload_keeps_plain_errors_as_a_bare_code() {
+        let payload = failure_payload(&anyhow::anyhow!("stale_base_branch"));
+        assert_eq!(payload["code"], json!("stale_base_branch"));
+        assert!(payload.get("detail").is_none());
+    }
+
     #[test]
     fn prompt_marks_config_as_untrusted_and_keeps_fixed_authority() {
         let prompt = fixed_prompt(
