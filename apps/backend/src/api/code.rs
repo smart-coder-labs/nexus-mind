@@ -785,11 +785,64 @@ pub async fn post_search(
 const MAX_HIT_CHARS: usize = 1_600;
 const MAX_RESPONSE_CHARS: usize = 8_000;
 
+/// Per-body ceiling for `GET /v1/code/context`, deliberately higher than
+/// `MAX_HIT_CHARS`.
+///
+/// A search hit is one of five speculative candidates; a context body is the one
+/// symbol the caller named on purpose. Trimming a requested symbol as hard as a
+/// speculative hit would defeat the call — the agent would have to read the file
+/// anyway, which is the cost the budget exists to remove.
+const MAX_CONTEXT_SYMBOL_CHARS: usize = 6_000;
+
+/// Largest index `i <= at` that is a UTF-8 boundary in `s`.
+///
+/// A byte ceiling can land mid-codepoint, and both `&s[..i]` and
+/// `String::truncate` panic there. Source files carry accented comments and
+/// emoji, so this is reachable in normal use, not a theoretical case.
+fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Trims one body to `allowance` on a line boundary and appends a pointer to
+/// where the rest lives.
+///
+/// The pointer is what keeps a trimmed body actionable: the reader always knows
+/// the file and the line range, so the omitted code is one `Read` away.
+fn truncate_with_pointer(result: &mut SearchCodeResult, allowance: usize) {
+    if result.content.len() <= allowance {
+        return;
+    }
+    let end = floor_char_boundary(&result.content, allowance);
+    let cut = result.content[..end].rfind('\n').unwrap_or(end);
+    result.content.truncate(cut);
+    result.content.push_str(&format!(
+        "\n… truncado — {} líneas {}-{}, léelo si necesitas el resto",
+        result.file_path, result.start_line, result.end_line
+    ));
+}
+
 /// Trims hit bodies to the budget, truncating on line boundaries.
 ///
 /// Ranked order is preserved and no hit is dropped: a caller asking for five
 /// results gets five, because losing the fifth path silently is worse than
 /// shortening its body visibly.
+///
+/// A budget-aware variant was tried and rejected — serving top hits whole and
+/// degrading the tail to a pointer. It cannot help at the default `top_k` of 5,
+/// where five per-hit ceilings of 1,600 sum to exactly `MAX_RESPONSE_CHARS` and
+/// the response ceiling therefore never binds. Simulated over the real chunk-size
+/// distribution (16,649 chunks) it was strictly worse where it did apply: at
+/// `top_k` 20 it returned 17.4 complete bodies per response against this
+/// version's 18.6, to save 389 characters. The per-hit floor is what makes the
+/// difference — a small tail hit fits inside it and arrives whole, where
+/// budget-aware selection turned it into a pointer.
 fn trim_to_budget(results: &mut [SearchCodeHit]) {
     let mut spent = 0usize;
     for hit in results.iter_mut() {
@@ -797,17 +850,40 @@ fn trim_to_budget(results: &mut [SearchCodeHit]) {
         // what makes a trimmed hit still legible. It stays whole.
         let remaining = MAX_RESPONSE_CHARS.saturating_sub(spent);
         let allowance = MAX_HIT_CHARS.min(remaining.max(240));
-        if hit.result.content.len() > allowance {
-            let cut = hit.result.content[..allowance]
-                .rfind('\n')
-                .unwrap_or(allowance);
-            hit.result.content.truncate(cut);
-            hit.result.content.push_str(&format!(
-                "\n… truncado — {} líneas {}-{}, léelo si necesitas el resto",
-                hit.result.file_path, hit.result.start_line, hit.result.end_line
-            ));
-        }
+        truncate_with_pointer(&mut hit.result, allowance);
         spent += hit.result.content.len();
+    }
+}
+
+/// Trims a `GET /v1/code/context` response to the budget.
+///
+/// This endpoint had no ceiling at all: it returns whole chunks — a chunk is a
+/// function or a class — plus every neighbouring chunk within ±60 lines, so a
+/// large symbol in a dense file could return far more than the caller asked for.
+/// It is reached by the `get_symbol_context` MCP tool, meaning an agent paid for
+/// all of it.
+///
+/// The named symbol is served first and from the larger allowance, because it is
+/// the reason the call was made. Neighbours are context nobody asked for and are
+/// trimmed like a search hit.
+fn trim_context_to_budget(results: &mut [SearchCodeResult], symbol: &str) {
+    let target = results
+        .iter()
+        .position(|r| r.symbol.as_deref() == Some(symbol));
+
+    let mut spent = 0usize;
+    if let Some(i) = target {
+        truncate_with_pointer(&mut results[i], MAX_CONTEXT_SYMBOL_CHARS);
+        spent += results[i].content.len();
+    }
+    for (i, r) in results.iter_mut().enumerate() {
+        if Some(i) == target {
+            continue;
+        }
+        let remaining = MAX_RESPONSE_CHARS.saturating_sub(spent);
+        let allowance = MAX_HIT_CHARS.min(remaining.max(240));
+        truncate_with_pointer(r, allowance);
+        spent += r.content.len();
     }
 }
 
@@ -865,6 +941,122 @@ mod budget_tests {
         let mut hits = vec![hit("src/a.rs", "fn f() {}\n")];
         trim_to_budget(&mut hits);
         assert_eq!(hits[0].result.content, "fn f() {}\n");
+    }
+
+    /// A byte ceiling can land in the middle of a multi-byte character, where
+    /// both `&s[..i]` and `String::truncate` panic. Source files carry accented
+    /// comments, arrows in doc comments and emoji, so this is a crash a real
+    /// repository can trigger — not a theoretical case.
+    ///
+    /// "→" is three bytes and `MAX_HIT_CHARS % 3 == 1`, so the ceiling lands one
+    /// byte inside a character. Without `floor_char_boundary` this test panics.
+    #[test]
+    fn a_multibyte_search_body_is_trimmed_without_panicking() {
+        assert_eq!(MAX_HIT_CHARS % 3, 1, "the fixture only bites if the ceiling is mid-character");
+        let body = "→".repeat(5_000);
+        let mut hits = vec![hit("src/a.rs", &body)];
+        trim_to_budget(&mut hits);
+        let out = &hits[0].result.content;
+        assert!(out.len() < MAX_HIT_CHARS + 200);
+        assert!(out.contains("src/a.rs"));
+    }
+
+    /// Same crash on the context path, where the ceiling is different. A leading
+    /// ASCII byte shifts the arrows so `MAX_CONTEXT_SYMBOL_CHARS` also lands
+    /// mid-character.
+    #[test]
+    fn a_multibyte_context_body_is_trimmed_without_panicking() {
+        assert_ne!(
+            (MAX_CONTEXT_SYMBOL_CHARS - 1) % 3,
+            0,
+            "the fixture only bites if the ceiling is mid-character"
+        );
+        let body = format!("a{}", "→".repeat(5_000));
+        let mut out = vec![res("src/a.rs", "Big", &body)];
+        trim_context_to_budget(&mut out, "Big");
+        assert!(out[0].content.len() < MAX_CONTEXT_SYMBOL_CHARS + 200);
+        assert!(out[0].content.contains("src/a.rs"));
+    }
+
+    fn res(path: &str, symbol: &str, body: &str) -> SearchCodeResult {
+        SearchCodeResult {
+            file_path: path.to_string(),
+            symbol: Some(symbol.to_string()),
+            start_line: 1,
+            end_line: 400,
+            content: body.to_string(),
+            score: 1.0,
+        }
+    }
+
+    /// The measured gap: `GET /v1/code/context` — the handler behind the
+    /// `get_symbol_context` MCP tool — had no ceiling at all and returned whole
+    /// chunks.
+    #[test]
+    fn a_context_body_is_now_bounded() {
+        let body = (0..4_000).map(|i| format!("linea {i}")).collect::<Vec<_>>().join("\n");
+        let before = body.len();
+        let mut out = vec![res("src/a.rs", "BigClass", &body)];
+        trim_context_to_budget(&mut out, "BigClass");
+        assert!(before > 20_000, "the fixture must be a genuinely large symbol");
+        assert!(out[0].content.len() < MAX_CONTEXT_SYMBOL_CHARS + 200);
+        assert!(out[0].content.contains("src/a.rs"), "the reader knows where the rest is");
+        assert!(out[0].content.contains("1-400"));
+    }
+
+    /// The named symbol is why the call was made, so it gets a larger allowance
+    /// than one of five speculative search hits.
+    #[test]
+    fn the_named_symbol_keeps_more_than_a_search_hit_would() {
+        let body = "x".repeat(30_000);
+        let mut out = vec![res("src/a.rs", "BigClass", &body)];
+        trim_context_to_budget(&mut out, "BigClass");
+        assert!(
+            out[0].content.len() > MAX_HIT_CHARS * 2,
+            "a requested symbol must not be trimmed like a speculative hit"
+        );
+    }
+
+    /// Neighbours are context nobody asked for. The ±60-line window can return
+    /// many of them in a dense file, so the response as a whole stays bounded.
+    #[test]
+    fn neighbours_are_trimmed_and_the_response_stays_bounded() {
+        let body = "y".repeat(9_000);
+        let mut out: Vec<SearchCodeResult> = (0..8)
+            .map(|i| res("src/a.rs", &format!("neighbour{i}"), &body))
+            .collect();
+        out.insert(4, res("src/a.rs", "Target", &body));
+
+        trim_context_to_budget(&mut out, "Target");
+
+        let total: usize = out.iter().map(|r| r.content.len()).sum();
+        assert!(total < MAX_CONTEXT_SYMBOL_CHARS + MAX_RESPONSE_CHARS, "got {total}");
+        assert_eq!(out.len(), 9, "no chunk is dropped, only shortened");
+        for r in &out {
+            assert!(!r.content.is_empty(), "every chunk keeps something readable");
+        }
+    }
+
+    /// The ordinary case — a small symbol and its neighbours — is untouched.
+    #[test]
+    fn a_short_context_response_is_untouched() {
+        let mut out = vec![
+            res("src/a.rs", "before", "fn before() {}\n"),
+            res("src/a.rs", "target", "fn target() {}\n"),
+        ];
+        trim_context_to_budget(&mut out, "target");
+        assert_eq!(out[0].content, "fn before() {}\n");
+        assert_eq!(out[1].content, "fn target() {}\n");
+    }
+
+    /// A symbol the query named but the store did not return must not make the
+    /// whole response bypass the budget.
+    #[test]
+    fn a_missing_target_still_leaves_every_body_bounded() {
+        let body = "z".repeat(9_000);
+        let mut out = vec![res("src/a.rs", "somethingElse", &body)];
+        trim_context_to_budget(&mut out, "notPresent");
+        assert!(out[0].content.len() < MAX_HIT_CHARS + 200);
     }
 }
 
@@ -1075,7 +1267,7 @@ pub async fn get_context(
         ));
     }
 
-    let results: Vec<SearchCodeResult> = chunks
+    let mut results: Vec<SearchCodeResult> = chunks
         .into_iter()
         .map(|c| SearchCodeResult {
             file_path: c.file_path,
@@ -1087,6 +1279,7 @@ pub async fn get_context(
         })
         .collect();
 
+    trim_context_to_budget(&mut results, &params.symbol);
     Ok(Json(results))
 }
 

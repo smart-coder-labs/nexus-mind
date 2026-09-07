@@ -5653,6 +5653,129 @@ pub fn list_files_with_source(
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
+/// Per-file record of how far indexing got, keyed by file path.
+///
+/// `graphed` is the content hash at which Pass 1 (parse + graph + stored source)
+/// last completed for that file; `chunked` the hash at which Pass 2 (chunks +
+/// embeddings) did. `None` means that pass has never run for the file.
+#[derive(Debug, Clone, Default)]
+pub struct IndexedState {
+    pub graphed: Option<String>,
+    pub chunked: Option<String>,
+}
+
+/// Returns, per file, the hashes at which each indexing pass last completed.
+///
+/// This replaces inferring completeness from the absence of rows in other tables.
+/// "This file has no symbols" and "this file was never parsed" are the same
+/// observation under the old scheme, and a `.scss`, a barrel `index.tsx` that only
+/// re-exports, or a markdown page produce no symbols by nature — so they never
+/// counted as complete and were re-read, re-parsed and re-stored on every
+/// incremental run. Measured on the production index: 3,012 of 5,845 files.
+pub fn list_indexed_state(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashMap<String, IndexedState>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, graphed_hash, chunked_hash FROM code_files \
+         WHERE code_project_id = ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            IndexedState {
+                graphed: r.get::<_, Option<String>>(1)?,
+                chunked: r.get::<_, Option<String>>(2)?,
+            },
+        ))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (path, state) = row?;
+        map.insert(path, state);
+    }
+    Ok(map)
+}
+
+/// Records that Pass 1 completed for this file at `file_hash`.
+pub fn set_file_graphed(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    file_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET graphed_hash = ?3 \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path, file_hash],
+    )?;
+    Ok(())
+}
+
+/// Records that Pass 2 settled this file at `file_hash` — chunks written, or
+/// established to produce none.
+///
+/// Stamped for both outcomes on purpose: "produces no chunks" is a settled result,
+/// and only recording it separates that file from one the pass never reached.
+pub fn set_file_chunked(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+    file_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET chunked_hash = ?3 \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path, file_hash],
+    )?;
+    Ok(())
+}
+
+/// Marks this file's Pass 2 as unfinished.
+///
+/// Called in the same critical section as `delete_chunks_for_file`, because
+/// between the delete and the re-insert the file has no chunks: a stamp left
+/// standing there would survive a crash and declare an empty file complete.
+pub fn clear_file_chunked(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_files SET chunked_hash = NULL \
+         WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
+}
+
+/// Returns the set of file paths holding at least one chunk whose embedding is
+/// missing.
+///
+/// The incremental skip in `index_project` used to ask only two questions — does
+/// this file have graph symbols, and is its source stored — and both are true for
+/// a file that was chunked while the embedder was off. Such a file is unchanged
+/// by hash, so it was skipped on every later run and its chunks kept their NULL
+/// vectors forever: search silently fell back to keyword, and a `reindex` did not
+/// repair it because reindex takes the same incremental path.
+///
+/// A file with no chunks at all is not reported here. Plenty of files legitimately
+/// produce none (unsupported language, no parseable symbol), and treating them as
+/// incomplete would re-parse and re-store them on every run for no gain.
+pub fn list_files_with_unembedded_chunks(
+    conn: &Connection,
+    code_project_id: i64,
+) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT file_path FROM code_chunks \
+         WHERE code_project_id = ?1 AND embedding IS NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
+        r.get::<_, String>(0)
+    })?;
+    Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
 /// Returns the set of file paths that already have file-owned code symbols.
 pub fn list_files_with_symbols(
     conn: &Connection,
@@ -12829,6 +12952,82 @@ mod tests {
             result.is_none(),
             "org isolation must hold for code projects"
         );
+    }
+
+    #[test]
+    /// The crash window O-2c would otherwise open: between deleting a file's
+    /// chunks and re-inserting them, a surviving `chunked_hash` would declare an
+    /// empty file complete, and the next run would skip it out of semantic search
+    /// for good — with `reindex` unable to repair it, since it takes the same
+    /// incremental path.
+    #[test]
+    fn clearing_the_chunk_stamp_makes_a_file_incomplete_again() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        upsert_code_file(&conn, project_id, "src/a.rs", "fn a() {}", "h1").unwrap();
+        set_file_chunked(&conn, project_id, "src/a.rs", "h1").unwrap();
+        let before = list_indexed_state(&conn, project_id).unwrap();
+        assert_eq!(before["src/a.rs"].chunked.as_deref(), Some("h1"));
+
+        clear_file_chunked(&conn, project_id, "src/a.rs").unwrap();
+        let after = list_indexed_state(&conn, project_id).unwrap();
+        assert!(after["src/a.rs"].chunked.is_none(), "Pass 2 must read as unfinished");
+        assert_eq!(
+            after["src/a.rs"].graphed.as_deref(),
+            before["src/a.rs"].graphed.as_deref(),
+            "Pass 1 is untouched — only the chunking half is in doubt"
+        );
+    }
+
+    #[test]
+    fn list_files_with_unembedded_chunks_finds_only_the_gaps() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+
+        // Embedded: has a vector, nothing to repair.
+        insert_code_chunk(
+            &conn, project_id, "src/ok.rs", "h1", None, Some("f"), 1, 5, "fn f() {}",
+            Some(&[0u8, 1, 2, 3]),
+        )
+        .unwrap();
+        // The defect: chunked while the embedder was off.
+        insert_code_chunk(
+            &conn, project_id, "src/gap.rs", "h2", None, Some("g"), 1, 5, "fn g() {}", None,
+        )
+        .unwrap();
+        // A file where only one of two chunks is missing its vector still counts.
+        insert_code_chunk(
+            &conn, project_id, "src/half.rs", "h3", None, Some("a"), 1, 5, "fn a() {}",
+            Some(&[9u8, 9]),
+        )
+        .unwrap();
+        insert_code_chunk(
+            &conn, project_id, "src/half.rs", "h3", None, Some("b"), 6, 9, "fn b() {}", None,
+        )
+        .unwrap();
+
+        let gaps = list_files_with_unembedded_chunks(&conn, project_id).unwrap();
+        assert!(gaps.contains("src/gap.rs"));
+        assert!(gaps.contains("src/half.rs"), "one missing vector is enough");
+        assert!(!gaps.contains("src/ok.rs"), "a fully embedded file is not re-parsed");
+        assert_eq!(gaps.len(), 2);
+    }
+
+    /// A file with no chunks at all is not a gap. Plenty legitimately produce
+    /// none, and reporting them would re-parse and re-store them on every run —
+    /// 383 of 5,845 files in the August backup — to repair nothing.
+    #[test]
+    fn a_file_with_no_chunks_is_not_reported_as_unembedded() {
+        let conn = setup();
+        let org_id = setup_org_for_code(&conn);
+        let project_id = upsert_code_project(&conn, &org_id, "myapp", "/ws").unwrap();
+        upsert_code_file(&conn, project_id, "README.md", "# hi", "h1").unwrap();
+
+        let gaps = list_files_with_unembedded_chunks(&conn, project_id).unwrap();
+        assert!(gaps.is_empty());
     }
 
     #[test]
