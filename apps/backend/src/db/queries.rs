@@ -15443,6 +15443,7 @@ mod memory_project_scope_tests {
     }
 }
 
+#[cfg(test)]
 mod convention_scope_tests {
     use super::*;
     use crate::db::{connection, migrations};

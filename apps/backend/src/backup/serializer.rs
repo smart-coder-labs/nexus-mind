@@ -142,6 +142,7 @@ fn sqlite_value_to_json(row: &rusqlite::Row<'_>, i: usize) -> Value {
 
 // Uses `chunks_exact(3)` with an explicit `remainder()` tail for base64 padding;
 // keeping that shape is clearer here than the as_chunks rewrite.
+#[allow(unknown_lints)]
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] =

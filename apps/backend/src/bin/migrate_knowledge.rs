@@ -924,6 +924,10 @@ pub fn bulk_prompt(
 /// only ever read its output. That is what lets `Connector` stay non-`Sync` —
 /// the DB connector wraps a reader that is not `Sync`, and requiring it here
 /// would stop that connector compiling.
+/// Each batch's outcomes tagged with the batch index, so the fold afterwards is
+/// deterministic no matter which worker finishes first.
+type BatchResults = Vec<(usize, Vec<Result<CandidatePayload, BulkMiss>>)>;
+
 pub fn build_candidates_bulk(
     connector: &dyn Connector,
     items: &[SourceItem],
@@ -953,8 +957,7 @@ pub fn build_candidates_bulk(
     // Collected per batch and folded in order afterwards. Counters assembled
     // inside the workers would depend on which batch happened to finish first,
     // and a summary that changes between identical runs is not a summary.
-    let collected: Mutex<Vec<(usize, Vec<Result<CandidatePayload, BulkMiss>>)>> =
-        Mutex::new(Vec::with_capacity(ranges.len()));
+    let collected: Mutex<BatchResults> = Mutex::new(Vec::with_capacity(ranges.len()));
 
     std::thread::scope(|scope| {
         for _ in 0..workers.max(1) {
