@@ -225,7 +225,7 @@
   /* ----------------------------------------
      Glass panels/cards — the primary "dark glass" surface recipe used for
      every card-like section (Solution diagram, Early Adopter cards,
-     Pricing tiers, the waitlist form). Border/bg/blur values match the
+     Pricing tiers). Border/bg/blur values match the
      apps/admin GLASS_PANEL recipe; hover lift + brighter border added per
      the redesign spec.
      ---------------------------------------- */
