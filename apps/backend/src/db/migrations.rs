@@ -8696,7 +8696,6 @@ mod tests {
 
     /// v74 admits the `source-code` connector into the `migration_runs`
     /// source_kind CHECK, and the rebuild preserves the scope triggers.
-    #[test]
     /// The one place the end-state version is checked against reality.
     ///
     /// Every other test compares against `LATEST_USER_VERSION` rather than a

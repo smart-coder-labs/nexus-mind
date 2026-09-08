@@ -89,3 +89,17 @@ describe('Search — SDD result group', () => {
     expect(screen.queryByTestId('sdd-results')).not.toBeInTheDocument()
   })
 })
+
+describe('Search — full profile keeps every facet', () => {
+  it('policies_tab_is_offered_even_while_the_policies_page_is_temporarily_off', async () => {
+    // The /policies route is in the TEMPORARY disabled set. That hides a page,
+    // not the feature: a policy hit is still a hit, and it links nowhere.
+    renderWithProviders(<Search />)
+    typeQuery()
+    // The type filter only renders once a search has results.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /filter by result type/i })).toBeInTheDocument())
+    for (const label of ['Memories', 'Users', 'Projects', 'Policies', 'Conventions', 'SDD']) {
+      expect(screen.getByRole('option', { name: new RegExp(`^${label}`) }), label).toBeInTheDocument()
+    }
+  })
+})

@@ -4,6 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth, isPrivileged } from '../auth/AuthContext'
 import { createClient, NexusMindClient } from '../api/client'
 import { todayStamp } from '../lib/download'
+import { isSectionKeptByProfile } from '../config/disabled-sections'
+
+// The sessions and collections tabs are the in-page face of features the
+// only-context cut removes; they go with their sections. The temporary flag
+// on /sessions does not apply here — it hides the standalone page, not the
+// feature (matches the pre-existing behaviour of the full panel).
+const MEMORY_TABS = (['memories', 'sessions', 'tags', 'duplicates', 'collections'] as const)
+  .filter(tab => tab !== 'sessions' || isSectionKeptByProfile('/sessions'))
+  .filter(tab => tab !== 'collections' || isSectionKeptByProfile('/collections'))
 import type { Memory, ImportMemory, ImportMemoriesResponse, Collection } from '../types'
 import { TagAutocomplete } from '../components/TagAutocomplete'
 import { Markdown } from '../components/ui/Markdown'
@@ -2139,7 +2148,7 @@ export default function Memories() {
           (duplicates keeps its red/error tint — that urgency signal predates
           this pass and stays semantically meaningful). */}
       <div className={`${GLASS_PANEL} rounded-[12px] p-1 flex gap-0.5 w-fit overflow-x-auto`}>
-        {(['memories', 'sessions', 'tags', 'duplicates', 'collections'] as const).map(tab => (
+        {MEMORY_TABS.map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}

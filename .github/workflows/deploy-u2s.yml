@@ -90,11 +90,17 @@ jobs:
       # Admin is built WITHOUT VITE_API_URL on purpose: the client falls back to
       # relative URLs and the bundled nginx proxies /v1 to the backend, so the
       # image is IP-agnostic and needs no rebuild per box.
+      # VITE_ADMIN_PROFILE=only-context is the u2s cut of the panel: memories,
+      # graphs, tags, conventions, clients, projects, users & roles, migration.
+      # Every other section is hidden and its route blocked. The catalog lives
+      # in apps/admin/src/config/disabled-sections.ts.
       - name: Build & push admin
         uses: docker/build-push-action@v6
         with:
           context: apps/admin
           push: true
+          build-args: |
+            VITE_ADMIN_PROFILE=only-context
           tags: ghcr.io/${{ steps.vars.outputs.owner_lc }}/nexusmind-admin:main
 
   deploy:

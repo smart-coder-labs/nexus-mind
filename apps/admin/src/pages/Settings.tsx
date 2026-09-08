@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { WEBHOOKS_ENABLED } from '../config/disabled-sections'
 import type { AgentEventSettings, OrgSettings, Webhook, CreateWebhookRequest, WebhookTestResult, ImportConfigResponse } from '../types'
 
 // Same glass recipe as GLASS_PANEL in src/pages/Sdd.tsx — inlined rather than
@@ -1211,7 +1212,7 @@ export default function Settings() {
           {/* ── Integrations & data ──────────────────────────────────────── */}
           {activeSection === 'integrations' && isAdmin && (
             <>
-              <div className={CARD}>
+              {WEBHOOKS_ENABLED && <div className={CARD}>
                 <div className="flex items-center justify-between gap-3 mb-3.5">
                   <div>
                     <h2 className="text-[16px] font-bold text-text-primary">Webhooks</h2>
@@ -1389,7 +1390,7 @@ export default function Settings() {
                     </div>
                   </form>
                 )}
-              </div>
+              </div>}
 
               <div className={CARD}>
                 <h2 className="text-[16px] font-bold text-text-primary mb-1">Org data export</h2>

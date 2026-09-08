@@ -953,7 +953,8 @@ pub fn build_candidates_bulk(
     // Collected per batch and folded in order afterwards. Counters assembled
     // inside the workers would depend on which batch happened to finish first,
     // and a summary that changes between identical runs is not a summary.
-    let collected: Mutex<Vec<(usize, Vec<Result<CandidatePayload, BulkMiss>>)>> =
+    type BatchResults = Vec<Result<CandidatePayload, BulkMiss>>;
+    let collected: Mutex<Vec<(usize, BatchResults)>> =
         Mutex::new(Vec::with_capacity(ranges.len()));
 
     std::thread::scope(|scope| {

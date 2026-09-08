@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Brain, User, FolderOpen, FileStack, Search, Loader2, ChevronRight, Clock, X } from 'lucide-react'
 import { createClient } from '../api/client'
 import type { GlobalSearchResult } from '../types'
+import { isSectionEnabled } from '../config/disabled-sections'
 
 const HISTORY_KEY = 'nexusmind-search-history'
 const MAX_HISTORY = 8
@@ -67,7 +68,9 @@ export function flattenResults(results: GlobalSearchResult): FlatResult[] {
       icon: 'sdd',
     })
   }
-  return flat
+  // A hit must not lead to a section this build hides — the route would only
+  // bounce the user back to the dashboard.
+  return flat.filter(r => isSectionEnabled(r.path))
 }
 
 function ResultIcon({ kind }: { kind: FlatResult['icon'] }) {

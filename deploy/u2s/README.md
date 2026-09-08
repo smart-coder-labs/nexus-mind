@@ -14,6 +14,28 @@ in-process over a single SQLite file.
 
 Data persists in the Docker volume `nexusmind_data` (`/data/nexusmind.db`).
 
+## Admin profile: `only-context`
+
+The u2s panel is built with `VITE_ADMIN_PROFILE=only-context` (see the admin
+build step in `.github/workflows/deploy-u2s.yml`). That is the "company brain"
+cut the client asked for: it keeps **Search, Dashboard, Memories, Graph
+(knowledge + code), Tags, Conventions, Migration, Clients, Projects, Code, Users,
+Roles and Settings**. Usage, Collections, Sessions, Tasks, SDD, Harnesses,
+Automation, API keys, Agent identities, Policies, Webhooks, Audit log and Backups
+are hidden from navigation and their routes redirect to the dashboard. Their
+in-page traces go too: the Sessions and Collections tabs inside Memories, the
+Webhooks card in Settings, the usage and agent-activity dashboard cards, the
+Policies/SDD search facets and the matching permissions in the role editor.
+
+Still visible, on purpose: the per-user audit feed on the Users page and the
+sessions KPI on the dashboard (context about who wrote what, not a section).
+
+The cut is a UI decision only: the backend keeps serving every endpoint under
+its normal permissions. The section catalog lives in
+`apps/admin/src/config/disabled-sections.ts`; the matching MCP profile is
+`NEXUSMIND_MCP_TOOL_PROFILE=only_context`, which u2s users export next to their API
+key so the Claude Code plugin picks it up.
+
 ## One-time box preparation
 
 On the t3.medium (`ssh u2s-nexus`):
