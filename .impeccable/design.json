@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-06T00:00:00.000Z",
+  "title": "Design System: NexusMind",
+  "extensions": {
+    "colorMeta": {
+      "action-blue": {
+        "role": "primary",
+        "displayName": "Action Blue",
+        "canonical": "#0066cc",
+        "tonalRamp": ["oklch(15% 0.06 250)", "oklch(26% 0.10 250)", "oklch(37% 0.14 250)", "oklch(48% 0.16 250)", "oklch(59% 0.15 250)", "oklch(70% 0.12 250)", "oklch(81% 0.08 250)", "oklch(92% 0.04 250)"]
+      },
+      "sky-link-blue": {
+        "role": "primary",
+        "displayName": "Sky Link Blue",
+        "canonical": "#2997ff",
+        "tonalRamp": ["oklch(15% 0.06 249)", "oklch(26% 0.10 249)", "oklch(37% 0.13 249)", "oklch(48% 0.15 249)", "oklch(59% 0.16 249)", "oklch(70% 0.14 249)", "oklch(81% 0.09 249)", "oklch(92% 0.04 249)"]
+      },
+      "ops-amber": {
+        "role": "primary",
+        "displayName": "Ops Amber",
+        "canonical": "#f59e0b",
+        "tonalRamp": ["oklch(15% 0.05 70)", "oklch(26% 0.08 70)", "oklch(37% 0.11 70)", "oklch(48% 0.13 70)", "oklch(59% 0.15 70)", "oklch(70% 0.17 70)", "oklch(81% 0.13 70)", "oklch(92% 0.06 70)"]
+      },
+      "trace-violet": {
+        "role": "secondary",
+        "displayName": "Trace Violet",
+        "canonical": "#a78bfa",
+        "tonalRamp": ["oklch(15% 0.05 295)", "oklch(26% 0.08 295)", "oklch(37% 0.11 295)", "oklch(48% 0.13 295)", "oklch(59% 0.14 295)", "oklch(70% 0.14 295)", "oklch(81% 0.10 295)", "oklch(92% 0.05 295)"]
+      },
+      "memory-purple": {
+        "role": "tertiary",
+        "displayName": "Memory Purple",
+        "canonical": "#bf5af2",
+        "tonalRamp": ["oklch(15% 0.06 310)", "oklch(26% 0.10 310)", "oklch(37% 0.14 310)", "oklch(48% 0.18 310)", "oklch(59% 0.21 310)", "oklch(70% 0.18 310)", "oklch(81% 0.12 310)", "oklch(92% 0.05 310)"]
+      },
+      "instrument-black": {
+        "role": "neutral",
+        "displayName": "Instrument Black",
+        "canonical": "#000000",
+        "tonalRamp": ["oklch(0% 0 0)", "oklch(12% 0 0)", "oklch(20% 0 0)", "oklch(32% 0 0)", "oklch(45% 0 0)", "oklch(60% 0 0)", "oklch(78% 0 0)", "oklch(95% 0 0)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#1d1d1f",
+        "tonalRamp": ["oklch(15% 0.002 285)", "oklch(22% 0.002 285)", "oklch(30% 0.002 285)", "oklch(41% 0.002 285)", "oklch(52% 0.002 285)", "oklch(66% 0.002 285)", "oklch(80% 0.002 285)", "oklch(95% 0.002 285)"]
+      },
+      "frosted-panel": {
+        "role": "neutral",
+        "displayName": "Frosted Panel",
+        "canonical": "rgba(13, 15, 20, 0.60)",
+        "tonalRamp": ["oklch(15% 0.008 265)", "oklch(23% 0.008 265)", "oklch(31% 0.008 265)", "oklch(42% 0.008 265)", "oklch(53% 0.008 265)", "oklch(67% 0.008 265)", "oklch(81% 0.008 265)", "oklch(95% 0.008 265)"]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgba(255, 255, 255, 0.08)",
+        "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(45% 0 0)", "oklch(55% 0 0)", "oklch(70% 0 0)", "oklch(85% 0 0)", "oklch(95% 0 0)"]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Signal White",
+        "canonical": "#ffffff",
+        "tonalRamp": ["oklch(20% 0 0)", "oklch(32% 0 0)", "oklch(44% 0 0)", "oklch(56% 0 0)", "oklch(68% 0 0)", "oklch(79% 0 0)", "oklch(90% 0 0)", "oklch(100% 0 0)"]
+      },
+      "status-success": {
+        "role": "neutral",
+        "displayName": "Success Green",
+        "canonical": "#30d158",
+        "tonalRamp": ["oklch(15% 0.05 145)", "oklch(26% 0.09 145)", "oklch(37% 0.13 145)", "oklch(48% 0.16 145)", "oklch(59% 0.19 145)", "oklch(70% 0.20 145)", "oklch(81% 0.13 145)", "oklch(92% 0.06 145)"]
+      },
+      "status-error": {
+        "role": "neutral",
+        "displayName": "Error Red",
+        "canonical": "#ff453a",
+        "tonalRamp": ["oklch(15% 0.06 27)", "oklch(26% 0.10 27)", "oklch(37% 0.14 27)", "oklch(48% 0.18 27)", "oklch(59% 0.21 27)", "oklch(70% 0.19 27)", "oklch(81% 0.13 27)", "oklch(92% 0.06 27)"]
+      }
+    },
+    "typographyMeta": {
+      "page-title": { "displayName": "Page Title", "purpose": "One per page, at the top of the content column." },
+      "section-title": { "displayName": "Section Title", "purpose": "Card headers and panel titles." },
+      "body": { "displayName": "Body", "purpose": "The system's voice: table cells, form values, list items, nav items, descriptions." },
+      "label": { "displayName": "Label", "purpose": "Form labels and column headers. Sentence case; uppercase only for column headers and small group labels." },
+      "caption": { "displayName": "Caption", "purpose": "Metadata, timestamps and counts, in text-tertiary." },
+      "micro": { "displayName": "Micro", "purpose": "Badges and keyboard hints. The floor — nothing renders smaller." },
+      "metric": { "displayName": "Metric", "purpose": "The number in a stat tile, always tabular-nums." },
+      "mono": { "displayName": "Mono", "purpose": "Code, symbols, identifiers and API keys." }
+    },
+    "shadows": [
+      {
+        "name": "action-bloom",
+        "value": "0 4px 6px -1px rgba(0, 102, 204, 0.30), 0 2px 4px -2px rgba(0, 102, 204, 0.30)",
+        "purpose": "The single glow in the product surface. Belongs to the primary button and nothing else."
+      },
+      {
+        "name": "tile-glow",
+        "value": "width:7rem; height:7rem; border-radius:9999px; opacity:0.18; filter:blur(30px)",
+        "purpose": "A blurred accent orb tucked into a stat tile's corner. Permitted only when the tint encodes state."
+      },
+      {
+        "name": "marketing-lg",
+        "value": "0 8px 32px rgba(0, 0, 0, 0.48), 0 4px 16px rgba(0, 0, 0, 0.40)",
+        "purpose": "Inherited neutral shadow scale on landing and backoffice only. Must not migrate into the product panel."
+      }
+    ],
+    "motion": [
+      { "name": "ease-apple", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "The only easing curve in the system." },
+      { "name": "duration-state", "value": "150ms", "purpose": "Hover and color transitions." },
+      { "name": "duration-enter", "value": "220ms", "purpose": "Entrances: fadeIn, scaleIn, slideUp, slideDown. Exits never exceed 150ms." },
+      { "name": "press-scale", "value": "scale(0.95)", "purpose": "The signature press micro-interaction on buttons. Suppressed under prefers-reduced-motion." },
+      { "name": "panel-lift", "value": "translateY(-2px)", "purpose": "Interactive card hover. Paired with a border brightening to 14% white — never a shadow." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single most important control on a screen. The only element carrying the Action Blue bloom.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Store memory</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:44px; padding:0 22px; border:none; border-radius:9999px; font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; font-size:13px; font-weight:600; cursor:pointer; user-select:none; transition:background-color 150ms cubic-bezier(0.16,1,0.3,1), border-color 150ms cubic-bezier(0.16,1,0.3,1), transform 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-primary { background:var(--color-accent-blue,#0066cc); color:#fff; box-shadow:0 4px 6px -1px rgba(0,102,204,0.30), 0 2px 4px -2px rgba(0,102,204,0.30); } .ds-btn-primary:hover { background:var(--color-accent-blue-hover,#0071e3); } .ds-btn-primary:active { background:var(--color-accent-blue-active,#0058a8); transform:scale(0.95); } .ds-btn-primary:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Hairline border on transparent. The default for anything that is not the page's one primary action.",
+      "html": "<button class=\"ds-btn ds-btn-secondary\">Cancel</button>",
+      "css": ".ds-btn-secondary { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:44px; padding:0 22px; border-radius:9999px; font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; font-size:13px; font-weight:600; cursor:pointer; background:transparent; color:#cccccc; border:1px solid rgba(255,255,255,0.08); transition:background-color 150ms cubic-bezier(0.16,1,0.3,1), border-color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-secondary:hover { background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.14); } .ds-btn-secondary:active { background:rgba(255,255,255,0.10); } .ds-btn-secondary:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Error-tinted border and text on transparent. Always paired with a confirm modal, never a bare click.",
+      "html": "<button class=\"ds-btn-destructive\">Delete memory</button>",
+      "css": ".ds-btn-destructive { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:44px; padding:0 22px; border-radius:9999px; font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; font-size:13px; font-weight:600; cursor:pointer; background:transparent; color:var(--color-status-error,#ff453a); border:1px solid rgba(255,69,58,0.35); transition:background-color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-destructive:hover { background:rgba(255,69,58,0.10); } .ds-btn-destructive:active { background:rgba(255,69,58,0.15); } .ds-btn-destructive:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "36px tall, 11px radius, 3% white fill. Label always above; never a placeholder standing in for one.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Project</span><input class=\"ds-input\" type=\"text\" placeholder=\"nexus-mind\" /></label>",
+      "css": ".ds-field { display:flex; flex-direction:column; font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; } .ds-field-label { display:block; font-size:12px; font-weight:500; color:#cccccc; margin-bottom:6px; } .ds-input { width:100%; height:36px; padding:0 16px; border-radius:11px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.09); color:#ffffff; font-family:inherit; font-size:13px; transition:border-color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-input::placeholder { color:#555555; } .ds-input:hover { border-color:rgba(255,255,255,0.14); } .ds-input:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "badge-primary",
+      "description": "Pill at 11px. Background is a status or accent color at 10-12%, bordered by the same color at 20%. Never a button.",
+      "html": "<span class=\"ds-badge ds-badge-primary\">convention</span><span class=\"ds-badge ds-badge-success\">active</span><span class=\"ds-badge ds-badge-default\">claude-code</span>",
+      "css": ".ds-badge { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:24px; padding:0 10px; margin-right:6px; border-radius:9999px; font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; font-size:11px; font-weight:500; } .ds-badge-primary { background:rgba(0,102,204,0.10); color:var(--color-accent-blue,#0066cc); border:1px solid rgba(0,102,204,0.20); } .ds-badge-success { background:rgba(48,209,88,0.10); color:var(--color-status-success,#30d158); border:1px solid rgba(48,209,88,0.20); } .ds-badge-default { background:rgba(255,255,255,0.06); color:#cccccc; border:1px solid rgba(255,255,255,0.09); }"
+    },
+    {
+      "name": "Glass Card",
+      "kind": "card",
+      "refersTo": "card-glass",
+      "description": "The system's real surface. Frosted panel over blur(12px) with a hairline border and an 18px radius.",
+      "html": "<div class=\"ds-card\"><h3 class=\"ds-card-title\">Recent activity</h3><p class=\"ds-card-body\">Actions performed by your team will appear here.</p></div>",
+      "css": ".ds-card { border-radius:18px; padding:20px; background:rgba(13,15,20,0.60); border:1px solid rgba(255,255,255,0.07); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; transition:transform 250ms cubic-bezier(0.16,1,0.3,1), border-color 250ms cubic-bezier(0.16,1,0.3,1); } .ds-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,0.14); } .ds-card-title { margin:0 0 8px; font-size:15px; font-weight:600; letter-spacing:-0.2px; color:#ffffff; } .ds-card-body { margin:0; font-size:13px; line-height:1.5; color:#cccccc; }"
+    },
+    {
+      "name": "Stat Tile",
+      "kind": "custom",
+      "refersTo": "card-glass",
+      "description": "One neutral treatment for every metric: 28px tabular number over a 12px tertiary label. No per-metric identity tint.",
+      "html": "<div class=\"ds-stat\"><div class=\"ds-stat-value\">12,480</div><div class=\"ds-stat-label\">Total memories</div></div>",
+      "css": ".ds-stat { position:relative; overflow:hidden; border-radius:18px; padding:20px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; } .ds-stat-value { font-size:28px; font-weight:600; line-height:1.2; color:#ffffff; font-variant-numeric:tabular-nums; } .ds-stat-label { margin-top:4px; font-size:12px; font-weight:400; color:#7a7a7a; }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "13px at an 8px radius inside the 208px frosted sidebar. Active fills to 6% white; grouped under 11px uppercase domain labels.",
+      "html": "<nav class=\"ds-nav\"><div class=\"ds-nav-group\">Knowledge</div><a class=\"ds-nav-item ds-nav-item-active\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 19.5A2.5 2.5 0 0 1 6.5 17H20\"/><path d=\"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z\"/></svg>Memories</a><a class=\"ds-nav-item\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/></svg>Search</a></nav>",
+      "css": ".ds-nav { display:flex; flex-direction:column; gap:4px; width:208px; padding:16px; border-radius:18px; background:rgba(13,15,20,0.60); border:1px solid rgba(255,255,255,0.07); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; } .ds-nav-group { padding:8px 12px 4px; font-size:11px; font-weight:500; letter-spacing:0.06em; text-transform:uppercase; color:#7a7a7a; } .ds-nav-item { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:8px; font-size:13px; font-weight:400; color:#cccccc; text-decoration:none; transition:background-color 150ms cubic-bezier(0.16,1,0.3,1), color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-nav-item:hover { background:rgba(255,255,255,0.03); color:#ffffff; } .ds-nav-item-active { background:rgba(255,255,255,0.06); color:#ffffff; } .ds-nav-item:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }"
+    },
+    {
+      "name": "Modal",
+      "kind": "custom",
+      "refersTo": "modal",
+      "description": "The elevated glass variant: more opaque, blurred harder. Depth by translucency, never by shadow. One primary action, right-aligned.",
+      "html": "<div class=\"ds-modal\"><h2 class=\"ds-modal-title\">Delete API key</h2><p class=\"ds-modal-body\">This revokes access immediately for every tool using it. This cannot be undone.</p><div class=\"ds-modal-actions\"><button class=\"ds-btn-secondary\">Cancel</button><button class=\"ds-btn-destructive\">Delete key</button></div></div>",
+      "css": ".ds-modal { max-width:420px; padding:24px; border-radius:18px; background:rgba(15,17,23,0.94); border:1px solid rgba(255,255,255,0.10); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); font-family:system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif; } .ds-modal-title { margin:0 0 8px; font-size:15px; font-weight:600; letter-spacing:-0.2px; color:#ffffff; } .ds-modal-body { margin:0 0 20px; font-size:13px; line-height:1.5; color:#cccccc; } .ds-modal-actions { display:flex; justify-content:flex-end; gap:8px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Instrument",
+    "overview": "NexusMind is where an engineering lead goes to see what their team's AI knows and decide what it is allowed to do. The interface has to hold thousands of memories, audit rows, code symbols and agent runs without ever competing with them. So the chassis is near-black and almost silent: true black behind, frosted glass panels floating on it, hairline borders drawn at 7-8% white, and exactly one blue that means \"this responds to you.\" Everything that glows is the team's knowledge. Nothing else is allowed to.\n\nThe system descends from Apple's marketing language — the single Action Blue, the pill CTA, the refusal to decorate — but it is no longer that system. It was rebuilt for a data-dense product. Depth is not the flat surface-stepping of the original: panels are genuinely translucent, backdrop-filter: blur(12px) over a dark canvas, so a card reads as a pane of smoked glass rather than a lighter rectangle. Density is high and deliberately so; the correction the system makes to its ancestor is that dense must still mean legible — a 13px body, not a 12px whisper.\n\nOne design language runs at three volumes. apps/admin is the product panel: Action Blue on near-black. apps/backoffice is the same chassis in Ops Amber, so an operator can never mistake a superadmin screen for a customer one. apps/landing is the same dark glass turned outward, with the marketing page's larger type and radial accent washes. Reading the three side by side, only the accent hue and the type scale change.",
+    "keyCharacteristics": [
+      "Near-black canvas; frosted translucent panels; hairline white borders",
+      "Exactly one interactive accent per surface — blue in product, amber in internal ops",
+      "Pill-shaped controls, 18px panels, 11px fields, 8px nav items — four radii, no others",
+      "Color encodes state, never identity",
+      "Dense but legible: 13px body, nothing below 11px",
+      "Motion is short and eased (cubic-bezier(0.16, 1, 0.3, 1)), 220ms in, 150ms on state"
+    ],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "A surface has exactly one interactive accent. Action Blue in the product and on marketing; Ops Amber in the backoffice. A second accent hue on the same screen is a defect, not a variation.", "section": "colors" },
+      { "name": "The State-Not-Identity Rule", "body": "Color on a metric, tile or row encodes state — an error count in status-error, a healthy run in status-success. It never encodes identity. Per-metric decorative tints read as arbitrary and are prohibited.", "section": "colors" },
+      { "name": "The Hairline Rule", "body": "Every border in the system is white at 4%, 8% or 14%. There are no colored borders except a status tint at 20% inside a badge, and no border thicker than 1px except the focus ring.", "section": "colors" },
+      { "name": "The 13px Floor Rule", "body": "Body is 13px and nothing renders below 11px. 12px is a label and caption size, not the reading voice. A page title set at 12px semibold is a defect.", "section": "typography" },
+      { "name": "The Tabular Numbers Rule", "body": "Any number a reader compares down a column — metrics, counts, durations, costs — is tabular-nums. Ragged digits in a dense table are unreadable at 13px.", "section": "typography" },
+      { "name": "The Glass-Not-Shadow Rule", "body": "Depth comes from backdrop-filter and opacity. To raise something, make it more opaque and blur harder — never add a drop shadow to a card, a row, a badge or a piece of text.", "section": "elevation" },
+      { "name": "The One Glow Rule", "body": "The Action Blue bloom belongs to the primary button and to nothing else. A glowing card, tile or input is a defect.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do build every surface from the three moves: hairline border, translucent fill, one accent where it matters.",
+      "Do reach for backdrop-filter and opacity when you need depth — rgba(13, 15, 20, 0.60) at blur(12px) for a panel, rgba(15, 17, 23, 0.94) at blur(22px) for a modal.",
+      "Do set body text at 13px and stop at 11px. Page titles are 22px/600.",
+      "Do route every color through a token (bg-accent-blue, text-text-secondary). Inline hexes in TSX are debt.",
+      "Do give every interactive element a visible :focus-visible outline — 2px #0071e3 at 2px offset, as CSS outline, not a Tailwind ring.",
+      "Do use tabular-nums on any number a reader compares down a column.",
+      "Do pick from the four radii — 8px control, 11px field, 18px panel, 9999px pill.",
+      "Do swap the accent to Ops Amber, and only the accent, when the surface is apps/backoffice."
+    ],
+    "donts": [
+      "Don't add a drop shadow to a card, row, badge or text. The one bloom in the product surface belongs to the primary button.",
+      "Don't introduce a second interactive accent on a surface. Status colors are state, not decoration.",
+      "Don't tint a metric tile to encode identity. Color on a metric means state or it means nothing.",
+      "Don't build a generic multicolor SaaS dashboard — a palette per metric, rainbow charts, decorative per-card hues. This is the system's confirmed anti-reference.",
+      "Don't set a page title, nav item or table cell at 12px. That is the label size.",
+      "Don't write focus-visible:outline-none without an immediate replacement.",
+      "Don't use text-quaternary (#555555) as the only label of an action or a piece of information — it fails contrast at body size on #1d1d1f. Decorative and disabled only.",
+      "Don't invent a fifth radius, a colored border, or a border thicker than 1px."
+    ]
+  }
+}

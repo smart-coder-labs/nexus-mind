@@ -1,5 +1,6 @@
 ---
 // For Teams — Enterprise section
+import Icon from './ui/Icon/Icon.astro';
 ---
 
 <section class="py-24 px-4" id="for-teams">
@@ -8,7 +9,7 @@
     <!-- Header -->
     <div class="text-center mb-16">
       <span class="tile-label inline-block mb-4"
-        style="color: var(--color-accent-blue);">
+        style="color: var(--color-accent-on-dark);">
         Empresas
       </span>
       <h2 class="text-4xl md:text-5xl font-bold tracking-tight text-text-primary leading-tight">
@@ -24,23 +25,23 @@
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
       {[
         {
-          icon: '👥',
+          icon: 'users',
           title: 'Multi-usuario',
           description: 'Cada developer tiene su propia API key. Agregá, revocá o rotá accesos en un clic — sin secrets compartidos.',
         },
         {
-          icon: '📋',
+          icon: 'clipboard-list',
           title: 'Audit trail completo',
           description: 'Cada store, search y delete queda logueado con usuario, timestamp y metadata. Exportable a CSV para compliance.',
         },
         {
-          icon: '🛡️',
+          icon: 'shield',
           title: 'Panel de administración incluido',
           description: 'Dashboard web para explorar memorias, gestionar usuarios, revisar actividad y exportar datos — listo desde el día uno.',
         },
       ].map(({ icon, title, description }) => (
         <div class="ds-surface p-6">
-          <div class="text-3xl mb-4">{icon}</div>
+          <div class="icon-tile mb-4"><Icon name={icon} size={22} /></div>
           <h3 class="text-base font-semibold text-text-primary mb-2">{title}</h3>
           <p class="text-sm leading-relaxed" style="color: var(--color-text-secondary);">{description}</p>
         </div>

@@ -273,6 +273,7 @@ export default function Orgs() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
+            aria-label="Search organizations"
             placeholder="Search organizations…"
             className="w-full bg-surface-primary border border-border-primary rounded-lg pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-quaternary focus:outline-none focus:border-accent-blue/40 focus:ring-2 focus:ring-accent-blue/10 transition-colors"
           />

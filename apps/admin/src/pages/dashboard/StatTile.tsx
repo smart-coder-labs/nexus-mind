@@ -13,7 +13,6 @@ export interface StatTileProps {
   /** Caption under the value. A node, so callers can inline a delta chip. */
   sub?: ReactNode
   icon: LucideIcon
-  accent: string
   /** Recent daily counts, most recent last. Omitted entirely when the
    *  metric has no real per-day series (never fabricated). */
   sparkline?: number[]
@@ -25,7 +24,13 @@ export interface StatTileProps {
  * and an optional mini bar-sparkline bottom-right — sparkline is only
  * rendered when real per-day data was passed in.
  */
-export function StatTile({ label, value, sub, icon: Icon, accent, sparkline }: StatTileProps) {
+export function StatTile({ label, value, sub, icon: Icon, sparkline }: StatTileProps) {
+  // One treatment for every metric tile. Callers used to pass accentFor(index),
+  // which cycled blue/green/amber/red/purple by position — a tile rendered red
+  // because it was fourth, not because anything was wrong. Colour in this system
+  // encodes state, never identity (DESIGN.md, The State-Not-Identity Rule), so
+  // the tile is uniformly Action Blue and a caller can no longer override it.
+  const accent = 'var(--color-accent-blue)'
   const bars = sparkline && sparkline.length > 1 ? sparkline.slice(-8) : null
   const maxBar = bars ? Math.max(...bars, 1) : 1
 
@@ -34,7 +39,7 @@ export function StatTile({ label, value, sub, icon: Icon, accent, sparkline }: S
       role="listitem"
       className={`relative flex flex-col gap-2.5 rounded-[18px] p-5 overflow-hidden transition-colors hover:border-white/[0.16] ${GLASS_PANEL}`}
     >
-      {/* Decorative glow blob, tinted by the metric's accent color */}
+      {/* Decorative glow blob — the surface's single accent, not a per-metric hue */}
       <div
         aria-hidden="true"
         className="absolute -top-11 -right-9 w-32 h-32 rounded-full pointer-events-none"

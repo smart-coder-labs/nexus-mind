@@ -1,41 +1,35 @@
 ---
 // Feature cards grid (11 features)
+import Icon from './ui/Icon/Icon.astro';
 ---
 
 <section id="features" class="py-20 px-4">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-14" data-reveal>
-      <span class="tile-label text-accent">Características</span>
+      <span class="tile-label text-accent-on-dark">Características</span>
       <h2 class="text-3xl sm:text-4xl font-bold mt-3 text-text-primary">Un control plane,<br/>no otra herramienta.</h2>
     </div>
 
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
       {[
-        { icon: '🧠', title: 'Memoria Cross-Tool', desc: 'Contexto persistente entre Claude Code, Cursor, Copilot y cualquier agente. Sin repetir nada.' },
-        { icon: '📐', title: 'Artefactos SDD', desc: 'Proposal, spec, design, tasks y verify-report versionados y enlazados a cada change. Viven en el repo y en NexusMind, consultables desde cualquier agente.' },
-        { icon: '✅', title: 'Tasks de Equipo', desc: 'Tracker compartido entre humanos y agentes. Crear, asignar, etiquetar, comentar y enlazar cada task a su spec.' },
-        { icon: '🧰', title: 'Harnesses Compartidos', desc: 'Setups de tooling AI reutilizables: skills, agents, commands, hooks y plugins. Tu equipo los publica, versiona, descubre e instala en Claude Code, Codex y Cursor.' },
-        { icon: '🤖', title: 'Agentes Autónomos', desc: 'Workers en background para resolver GitHub issues, prospectar leads y correr QA. Siempre entregan borradores para revisión: abren draft PRs, nunca mergean ni deployan.' },
-        { icon: '🔒', title: 'Policy Engine', desc: 'Reglas centralizadas que cualquier herramienta respeta. PII redaction, model whitelist, cost controls.' },
-        { icon: '📋', title: 'Audit Trail Universal', desc: 'Todas las interacciones AI de tu empresa en un solo lugar. Inmutable, exportable, auditable.' },
-        { icon: '🏢', title: 'Enterprise Admin', desc: 'RBAC granular, SSO (SAML/OIDC), dashboard de uso, analytics de costos cross-tool.' },
-        { icon: '🔑', title: 'BYOM (Bring Your Model)', desc: 'Sin costos de LLM ocultos. Trae tus keys de OpenAI, Anthropic, Google o corre modelos locales.' },
-        { icon: '🔐', title: 'On-prem / Self-hosted', desc: 'Single binary deploy. Sin dependencias externas. Tus datos nunca salen de tu infraestructura.' },
-        { icon: '📦', title: 'Exportabilidad Total', desc: 'Zero lock-in. Memoria, políticas y audit trails se exportan. Si te vas, te llevas todo.' },
-      ].map((f, i) => {
-        // Reuse the app's existing status/accent tokens in a fixed rotation
-        // instead of inventing new tile accent colors — same tradeoff already
-        // made in apps/admin's MemoryStatTiles (status-error is skipped here
-        // since it already means "problem" in the Problem section above).
-        const accents = ['var(--color-accent-blue)', 'var(--color-status-success)', 'var(--color-status-warning)'];
-        return (
+        { icon: 'network', title: 'Memoria Cross-Tool', desc: 'Contexto persistente entre Claude Code, Cursor, Copilot y cualquier agente. Sin repetir nada.' },
+        { icon: 'file-text', title: 'Artefactos SDD', desc: 'Proposal, spec, design, tasks y verify-report versionados y enlazados a cada change. Viven en el repo y en NexusMind, consultables desde cualquier agente.' },
+        { icon: 'list-checks', title: 'Tasks de Equipo', desc: 'Tracker compartido entre humanos y agentes. Crear, asignar, etiquetar, comentar y enlazar cada task a su spec.' },
+        { icon: 'package', title: 'Harnesses Compartidos', desc: 'Setups de tooling AI reutilizables: skills, agents, commands, hooks y plugins. Tu equipo los publica, versiona, descubre e instala en Claude Code, Codex y Cursor.' },
+        { icon: 'bot', title: 'Agentes Autónomos', desc: 'Workers en background para resolver GitHub issues, prospectar leads y correr QA. Siempre entregan borradores para revisión: abren draft PRs, nunca mergean ni deployan.' },
+        { icon: 'shield-check', title: 'Policy Engine', desc: 'Reglas centralizadas que cualquier herramienta respeta. PII redaction, model whitelist, cost controls.' },
+        { icon: 'scroll-text', title: 'Audit Trail Universal', desc: 'Todas las interacciones AI de tu empresa en un solo lugar. Inmutable, exportable, auditable.' },
+        { icon: 'building-2', title: 'Enterprise Admin', desc: 'RBAC granular, SSO (SAML/OIDC), dashboard de uso, analytics de costos cross-tool.' },
+        { icon: 'key', title: 'BYOM (Bring Your Model)', desc: 'Sin costos de LLM ocultos. Trae tus keys de OpenAI, Anthropic, Google o corre modelos locales.' },
+        { icon: 'server', title: 'On-prem / Self-hosted', desc: 'Single binary deploy. Sin dependencias externas. Tus datos nunca salen de tu infraestructura.' },
+        { icon: 'download', title: 'Exportabilidad Total', desc: 'Zero lock-in. Memoria, políticas y audit trails se exportan. Si te vas, te llevas todo.' },
+      ].map((f, i) => (
         <div class="feature-card" data-reveal data-reveal-delay={i * 80}>
-          <span class="tile-glow" style={`background: ${accents[i % accents.length]}`} aria-hidden="true"></span>
-          <div class="text-3xl mb-3 relative">{f.icon}</div>
+          <div class="feature-icon relative"><Icon name={f.icon} size={22} /></div>
           <h3 class="font-semibold text-text-primary mb-1 relative">{f.title}</h3>
           <p class="text-sm leading-relaxed relative" style="color: var(--color-text-secondary);">{f.desc}</p>
         </div>
-      );})}
+      ))}
     </div>
   </div>
 </section>
@@ -53,5 +47,21 @@
   .feature-card:hover {
     transform: translateY(-2px);
     border-color: var(--color-border-hover);
+  }
+
+  /* One accent for every card. The previous version rotated Action Blue,
+     status-success and status-warning by index, which painted "success" and
+     "warning" onto cards where nothing succeeds or warns — colour encoding
+     identity instead of state, and three accent hues on one surface. */
+  .feature-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin-bottom: 0.875rem;
+    border-radius: 0.625rem;
+    background: var(--color-accent-blue-tint);
+    color: var(--color-accent-on-dark);
   }
 </style>

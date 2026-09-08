@@ -6,7 +6,6 @@ import { Shield, Trash2, Plus, Users, X, UserMinus, Search, KeyRound, Sparkles, 
 import type { LucideIcon } from 'lucide-react'
 import type { CustomRole } from '../types'
 import { StatTile } from './dashboard/StatTile'
-import { accentFor } from './dashboard/colors'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { cn } from '../lib/utils'
 import { Modal, ModalHeader, ModalTitle, ModalDescription, ModalFooter, ModalCloseButton } from '../components/ui/Modal/Modal'
@@ -265,9 +264,9 @@ export default function Roles() {
 
       {roleStats && (
         <KpiMarquee role="list" aria-label="Role statistics">
-          {roleStats.map((t, i) => (
+          {roleStats.map((t) => (
             <div key={t.label} className="w-[232px] flex-none">
-              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} accent={accentFor(i)} />
+              <StatTile label={t.label} value={t.value} sub={t.sub} icon={t.icon} />
             </div>
           ))}
         </KpiMarquee>

@@ -1,5 +1,6 @@
 ---
 // Problem section
+import Icon from './ui/Icon/Icon.astro';
 ---
 
 <section class="py-20 px-4" data-reveal>
@@ -11,13 +12,12 @@
     </div>
     <div class="grid md:grid-cols-3 gap-6">
       {[
-        { icon: '🧩', title: 'Herramientas Fragmentadas', desc: '5 herramientas AI distintas en tu empresa. Cada una con su login, su factura, su equipo aprendiendo desde cero.', accent: 'var(--color-status-error)' },
-        { icon: '🧠', title: 'Conocimiento Perdido', desc: 'Un developer se va y el contexto del proyecto se va con él. La memoria muere cuando la persona se cambia de equipo.', accent: 'var(--color-status-warning)' },
-        { icon: '🔍', title: 'Gobierno Inexistente', desc: 'Sin audit trails, sin data residency, sin RBAC. Tus datos están en servidores que no controlas.', accent: 'var(--color-accent-blue)' },
+        { icon: 'puzzle', title: 'Herramientas Fragmentadas', desc: '5 herramientas AI distintas en tu empresa. Cada una con su login, su factura, su equipo aprendiendo desde cero.' },
+        { icon: 'archive-x', title: 'Conocimiento Perdido', desc: 'Un developer se va y el contexto del proyecto se va con él. La memoria muere cuando la persona se cambia de equipo.' },
+        { icon: 'eye-off', title: 'Gobierno Inexistente', desc: 'Sin audit trails, sin data residency, sin RBAC. Tus datos están en servidores que no controlas.' },
       ].map((item, i) => (
         <div class="feature-card text-center" data-reveal data-reveal-delay={i * 150}>
-          <span class="tile-glow" style={`background: ${item.accent}`} aria-hidden="true"></span>
-          <div class="text-4xl mb-4 relative">{item.icon}</div>
+          <div class="problem-icon relative"><Icon name={item.icon} size={22} /></div>
           <h3 class="text-lg font-semibold text-text-primary mb-2 relative">{item.title}</h3>
           <p class="text-sm leading-relaxed relative" style="color: var(--color-text-secondary);">{item.desc}</p>
         </div>
@@ -27,6 +27,21 @@
 </section>
 
 <style>
+  /* The section is "El Problema", so its one accent is status-error — used
+     once, semantically. The previous version rotated error / warning / blue
+     across the three cards, which made the hue arbitrary per card. */
+  .problem-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: 0 auto 1rem;
+    border-radius: 0.75rem;
+    background: rgba(255, 69, 58, 0.10);
+    color: var(--color-status-error);
+  }
+
   .feature-card {
     background: rgba(255,255,255,0.04);
     border: 1px solid var(--color-border-primary);

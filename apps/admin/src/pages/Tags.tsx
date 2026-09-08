@@ -5,7 +5,6 @@ import { createClient } from '../api/client'
 import { cn } from '@/lib/utils'
 import { KpiMarquee } from '@/components/ui/KpiMarquee'
 import { StatTile } from './dashboard/StatTile'
-import { accentFor } from './dashboard/colors'
 import type { NameCount } from '../types'
 
 const client = createClient()
@@ -140,10 +139,10 @@ export default function Tags() {
         <div className="mb-4">
           <KpiMarquee>
             <div key="tags" className="w-[232px] flex-none">
-              <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} accent={accentFor(0)} />
+              <StatTile label="Tags" value={String(tags.length)} sub="vocabulary size" icon={Hash} />
             </div>
             <div key="taggings" className="w-[232px] flex-none">
-              <StatTile label="Taggings" value={totalTaggings.toLocaleString()} sub="total applications" icon={Layers} accent={accentFor(1)} />
+              <StatTile label="Taggings" value={totalTaggings.toLocaleString()} sub="total applications" icon={Layers} />
             </div>
             <div key="top-tag" className="w-[232px] flex-none">
               <StatTile
@@ -151,7 +150,6 @@ export default function Tags() {
                 value={topTag ? topTag.name : '—'}
                 sub={topTag ? `${topTag.count.toLocaleString()} uses` : undefined}
                 icon={TrendingUp}
-                accent={accentFor(2)}
               />
             </div>
           </KpiMarquee>
