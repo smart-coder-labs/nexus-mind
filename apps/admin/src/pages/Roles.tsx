@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { isSectionKeptByProfile } from '../config/disabled-sections'
 import { Shield, Trash2, Plus, Users, X, UserMinus, Search, KeyRound, Sparkles, Eye, Check } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CustomRole } from '../types'
@@ -75,9 +76,33 @@ const PERMISSION_GROUPS: { label: string; color: string; prefixes: string[] }[] 
   { label: 'SYSTEM', color: '#facc15', prefixes: ['audit', 'settings', 'webhook', 'backup'] },
 ]
 
+// A permission is only offered when the feature it unlocks exists in this
+// PROFILE. Offering `harness:read` in a cut with no harnesses would be a switch
+// wired to nothing. This deliberately ignores the temporary flags: a page that
+// is hidden while unfinished still has an API and an MCP surface, and the
+// permission must stay grantable. Prefixes not listed here are always offered.
+const PERMISSION_SECTION: Record<string, string> = {
+  collection: '/collections',
+  session: '/sessions',
+  api_key: '/api-keys',
+  policy: '/policies',
+  harness: '/harnesses',
+  audit: '/audit',
+  webhook: '/webhooks',
+  backup: '/backups',
+  task: '/tasks',
+  sdd: '/sdd',
+  autonomous_agent: '/autonomous-agents',
+  usage: '/usage',
+}
+const isPermissionOffered = (key: string) => {
+  const section = PERMISSION_SECTION[key.split(':')[0]]
+  return section === undefined || isSectionKeptByProfile(section)
+}
+
 const GROUPED_PERMISSIONS = PERMISSION_GROUPS.map(g => ({
   ...g,
-  perms: AVAILABLE_PERMISSIONS.filter(p => g.prefixes.includes(p.key.split(':')[0])),
+  perms: AVAILABLE_PERMISSIONS.filter(p => g.prefixes.includes(p.key.split(':')[0]) && isPermissionOffered(p.key)),
 })).filter(g => g.perms.length > 0)
 
 export default function Roles() {

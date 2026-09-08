@@ -3,13 +3,29 @@ import { Search as SearchIcon, X, ChevronDown } from 'lucide-react'
 import { createClient } from '../api/client'
 import type { GlobalSearchResult } from '../types'
 import { cn } from '@/lib/utils'
+import { isSectionKeptByProfile } from '../config/disabled-sections'
 import { ResultRow } from './search/ResultRow'
 
 const client = createClient()
 
 type Tab = 'all' | 'memories' | 'users' | 'projects' | 'policies' | 'conventions' | 'sdd'
 
-const TABS: { key: Tab; label: string }[] = [
+// A facet whose feature the PROFILE removes is dropped from the tabs AND from
+// the results. Keyed on the profile, not on the temporary flags: a policy hit
+// is still a hit in the full panel even while the Policies page is switched off.
+const FACET_SECTION: Partial<Record<Tab, string>> = {
+  users: '/users',
+  projects: '/projects',
+  policies: '/policies',
+  conventions: '/conventions',
+  sdd: '/sdd',
+}
+const isFacetEnabled = (tab: Tab) => {
+  const section = FACET_SECTION[tab]
+  return section === undefined || isSectionKeptByProfile(section)
+}
+
+const TABS: { key: Tab; label: string }[] = ([
   { key: 'all',         label: 'All types' },
   { key: 'memories',   label: 'Memories' },
   { key: 'users',      label: 'Users' },
@@ -17,7 +33,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'policies',   label: 'Policies' },
   { key: 'conventions', label: 'Conventions' },
   { key: 'sdd',        label: 'SDD' },
-]
+] as { key: Tab; label: string }[]).filter(t => isFacetEnabled(t.key))
 
 function firstLine(content: string): string {
   return content.split('\n')[0].trim()
@@ -78,13 +94,13 @@ export default function Search() {
   }, [debouncedQuery, runSearch])
 
   const memories    = results?.memories    ?? []
-  const users       = results?.users       ?? []
-  const projects    = results?.projects    ?? []
-  const policies    = results?.policies    ?? []
-  const conventions = results?.conventions ?? []
+  const users       = isFacetEnabled('users')       ? results?.users       ?? [] : []
+  const projects    = isFacetEnabled('projects')    ? results?.projects    ?? [] : []
+  const policies    = isFacetEnabled('policies')    ? results?.policies    ?? [] : []
+  const conventions = isFacetEnabled('conventions') ? results?.conventions ?? [] : []
   // Additive facet: a backend that predates it omits the key entirely, and a
   // caller without `sdd:read` gets it back empty (A4). Both must be non-events.
-  const sddChanges  = results?.sdd_changes ?? []
+  const sddChanges  = isFacetEnabled('sdd') ? results?.sdd_changes ?? [] : []
   const totalCount  = memories.length + users.length + projects.length + policies.length
     + conventions.length + sddChanges.length
 

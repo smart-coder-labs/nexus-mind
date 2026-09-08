@@ -89,25 +89,25 @@ function AppRoutes() {
                 <Route path="/roles"    element={<AdminRoute><Roles /></AdminRoute>} />
                 <Route path="/projects" element={<AdminRoute><Projects /></AdminRoute>} />
                 <Route path="/clients"  element={<AdminRoute><Clients /></AdminRoute>} />
-                <Route path="/usage"    element={<AdminRoute><Usage /></AdminRoute>} />
+                <Route path="/usage"    element={<MaybeDisabled href="/usage"><AdminRoute><Usage /></AdminRoute></MaybeDisabled>} />
                 <Route path="/code"     element={<AdminRoute><Code /></AdminRoute>} />
                 <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
                 <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
-                <Route path="/autonomous-agents" element={<AutonomousAgents />} />
+                <Route path="/autonomous-agents" element={<MaybeDisabled href="/autonomous-agents"><AutonomousAgents /></MaybeDisabled>} />
                 <Route path="/policies"     element={<MaybeDisabled href="/policies"><AdminRoute><Policies /></AdminRoute></MaybeDisabled>} />
                 <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
                 <Route path="/webhooks"    element={<MaybeDisabled href="/webhooks"><AdminRoute><Webhooks /></AdminRoute></MaybeDisabled>} />
-                <Route path="/collections" element={<AdminRoute><Collections /></AdminRoute>} />
+                <Route path="/collections" element={<MaybeDisabled href="/collections"><AdminRoute><Collections /></AdminRoute></MaybeDisabled>} />
                 <Route path="/search"   element={<Search />} />
                 <Route path="/sessions" element={<MaybeDisabled href="/sessions"><Sessions /></MaybeDisabled>} />
                 <Route path="/memories" element={<Memories />} />
                 <Route path="/tags"     element={<AdminRoute><Tags /></AdminRoute>} />
-                <Route path="/audit"    element={<SuperUserRoute><AuditLog /></SuperUserRoute>} />
+                <Route path="/audit"    element={<MaybeDisabled href="/audit"><SuperUserRoute><AuditLog /></SuperUserRoute></MaybeDisabled>} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/backups" element={<AdminRoute><Backups /></AdminRoute>} />
-                <Route path="/harnesses" element={<AdminRoute><Harnesses /></AdminRoute>} />
-                <Route path="/tasks"    element={<AdminRoute><Tasks /></AdminRoute>} />
-                <Route path="/sdd"      element={<AdminRoute><Sdd /></AdminRoute>} />
+                <Route path="/backups" element={<MaybeDisabled href="/backups"><AdminRoute><Backups /></AdminRoute></MaybeDisabled>} />
+                <Route path="/harnesses" element={<MaybeDisabled href="/harnesses"><AdminRoute><Harnesses /></AdminRoute></MaybeDisabled>} />
+                <Route path="/tasks"    element={<MaybeDisabled href="/tasks"><AdminRoute><Tasks /></AdminRoute></MaybeDisabled>} />
+                <Route path="/sdd"      element={<MaybeDisabled href="/sdd"><AdminRoute><Sdd /></AdminRoute></MaybeDisabled>} />
                 <Route path="/migrations" element={<AdminRoute><Migrations /></AdminRoute>} />
                 <Route path="/graph"   element={<Graph />} />
                 <Route path="/401"    element={<Unauthorized />} />

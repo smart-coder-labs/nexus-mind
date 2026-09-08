@@ -22,14 +22,21 @@ import { MemoryHealthCard } from './dashboard/MemoryHealthCard'
 import { MemoryTypesCard } from './dashboard/MemoryTypesCard'
 import { TopProjectsCard } from './dashboard/TopProjectsCard'
 import { accentFor } from './dashboard/colors'
+import { ADMIN_PROFILE, WEBHOOKS_ENABLED, isSectionEnabled, isSectionKeptByProfile } from '../config/disabled-sections'
 
 type CardKey =
   | 'onboarding' | 'quick-actions' | 'recent-activity' | 'memory-trends' | 'memory-types'
   | 'agent-activity' | 'memory-health' | 'top-projects' | 'contributors' | 'usage' | 'heatmap' | 'conventions'
-const ALL_CARDS: CardKey[] = [
+// Cards that report on sections the only-context build does not ship. They are
+// removed from the catalog (not merely hidden) so the Customize menu cannot
+// re-enable them either.
+const PROFILE_HIDDEN_CARDS: readonly CardKey[] = ADMIN_PROFILE === 'only-context'
+  ? ['agent-activity', 'usage']
+  : []
+const ALL_CARDS: CardKey[] = ([
   'onboarding', 'quick-actions', 'recent-activity', 'memory-trends', 'memory-types',
   'agent-activity', 'memory-health', 'top-projects', 'contributors', 'usage', 'heatmap', 'conventions',
-]
+] as CardKey[]).filter(key => !PROFILE_HIDDEN_CARDS.includes(key))
 const CARDS_STORAGE_KEY = 'nexusmind-dashboard-cards'
 
 function downloadBlob(blob: Blob, filename = 'download.json') {
@@ -202,7 +209,7 @@ export default function Dashboard() {
       return next
     })
   }
-  const isVisible = (key: CardKey) => !hiddenCards.includes(key)
+  const isVisible = (key: CardKey) => ALL_CARDS.includes(key) && !hiddenCards.includes(key)
 
   // Close customize dropdown on outside click
   useEffect(() => {
@@ -338,13 +345,15 @@ export default function Dashboard() {
     return tiles
   }, [stats, trends, usageStats, users, conventions, conventionStats, availability])
 
-  const quickActions: QuickAction[] = [
+  // An action that opens a section this build hides is dropped: the route would
+  // only bounce the user back here.
+  const quickActions: QuickAction[] = ([
     { label: 'Invite user', href: '/users', icon: UserPlus },
-    { label: 'New collection', href: '/memories?tab=collections', icon: FolderPlus },
+    ...(isSectionKeptByProfile('/collections') ? [{ label: 'New collection', href: '/memories?tab=collections', icon: FolderPlus }] : []),
     ...(isSuperUser ? [{ label: 'Export config', icon: Download, onAction: () => client.exportOrgConfig().then(b => downloadBlob(b, 'nexusmind-config.json')) }] : []),
     ...(isSuperUser ? [{ label: 'View audit log', href: '/audit', icon: FileText }] : []),
-    { label: 'Manage webhooks', href: '/settings', icon: Zap },
-  ]
+    ...(WEBHOOKS_ENABLED ? [{ label: 'Manage webhooks', href: '/settings', icon: Zap }] : []),
+  ] as QuickAction[]).filter(action => !('href' in action) || isSectionEnabled(action.href))
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -988,7 +997,7 @@ export default function Dashboard() {
               { label: 'Search', href: '/search', description: 'Semantic search across all memories' },
               { label: 'Projects', href: '/projects', description: 'View your assigned projects' },
               { label: 'Sessions', href: '/sessions', description: 'Browse agent sessions' },
-            ].map(item => (
+            ].filter(item => isSectionEnabled(item.href)).map(item => (
               <Link
                 key={item.label}
                 to={item.href}
