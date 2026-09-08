@@ -4723,7 +4723,7 @@ pub async fn publish_finding_to_linkedin(
                     .and_then(|v| v.as_str())
                     .map(normalize_linkedin_destination);
                 match tagged {
-                    Some(value) if allowed.iter().any(|item| *item == value) => value,
+                    Some(value) if allowed.contains(&value) => value,
                     _ => allowed
                         .first()
                         .cloned()
