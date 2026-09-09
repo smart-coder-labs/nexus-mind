@@ -14,6 +14,7 @@ Technical documentation covering product, architecture, API, and engineering pro
 | 6 | [CLAUDE_CODE_PLUGIN.md](./CLAUDE_CODE_PLUGIN.md) | Claude Code plugin integration |
 | 7 | [CURSOR_PLUGIN.md](./CURSOR_PLUGIN.md) | Cursor integration |
 | 8 | [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) | Codex integration |
+| 9 | [REPOSITORY_CONFIG.md](./REPOSITORY_CONFIG.md) | `.nexusmind.yaml` reference: project routing, agent profiles, resolution rules, examples |
 
 ## Architecture Decision Records
 

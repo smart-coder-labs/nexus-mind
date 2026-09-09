@@ -40,6 +40,16 @@ Then restart your shell and open Claude Code — NexusMind connects automaticall
 |----------|---------|-------------|
 | `NEXUSMIND_API_KEY` | — | Your NexusMind API key (required) |
 | `NEXUSMIND_BASE_URL` | `https://nexusmind-backend.fly.dev` | Backend URL (for self-hosting) |
+| `NEXUSMIND_MCP_TOOL_PROFILE` | `essential` | MCP tool profile. `only_context` on context-only deployments (admin built with `VITE_ADMIN_PROFILE=only-context`). |
+
+### Project detection and `.nexusmind.yaml`
+
+The hooks resolve the project name from, in order: a `.nexusmind.yaml` whose `paths` claim the
+current directory (its alias is used as the name), the git remote `origin` repository name, the git
+root directory name, the current directory name. A repository whose NexusMind project is named after
+it needs no config. Add `.nexusmind.yaml` for workspaces that are not git repositories, monorepos
+routing subtrees to several projects, or a repository whose name differs from the project.
+Full reference: [REPOSITORY_CONFIG.md](./REPOSITORY_CONFIG.md).
 
 ## MCP Tools
 
