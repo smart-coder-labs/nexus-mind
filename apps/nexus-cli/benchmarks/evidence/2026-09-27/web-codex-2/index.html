@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Catálogo | Nébula</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="catalogue" id="app" aria-labelledby="catalogue-title">
+      <header class="catalogue__header"><p class="eyebrow">Tienda Nébula</p><h1 id="catalogue-title">Encuentra tu próximo esencial</h1><p class="intro">Tecnología seleccionada para trabajar, escuchar y crear mejor.</p></header>
+      <section class="controls" aria-label="Controles del catálogo">
+        <div class="field field--search"><label for="search">Buscar productos</label><input id="search" name="search" type="search" placeholder="Ej.: teclado o auriculares" autocomplete="off"></div>
+        <div class="field"><label for="category">Categoría</label><select id="category" name="category"></select></div>
+        <div class="field"><label for="sort">Ordenar por</label><select id="sort" name="sort"><option value="name">Nombre (A–Z)</option><option value="name-desc">Nombre (Z–A)</option><option value="price-asc">Precio: menor a mayor</option><option value="price-desc">Precio: mayor a menor</option></select></div>
+      </section>
+      <p class="results-count" id="results-count" aria-live="polite"></p>
+      <section id="products" class="products" aria-label="Productos"></section>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

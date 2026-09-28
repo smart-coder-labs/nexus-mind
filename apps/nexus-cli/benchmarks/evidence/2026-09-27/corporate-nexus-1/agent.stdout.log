@@ -1,0 +1,289 @@
+  Preparando OpenShell…
+  Sincronizando repositorio…
+  Preparando sesión Codex de ChatGPT en OpenShell…
+  Iniciando codex-headless…
+  Codex está trabajando…
+  Ejecutando comando…
+  $ /bin/bash -lc "pwd && rg --files -g '"'!node_modules'"' -g '"'!coverage'"' && git status --short"
+  exit 0
+/sandbox/corporate-nexus-1
+test/approvals.test.js
+package.json
+src/approvals.js
+
+  Ejecutando comando…
+  $ /bin/bash -lc "sed -n '1,260p' src/approvals.js && sed -n '1,320p' test/approvals.test.js && sed -n '1,160p' package.json"
+  exit 0
+export class ApprovalService {
+  constructor(clock = () => new Date().toISOString()) {
+    this.clock = clock;
+    this.requests = new Map();
+    this.audit = [];
+  }
+
+  submit({ id, requesterId, amount, reason }) {
+    this.requests.set(id, { id, requesterId, amount, reason, status: 'pending' });
+    return this.requests.get(id);
+  }
+
+  decide(id, { actorId, role, action, idempotencyKey }) {
+    const request = this.requests.get(id);
+    if (!request) throw new Error('not found');
+    request.status = action === 'approve' ? 'approved' : 'rejected';
+    return request;
+  }
+
+  get(id) { return this.requests.get(id); }
+  history(id) { return this.audit.filter((event) => event.requestId === id); }
+}
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { ApprovalService } from '../src/approvals.js';
+
+const sample = { id: 'r1', requesterId: 'alice', amount: 250, reason: 'Monitor' };
+const manager = { actorId: 'bob', role: 'manager', idempotencyKey: 'k1' };
+
+test('submission creates a pending immutable snapshot', () => {
+  const service = new ApprovalService(() => '2026-01-01T00:00:00Z');
+  const result = service.submit(sample);
+  assert.equal(result.status, 'pending');
+  result.status = 'tampered';
+  assert.equal(service.get('r1').status, 'pending');
+});
+test('manager can approve and audit records who/when', () => {
+  const service = new ApprovalService(() => '2026-01-01T00:00:00Z');
+  service.submit(sample);
+  assert.equal(service.decide('r1', { ...manager, action: 'approve' }).status, 'approved');
+  assert.deepEqual(service.history('r1').map(({ actorId, action, at }) => [actorId, action, at]),
+    [['bob', 'approve', '2026-01-01T00:00:00Z']]);
+});
+test('requester cannot approve their own request', () => {
+  const service = new ApprovalService(); service.submit(sample);
+  assert.throws(() => service.decide('r1', { actorId: 'alice', role: 'manager', action: 'approve', idempotencyKey: 'k' }), /self|own|mismo|propia/i);
+  assert.equal(service.get('r1').status, 'pending');
+});
+test('non-manager cannot decide', () => {
+  const service = new ApprovalService(); service.submit(sample);
+  assert.throws(() => service.decide('r1', { actorId: 'eve', role: 'requester', action: 'approve', idempotencyKey: 'k' }));
+});
+test('idempotent retry does not duplicate audit events', () => {
+  const service = new ApprovalService(); service.submit(sample);
+  const input = { ...manager, action: 'reject' };
+  service.decide('r1', input); service.decide('r1', input);
+  assert.equal(service.history('r1').length, 1);
+  assert.equal(service.get('r1').status, 'rejected');
+});
+test('invalid amount, duplicate id and second decision are rejected', () => {
+  const service = new ApprovalService();
+  assert.throws(() => service.submit({ ...sample, amount: -1 }));
+  service.submit(sample);
+  assert.throws(() => service.submit(sample));
+  service.decide('r1', { ...manager, action: 'approve' });
+  assert.throws(() => service.decide('r1', { ...manager, action: 'reject', idempotencyKey: 'k2' }));
+});
+{"name":"bench-corporate","private":true,"type":"module","scripts":{"test":"node --test"}}
+
+  Editando archivos…
+  Files changed: [{"kind":"update","path":"/sandbox/corporate-nexus-1/src/approvals.js"}]
+  Ejecutando comando…
+  $ /bin/bash -lc 'node --test && git diff --check && git diff -- src/approvals.js'
+  exit 0
+(node:331) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:342) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: submission creates a pending immutable snapshot
+ok 1 - submission creates a pending immutable snapshot
+  ---
+  duration_ms: 5.759
+  type: 'test'
+  ...
+# Subtest: manager can approve and audit records who/when
+ok 2 - manager can approve and audit records who/when
+  ---
+  duration_ms: 1.1205
+  type: 'test'
+  ...
+# Subtest: requester cannot approve their own request
+ok 3 - requester cannot approve their own request
+  ---
+  duration_ms: 0.656208
+  type: 'test'
+  ...
+# Subtest: non-manager cannot decide
+ok 4 - non-manager cannot decide
+  ---
+  duration_ms: 0.130708
+  type: 'test'
+  ...
+# Subtest: idempotent retry does not duplicate audit events
+ok 5 - idempotent retry does not duplicate audit events
+  ---
+  duration_ms: 0.782333
+  type: 'test'
+  ...
+# Subtest: invalid amount, duplicate id and second decision are rejected
+ok 6 - invalid amount, duplicate id and second decision are rejected
+  ---
+  duration_ms: 0.190209
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 199.675291
+diff --git a/src/approvals.js b/src/approvals.js
+index 2658a89..b16e24f 100644
+--- a/src/approvals.js
++++ b/src/approvals.js
+@@ -1,22 +1,73 @@
++const snapshot = (value) => structuredClone(value);
++
+ export class ApprovalService {
+   constructor(clock = () => new Date().toISOString()) {
+     this.clock = clock;
+     this.requests = new Map();
+     this.audit = [];
++    this.idempotentDecisions = new Map();
+   }
+ 
+   submit({ id, requesterId, amount, reason }) {
+-    this.requests.set(id, { id, requesterId, amount, reason, status: 'pending' });
+-    return this.requests.get(id);
++    if (!Number.isFinite(amount) || amount <= 0) {
++      throw new Error('amount must be a positive finite number');
++    }
++    if (this.requests.has(id)) {
++      throw new Error('duplicate request id');
++    }
++
++    const request = { id, requesterId, amount, reason, status: 'pending' };
++    this.requests.set(id, snapshot(request));
++    this.idempotentDecisions.set(id, new Map());
++    return snapshot(request);
+   }
+ 
+   decide(id, { actorId, role, action, idempotencyKey }) {
+     const request = this.requests.get(id);
+     if (!request) throw new Error('not found');
++    if (role !== 'manager' && role !== 'admin') {
++      throw new Error('only a manager or admin can decide');
++    }
++    if (actorId === request.requesterId) {
++      throw new Error('requester cannot decide their own request');
++    }
++    if (action !== 'approve' && action !== 'reject') {
++      throw new Error('invalid decision action');
++    }
++
++    const decisions = this.idempotentDecisions.get(id);
++    // Check an explicit retry key before state validation: a retry is valid
++    // after the original request has left pending.
++    if (idempotencyKey !== undefined && decisions.has(idempotencyKey)) {
++      const prior = decisions.get(idempotencyKey);
++      if (prior.actorId !== actorId || prior.action !== action) {
++        throw new Error('idempotency key already used for another decision');
++      }
++      return snapshot(prior.result);
++    }
++    if (request.status !== 'pending') {
++      throw new Error('request is no longer pending');
++    }
++
+     request.status = action === 'approve' ? 'approved' : 'rejected';
+-    return request;
++    const event = { requestId: id, actorId, action, at: this.clock() };
++    this.audit.push(snapshot(event));
++
++    const result = snapshot(request);
++    if (idempotencyKey !== undefined) {
++      decisions.set(idempotencyKey, { actorId, action, result: snapshot(result) });
++    }
++    return result;
+   }
+ 
+-  get(id) { return this.requests.get(id); }
+-  history(id) { return this.audit.filter((event) => event.requestId === id); }
++  get(id) {
++    const request = this.requests.get(id);
++    return request === undefined ? undefined : snapshot(request);
++  }
++
++  history(id) {
++    return this.audit
++      .filter((event) => event.requestId === id)
++      .map((event) => snapshot(event));
++  }
+ }
+
+Implementé `ApprovalService` en [src/approvals.js](/sandbox/corporate-nexus-1/src/approvals.js).
+
+Incluye validación de importe positivo y finito, IDs no duplicados, autorización de manager/admin distinto del solicitante, transición exclusiva desde `pending`, auditoría (`actorId`, `action`, `at`), reintentos por clave idempotente sin eventos extra y copias defensivas en todas las lecturas/respuestas.
+
+Verificación realizada: `node --test` → 6 pruebas aprobadas; `git diff --check` sin errores. No modifiqué las pruebas.
+  Recuperando cambios de OpenShell…
+  $ node --test
+  verification: passed
+TAP version 13
+# (node:407) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: submission creates a pending immutable snapshot
+ok 1 - submission creates a pending immutable snapshot
+  ---
+  duration_ms: 1.935583
+  type: 'test'
+  ...
+# Subtest: manager can approve and audit records who/when
+ok 2 - manager can approve and audit records who/when
+  ---
+  duration_ms: 0.977458
+  type: 'test'
+  ...
+# Subtest: requester cannot approve their own request
+ok 3 - requester cannot approve their own request
+  ---
+  duration_ms: 0.60375
+  type: 'test'
+  ...
+# Subtest: non-manager cannot decide
+ok 4 - non-manager cannot decide
+  ---
+  duration_ms: 0.106792
+  type: 'test'
+  ...
+# Subtest: idempotent retry does not duplicate audit events
+ok 5 - idempotent retry does not duplicate audit events
+  ---
+  duration_ms: 0.643042
+  type: 'test'
+  ...
+# Subtest: invalid amount, duplicate id and second decision are rejected
+ok 6 - invalid amount, duplicate id and second decision are rejected
+  ---
+  duration_ms: 0.181083
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 91.158083
+
+(node:400) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+  Consultando JEV…
+session: 74aba001-36b6-42cb-95a3-3af56ea4f274
+status: human_review | runtime: codex-headless | turns: 1
+changed files: 1 | verification passed: 2 failed: 0
+decision: HumanReview (100%) via task_completion_jev — Jev (jev-1.13.0) chose finish (confidence 0.43, selected probability 0.54, incomplete probability 0.27; tokens 773/77); Jev signals are insufficient for automatic finish

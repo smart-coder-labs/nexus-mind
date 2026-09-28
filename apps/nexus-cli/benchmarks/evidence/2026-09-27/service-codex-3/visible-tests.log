@@ -1,0 +1,13 @@
+✔ health endpoint returns JSON without exposing orders (16.153375ms)
+✔ create and read an order (7.956833ms)
+✔ same idempotency key returns the same order (3.131292ms)
+✔ invalid payload and malformed JSON are client errors (3.645125ms)
+✔ unknown route and order return JSON 404 (1.986417ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 105.386208

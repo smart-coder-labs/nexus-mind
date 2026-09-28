@@ -1,0 +1,55 @@
+{
+  "case": "web",
+  "arm": "codex",
+  "trial": 2,
+  "startedAt": "2026-09-27T20:00:44.332Z",
+  "elapsedSeconds": 126.5,
+  "tool": "codex-cli 0.154.0",
+  "model": "gpt-5.6-terra",
+  "prompt": "Implementa una página de catálogo responsive en español en index.html, styles.css y src/app.js. Debe tener búsqueda sin distinguir acentos, filtro de categoría, orden por nombre/precio ascendente/descendente, estado vacío, controles etiquetados, HTML seguro frente a XSS y un layout adaptable. Mantén las exportaciones y pasa node --test; no modifiques las pruebas.",
+  "exitCode": 0,
+  "signal": null,
+  "usage": {
+    "input_tokens": 152219,
+    "cached_input_tokens": 132352,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 5899,
+    "reasoning_output_tokens": 171
+  },
+  "nexusStatus": null,
+  "decision": null,
+  "visible": {
+    "exitCode": 0,
+    "pass": 6,
+    "fail": 0
+  },
+  "heldout": {
+    "exitCode": 0,
+    "pass": 5,
+    "fail": 0
+  },
+  "changedPaths": [
+    "index.html",
+    "src/app.js",
+    "styles.css"
+  ],
+  "testsUnmodified": true,
+  "diffCheck": true,
+  "contextSourceCount": null,
+  "hashes": {
+    "fixtureTestSha256": "dcdea31ca4d0d03429222f345445d1bd57f700fe1cc4aa97c68156192faff33a",
+    "implementationDiffSha256": "1c60a4d5ee1e92e9525ded1c8f7d233183e06684e44f825177e9463bf572bb32",
+    "stdoutSha256": "3bf5c8b8fccee101563674aa6849565b5d919d92994d87f51b8154fc2da70e49"
+  },
+  "heldoutInitial": {
+    "exitCode": 0,
+    "pass": 5,
+    "fail": 0
+  },
+  "codexDetailedUsage": null,
+  "evidence": {
+    "initialRunnerMetrics": "/private/tmp/nexus-bench-realworld-20260927/web-codex-2/metrics.json",
+    "initialHeldoutLog": "/private/tmp/nexus-bench-realworld-20260927/web-codex-2/heldout-tests.log",
+    "finalHeldoutRubric": "/Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/web.test.mjs"
+  }
+}

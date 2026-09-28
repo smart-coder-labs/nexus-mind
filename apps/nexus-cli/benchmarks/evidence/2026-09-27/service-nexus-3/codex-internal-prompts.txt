@@ -1,0 +1,33 @@
+<recommended_plugins>
+Here is a list of plugins that are available but not installed.
+
+- Dropbox (app-69b31dc2110c8191b8b47dc98fe5a052@openai-curated-remote)
+- Box (box@openai-curated-remote)
+- Codex Security (codex-security@openai-curated-remote)
+- Figma (figma@openai-curated-remote)
+- Google Calendar (google-calendar@openai-curated-remote)
+- Linear (linear@openai-curated-remote)
+- OpenAI Developers (openai-developers@openai-curated-remote)
+- Outlook Calendar (outlook-calendar@openai-curated-remote)
+- Outlook Email (outlook-email@openai-curated-remote)
+- SharePoint (sharepoint@openai-curated-remote)
+- Slack (slack@openai-curated-remote)
+- Teams (teams@openai-curated-remote)
+</recommended_plugins>
+
+--- NEXT USER MESSAGE ---
+
+<environment_context>
+  <cwd>/sandbox/service-nexus-3</cwd>
+  <shell>bash</shell>
+  <current_date>2026-09-28</current_date>
+  <timezone>Etc/UTC</timezone>
+  <filesystem><workspace_roots><root>/sandbox/service-nexus-3</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+</environment_context>
+
+--- NEXT USER MESSAGE ---
+
+NexusMind context (verify against the current files before relying on it):
+
+Work on the request in this repository. Explain the result and the evidence from verification.
+User request: Implementa un microservicio HTTP de pedidos sin dependencias externas: GET /health, POST /orders y GET /orders/:id, JSON consistente, validación estricta de sku y cantidad entera positiva, idempotencia por cabecera con 409 si la misma clave trae otro payload, 415 para content-type inválido, 413 para cuerpos mayores de 64 KiB y 404 JSON para rutas desconocidas. Mantén createServer y pasa node --test; no modifiques las pruebas.
