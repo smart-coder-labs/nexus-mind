@@ -93,6 +93,12 @@ const RESULT_CODE: Record<string, string> = {
   sandbox_environment_failed: 'failed to prepare its sandbox environment',
   claude_auth_required: 'needs Claude Code re-authentication',
   claude_runtime_unavailable: 'could not reach the Claude Code runtime',
+  nexus_executor_not_ready: 'needs its Nexus OpenShell executor and Claude login provisioned',
+  nexus_auth_required: 'needs Claude login inside its OpenShell sandbox',
+  nexus_gateway_unavailable: 'could not reach the OpenShell gateway',
+  nexus_cli_unavailable: 'could not start the Nexus worker executable',
+  nexus_sync_failed: 'could not safely synchronize OpenShell changes',
+  nexus_runtime_failed: 'Nexus execution failed inside OpenShell',
   unsupported_template: 'used an unsupported template',
 }
 
