@@ -2276,6 +2276,36 @@ mod tests {
     }
 
     #[test]
+    fn nexus_run_can_be_claimed_when_host_claude_needs_reauth() {
+        let (conn, org_id, user_id) = fixture();
+        let mut nexus_request = request();
+        nexus_request.config["executor"] = serde_json::json!("nexus");
+        let created = queries::create_autonomous_agent_definition(
+            &conn, &org_id, &user_id, &nexus_request,
+        ).unwrap();
+        queries::validate_autonomous_agent_definition(
+            &conn, &org_id, &user_id, &created.definition.id,
+        ).unwrap();
+        queries::set_autonomous_agent_status(
+            &conn, &org_id, &created.definition.id, "enabled",
+        ).unwrap();
+        queries::enqueue_autonomous_agent_run(
+            &conn, &org_id, &created.definition.id, "manual", "nexus-health", None, None,
+        ).unwrap();
+        queries::save_autonomous_runtime_health(&conn, &crate::automation::runtime::RuntimeHealth {
+            status: "reauth_required".into(),
+            reason_code: Some("host_claude_login".into()),
+            claude_version: None,
+            checked_at: None,
+            last_success_at: None,
+            last_failure_at: None,
+        }).unwrap();
+        let claim = queries::claim_next_autonomous_agent_run(&conn, "worker", 60)
+            .unwrap().expect("Nexus uses sandbox login, not host Claude health");
+        assert_eq!(queries::autonomous_executor(&claim.config).unwrap(), "nexus");
+    }
+
+    #[test]
     fn expired_lease_is_reclaimed_with_a_new_bound_token() {
         let (conn, org_id, user_id) = fixture();
         let created =

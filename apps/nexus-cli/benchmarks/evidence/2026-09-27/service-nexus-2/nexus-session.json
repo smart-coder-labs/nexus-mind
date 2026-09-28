@@ -1,0 +1,45 @@
+{
+  "id": "4c044ddc-cff5-4248-9b50-126cc89e13e5",
+  "created_at": "2026-09-27T20:07:56.274114Z",
+  "updated_at": "2026-09-27T20:08:22.962904Z",
+  "runtime": "codex-headless",
+  "state": {
+    "task_id": "4c044ddc-cff5-4248-9b50-126cc89e13e5",
+    "objective": "Implementa un microservicio HTTP de pedidos sin dependencias externas: GET /health, POST /orders y GET /orders/:id, JSON consistente, validación estricta de sku y cantidad entera positiva, idempotencia por cabecera con 409 si la misma clave trae otro payload, 415 para content-type inválido, 413 para cuerpos mayores de 64 KiB y 404 JSON para rutas desconocidas. Mantén createServer y pasa node --test; no modifiques las pruebas.",
+    "repository": "/private/tmp/nexus-bench-realworld-20260927/service-nexus-2",
+    "requirements_total": 1,
+    "requirements_covered": 0,
+    "unresolved_requirements": [
+      "no task-specific acceptance evidence"
+    ],
+    "changed_files": [],
+    "changed_symbols": [],
+    "impact_radius": 0,
+    "affected_processes": [],
+    "affected_contracts": [],
+    "verification": {
+      "tests_passed": 0,
+      "tests_failed": 0,
+      "lint_passed": null,
+      "typecheck_passed": null,
+      "commands": []
+    },
+    "unresolved_evidence": [
+      "verification not run"
+    ],
+    "attempts": 1,
+    "tool_errors": 1,
+    "tokens_used": 0,
+    "estimated_cost_usd": 0,
+    "agent_summary": "[Codex] You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:40 PM.",
+    "change_summary": "",
+    "verification_output": "",
+    "context_sources": []
+  },
+  "decisions": [],
+  "transcript": [
+    "user: Implementa un microservicio HTTP de pedidos sin dependencias externas: GET /health, POST /orders y GET /orders/:id, JSON consistente, validación estricta de sku y cantidad entera positiva, idempotencia por cabecera con 409 si la misma clave trae otro payload, 415 para content-type inválido, 413 para cuerpos mayores de 64 KiB y 404 JSON para rutas desconocidas. Mantén createServer y pasa node --test; no modifiques las pruebas.\nassistant: [Codex] You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:40 PM."
+  ],
+  "status": "failed",
+  "provider_session_id": "01a0e47b-8785-7f22-9da4-f4f97e1fb885"
+}

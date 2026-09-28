@@ -1,0 +1,110 @@
+✖ health endpoint returns JSON without exposing orders (40.598584ms)
+✖ create and read an order (22.275625ms)
+✖ same idempotency key returns the same order (7.392791ms)
+✖ invalid payload and malformed JSON are client errors (6.581083ms)
+✖ unknown route and order return JSON 404 (4.782084ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 0
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 202.286167
+
+✖ failing tests:
+
+test at test/server.test.js:12:1
+✖ health endpoint returns JSON without exposing orders (40.598584ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 200
+  
+      at file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:14:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:8:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 200,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/server.test.js:17:1
+✖ create and read an order (22.275625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 201
+  
+      at file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:19:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:8:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 201,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/server.test.js:25:1
+✖ same idempotency key returns the same order (7.392791ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 201
+  
+      at file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:28:10
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:8:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 201,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/server.test.js:31:1
+✖ invalid payload and malformed JSON are client errors (6.581083ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 400
+  
+      at file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:34:12
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:8:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 400,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/server.test.js:37:1
+✖ unknown route and order return JSON 404 (4.782084ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  501 !== 404
+  
+      at file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:39:55
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async withServer (file:///private/tmp/nexus-bench-realworld-20260927/service-nexus-2/test/server.test.js:8:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 501,
+    expected: 404,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

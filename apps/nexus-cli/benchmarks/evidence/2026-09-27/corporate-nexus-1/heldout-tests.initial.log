@@ -1,0 +1,12 @@
+✔ a rejected authorization leaves state and audit unchanged (1.253833ms)
+✔ returned get and history values cannot mutate internal state (1.870292ms)
+✔ invalid action is rejected without a state transition (0.158833ms)
+✔ nonfinite amount is rejected (0.590083ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 58.869416

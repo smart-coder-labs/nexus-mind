@@ -1,0 +1,25 @@
+:root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #16211b; background: #f5f7f3; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+.catalog { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: clamp(2rem, 5vw, 4.5rem) 0; }
+.catalog__header { max-width: 43rem; margin-bottom: 2rem; }
+.eyebrow { margin: 0 0 .65rem; color: #18794e; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+h1 { margin: 0; font-size: clamp(2.15rem, 6vw, 4rem); letter-spacing: -.055em; line-height: 1; }
+.catalog__intro { margin: 1rem 0 0; color: #56635b; font-size: 1.05rem; line-height: 1.55; }
+.filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(11rem, 1fr) minmax(12rem, 1fr); gap: 1rem; padding: 1rem; margin-bottom: 1.5rem; background: #fff; border: 1px solid #dce4dc; border-radius: 1rem; box-shadow: 0 10px 32px rgba(23, 51, 35, .06); }
+.field { display: grid; gap: .45rem; }
+label { color: #324339; font-size: .86rem; font-weight: 700; }
+input, select { width: 100%; min-height: 2.8rem; padding: .6rem .75rem; color: inherit; font: inherit; background: #fff; border: 1px solid #aab9ae; border-radius: .55rem; }
+input:focus, select:focus { outline: 3px solid #a8dfbd; outline-offset: 2px; border-color: #18794e; }
+.catalog__results { margin: 0 0 1rem; color: #56635b; font-size: .92rem; }
+.products { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; padding: 0; margin: 0; list-style: none; }
+.product { display: grid; gap: 1.15rem; min-height: 180px; padding: 1.25rem; background: #fff; border: 1px solid #dce4dc; border-radius: 1rem; transition: transform .18s ease, box-shadow .18s ease; }
+.product:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(23, 51, 35, .1); }
+.product__category { margin: 0; color: #18794e; font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.product__name { margin: .3rem 0 0; font-size: 1.18rem; letter-spacing: -.02em; }
+.product__price { align-self: end; margin: 0; font-size: 1.35rem; font-weight: 800; }
+.empty { padding: clamp(2rem, 8vw, 4rem) 1.5rem; text-align: center; background: #fff; border: 1px dashed #aab9ae; border-radius: 1rem; }
+.empty h2 { margin: 0; font-size: 1.35rem; }
+.empty p { margin: .5rem 0 0; color: #56635b; }
+@media (max-width: 680px) { .catalog { width: min(100% - 1.25rem, 1120px); padding-top: 2rem; } .filters, .products { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .product { transition: none; } }

@@ -45,6 +45,7 @@ interface FormState {
   name: string
   description: string
   template: AutonomousAgentTemplateKey
+  executor: 'claude' | 'nexus'
   // target
   targetKind: string
   targetName: string
@@ -123,6 +124,7 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     name: '',
     description: '',
     template,
+    executor: 'claude',
     targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' || template === 'ai_content_manager' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
@@ -286,7 +288,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.onSuccessTriggerDelaySeconds.trim()) config.on_success_trigger_delay_seconds = Math.max(0, Number(state.onSuccessTriggerDelaySeconds) || 0)
   }
   const extra = parseJsonObject(state.extraConfig)
-  return extra ? { ...config, ...extra } : config
+  return { ...config, ...(extra ?? {}), executor: state.executor }
 }
 
 /** Split a shell-like command string into argv (whitespace, no shell). */
@@ -318,6 +320,7 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     ...base,
     name: agent.name,
     description: agent.description ?? '',
+    executor: config.executor === 'nexus' ? 'nexus' : 'claude',
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
@@ -685,6 +688,12 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
   }
   return (
     <div className="space-y-5">
+      <Field label="Task executor" hint="Claude pure keeps the existing worker. Nexus requires a provisioned OpenShell gateway and agent login; until ready, its runs are blocked rather than silently falling back.">
+        <NativeSelect value={state.executor} onChange={value => set('executor', value as FormState['executor'])}>
+          <option value="claude">Claude pure</option>
+          <option value="nexus">Nexus harness (OpenShell)</option>
+        </NativeSelect>
+      </Field>
       {template === 'qa' && (
         <>
           <Field label="Test adapter" hint="Playwright: the agent drives the browser via the Playwright MCP — no command needed. Allowlisted command: the worker runs a pinned argv.">
@@ -1103,6 +1112,9 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
         <Field label="Description">
           <Input inputSize="sm" value={state.description} onChange={event => set('description', event.target.value)} placeholder="Optional" />
         </Field>
+      </div>
+      <div className="rounded-[12px] border border-border-primary bg-white/[0.02] p-3 text-[12px] text-text-secondary">
+        Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : 'Claude pure'}</span>
       </div>
       <Field label="Budgets (JSON)" hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency.">
         <Textarea className="font-mono text-xs" rows={5} value={state.budgets || JSON.stringify(template?.default_budgets ?? {}, null, 2)} onChange={event => set('budgets', event.target.value)} error={budgetsError ? 'Must be a JSON object' : undefined} />

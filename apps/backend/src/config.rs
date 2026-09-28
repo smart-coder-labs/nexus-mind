@@ -85,6 +85,11 @@ pub struct Config {
     #[arg(long, env = "CLAUDE_CODE_BIN", default_value = "/usr/local/bin/claude")]
     pub claude_code_bin: String,
 
+    /// Nexus harness executable. It connects to an independently managed
+    /// OpenShell gateway; the backend never receives the gateway's Docker socket.
+    #[arg(long, env = "NEXUS_WORKER_BIN", default_value = "/app/nexus")]
+    pub nexus_worker_bin: String,
+
     #[arg(
         long,
         env = "CLAUDE_CODE_PROBE_INTERVAL_SECONDS",

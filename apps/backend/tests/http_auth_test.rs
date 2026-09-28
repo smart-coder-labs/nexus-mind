@@ -41,6 +41,7 @@ fn test_config() -> Config {
         backup_interval_hours: 6,
         autonomous_agents_enabled: false,
         claude_code_bin: "/usr/local/bin/claude".into(),
+        nexus_worker_bin: "/app/nexus".into(),
         claude_code_probe_interval_seconds: 300,
         autonomous_agent_poll_seconds: 15,
     }

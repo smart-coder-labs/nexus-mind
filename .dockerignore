@@ -1,0 +1,15 @@
+**
+!apps/
+!apps/backend/
+!apps/backend/Cargo.toml
+!apps/backend/Cargo.lock
+!apps/backend/Dockerfile
+!apps/backend/src/
+!apps/backend/src/**
+!apps/nexus-cli/
+!apps/nexus-cli/Cargo.toml
+!apps/nexus-cli/Cargo.lock
+!apps/nexus-cli/src/
+!apps/nexus-cli/src/**
+!apps/nexus-cli/sandbox/
+!apps/nexus-cli/sandbox/**

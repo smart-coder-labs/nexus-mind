@@ -1,0 +1,61 @@
+{
+  "case": "service",
+  "arm": "nexus",
+  "trial": 2,
+  "startedAt": "2026-09-27T20:07:56.251Z",
+  "elapsedSeconds": 26.7,
+  "tool": "nexus + OpenShell + codex-cli 0.154.0 + JEV + NexusMind",
+  "model": "gpt-5.6-terra",
+  "prompt": "Implementa un microservicio HTTP de pedidos sin dependencias externas: GET /health, POST /orders y GET /orders/:id, JSON consistente, validación estricta de sku y cantidad entera positiva, idempotencia por cabecera con 409 si la misma clave trae otro payload, 415 para content-type inválido, 413 para cuerpos mayores de 64 KiB y 404 JSON para rutas desconocidas. Mantén createServer y pasa node --test; no modifiques las pruebas.",
+  "exitCode": 1,
+  "signal": null,
+  "usage": {
+    "codex_total_tokens": 0,
+    "jev_input_tokens": null,
+    "jev_output_tokens": null
+  },
+  "nexusStatus": "failed",
+  "decision": null,
+  "visible": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 5
+  },
+  "heldout": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 4
+  },
+  "changedPaths": [],
+  "testsUnmodified": true,
+  "diffCheck": true,
+  "contextSourceCount": 0,
+  "hashes": {
+    "fixtureTestSha256": "268a961a1b778e48744c4d1466d051effd3114124311a70a7be8981858062ed4",
+    "implementationDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdoutSha256": "ce805672c3ee987051d74f69af5e882b1c739faf716a2c6b8eff944344fb0519"
+  },
+  "heldoutInitial": {
+    "exitCode": 1,
+    "pass": 0,
+    "fail": 4
+  },
+  "codexDetailedUsage": {
+    "sandbox": "nx-x-f749de91fff3",
+    "container": "openshell-default--nx-x-f749de91fff3-be7c3742-6f94-49c7-86a0-a68a1acf48ce",
+    "sessions": 1,
+    "usage": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 0
+    }
+  },
+  "evidence": {
+    "initialRunnerMetrics": "/private/tmp/nexus-bench-realworld-20260927/service-nexus-2/metrics.json",
+    "initialHeldoutLog": "/private/tmp/nexus-bench-realworld-20260927/service-nexus-2/heldout-tests.log",
+    "finalHeldoutRubric": "/Volumes/external/Documents/nexu-loop-agents/nexusmind-worktrees/nexus-harness-cli/apps/nexus-cli/benchmarks/heldout/service.test.mjs"
+  }
+}

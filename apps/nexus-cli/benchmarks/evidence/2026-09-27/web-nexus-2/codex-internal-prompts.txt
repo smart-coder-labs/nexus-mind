@@ -1,0 +1,33 @@
+<recommended_plugins>
+Here is a list of plugins that are available but not installed.
+
+- Dropbox (app-69b31dc2110c8191b8b47dc98fe5a052@openai-curated-remote)
+- Box (box@openai-curated-remote)
+- Codex Security (codex-security@openai-curated-remote)
+- Figma (figma@openai-curated-remote)
+- Google Calendar (google-calendar@openai-curated-remote)
+- Linear (linear@openai-curated-remote)
+- OpenAI Developers (openai-developers@openai-curated-remote)
+- Outlook Calendar (outlook-calendar@openai-curated-remote)
+- Outlook Email (outlook-email@openai-curated-remote)
+- SharePoint (sharepoint@openai-curated-remote)
+- Slack (slack@openai-curated-remote)
+- Teams (teams@openai-curated-remote)
+</recommended_plugins>
+
+--- NEXT USER MESSAGE ---
+
+<environment_context>
+  <cwd>/sandbox/web-nexus-2</cwd>
+  <shell>bash</shell>
+  <current_date>2026-09-27</current_date>
+  <timezone>Etc/UTC</timezone>
+  <filesystem><workspace_roots><root>/sandbox/web-nexus-2</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+</environment_context>
+
+--- NEXT USER MESSAGE ---
+
+NexusMind context (verify against the current files before relying on it):
+
+Work on the request in this repository. Explain the result and the evidence from verification.
+User request: Implementa una página de catálogo responsive en español en index.html, styles.css y src/app.js. Debe tener búsqueda sin distinguir acentos, filtro de categoría, orden por nombre/precio ascendente/descendente, estado vacío, controles etiquetados, HTML seguro frente a XSS y un layout adaptable. Mantén las exportaciones y pasa node --test; no modifiques las pruebas.

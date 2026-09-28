@@ -1,0 +1,85 @@
+diff --git a/src/approvals.js b/src/approvals.js
+index 2658a89..99dd58f 100644
+--- a/src/approvals.js
++++ b/src/approvals.js
+@@ -1,22 +1,75 @@
++const copy = (value) => structuredClone(value);
++
+ export class ApprovalService {
+   constructor(clock = () => new Date().toISOString()) {
+     this.clock = clock;
+     this.requests = new Map();
+     this.audit = [];
++    this.decisionsByKey = new Map();
+   }
+ 
+   submit({ id, requesterId, amount, reason }) {
+-    this.requests.set(id, { id, requesterId, amount, reason, status: 'pending' });
+-    return this.requests.get(id);
++    if (!Number.isFinite(amount) || amount <= 0) {
++      throw new Error('amount must be a finite positive number');
++    }
++    if (this.requests.has(id)) {
++      throw new Error('duplicate request id');
++    }
++
++    const request = { id, requesterId, amount, reason: copy(reason), status: 'pending' };
++    this.requests.set(id, request);
++    return copy(request);
+   }
+ 
+   decide(id, { actorId, role, action, idempotencyKey }) {
+     const request = this.requests.get(id);
+     if (!request) throw new Error('not found');
++    if (role !== 'manager' && role !== 'admin') {
++      throw new Error('only a manager or admin can decide');
++    }
++    if (actorId === request.requesterId) {
++      throw new Error('cannot decide your own request');
++    }
++    if (action !== 'approve' && action !== 'reject') {
++      throw new Error('invalid decision action');
++    }
++    if (idempotencyKey === undefined || idempotencyKey === null || idempotencyKey === '') {
++      throw new Error('idempotency key is required');
++    }
++
++    const key = idempotencyKey;
++    const requestDecisions = this.decisionsByKey.get(id);
++    const previous = requestDecisions?.get(key);
++    if (previous) {
++      if (previous.actorId !== actorId || previous.role !== role || previous.action !== action) {
++        throw new Error('idempotency key was already used for a different decision');
++      }
++      return copy(previous.result);
++    }
++
++    if (request.status !== 'pending') {
++      throw new Error('request has already been decided');
++    }
++
+     request.status = action === 'approve' ? 'approved' : 'rejected';
+-    return request;
++    const event = { requestId: id, actorId, action, at: this.clock() };
++    this.audit.push(event);
++
++    const result = copy(request);
++    const decisions = requestDecisions ?? new Map();
++    decisions.set(key, { actorId, role, action, result });
++    this.decisionsByKey.set(id, decisions);
++    return copy(result);
+   }
+ 
+-  get(id) { return this.requests.get(id); }
+-  history(id) { return this.audit.filter((event) => event.requestId === id); }
++  get(id) {
++    const request = this.requests.get(id);
++    return request === undefined ? undefined : copy(request);
++  }
++
++  history(id) {
++    return this.audit
++      .filter((event) => event.requestId === id)
++      .map((event) => copy(event));
++  }
+ }

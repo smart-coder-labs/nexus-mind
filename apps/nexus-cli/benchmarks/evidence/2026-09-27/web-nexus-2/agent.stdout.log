@@ -1,0 +1,382 @@
+  Preparando OpenShell…
+  Sincronizando repositorio…
+  Preparando sesión Codex de ChatGPT en OpenShell…
+  Iniciando codex-headless…
+  Codex está trabajando…
+  Ejecutando comando…
+  $ /bin/bash -lc "pwd && rg --files -g '"'!*node_modules*'"' | sed -n '1,160p' && git status --short"
+  exit 0
+/sandbox/web-nexus-2
+styles.css
+test/web.test.js
+src/app.js
+index.html
+package.json
+
+  Ejecutando comando…
+  $ /bin/bash -lc "sed -n '1,260p' index.html && sed -n '1,320p' styles.css && sed -n '1,360p' src/app.js && sed -n '1,360p' test/web.test.js && sed -n '1,160p' package.json"
+  exit 0
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Catálogo</title><link rel="stylesheet" href="./styles.css"></head>
+<body><div id="app"></div><script type="module" src="./src/app.js"></script></body></html>
+body { font-family: sans-serif; }
+export const products = [
+  { id: 'p1', name: 'Auriculares Pro', category: 'Audio', price: 99 },
+  { id: 'p2', name: 'Teclado Mecánico', category: 'Oficina', price: 149 },
+  { id: 'p3', name: 'Altavoz Mini', category: 'Audio', price: 39 },
+  { id: 'p4', name: 'Soporte Laptop', category: 'Oficina', price: 29 },
+];
+
+export function selectProducts(items, { query = '', category = 'all', sort = 'name' } = {}) {
+  return items;
+}
+
+export function renderProducts(items) {
+  return items.map((item) => `<p>${item.name}</p>`).join('');
+}
+
+if (typeof document !== 'undefined') {
+  document.querySelector('#app').innerHTML = renderProducts(products);
+}
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { products, selectProducts, renderProducts } from '../src/app.js';
+
+test('search is case-insensitive and accent-insensitive', () => {
+  assert.deepEqual(selectProducts(products, { query: 'MECANICO' }).map((p) => p.id), ['p2']);
+});
+test('category filter combines with search', () => {
+  assert.deepEqual(selectProducts(products, { query: 'mini', category: 'Audio' }).map((p) => p.id), ['p3']);
+});
+test('price ordering does not mutate input', () => {
+  const before = products.map((p) => p.id);
+  assert.deepEqual(selectProducts(products, { sort: 'price-asc' }).map((p) => p.id), ['p4', 'p3', 'p1', 'p2']);
+  assert.deepEqual(products.map((p) => p.id), before);
+});
+test('empty matches are represented in the rendered output', () => {
+  assert.match(renderProducts([]), /sin resultados|no hay resultados|no results/i);
+});
+test('product strings are escaped before HTML insertion', () => {
+  const html = renderProducts([{ id: 'x', name: '<script>alert(1)</script>', category: 'X', price: 1 }]);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+test('page has semantic language and a main landmark', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<html[^>]+lang="es"/i);
+  assert.match(html, /<main\b/i);
+});
+{"name":"bench-web","private":true,"type":"module","scripts":{"test":"node --test"}}
+
+  Editando archivos…
+  Files changed: [{"kind":"update","path":"/sandbox/web-nexus-2/index.html"},{"kind":"update","path":"/sandbox/web-nexus-2/src/app.js"},{"kind":"update","path":"/sandbox/web-nexus-2/styles.css"}]
+  Ejecutando comando…
+  $ /bin/bash -lc 'node --test && git diff --check && git diff -- index.html styles.css src/app.js'
+  exit 0
+(node:329) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:338) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: search is case-insensitive and accent-insensitive
+ok 1 - search is case-insensitive and accent-insensitive
+  ---
+  duration_ms: 3.450708
+  type: 'test'
+  ...
+# Subtest: category filter combines with search
+ok 2 - category filter combines with search
+  ---
+  duration_ms: 0.160917
+  type: 'test'
+  ...
+# Subtest: price ordering does not mutate input
+ok 3 - price ordering does not mutate input
+  ---
+  duration_ms: 0.125958
+  type: 'test'
+  ...
+# Subtest: empty matches are represented in the rendered output
+ok 4 - empty matches are represented in the rendered output
+  ---
+  duration_ms: 0.317708
+  type: 'test'
+  ...
+# Subtest: product strings are escaped before HTML insertion
+ok 5 - product strings are escaped before HTML insertion
+  ---
+  duration_ms: 17.310875
+  type: 'test'
+  ...
+# Subtest: page has semantic language and a main landmark
+ok 6 - page has semantic language and a main landmark
+  ---
+  duration_ms: 0.562208
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 160.128792
+diff --git a/index.html b/index.html
+index 4e91457..c34f7e9 100644
+--- a/index.html
++++ b/index.html
+@@ -1,3 +1,44 @@
+ <!doctype html>
+-<html><head><meta charset="utf-8"><title>Catálogo</title><link rel="stylesheet" href="./styles.css"></head>
+-<body><div id="app"></div><script type="module" src="./src/app.js"></script></body></html>
++<html lang="es">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Catálogo | NexusMind</title>
++    <link rel="stylesheet" href="./styles.css">
++  </head>
++  <body>
++    <main class="catalogo" aria-labelledby="catalogo-titulo">
++      <header class="catalogo__cabecera">
++        <p class="catalogo__eyebrow">NexusMind</p>
++        <h1 id="catalogo-titulo">Catálogo de productos</h1>
++        <p>Encuentra el equipo que necesitas para trabajar y disfrutar.</p>
++      </header>
++
++      <section class="filtros" aria-label="Filtros del catálogo">
++        <div class="campo campo--busqueda">
++          <label for="busqueda">Buscar productos</label>
++          <input id="busqueda" name="busqueda" type="search" placeholder="Ej.: teclado o auriculares" autocomplete="off">
++        </div>
++        <div class="campo">
++          <label for="categoria">Categoría</label>
++          <select id="categoria" name="categoria">
++            <option value="all">Todas las categorías</option>
++          </select>
++        </div>
++        <div class="campo">
++          <label for="orden">Ordenar por</label>
++          <select id="orden" name="orden">
++            <option value="name-asc">Nombre: A a Z</option>
++            <option value="name-desc">Nombre: Z a A</option>
++            <option value="price-asc">Precio: menor a mayor</option>
++            <option value="price-desc">Precio: mayor a menor</option>
++          </select>
++        </div>
++      </section>
++
++      <p id="resumen" class="resumen" aria-live="polite"></p>
++      <section id="app" class="productos" aria-label="Productos" aria-live="polite"></section>
++    </main>
++    <script type="module" src="./src/app.js"></script>
++  </body>
++</html>
+diff --git a/src/app.js b/src/app.js
+index 6cb9e59..f5c49c5 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -5,14 +5,85 @@ export const products = [
+   { id: 'p4', name: 'Soporte Laptop', category: 'Oficina', price: 29 },
+ ];
+ 
++/** Normalize text for case- and accent-insensitive comparisons. */
++function normalizeText(value) {
++  return String(value ?? '')
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .toLocaleLowerCase('es');
++}
++
++function compareNames(a, b) {
++  return String(a.name ?? '').localeCompare(String(b.name ?? ''), 'es', { sensitivity: 'base' });
++}
++
+ export function selectProducts(items, { query = '', category = 'all', sort = 'name' } = {}) {
+-  return items;
++  const normalizedQuery = normalizeText(query).trim();
++  const filtered = items.filter((item) => {
++    const matchesQuery = !normalizedQuery || normalizeText(item.name).includes(normalizedQuery);
++    const matchesCategory = category === 'all' || item.category === category;
++    return matchesQuery && matchesCategory;
++  });
++
++  const direction = sort.endsWith('-desc') ? -1 : 1;
++  const sortByPrice = sort === 'price-asc' || sort === 'price-desc';
++  return filtered.slice().sort((a, b) => {
++    const result = sortByPrice
++      ? Number(a.price) - Number(b.price)
++      : compareNames(a, b);
++    return result * direction;
++  });
++}
++
++function escapeHtml(value) {
++  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
++    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
++  })[character]);
++}
++
++function formatPrice(value) {
++  const amount = Number(value);
++  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' })
++    .format(Number.isFinite(amount) ? amount : 0);
+ }
+ 
+ export function renderProducts(items) {
+-  return items.map((item) => `<p>${item.name}</p>`).join('');
++  if (!items.length) {
++    return '<div class="estado-vacio" role="status"><h2>Sin resultados</h2><p>No hay productos que coincidan con los filtros seleccionados.</p></div>';
++  }
++  return items.map((item) => `
++    <article class="producto">
++      <p class="producto__categoria">${escapeHtml(item.category)}</p>
++      <h2 class="producto__nombre">${escapeHtml(item.name)}</h2>
++      <p class="producto__precio">${escapeHtml(formatPrice(item.price))}</p>
++    </article>`).join('');
+ }
+ 
+ if (typeof document !== 'undefined') {
+-  document.querySelector('#app').innerHTML = renderProducts(products);
++  const app = document.querySelector('#app');
++  const search = document.querySelector('#busqueda');
++  const category = document.querySelector('#categoria');
++  const order = document.querySelector('#orden');
++  const summary = document.querySelector('#resumen');
++
++  if (app && search && category && order && summary) {
++    const categories = [...new Set(products.map((product) => product.category))];
++    category.insertAdjacentHTML('beforeend', categories
++      .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join(''));
++
++    const updateCatalog = () => {
++      const selected = selectProducts(products, {
++        query: search.value,
++        category: category.value,
++        sort: order.value,
++      });
++      app.innerHTML = renderProducts(selected);
++      summary.textContent = `${selected.length} ${selected.length === 1 ? 'producto encontrado' : 'productos encontrados'}`;
++    };
++
++    search.addEventListener('input', updateCatalog);
++    category.addEventListener('change', updateCatalog);
++    order.addEventListener('change', updateCatalog);
++    updateCatalog();
++  }
+ }
+diff --git a/styles.css b/styles.css
+index 693ce9b..8300d45 100644
+--- a/styles.css
++++ b/styles.css
+@@ -1 +1,36 @@
+-body { font-family: sans-serif; }
++:root {
++  color: #172033;
++  background: #f5f7fb;
++  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
++}
++
++* { box-sizing: border-box; }
++
++body { margin: 0; }
++
++.catalogo { max-width: 1120px; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
++.catalogo__cabecera { max-width: 680px; margin-bottom: 2rem; }
++.catalogo__eyebrow { margin: 0 0 .45rem; color: #5b3fc6; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: .78rem; }
++h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.25rem); line-height: 1.08; }
++.catalogo__cabecera > p:last-child { color: #586174; line-height: 1.55; }
++
++.filtros { display: grid; grid-template-columns: minmax(0, 2fr) repeat(2, minmax(170px, 1fr)); gap: 1rem; padding: 1rem; background: #fff; border: 1px solid #e4e8f0; border-radius: 1rem; box-shadow: 0 8px 24px rgb(23 32 51 / 6%); }
++.campo { display: grid; gap: .42rem; min-width: 0; }
++label { font-weight: 650; font-size: .9rem; }
++input, select { width: 100%; min-width: 0; min-height: 2.75rem; padding: .65rem .75rem; color: inherit; font: inherit; background: #fff; border: 1px solid #b8c0d0; border-radius: .55rem; }
++input:focus, select:focus { outline: 3px solid #bcaeff; outline-offset: 2px; border-color: #6748d7; }
++.resumen { min-height: 1.5rem; margin: 1.4rem 0 .85rem; color: #586174; }
++
++.productos { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
++.producto { display: flex; flex-direction: column; min-height: 175px; padding: 1.25rem; background: #fff; border: 1px solid #e4e8f0; border-radius: .9rem; box-shadow: 0 5px 18px rgb(23 32 51 / 5%); }
++.producto__categoria { margin: 0 0 .65rem; color: #5b3fc6; font-size: .82rem; font-weight: 700; }
++.producto__nombre { margin: 0; font-size: 1.15rem; line-height: 1.3; }
++.producto__precio { margin: auto 0 0; padding-top: 1.25rem; font-size: 1.2rem; font-weight: 750; }
++.estado-vacio { grid-column: 1 / -1; padding: 2.5rem 1rem; text-align: center; background: #fff; border: 1px dashed #b8c0d0; border-radius: .9rem; color: #586174; }
++.estado-vacio h2 { margin: 0 0 .4rem; color: #172033; font-size: 1.2rem; }
++.estado-vacio p { margin: 0; }
++
++@media (max-width: 680px) {
++  .catalogo { padding-top: 2rem; }
++  .filtros { grid-template-columns: 1fr; }
++}
+
+Implementé el catálogo responsive en:
+
+- [index.html](/sandbox/web-nexus-2/index.html)
+- [styles.css](/sandbox/web-nexus-2/styles.css)
+- [src/app.js](/sandbox/web-nexus-2/src/app.js)
+
+Incluye búsqueda insensible a mayúsculas y acentos, filtro por categoría, orden por nombre y precio en ambos sentidos, estado vacío, etiquetas accesibles y diseño adaptable. La inserción HTML escapa los textos de productos para evitar XSS, y se preservan las exportaciones existentes.
+
+Verificación realizada: `node --test` pasa las 6 pruebas, y `git diff --check` no detecta problemas de espacios.
+  Recuperando cambios de OpenShell…
+  $ node --test
+  verification: passed
+TAP version 13
+# (node:407) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: search is case-insensitive and accent-insensitive
+ok 1 - search is case-insensitive and accent-insensitive
+  ---
+  duration_ms: 3.1945
+  type: 'test'
+  ...
+# Subtest: category filter combines with search
+ok 2 - category filter combines with search
+  ---
+  duration_ms: 0.128459
+  type: 'test'
+  ...
+# Subtest: price ordering does not mutate input
+ok 3 - price ordering does not mutate input
+  ---
+  duration_ms: 0.143292
+  type: 'test'
+  ...
+# Subtest: empty matches are represented in the rendered output
+ok 4 - empty matches are represented in the rendered output
+  ---
+  duration_ms: 0.270709
+  type: 'test'
+  ...
+# Subtest: product strings are escaped before HTML insertion
+ok 5 - product strings are escaped before HTML insertion
+  ---
+  duration_ms: 23.190958
+  type: 'test'
+  ...
+# Subtest: page has semantic language and a main landmark
+ok 6 - page has semantic language and a main landmark
+  ---
+  duration_ms: 0.688417
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 141.095042
+
+(node:400) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+  Consultando JEV…
+session: e797e774-6ee1-4d6e-9622-79f4592c8480
+status: human_review | runtime: codex-headless | turns: 1
+changed files: 3 | verification passed: 2 failed: 0
+decision: HumanReview (100%) via task_completion_jev — Jev (jev-1.13.0) chose finish (confidence 0.41, selected probability 0.53, incomplete probability 0.28; tokens 799/77); Jev signals are insufficient for automatic finish

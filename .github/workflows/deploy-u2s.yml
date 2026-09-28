@@ -79,7 +79,8 @@ jobs:
       - name: Build & push backend (slim, no browsers, no nuclei, no scanners)
         uses: docker/build-push-action@v6
         with:
-          context: apps/backend
+          context: .
+          file: apps/backend/Dockerfile
           push: true
           build-args: |
             INSTALL_BROWSERS=false
