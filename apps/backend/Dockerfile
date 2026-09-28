@@ -4,17 +4,42 @@ FROM rust:1.88-slim AS builder
 RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY apps/backend/Cargo.toml apps/backend/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release 2>/dev/null; rm -rf src
 
-COPY src ./src
+COPY apps/backend/src ./src
 RUN cargo build --release
+
+FROM rust:1.98-slim AS nexus-builder
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY apps/nexus-cli/Cargo.toml apps/nexus-cli/Cargo.lock ./
+COPY apps/nexus-cli/src ./src
+COPY apps/nexus-cli/sandbox ./sandbox
+RUN cargo build --release --locked
 
 # Runtime stage
 FROM debian:bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.235
+ARG OPENSHELL_VERSION=v0.1.2
+
+# Client only. The OpenShell gateway is a separate service with its own
+# sandbox runtime; the backend image must never need a Docker socket.
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) os_arch=x86_64;; arm64) os_arch=aarch64;; *) exit 1;; esac; \
+    asset="openshell-${os_arch}-unknown-linux-musl.tar.gz"; \
+    base="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar; \
+    curl -fsSL "${base}/${asset}" -o "/tmp/${asset}"; \
+    curl -fsSL "${base}/openshell-checksums-sha256.txt" -o /tmp/openshell-checksums; \
+    grep "  ${asset}$" /tmp/openshell-checksums | (cd /tmp && sha256sum -c -); \
+    tar -xzf "/tmp/${asset}" -C /usr/local/bin openshell; \
+    openshell --version; \
+    rm -f "/tmp/${asset}" /tmp/openshell-checksums; \
+    rm -rf /var/lib/apt/lists/*
 
 # When true (default), the runtime image bundles Playwright's chromium +
 # chrome-for-testing so backend-spawned QA agents can drive a browser. The u2s
@@ -23,13 +48,13 @@ ARG CLAUDE_CODE_VERSION=2.1.235
 # main-arm64 / oracle keep the default. See .github/workflows/deploy-u2s.yml.
 ARG INSTALL_BROWSERS=true
 
-# Node 20 (from NodeSource, not Debian's Node 18) because Playwright requires
-# Node >= 20. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
+# Node 22 (from NodeSource) because the pinned Claude Code release requires
+# Node >= 22. Pin npm's global prefix to /usr/local so CLAUDE_CODE_BIN and the
 # global bins (claude, mcp-server-playwright) resolve where the rest of the
 # image expects them.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg gh git \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm config set prefix /usr/local \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
@@ -144,6 +169,7 @@ RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmi
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
+COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
 #   import-sdd --db /data/nexusmind.db --org-id <id> --root <checkout> [--dry-run]

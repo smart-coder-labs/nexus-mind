@@ -32,6 +32,21 @@ fn sanitize_output_with_secrets(value: &[u8], limit: usize, secrets: &[String]) 
         })
 }
 
+fn nexus_failure_code(stderr: &[u8]) -> &'static str {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if text.contains("login") || text.contains("authentication") || text.contains("auth required") {
+        "nexus_auth_required"
+    } else if text.contains("gateway") || text.contains("connection refused") {
+        "nexus_gateway_unavailable"
+    } else if text.contains("openshell cli is required") || text.contains("could not start") {
+        "nexus_cli_unavailable"
+    } else if text.contains("synchroniz") {
+        "nexus_sync_failed"
+    } else {
+        "nexus_runtime_failed"
+    }
+}
+
 fn parse_claude_event_stream(
     value: &[u8],
 ) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
@@ -80,6 +95,7 @@ fn parse_claude_event_stream(
 /// runaway run can't OOM the worker.
 async fn run_claude_capturing_transcript(
     command: &mut Command,
+    prompt_stdin: Option<&str>,
     store: &SqliteStore,
     org_id: &str,
     run_id: &str,
@@ -89,13 +105,23 @@ async fn run_claude_capturing_transcript(
     // UNIQUE(run_id, sequence).
     seq_base: i64,
 ) -> std::io::Result<std::process::Output> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
     const MAX_LINE_BYTES: usize = 4 * 1_048_576;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn()?;
+    let stdin_task = if let Some(prompt) = prompt_stdin {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("stdin not piped"))?;
+        let body = prompt.as_bytes().to_vec();
+        Some(tokio::spawn(async move { stdin.write_all(&body).await }))
+    } else {
+        None
+    };
     let stdout = child
         .stdout
         .take()
@@ -170,6 +196,11 @@ async fn run_claude_capturing_transcript(
             );
         }
     }
+    if let Some(writer) = stdin_task {
+        // A fast-failing child may close stdin before consuming the prompt.
+        // Preserve its exit status and stderr for the runtime classifier.
+        let _ = writer.await;
+    }
     let status = child.wait().await?;
     let stderr_buf = stderr_task.await.unwrap_or_default();
     Ok(std::process::Output {
@@ -213,6 +244,53 @@ fn restrict_claude_environment(command: &mut Command) {
     // capability-filtered catalog) instead of the full legacy catalog. The MCP is
     // spawned by Claude Code as a child, so it inherits this from the command env.
     command.env("NEXUSMIND_MCP_TOOL_PROFILE", "essential");
+}
+
+fn nexus_sandbox_name(definition_id: &str) -> String {
+    let digest = hex::encode(Sha256::digest(definition_id.as_bytes()));
+    format!("nx-a-{}", &digest[..12])
+}
+
+fn restrict_nexus_environment(command: &mut Command, definition_id: &str) {
+    let allowed = [
+        "HOME", "PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR",
+        "SSL_CERT_FILE", "OPENSHELL_GATEWAY_ENDPOINT", "OPENSHELL_GATEWAY",
+        "OPENSHELL_WORKSPACE", "NEXUS_OPENSHELL_IMAGE", "NEXUS_OPENSHELL_BIN",
+        "NEXUS_OPENSHELL_EXTRA_PROVIDERS",
+        "NEXUSMIND_API_KEY", "NEXUSMIND_BASE_URL", "TYPESAFE_API_KEY", "JEV_API_KEY",
+    ];
+    let inherited = allowed
+        .iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (*key, value)))
+        .collect::<Vec<_>>();
+    command.env_clear();
+    for (key, value) in inherited {
+        command.env(key, value);
+    }
+    command
+        .env("NEXUS_OPENSHELL_SANDBOX", nexus_sandbox_name(definition_id))
+        .env("NEXUS_OPENSHELL_CREATE_NAMED", "1")
+        .env("NEXUS_OPENSHELL_NO_INSTALL", "1")
+        .env("NEXUSMIND_MCP_TOOL_PROFILE", "essential");
+}
+
+async fn prepare_nexus_workspace(workdir: &Path) -> anyhow::Result<()> {
+    let status = Command::new("git")
+        .current_dir(workdir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .await?;
+    if status.status.success() && status.stdout == b"true\n" {
+        return Ok(());
+    }
+    command_ok({
+        let mut command = Command::new("git");
+        command.current_dir(workdir).args(["init", "-q"]);
+        command
+    })
+    .await?;
+    tokio::fs::write(workdir.join(".nexus-worker-root"), b"autonomous workspace\n").await?;
+    Ok(())
 }
 
 async fn command_ok(mut command: Command) -> anyhow::Result<()> {
@@ -2744,7 +2822,8 @@ async fn open_partial_pr(
 #[allow(clippy::too_many_arguments)]
 async fn resolve_issue_worktree(
     store: SqliteStore,
-    claude_bin: String,
+    worker_bin: String,
+    nexus_selected: bool,
     mut claim: queries::ClaimedAutonomousRun,
     repository: String,
     number: i64,
@@ -2797,22 +2876,26 @@ async fn resolve_issue_worktree(
             return (number, "blocked_runtime".into(), json!({"code":error.to_string()}))
         }
     };
-    let mut claude = Command::new(&claude_bin);
-    restrict_claude_environment(&mut claude);
+    let mut claude = Command::new(&worker_bin);
     let max_turns_str = max_turns.to_string();
-    claude.args([
-        "-p",
-        &prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        &max_turns_str,
-        "--permission-mode",
-        "acceptEdits",
-        "--allowedTools",
-        "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
-    ]);
+    if nexus_selected {
+        restrict_nexus_environment(&mut claude, &claim.run.definition_id);
+        claude.args([
+            "--repository", workdir.to_string_lossy().as_ref(), "worker-exec",
+            "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
+            "--allowed-tools",
+            "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
+        ]);
+        claude.stdin(std::process::Stdio::piped());
+    } else {
+        restrict_claude_environment(&mut claude);
+        claude.args([
+            "-p", &prompt, "--output-format", "stream-json", "--verbose",
+            "--max-turns", &max_turns_str, "--permission-mode", "acceptEdits",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob,Skill,Task,mcp__plugin_nexusmind_nexusmind__*",
+        ]);
+    }
     // Register the NexusMind MCP so the resolver can actually load the tools its
     // allowedTools/prompt reference (without this the server is never spawned).
     let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
@@ -2859,7 +2942,7 @@ async fn resolve_issue_worktree(
     let wip_branch = continue_branch
         .clone()
         .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
-    let committer = token.clone().map(|checkpoint_token| {
+    let committer = (!nexus_selected).then(|| token.clone()).flatten().map(|checkpoint_token| {
         let workdir = workdir.clone();
         let branch = wip_branch.clone();
         let base = base_sha.clone();
@@ -2872,6 +2955,7 @@ async fn resolve_issue_worktree(
     });
     let invocation = run_claude_capturing_transcript(
         &mut claude,
+        nexus_selected.then_some(prompt.as_str()),
         &store,
         &claim.org_id,
         &claim.run.id,
@@ -2882,16 +2966,20 @@ async fn resolve_issue_worktree(
         _ = cancelled => ("cancelled".into(), json!({"code":"cancelled_by_operator"})),
         value = timeout(Duration::from_secs(wall_time), invocation) => match value {
             Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
-            Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":"claude_spawn_failed"})),
+            Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
                 match parse_claude_event_stream(&output.stdout) {
                     Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed","result":value,"stream":stream})),
                     Err(error) => ("blocked_runtime".into(), json!({"code":error.to_string()})),
                 }
             }
+            Ok(Ok(output)) if nexus_selected => (
+                "blocked_runtime".into(),
+                json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code()}),
+            ),
             Ok(Ok(output)) => match parse_claude_event_stream(&output.stdout) {
                 Ok((value, stream)) => ("succeeded".into(), json!({"code":"completed_nonzero_exit","result":value,"stream":stream})),
-                Err(_) => ("failed".into(), json!({"code":"claude_failed","exit_code":output.status.code()})),
+                Err(_) => ("failed".into(), json!({"code":if nexus_selected {nexus_failure_code(&output.stderr)} else {"claude_failed"},"exit_code":output.status.code()})),
             },
         }
     };
@@ -3003,6 +3091,7 @@ async fn execute_resolver_fanout(
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
+    let nexus_selected = queries::autonomous_executor(&claim.config).ok() == Some("nexus");
     // One issue per run: keeps each run small and cheap (avoids blowing the Claude
     // session budget) and gives a clean 1 PR ↔ 1 run mapping. Subsequent runs pick
     // the next eligible issue (ones with an open resolver PR are already excluded).
@@ -3152,7 +3241,8 @@ async fn execute_resolver_fanout(
             let (index, repository, number, worktree, base_sha, continue_branch) = item;
             set.spawn(resolve_issue_worktree(
                 store.clone(),
-                config.claude_code_bin.clone(),
+                if nexus_selected { config.nexus_worker_bin.clone() } else { config.claude_code_bin.clone() },
+                nexus_selected,
                 claim.clone(),
                 repository,
                 number,
@@ -3262,6 +3352,11 @@ async fn execute_claim(
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
 ) -> (String, serde_json::Value) {
+    let nexus_selected = match queries::autonomous_executor(&claim.config) {
+        Ok("nexus") => true,
+        Ok("claude") => false,
+        _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
+    };
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -3469,6 +3564,9 @@ async fn execute_claim(
             "failed".into(),
             json!({"code":"sandbox_environment_failed"}),
         );
+    }
+    if nexus_selected && prepare_nexus_workspace(&workdir).await.is_err() {
+        return ("blocked_runtime".into(), json!({"code":"nexus_workspace_failed"}));
     }
     // Clone any additional read-only context repositories (issue resolver only) so
     // the agent can reference sibling repos of the same project while resolving an
@@ -3721,12 +3819,16 @@ async fn execute_claim(
             );
         }
     };
-    let preflight = super::runtime::probe_claude(&config.claude_code_bin).await;
-    if preflight.status != "ready" {
+    let preflight = if nexus_selected {
+        None
+    } else {
+        Some(super::runtime::probe_claude(&config.claude_code_bin).await)
+    };
+    if preflight.as_ref().is_some_and(|health| health.status != "ready") {
         let _ = tokio::fs::remove_dir_all(&workdir).await;
         return (
             "blocked_runtime".into(),
-            json!({"code":if preflight.status=="reauth_required"{"claude_auth_required"}else{"claude_runtime_unavailable"}}),
+            json!({"code":if preflight.as_ref().is_some_and(|health| health.status=="reauth_required") {"claude_auth_required"}else{"claude_runtime_unavailable"}}),
         );
     }
     let slack_enabled = matches!(claim.template_key.as_str(), "qa" | "judge")
@@ -3789,25 +3891,31 @@ async fn execute_claim(
         .unwrap_or(workdir.as_path())
         .join("screenshots");
     let mut outcome = loop {
-    let mut claude = Command::new(&config.claude_code_bin);
-    restrict_claude_environment(&mut claude);
-    claude.args([
-        "-p",
-        &prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        &max_turns,
-        "--permission-mode",
-        permission_mode,
-        "--allowedTools",
-        allowed_tools,
-    ]);
+    let mut claude = if nexus_selected {
+        Command::new(&config.nexus_worker_bin)
+    } else {
+        Command::new(&config.claude_code_bin)
+    };
+    if nexus_selected {
+        restrict_nexus_environment(&mut claude, &claim.run.definition_id);
+        claude.args([
+            "--repository", workdir.to_string_lossy().as_ref(), "worker-exec",
+            "--max-turns", &max_turns, "--permission-mode", permission_mode,
+            "--allowed-tools", allowed_tools,
+        ]);
+        claude.stdin(std::process::Stdio::piped());
+    } else {
+        restrict_claude_environment(&mut claude);
+        claude.args([
+            "-p", &prompt, "--output-format", "stream-json", "--verbose",
+            "--max-turns", &max_turns, "--permission-mode", permission_mode,
+            "--allowedTools", allowed_tools,
+        ]);
+    }
     // Grant the resolver read access to the sibling context repositories cloned
     // above. Without --add-dir, Claude Code refuses reads outside the cwd tree.
     if let Some(ref dir) = context_dir_arg {
-        claude.args(["--add-dir", dir.as_str()]);
+        claude.args([if nexus_selected { "--context-dir" } else { "--add-dir" }, dir.as_str()]);
     }
     // Register the NexusMind MCP for the templates whose allowedTools reference it
     // (issue-resolver, lead-generation) so its tools actually load.
@@ -3828,6 +3936,9 @@ async fn execute_claim(
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
+            if nexus_selected {
+                claude.args(["--mcp-config", base_config.as_str()]);
+            } else {
             let _ = tokio::fs::create_dir_all(&qa_screenshots_dir).await;
             let per_run = workdir
                 .parent()
@@ -3840,6 +3951,7 @@ async fn execute_claim(
                 })
                 .unwrap_or(base_config);
             claude.args(["--mcp-config", effective.as_str()]);
+            }
         }
     }
     // Values to redact from the streamed transcript on top of the pattern-based
@@ -3849,6 +3961,7 @@ async fn execute_claim(
     claude.current_dir(&workdir).kill_on_drop(true);
     let invocation = run_claude_capturing_transcript(
         &mut claude,
+        nexus_selected.then_some(prompt.as_str()),
         store,
         &claim.org_id,
         &claim.run.id,
@@ -3890,7 +4003,7 @@ async fn execute_claim(
         _ = cancelled => ("cancelled".into(),json!({"code":"cancelled_by_operator"})),
         value = timeout(Duration::from_secs(wall_time), invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
-        Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":"claude_spawn_failed"})),
+        Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
             let (value,stream)=match parse_claude_event_stream(&output.stdout){
                 Ok(parsed)=>parsed,
@@ -3899,6 +4012,10 @@ async fn execute_claim(
             let max_cost=claim.run.budget.get("max_cost_usd").and_then(|v|v.as_f64()).unwrap_or(25.0);
             if value.get("total_cost_usd").and_then(|v|v.as_f64()).is_some_and(|cost|cost>max_cost){("budget_exhausted".into(),json!({"code":"cost_limit_exceeded","result":value,"stream":stream,"context_manifest":manifest.clone()}))}else{("succeeded".into(), json!({"code":"completed","result":value,"stream":stream,"context_manifest":manifest.clone()}))}
         }
+        Ok(Ok(output)) if nexus_selected => (
+            "blocked_runtime".into(),
+            json!({"code":nexus_failure_code(&output.stderr),"exit_code":output.status.code(),"context_manifest":manifest.clone()}),
+        ),
         Ok(Ok(output)) => {
             // A non-zero exit (typically hitting max-turns) can still carry a
             // final machine-readable result. Evaluate it rather than discarding
@@ -3910,7 +4027,9 @@ async fn execute_claim(
                 ),
                 Err(_) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-                    if stderr.contains("auth") || stderr.contains("login") {
+                    if nexus_selected {
+                        ("blocked_runtime".into(), json!({"code":nexus_failure_code(&output.stderr)}))
+                    } else if stderr.contains("auth") || stderr.contains("login") {
                         ("blocked_runtime".into(), json!({"code":"claude_auth_required"}))
                     } else {
                         // Sanitized tails make the failure diagnosable from the timeline.
@@ -6001,9 +6120,6 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     tracing::error!("Failed to persist autonomous runtime health: {error:#}");
                 }
             }
-            if health.status != "ready" {
-                continue;
-            }
             if ticks == 1 || ticks.is_multiple_of(240) {
                 reconcile_github_triggers(&store).await;
             }
@@ -6045,7 +6161,7 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     &claim.org_id,
                     &claim.run.id,
                     "run.started",
-                    &json!({"worker":"local"}),
+                    &json!({"worker":"local","executor":queries::autonomous_executor(&claim.config).unwrap_or("invalid")}),
                 );
             }
             let (mut status, mut result) = execute_claim(&store, &config, &claim).await;
@@ -6271,6 +6387,12 @@ async fn maybe_trigger_next_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nexus_runtime_failures_have_actionable_codes() {
+        assert_eq!(nexus_failure_code(b"Claude login is not ready in OpenShell"), "nexus_auth_required");
+        assert_eq!(nexus_failure_code(b"OpenShell gateway is unavailable"), "nexus_gateway_unavailable");
+        assert_eq!(nexus_failure_code(b"worker changes were not safely synchronized"), "nexus_sync_failed");
+    }
     #[test]
     fn prompt_marks_config_as_untrusted_and_keeps_fixed_authority() {
         let prompt = fixed_prompt(

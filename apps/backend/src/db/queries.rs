@@ -16637,6 +16637,35 @@ pub fn get_autonomous_agent_detail(
     }))
 }
 
+pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
+    match config.get("executor") {
+        None => Ok("claude"), // revisions created before the selector remain unchanged
+        Some(serde_json::Value::String(value)) if value == "claude" || value == "nexus" => {
+            Ok(value)
+        }
+        _ => anyhow::bail!("invalid_executor"),
+    }
+}
+
+fn validate_autonomous_executor(config: &serde_json::Value) -> Result<()> {
+    autonomous_executor(config).map(|_| ())
+}
+
+#[cfg(test)]
+mod autonomous_executor_tests {
+    use super::autonomous_executor;
+    use serde_json::json;
+
+    #[test]
+    fn defaults_old_agents_to_claude_and_rejects_unknown_values() {
+        assert_eq!(autonomous_executor(&json!({})).unwrap(), "claude");
+        assert_eq!(autonomous_executor(&json!({"executor":"claude"})).unwrap(), "claude");
+        assert_eq!(autonomous_executor(&json!({"executor":"nexus"})).unwrap(), "nexus");
+        assert!(autonomous_executor(&json!({"executor":"other"})).is_err());
+        assert!(autonomous_executor(&json!({"executor":null})).is_err());
+    }
+}
+
 pub fn create_autonomous_agent_definition(
     conn: &Connection,
     org_id: &str,
@@ -16649,6 +16678,7 @@ pub fn create_autonomous_agent_definition(
     if !req.config.is_object() || !req.budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
+    validate_autonomous_executor(&req.config)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16704,6 +16734,7 @@ pub fn update_autonomous_agent_definition(
     if !config.is_object() || !budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
+    validate_autonomous_executor(config)?;
     let description = req
         .description
         .as_ref()
@@ -17603,12 +17634,10 @@ pub fn claim_next_autonomous_agent_run(
     lease_seconds: i64,
 ) -> Result<Option<ClaimedAutonomousRun>> {
     let health = get_autonomous_runtime_health(conn)?;
-    if !matches!(
+    let claude_ready = matches!(
         health.as_ref().map(|value| value.status.as_str()),
         Some("ready")
-    ) {
-        return Ok(None);
-    }
+    );
     let expired=conn.prepare("SELECT run_id FROM autonomous_agent_leases WHERE released_at IS NULL AND expires_at<=datetime('now')")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for run_id in expired {
         let attempt_ids=conn.prepare("SELECT attempt_id FROM autonomous_agent_leases WHERE run_id=?1 AND released_at IS NULL")?.query_map([&run_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -17631,6 +17660,7 @@ pub fn claim_next_autonomous_agent_run(
          LEFT JOIN autonomous_agent_work_items candidate_work ON candidate_work.run_id=r.id
          LEFT JOIN autonomous_agent_revisions candidate_revision ON candidate_revision.id=r.revision_id
          WHERE r.status='queued' AND o.autonomous_agents_enabled=1
+           AND (?1=1 OR COALESCE(json_extract(candidate_revision.config_json,'$.executor'),'claude')='nexus')
            AND (SELECT COUNT(*) FROM autonomous_agent_runs active
                 WHERE active.definition_id=r.definition_id AND active.status IN ('leased','running'))
                < COALESCE(json_extract(r.budget_json,'$.max_definition_concurrency'),1)
@@ -17649,7 +17679,7 @@ pub fn claim_next_autonomous_agent_run(
                 < COALESCE(json_extract(r.budget_json,'$.max_repository_concurrency'),1)
            )
          ORDER BY r.created_at LIMIT 1",
-        [], |row| Ok((row.get(0)?,row.get(1)?)),
+        rusqlite::params![if claude_ready { 1 } else { 0 }], |row| Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
     let Some((run_id, org_id)) = candidate else {
         return Ok(None);
