@@ -1,0 +1,5 @@
+Reading additional input from stdin...
+2026-09-28T00:10:41.026423Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-09-28T00:10:41.030165Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-09-28T00:11:36.107013Z ERROR codex_core::tools::router: error=apply_patch verification failed: invalid patch: multiple operations target /private/tmp/nexus-bench-realworld-20260927/service-codex-3/src/server.js
+2026-09-28T00:12:21.621577Z  WARN codex_sandboxing::violation: recorded sandbox violation: resource=filesystem backend=seatbelt reason=operation_not_permitted path=unknown

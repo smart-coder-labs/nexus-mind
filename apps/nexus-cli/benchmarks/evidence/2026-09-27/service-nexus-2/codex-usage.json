@@ -1,0 +1,13 @@
+{
+  "sandbox": "nx-x-f749de91fff3",
+  "container": "openshell-default--nx-x-f749de91fff3-be7c3742-6f94-49c7-86a0-a68a1acf48ce",
+  "sessions": 1,
+  "usage": {
+    "input_tokens": 0,
+    "cached_input_tokens": 0,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 0,
+    "reasoning_output_tokens": 0,
+    "total_tokens": 0
+  }
+}

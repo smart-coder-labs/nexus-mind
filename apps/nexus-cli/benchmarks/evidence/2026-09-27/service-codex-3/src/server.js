@@ -1,0 +1,128 @@
+import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
+
+const MAX_BODY_BYTES = 64 * 1024;
+const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
+const SKU_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'content-type': JSON_CONTENT_TYPE });
+  res.end(JSON.stringify(body));
+}
+
+function sendError(res, status, error) {
+  sendJson(res, status, { error });
+}
+
+function isJsonContentType(value) {
+  return typeof value === 'string'
+    && value.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+}
+
+function isValidOrder(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && typeof value.sku === 'string'
+    && SKU_PATTERN.test(value.sku)
+    && Number.isSafeInteger(value.quantity)
+    && value.quantity > 0;
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      req.resume();
+      reject({ status: 413, error: 'payload too large' });
+      return;
+    }
+
+    let size = 0;
+    let tooLarge = false;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        if (!tooLarge) reject({ status: 413, error: 'payload too large' });
+        tooLarge = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', () => reject({ status: 400, error: 'invalid request body' }));
+    req.on('end', () => {
+      if (tooLarge) return;
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject({ status: 400, error: 'invalid JSON body' });
+      }
+    });
+  });
+}
+
+export function createServer() {
+  const orders = new Map();
+  const idempotencyKeys = new Map();
+
+  return createHttpServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+
+    if (req.method === 'GET' && url.pathname === '/health') {
+      sendJson(res, 200, { status: 'ok' });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/orders/')) {
+      const id = decodeURIComponent(url.pathname.slice('/orders/'.length));
+      const order = orders.get(id);
+      if (!order) sendError(res, 404, 'order not found');
+      else sendJson(res, 200, order);
+      return;
+    }
+
+    if (req.method !== 'POST' || url.pathname !== '/orders') {
+      sendError(res, 404, 'not found');
+      return;
+    }
+
+    if (!isJsonContentType(req.headers['content-type'])) {
+      sendError(res, 415, 'content-type must be application/json');
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch ({ status, error }) {
+      if (!res.writableEnded) sendError(res, status, error);
+      return;
+    }
+
+    if (!isValidOrder(payload)) {
+      sendError(res, 400, 'invalid order payload');
+      return;
+    }
+
+    const key = req.headers['idempotency-key'];
+    if (typeof key === 'string' && key.length > 0) {
+      const previous = idempotencyKeys.get(key);
+      if (previous) {
+        if (previous.sku !== payload.sku || previous.quantity !== payload.quantity) {
+          sendError(res, 409, 'idempotency key was already used with a different payload');
+        } else {
+          sendJson(res, 200, previous.order);
+        }
+        return;
+      }
+    }
+
+    const order = Object.freeze({ id: randomUUID(), sku: payload.sku, quantity: payload.quantity });
+    orders.set(order.id, order);
+    if (typeof key === 'string' && key.length > 0) {
+      idempotencyKeys.set(key, { sku: payload.sku, quantity: payload.quantity, order });
+    }
+    sendJson(res, 201, order);
+  });
+}

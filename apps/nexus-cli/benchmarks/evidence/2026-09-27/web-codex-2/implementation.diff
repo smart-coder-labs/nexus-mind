@@ -1,0 +1,102 @@
+diff --git a/index.html b/index.html
+index 4e91457..31c0555 100644
+--- a/index.html
++++ b/index.html
+@@ -1,3 +1,22 @@
+ <!doctype html>
+-<html><head><meta charset="utf-8"><title>Catálogo</title><link rel="stylesheet" href="./styles.css"></head>
+-<body><div id="app"></div><script type="module" src="./src/app.js"></script></body></html>
++<html lang="es">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Catálogo | Nébula</title>
++    <link rel="stylesheet" href="./styles.css">
++  </head>
++  <body>
++    <main class="catalogue" id="app" aria-labelledby="catalogue-title">
++      <header class="catalogue__header"><p class="eyebrow">Tienda Nébula</p><h1 id="catalogue-title">Encuentra tu próximo esencial</h1><p class="intro">Tecnología seleccionada para trabajar, escuchar y crear mejor.</p></header>
++      <section class="controls" aria-label="Controles del catálogo">
++        <div class="field field--search"><label for="search">Buscar productos</label><input id="search" name="search" type="search" placeholder="Ej.: teclado o auriculares" autocomplete="off"></div>
++        <div class="field"><label for="category">Categoría</label><select id="category" name="category"></select></div>
++        <div class="field"><label for="sort">Ordenar por</label><select id="sort" name="sort"><option value="name">Nombre (A–Z)</option><option value="name-desc">Nombre (Z–A)</option><option value="price-asc">Precio: menor a mayor</option><option value="price-desc">Precio: mayor a menor</option></select></div>
++      </section>
++      <p class="results-count" id="results-count" aria-live="polite"></p>
++      <section id="products" class="products" aria-label="Productos"></section>
++    </main>
++    <script type="module" src="./src/app.js"></script>
++  </body>
++</html>
+diff --git a/src/app.js b/src/app.js
+index 6cb9e59..69769d3 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -6,13 +6,37 @@ export const products = [
+ ];
+ 
+ export function selectProducts(items, { query = '', category = 'all', sort = 'name' } = {}) {
+-  return items;
++  const normalize = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es');
++  const term = normalize(query).trim();
++  const selectedCategory = normalize(category);
++  const visible = items.filter((item) => (!term || normalize(item.name).includes(term)) && (selectedCategory === 'all' || normalize(item.category) === selectedCategory));
++  const direction = sort === 'name-desc' || sort === 'price-desc' ? -1 : 1;
++  return [...visible].sort((left, right) => (sort === 'price-asc' || sort === 'price-desc')
++    ? direction * (Number(left.price) - Number(right.price))
++    : direction * String(left.name).localeCompare(String(right.name), 'es', { sensitivity: 'base' }));
+ }
+ 
+ export function renderProducts(items) {
+-  return items.map((item) => `<p>${item.name}</p>`).join('');
++  const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
++  if (!items.length) return '<div class="empty" role="status"><h2>Sin resultados</h2><p>Prueba con otra búsqueda o categoría.</p></div>';
++  return items.map((item) => {
++    const price = Number(item.price);
++    const label = Number.isFinite(price) ? price.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' }) : 'Precio no disponible';
++    return `<article class="product" data-product-id="${escapeHtml(item.id)}"><p class="product__category">${escapeHtml(item.category)}</p><h2>${escapeHtml(item.name)}</h2><p class="product__price">${escapeHtml(label)}</p></article>`;
++  }).join('');
+ }
+ 
+ if (typeof document !== 'undefined') {
+-  document.querySelector('#app').innerHTML = renderProducts(products);
++  const productContainer = document.querySelector('#products');
++  const search = document.querySelector('#search');
++  const category = document.querySelector('#category');
++  const sort = document.querySelector('#sort');
++  const count = document.querySelector('#results-count');
++  if (productContainer && search && category && sort && count) {
++    const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
++    const categories = [...new Set(products.map((item) => item.category))].sort((a, b) => a.localeCompare(b, 'es'));
++    category.innerHTML = `<option value="all">Todas las categorías</option>${categories.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('')}`;
++    const update = () => { const selected = selectProducts(products, { query: search.value, category: category.value, sort: sort.value }); productContainer.innerHTML = renderProducts(selected); count.textContent = `${selected.length} ${selected.length === 1 ? 'producto encontrado' : 'productos encontrados'}`; };
++    search.addEventListener('input', update); category.addEventListener('change', update); sort.addEventListener('change', update); update();
++  }
+ }
+diff --git a/styles.css b/styles.css
+index 693ce9b..b6e1df6 100644
+--- a/styles.css
++++ b/styles.css
+@@ -1 +1,22 @@
+-body { font-family: sans-serif; }
++:root { color: #17231e; background: #f5f3ed; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
++* { box-sizing: border-box; }
++body { margin: 0; min-width: 320px; }
++.catalogue { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0 88px; }
++.catalogue__header { max-width: 690px; }
++.eyebrow { margin: 0 0 12px; color: #267251; font-size: .79rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
++h1 { margin: 0; font-size: clamp(2.25rem, 6vw, 4.75rem); line-height: .98; letter-spacing: -.055em; }
++.intro { max-width: 570px; margin: 20px 0 0; color: #536159; font-size: clamp(1rem, 2vw, 1.15rem); line-height: 1.6; }
++.controls { display: grid; grid-template-columns: minmax(220px, 1.7fr) 1fr 1.25fr; gap: 14px; margin-top: 48px; padding: 18px; background: #e6ece4; border: 1px solid #d4ddd2; border-radius: 18px; }
++.field { display: grid; gap: 7px; min-width: 0; }
++label { color: #3c4b42; font-size: .82rem; font-weight: 700; }
++input, select { width: 100%; min-height: 44px; padding: 0 12px; color: inherit; font: inherit; background: #fff; border: 1px solid #bfcabe; border-radius: 9px; }
++input:focus, select:focus { outline: 3px solid #92c8a7; outline-offset: 1px; border-color: #267251; }
++.results-count { min-height: 1.5em; margin: 28px 0 14px; color: #536159; font-size: .9rem; }
++.products { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 16px; }
++.product { display: flex; min-height: 218px; flex-direction: column; padding: 23px; background: #fff; border: 1px solid #dce2da; border-radius: 16px; box-shadow: 0 7px 22px rgba(27, 48, 36, .06); }
++.product__category { margin: 0 0 auto; color: #267251; font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
++.product h2 { margin: 30px 0 10px; font-size: 1.25rem; line-height: 1.2; letter-spacing: -.025em; overflow-wrap: anywhere; }
++.product__price { margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; }
++.empty { grid-column: 1 / -1; padding: 44px 24px; text-align: center; color: #536159; background: #fff; border: 1px dashed #b7c5b8; border-radius: 16px; }
++.empty h2 { margin: 0 0 8px; color: #17231e; font-size: 1.25rem; }.empty p { margin: 0; }
++@media (max-width: 680px) { .catalogue { width: min(100% - 28px, 1120px); padding: 45px 0 56px; } .controls { grid-template-columns: 1fr; margin-top: 35px; padding: 14px; } .product { min-height: 180px; } .product h2 { margin-top: 22px; } }

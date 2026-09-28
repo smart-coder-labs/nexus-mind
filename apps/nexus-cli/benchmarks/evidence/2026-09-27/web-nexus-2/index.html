@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Catálogo | NexusMind</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="catalogo" aria-labelledby="catalogo-titulo">
+      <header class="catalogo__cabecera">
+        <p class="catalogo__eyebrow">NexusMind</p>
+        <h1 id="catalogo-titulo">Catálogo de productos</h1>
+        <p>Encuentra el equipo que necesitas para trabajar y disfrutar.</p>
+      </header>
+
+      <section class="filtros" aria-label="Filtros del catálogo">
+        <div class="campo campo--busqueda">
+          <label for="busqueda">Buscar productos</label>
+          <input id="busqueda" name="busqueda" type="search" placeholder="Ej.: teclado o auriculares" autocomplete="off">
+        </div>
+        <div class="campo">
+          <label for="categoria">Categoría</label>
+          <select id="categoria" name="categoria">
+            <option value="all">Todas las categorías</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="orden">Ordenar por</label>
+          <select id="orden" name="orden">
+            <option value="name-asc">Nombre: A a Z</option>
+            <option value="name-desc">Nombre: Z a A</option>
+            <option value="price-asc">Precio: menor a mayor</option>
+            <option value="price-desc">Precio: mayor a menor</option>
+          </select>
+        </div>
+      </section>
+
+      <p id="resumen" class="resumen" aria-live="polite"></p>
+      <section id="app" class="productos" aria-label="Productos" aria-live="polite"></section>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
