@@ -2150,6 +2150,23 @@ async fn publish_template_output(
                         }
                     }
                 };
+                // A pending soak must never outlive a later verdict on the same PR:
+                // any outcome other than a fresh soak cancels it.
+                if auto_merge.get("reason").and_then(|v| v.as_str()) != Some("soak_pending") {
+                    let db = store.conn();
+                    let cancelled = match db.lock() {
+                        Ok(conn) => crate::db::factory_queries::cancel_merge_soak(
+                            &conn,
+                            &claim.org_id,
+                            repository,
+                            number,
+                        ),
+                        Err(_) => Err(anyhow::anyhow!("database_lock")),
+                    };
+                    if let Err(error) = cancelled {
+                        tracing::warn!(repository, number, "Could not cancel merge soak: {error:#}");
+                    }
+                }
             }
             Ok(
                 json!({"github_review":review,"event":if request_changes{"REQUEST_CHANGES"}else{"COMMENT"},"auto_merge":auto_merge}),
@@ -2159,12 +2176,115 @@ async fn publish_template_output(
     }
 }
 
-/// Decide whether a reviewed PR may be auto-merged and, if so, squash-merge it
-/// (keeping the branch). Merges only the exact commit that was reviewed, only when
-/// every changed path is docs/tests (interim floor, see `merge_gate`), and only when
-/// every required check on that commit is green; with no checks to verify it
-/// declines rather than merges blindly. The merge is pinned to the reviewed SHA so
-/// a push landing between these checks and the merge is rejected by GitHub.
+/// Soak window between "every gate passed" and the merge (plan D17).
+const MERGE_SOAK_SECONDS: i64 = 600;
+
+/// The decision model consulted for `criteria` policies. Not wired until F3, so
+/// every `criteria` merge is held for a person (`decision_model_not_configured`).
+fn merge_decision_model() -> crate::factory::policy_engine::ModelDecision {
+    crate::factory::policy_engine::ModelDecision::NotConfigured
+}
+
+/// Deterministic merge gates for one reviewed commit: head unchanged, docs/tests
+/// paths only (interim floor, see `merge_gate`), every required check present and
+/// green on that commit. `Err` carries the decline reason and details.
+async fn merge_gates(
+    token: &str,
+    repository: &str,
+    number: i64,
+    reviewed_sha: &str,
+    required: &[String],
+) -> anyhow::Result<Result<Vec<super::merge_gate::ChangedFile>, serde_json::Value>> {
+    let pull = super::connectors::get_github_pull(token, repository, number).await?;
+    if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(Err(json!({"merged": true, "reason": "already_merged"})));
+    }
+    let head_sha = pull
+        .pointer("/head/sha")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("head_sha_missing"))?;
+    if head_sha != reviewed_sha {
+        return Ok(Err(json!({"merged": false, "reason": "head_changed_since_review"})));
+    }
+    let files = match super::connectors::list_github_pull_files(token, repository, number).await {
+        Ok(files) => files,
+        Err(error) => {
+            return Ok(Err(
+                json!({"merged": false, "reason": "pull_files_unavailable", "error": error.to_string()}),
+            ))
+        }
+    };
+    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files) {
+        return Ok(Err(json!({"merged": false, "reason": reason})));
+    }
+    // Every check-run page plus commit statuses; a partial or unreadable list declines.
+    let runs = match super::connectors::list_commit_ci_runs(token, repository, reviewed_sha).await {
+        Ok(runs) => runs,
+        Err(error) => {
+            return Ok(Err(
+                json!({"merged": false, "reason": "checks_unavailable", "error": error.to_string()}),
+            ))
+        }
+    };
+    // A required check that never reported is a decline, not a pass.
+    if let Err(reason) = super::merge_gate::required_checks_verdict(required, &runs) {
+        return Ok(Err(json!({"merged": false, "reason": reason})));
+    }
+    Ok(Ok(files))
+}
+
+/// Asks the policy engine whether this gated commit may be merged, and records the
+/// decision (plan §4). The gates already ran, so no floor applies here.
+fn decide_merge(
+    store: &SqliteStore,
+    org_id: &str,
+    repository: &str,
+    number: i64,
+    reviewed_sha: &str,
+    files: &[super::merge_gate::ChangedFile],
+) -> anyhow::Result<crate::factory::contracts::ActionVerdict> {
+    use crate::db::factory_queries::{list_factory_policies, record_decision, DecisionRecord};
+    use crate::factory::{contracts::Action, policy_engine};
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+    let policies: Vec<_> = list_factory_policies(&conn, org_id)?
+        .into_iter()
+        .map(|stored| stored.policy)
+        .collect();
+    let task_class = super::merge_gate::merge_task_class(files);
+    let input = policy_engine::EvaluationInput {
+        action: Some(Action::Merge),
+        task_class: Some(task_class),
+        ..Default::default()
+    };
+    let model = merge_decision_model();
+    let evaluation = policy_engine::evaluate(
+        &input,
+        &policies,
+        &model,
+        policy_engine::DEFAULT_MIN_CONFIDENCE,
+    );
+    record_decision(
+        &conn,
+        org_id,
+        &DecisionRecord {
+            subject: format!("{repository}#{number}@{reviewed_sha}"),
+            action: Action::Merge,
+            verdict: evaluation.verdict.clone(),
+            policy_version: evaluation.policy_version,
+            provider: None,
+            model: None,
+            confidence: None,
+            inputs: json!({"task_class": task_class, "changed_files": files.len()}),
+        },
+    )?;
+    Ok(evaluation.verdict)
+}
+
+/// Decide whether a reviewed PR may be auto-merged. Every deterministic gate runs
+/// on the exact reviewed commit, then the per-action policy engine decides. An
+/// `allow` does not merge yet: it starts the soak window, and the worker merges
+/// pinned to the reviewed SHA only after re-running every gate when it elapses.
 async fn auto_merge_pull(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -2183,57 +2303,121 @@ async fn auto_merge_pull(
                 .collect()
         })
         .unwrap_or_default();
-    let pull = super::connectors::get_github_pull(token, repository, number).await?;
-    if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
-        return Ok(json!({"merged": true, "reason": "already_merged"}));
-    }
     let Some(reviewed_sha) = super::merge_gate::reviewed_head_sha(&claim.config) else {
         return Ok(json!({"merged": false, "reason": "reviewed_head_unknown"}));
     };
-    let head_sha = pull
-        .pointer("/head/sha")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("head_sha_missing"))?;
-    if head_sha != reviewed_sha {
-        return Ok(json!({"merged": false, "reason": "head_changed_since_review"}));
-    }
-    let files = match super::connectors::list_github_pull_files(token, repository, number).await {
+    let files = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
         Ok(files) => files,
-        Err(error) => {
-            return Ok(
-                json!({"merged": false, "reason": "pull_files_unavailable", "error": error.to_string()}),
-            )
-        }
+        Err(declined) => return Ok(declined),
     };
-    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files) {
-        return Ok(json!({"merged": false, "reason": reason}));
-    }
-    // Every check-run page plus commit statuses; a partial or unreadable list declines.
-    let runs = match super::connectors::list_commit_ci_runs(token, repository, reviewed_sha).await {
-        Ok(runs) => runs,
-        Err(error) => {
-            return Ok(
-                json!({"merged": false, "reason": "checks_unavailable", "error": error.to_string()}),
-            )
-        }
-    };
-    // A required check that never reported is a decline, not a pass.
-    if let Err(reason) = super::merge_gate::required_checks_verdict(&required, &runs) {
-        return Ok(json!({"merged": false, "reason": reason}));
-    }
     require_publish_authority(store, claim)?;
+    let verdict = decide_merge(store, &claim.org_id, repository, number, reviewed_sha, &files)?;
+    if verdict.verdict != crate::factory::contracts::Verdict::Allow {
+        return Ok(json!({"merged": false, "reason": verdict.reason, "decided_by": verdict.source}));
+    }
+    let soak = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        crate::db::factory_queries::start_merge_soak(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            repository,
+            number,
+            reviewed_sha,
+            &required,
+            MERGE_SOAK_SECONDS,
+        )?
+    };
+    Ok(json!({"merged": false, "reason": "soak_pending", "due_at": soak.due_at}))
+}
+
+/// Re-runs every gate for a soak whose window elapsed and merges pinned to its
+/// commit only if nothing changed. Any change or failure ends the soak; a new push
+/// is reviewed again by the normal webhook flow.
+async fn merge_after_soak(
+    store: &SqliteStore,
+    soak: &crate::db::factory_queries::MergeSoak,
+) -> anyhow::Result<serde_json::Value> {
+    let token = server_gh_token().await?;
+    let files = match merge_gates(
+        &token,
+        &soak.repository,
+        soak.pull_number,
+        &soak.head_sha,
+        &soak.required_checks,
+    )
+    .await?
+    {
+        Ok(files) => files,
+        Err(declined) => return Ok(declined),
+    };
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        if !queries::autonomous_agent_run_publish_authorized(&conn, &soak.org_id, &soak.run_id)? {
+            return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
+        }
+    }
+    let verdict = decide_merge(
+        store,
+        &soak.org_id,
+        &soak.repository,
+        soak.pull_number,
+        &soak.head_sha,
+        &files,
+    )?;
+    if verdict.verdict != crate::factory::contracts::Verdict::Allow {
+        return Ok(json!({"merged": false, "reason": verdict.reason}));
+    }
     match super::connectors::merge_github_pull(
-        token,
-        repository,
-        number,
+        &token,
+        &soak.repository,
+        soak.pull_number,
         "squash",
-        Some(reviewed_sha),
+        Some(&soak.head_sha),
     )
     .await
     {
         Ok(result) => Ok(json!({"merged": true, "detail": result})),
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))
+        }
+    }
+}
+
+/// Worker tick: finish every soak whose window has elapsed.
+async fn process_due_soaks(store: &SqliteStore) {
+    let due = {
+        let db = store.conn();
+        let due = match db.lock() {
+            Ok(conn) => crate::db::factory_queries::due_merge_soaks(&conn, 10),
+            Err(_) => return,
+        };
+        due.unwrap_or_default()
+    };
+    for soak in due {
+        let outcome = merge_after_soak(store, &soak).await;
+        match &outcome {
+            Ok(value) => tracing::info!(
+                repository = %soak.repository,
+                pull = soak.pull_number,
+                outcome = %value,
+                "Merge soak finished"
+            ),
+            Err(error) => tracing::warn!(
+                repository = %soak.repository,
+                pull = soak.pull_number,
+                "Merge soak failed: {error:#}"
+            ),
+        }
+        let db = store.conn();
+        let finished = match db.lock() {
+            Ok(conn) => crate::db::factory_queries::finish_merge_soak(&conn, &soak.id),
+            Err(_) => Err(anyhow::anyhow!("database_lock")),
+        };
+        if let Err(error) = finished {
+            tracing::warn!(soak = %soak.id, "Could not finish merge soak: {error:#}");
         }
     }
 }
@@ -6136,6 +6320,7 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                 reconcile_github_triggers(&store).await;
             }
             retry_one_delivery(&store, &config).await;
+            process_due_soaks(&store).await;
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {

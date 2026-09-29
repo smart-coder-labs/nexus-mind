@@ -163,7 +163,7 @@ The page states the states explicitly:
 
 `evaluate(input, policies, model) -> ActionVerdict` in a fixed order. The first rule that decides wins:
 
-1. **Select the policy:** the most specific match for `(action, project, task_class)`, in this order: exact project + class → project only → class only → any. If there is no match, the mode is `manual`.
+1. **Select the policy:** the most specific match for `(action, project, task_class)`, in this order: exact project + class → project only → class only → any. If there is no match, the mode is `manual`. When the item's project is unknown (autonomous runs do not carry one today) and a project-scoped policy exists for the action → `hold` with reason `project_unresolved`: the engine never falls back past a policy that might be the one that applies.
 2. **`never`** → `deny` (source `policy`). **`manual`** → `hold` (source `policy`).
 3. **Floors** (deterministic; any hit → `hold`, source `floor`). The caller computes them:
    - a sensitive path is touched (the `merge_gate` never-eligible rules, plus paths outside docs/tests for merge);
@@ -184,6 +184,7 @@ The model can only turn an eligible item into `allow`, or keep it held. It is ne
 When every gate passes for `merge`, the merge does **not** happen yet:
 
 - A row in `factory_merge_soaks` records `(org_id, run_id, repository, pull_number, head_sha, required_checks, due_at = now + 10 min)`, and the verdict is `hold` with reason `soak_pending`.
+- Every new review of the PR **restarts** the soak with its own run and required checks when it again ends in `allow`, and **cancels** it on any other outcome (blocking findings, a failed gate, a `hold`). A soak therefore always reflects the latest verdict, never an outdated one.
 - The worker tick runs `process_due_soaks`. For each row that is due, it re-runs the **full** gate: PR head still equals `head_sha`, paths, CI (every page plus statuses), policy, model and publish authority. It then merges pinned to `head_sha`.
 - Any change or failure deletes the row with a recorded decision. A new push is reviewed again by the normal webhook flow.
 
@@ -202,3 +203,44 @@ This is the dataset for the *false-low-risk* metric (plan §4 step 5).
 ### Integration in F0
 
 `auto_merge_pull` keeps the item-1 gates, then asks the engine for `merge`. Since no decision model exists until F3, auto-merge now always ends in `hold` (`decision_model_not_configured`, or `manual` when no policy exists), and the reason is visible in the run result. The soak and decision audit are exercised by tests with a fake provider, ready for F3.
+
+### Known effects (item 4)
+
+- **Judge chaining.** `maybe_trigger_next_agent` chains the Judge only when the reviewer run itself reports `merged: true`. Merges now happen later, in the worker tick after the soak, so the Judge is not chained automatically. Re-attaching it to `merge_after_soak` belongs to F3, when merges can actually be allowed.
+- **Soak failures fail closed.** An error while re-checking a due soak (network, token) ends the soak without merging and logs it. The PR stays open for a person or for the next review.
+- **Existing `auto_merge: true` agents stop merging.** With no merge policy the verdict is `no_policy_defaults_to_manual`; with a `criteria` policy it is `decision_model_not_configured` until F3. The reason is returned in the run result and recorded in `factory_decisions`.
+
+## 5. Intake
+
+### Scope in F0
+
+Intake **normalizes** external work into validated `TaskSpec`s. It does not persist them or route them: the router (F3) consumes them. Slack/Sentry (F3) and Gmail/transcripts (F4) plug into the same trait.
+
+### Contract (`src/factory/intake.rs`)
+
+```rust
+#[async_trait]
+pub trait IntakeSource {
+    fn kind(&self) -> SourceKind;
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>>;
+}
+```
+
+Every adapter is a thin fetcher over a **pure normalizer**, and the normalizer is what the tests cover:
+
+- `github_issue_to_task_spec(issue, target, now) -> Result<Option<TaskSpec>, String>`
+- `nexusmind_task_to_task_spec(task, target, now) -> Result<Option<TaskSpec>, String>`
+
+`IntakeTarget { repository, base_ref, privacy_class }` comes from the control-plane configuration of the source, never from the item. NexusMind projects have no repository field, so the target says which repository a project's tasks apply to.
+
+### Rules
+
+- **Opt-in by label** (assumption, reversible): only items labeled `factory` enter, the same pattern as the Gmail decision. `Ok(None)` means "not for the factory"; `Err` means the item is malformed.
+- Pull requests returned by the issues API are skipped.
+- **Trust.**
+  - GitHub issue: `trusted` only when `author_association` ∈ {`OWNER`, `MEMBER`, `COLLABORATOR`}; otherwise `untrusted` (design §2).
+  - NexusMind task: `trusted`, because it was created by an authenticated org member.
+- **Stable identity.** `task_id` is a name-based UUID derived from the source reference (`github_issue:acme/web#42`), so re-fetching the same item yields the same id. The router can deduplicate without storage.
+- **Task class** is derived deterministically from labels. The most sensitive class wins when labels conflict: `security` > `migration` > `infra` > `bugfix` > `backend` > `ui` > `tests` > `docs`. With no known label the class is `unknown`, and the router treats that as needing more context.
+- **Acceptance criteria** are the Markdown checklist items (`- [ ] …`) of the description.
+- Every produced `TaskSpec` passes `Contract::validate()`. The description is truncated to the contract's 64 KiB.

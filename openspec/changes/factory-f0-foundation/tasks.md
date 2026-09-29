@@ -22,9 +22,11 @@
 - [x] 3.4 Review fixes: atomic audit (`append_audit_chained`), `/auth/me` reports template-governed grants (`autonomous_agent:*`, `factory_policy:*`) exactly as enforced
 
 ## 4. Policy evaluation
-- [ ] 4.1 Evaluation order (policy → floors → Jev stub → merge checks → audit)
-- [ ] 4.2 Soak window (10 min) via a delayed re-check
-- [ ] 4.3 Decision audit log
+- [x] 4.1 Evaluation order in `factory/policy_engine.rs` (policy → floors → milestones → decision model; criteria holds while no model is configured)
+- [x] 4.2 Soak window (10 min): `factory_merge_soaks` (v79) + `process_due_soaks` in the worker tick re-runs every gate and merges pinned to the SHA
+- [x] 4.3 Decision audit log: `factory_decisions` (v79), one row per merge evaluation
+- [x] 4.4 `auto_merge_pull` asks the engine; wizard copy explains policy + soak
+- [x] 4.5 Review fixes: `project_unresolved` instead of falling back past project-scoped policies; any non-allow re-review cancels the soak; each allow restarts it with the latest run
 
 ## 5. Intake
 - [ ] 5.1 `IntakeSource` trait, `TaskSpec` normalization

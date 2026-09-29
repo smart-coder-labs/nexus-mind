@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 78;
+pub const LATEST_USER_VERSION: i32 = 79;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -91,6 +91,63 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v76(conn)?;
     run_v77(conn)?;
     run_v78(conn)?;
+    run_v79(conn)?;
+    Ok(())
+}
+
+/// Migration v79: software factory decision audit and merge soaks (plan §4, D17).
+///
+/// * `factory_decisions` records every policy evaluation — verdict, source,
+///   reason, policy version and model answer — with non-sensitive inputs only.
+///   It is the dataset for the false-low-risk metric.
+/// * `factory_merge_soaks` holds merges that passed every gate and wait out the
+///   soak window. One row per PR (`UNIQUE(org_id, repository, pull_number)`); the
+///   worker re-runs the full gate when `due_at` passes, pinned to `head_sha`.
+///
+/// Idempotent — guarded by PRAGMA user_version < 79, all-or-nothing.
+pub fn run_v79(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 79 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_decisions (
+             id             TEXT PRIMARY KEY,
+             org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             subject        TEXT NOT NULL,
+             action         TEXT NOT NULL,
+             verdict        TEXT NOT NULL CHECK (verdict IN ('allow','hold','deny')),
+             source         TEXT NOT NULL CHECK (source IN ('policy','floor','decision_model','human')),
+             reason         TEXT NOT NULL,
+             policy_version INTEGER,
+             provider       TEXT,
+             model          TEXT,
+             confidence     REAL,
+             inputs_json    TEXT NOT NULL DEFAULT '{}',
+             created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_decisions_subject
+             ON factory_decisions(org_id, subject);
+
+         CREATE TABLE IF NOT EXISTS factory_merge_soaks (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL,
+             repository          TEXT NOT NULL,
+             pull_number         INTEGER NOT NULL,
+             head_sha            TEXT NOT NULL,
+             required_checks_json TEXT NOT NULL DEFAULT '[]',
+             due_at              TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, repository, pull_number)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_merge_soaks_due
+             ON factory_merge_soaks(due_at);
+
+         PRAGMA user_version = 79;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

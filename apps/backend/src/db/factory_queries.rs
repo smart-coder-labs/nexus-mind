@@ -10,7 +10,9 @@ use anyhow::Result;
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row};
 
 use crate::db::queries::append_audit_chained;
-use crate::factory::contracts::{ActionPolicy, Contract, PolicyScope, SchemaV1, TaskClass};
+use crate::factory::contracts::{
+    Action, ActionPolicy, ActionVerdict, Contract, PolicyScope, SchemaV1, TaskClass,
+};
 
 /// A persisted policy: the wire contract plus its row identity.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -264,11 +266,194 @@ pub fn delete_factory_policy(
     Ok(existing)
 }
 
+/// One evaluated action, for the decision audit (false-low-risk dataset). Never
+/// carries diff content or secrets.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct DecisionRecord {
+    pub subject: String,
+    pub action: Action,
+    pub verdict: ActionVerdict,
+    pub policy_version: Option<u32>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub confidence: Option<f64>,
+    pub inputs: serde_json::Value,
+}
+
+pub fn record_decision(conn: &Connection, org_id: &str, record: &DecisionRecord) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO factory_decisions
+           (id, org_id, subject, action, verdict, source, reason, policy_version,
+            provider, model, confidence, inputs_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            org_id,
+            record.subject,
+            wire(&record.action),
+            wire(&record.verdict.verdict),
+            wire(&record.verdict.source),
+            record.verdict.reason,
+            record.policy_version,
+            record.provider,
+            record.model,
+            record.confidence,
+            serde_json::to_string(&record.inputs)?,
+        ],
+    )?;
+    Ok(id)
+}
+
+pub fn list_decisions(
+    conn: &Connection,
+    org_id: &str,
+    subject: &str,
+) -> Result<Vec<DecisionRecord>> {
+    let mut statement = conn.prepare(
+        "SELECT subject, action, verdict, source, reason, policy_version, provider, model,
+                confidence, inputs_json
+           FROM factory_decisions WHERE org_id = ?1 AND subject = ?2 ORDER BY rowid",
+    )?;
+    let rows = statement
+        .query_map([org_id, subject], |row| {
+            let inputs: String = row.get(9)?;
+            Ok(DecisionRecord {
+                subject: row.get(0)?,
+                action: from_wire(&row.get::<_, String>(1)?)?,
+                verdict: ActionVerdict {
+                    verdict: from_wire(&row.get::<_, String>(2)?)?,
+                    source: from_wire(&row.get::<_, String>(3)?)?,
+                    reason: row.get(4)?,
+                },
+                policy_version: row.get(5)?,
+                provider: row.get(6)?,
+                model: row.get(7)?,
+                confidence: row.get(8)?,
+                inputs: serde_json::from_str(&inputs).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(9, Type::Text, Box::new(error))
+                })?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// A merge that passed every gate and waits out the soak window (plan D17).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergeSoak {
+    pub id: String,
+    pub org_id: String,
+    pub run_id: String,
+    pub repository: String,
+    pub pull_number: i64,
+    pub head_sha: String,
+    pub required_checks: Vec<String>,
+    pub due_at: String,
+}
+
+/// Starts the soak for this PR, replacing any running one. Every new evaluation
+/// restarts the window with its own run (publish authority) and required checks,
+/// so a soak always reflects the latest review — never an outdated one.
+#[allow(clippy::too_many_arguments)]
+pub fn start_merge_soak(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    repository: &str,
+    pull_number: i64,
+    head_sha: &str,
+    required_checks: &[String],
+    soak_seconds: i64,
+) -> Result<MergeSoak> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM factory_merge_soaks
+          WHERE org_id = ?1 AND repository = ?2 AND pull_number = ?3",
+        params![org_id, repository, pull_number],
+    )?;
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO factory_merge_soaks
+           (id, org_id, run_id, repository, pull_number, head_sha, required_checks_json, due_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now', ?8))",
+        params![
+            id,
+            org_id,
+            run_id,
+            repository,
+            pull_number,
+            head_sha,
+            serde_json::to_string(required_checks)?,
+            format!("{soak_seconds:+} seconds"),
+        ],
+    )?;
+    let soak = tx.query_row(
+        &format!("SELECT {SOAK_COLUMNS} FROM factory_merge_soaks WHERE id = ?1"),
+        [&id],
+        row_to_soak,
+    )?;
+    tx.commit()?;
+    Ok(soak)
+}
+
+/// Soaks whose window has elapsed, across all orgs (the worker processes them).
+pub fn due_merge_soaks(conn: &Connection, limit: i64) -> Result<Vec<MergeSoak>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {SOAK_COLUMNS} FROM factory_merge_soaks
+          WHERE due_at <= datetime('now') ORDER BY due_at LIMIT ?1"
+    ))?;
+    let rows = statement
+        .query_map([limit], row_to_soak)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Cancels the pending soak of this PR, if any. Called whenever a new review of
+/// the PR does not end in `allow`: the soak must never outlive a later verdict.
+pub fn cancel_merge_soak(
+    conn: &Connection,
+    org_id: &str,
+    repository: &str,
+    pull_number: i64,
+) -> Result<bool> {
+    let removed = conn.execute(
+        "DELETE FROM factory_merge_soaks
+          WHERE org_id = ?1 AND repository = ?2 AND pull_number = ?3",
+        params![org_id, repository, pull_number],
+    )?;
+    Ok(removed > 0)
+}
+
+pub fn finish_merge_soak(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM factory_merge_soaks WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+const SOAK_COLUMNS: &str =
+    "id, org_id, run_id, repository, pull_number, head_sha, required_checks_json, due_at";
+
+fn row_to_soak(row: &Row) -> rusqlite::Result<MergeSoak> {
+    let checks: String = row.get(6)?;
+    Ok(MergeSoak {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        run_id: row.get(2)?,
+        repository: row.get(3)?,
+        pull_number: row.get(4)?,
+        head_sha: row.get(5)?,
+        required_checks: serde_json::from_str(&checks).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?,
+        due_at: row.get(7)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::{connection::connect, migrations, queries};
-    use crate::factory::contracts::{Action, PolicyMode};
+    use crate::factory::contracts::{PolicyMode, Verdict, VerdictSource};
 
     fn setup() -> (Connection, String, String) {
         let conn = connect(":memory:").unwrap();
@@ -463,6 +648,75 @@ mod tests {
         .unwrap();
         assert!(delete_factory_policy(&conn, &org, "ghost", &created.id).is_err());
         assert_eq!(list_factory_policies(&conn, &org).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn decisions_are_recorded_per_org_and_subject() {
+        let (conn, org, _) = setup();
+        let record = DecisionRecord {
+            subject: "acme/web#42@0123456789abcdef0123456789abcdef01234567".into(),
+            action: Action::Merge,
+            verdict: ActionVerdict {
+                verdict: Verdict::Hold,
+                reason: "decision_model_not_configured".into(),
+                source: VerdictSource::Policy,
+            },
+            policy_version: Some(2),
+            provider: None,
+            model: None,
+            confidence: None,
+            inputs: serde_json::json!({"task_class": "docs", "floors": []}),
+        };
+        record_decision(&conn, &org, &record).unwrap();
+        assert_eq!(
+            list_decisions(&conn, &org, &record.subject).unwrap(),
+            vec![record.clone()]
+        );
+        assert!(list_decisions(&conn, "other-org", &record.subject)
+            .unwrap()
+            .is_empty());
+    }
+
+    const SHA_A: &str = "0123456789abcdef0123456789abcdef01234567";
+    const SHA_B: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
+    #[test]
+    fn every_new_evaluation_restarts_the_soak_with_its_own_run() {
+        let (conn, org, _) = setup();
+        let first =
+            start_merge_soak(&conn, &org, "run-1", "acme/web", 42, SHA_A, &[], 600).unwrap();
+        let checks = vec!["ci".to_string()];
+        let again =
+            start_merge_soak(&conn, &org, "run-2", "acme/web", 42, SHA_A, &checks, 600).unwrap();
+        assert_ne!(again.id, first.id, "a re-review restarts the window");
+        assert_eq!(again.run_id, "run-2", "authority follows the latest run");
+        assert_eq!(again.required_checks, checks);
+        let moved =
+            start_merge_soak(&conn, &org, "run-3", "acme/web", 42, SHA_B, &checks, 600).unwrap();
+        assert_eq!(moved.head_sha, SHA_B);
+        assert_eq!(due_merge_soaks(&conn, 10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cancelling_removes_only_that_pull_requests_soak() {
+        let (conn, org, _) = setup();
+        start_merge_soak(&conn, &org, "run-1", "acme/web", 1, SHA_A, &[], -1).unwrap();
+        let other = start_merge_soak(&conn, &org, "run-2", "acme/web", 2, SHA_B, &[], -1).unwrap();
+        assert!(cancel_merge_soak(&conn, &org, "acme/web", 1).unwrap());
+        assert!(!cancel_merge_soak(&conn, "other-org", "acme/web", 2).unwrap());
+        assert_eq!(due_merge_soaks(&conn, 10).unwrap(), vec![other]);
+    }
+
+    #[test]
+    fn only_elapsed_soaks_are_due_and_finishing_removes_them() {
+        let (conn, org, _) = setup();
+        let checks = vec![];
+        start_merge_soak(&conn, &org, "run-1", "acme/web", 1, SHA_A, &checks, 600).unwrap();
+        let due =
+            start_merge_soak(&conn, &org, "run-2", "acme/web", 2, SHA_B, &checks, -1).unwrap();
+        assert_eq!(due_merge_soaks(&conn, 10).unwrap(), vec![due.clone()]);
+        finish_merge_soak(&conn, &due.id).unwrap();
+        assert!(due_merge_soaks(&conn, 10).unwrap().is_empty());
     }
 
     #[test]

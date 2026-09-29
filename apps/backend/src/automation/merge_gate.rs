@@ -108,6 +108,16 @@ pub fn parse_changed_files(page: &serde_json::Value) -> Result<Vec<ChangedFile>,
         .collect()
 }
 
+/// The policy task class of an eligible PR: `docs` when every file is
+/// documentation, otherwise `tests` (the only other eligible class).
+pub fn merge_task_class(files: &[ChangedFile]) -> crate::factory::contracts::TaskClass {
+    if files.iter().all(|file| is_doc_path(&file.filename)) {
+        crate::factory::contracts::TaskClass::Docs
+    } else {
+        crate::factory::contracts::TaskClass::Tests
+    }
+}
+
 /// `Ok(())` when every changed file may be auto-merged; otherwise the
 /// `path_not_eligible:<path>` reason naming the first offending path.
 pub fn auto_merge_path_verdict(files: &[ChangedFile]) -> Result<(), String> {
@@ -137,17 +147,6 @@ fn is_eligible_path(path: &str) -> bool {
     }
     let segments: Vec<&str> = path.split('/').collect();
     let name = segments.last().copied().unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    // Under `docs/` only prose and images count: `docs/conf.py` or a site config
-    // is executable in a docs build and must not ride along as "documentation".
-    // `.mdx` is excluded everywhere: it compiles to JS and can be a live route.
-    let is_doc = lower.ends_with(".md")
-        || (segments.first() == Some(&"docs")
-            && [
-                ".txt", ".rst", ".adoc", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-            ]
-            .iter()
-            .any(|ext| lower.ends_with(ext)));
     let in_test_dir = segments[..segments.len() - 1]
         .iter()
         .any(|segment| matches!(*segment, "tests" | "test" | "__tests__" | "e2e"));
@@ -157,7 +156,21 @@ fn is_eligible_path(path: &str) -> bool {
         || name.ends_with("_test.rs")
         || name.ends_with("_test.py")
         || (name.starts_with("test_") && name.ends_with(".py"));
-    is_doc || in_test_dir || is_test_file
+    is_doc_path(path) || in_test_dir || is_test_file
+}
+
+/// Under `docs/` only prose and images count: `docs/conf.py` or a site config is
+/// executable in a docs build and must not ride along as "documentation". `.mdx`
+/// is excluded everywhere: it compiles to JS and can be a live route.
+fn is_doc_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md")
+        || (lower.starts_with("docs/")
+            && [
+                ".txt", ".rst", ".adoc", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+            ]
+            .iter()
+            .any(|ext| lower.ends_with(ext)))
 }
 
 /// Files that change build, CI, dependencies or agent behavior. Blocked wherever
@@ -371,6 +384,19 @@ mod tests {
                 "{path} changes agent behavior"
             );
         }
+    }
+
+    #[test]
+    fn task_class_is_docs_only_when_every_file_is_documentation() {
+        use crate::factory::contracts::TaskClass;
+        assert_eq!(
+            merge_task_class(&[file("README.md", "modified"), file("docs/a.png", "added")]),
+            TaskClass::Docs
+        );
+        assert_eq!(
+            merge_task_class(&[file("docs/a.md", "modified"), file("tests/x.rs", "added")]),
+            TaskClass::Tests
+        );
     }
 
     #[test]
