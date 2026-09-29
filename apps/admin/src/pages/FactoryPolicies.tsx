@@ -260,6 +260,13 @@ export default function FactoryPolicies() {
                   Stop when (one condition per line)
                   <Textarea id="policy-stop" className="text-sm" rows={3} value={draft.stop} onChange={event => set('stop', event.target.value)} placeholder="The source is an external email" />
                 </label>
+                {draft.action === 'merge' && draft.project.trim() && (
+                  <p className="text-xs text-text-secondary">
+                    Autonomous reviews do not know which project a pull request belongs to yet. While any merge policy is
+                    scoped to a project, the factory holds every autonomous merge in the organization for a person rather
+                    than guess which policy applies.
+                  </p>
+                )}
                 {editing && <p className="text-xs text-text-tertiary">Action and scope identify the policy and cannot change. Delete it and create a new one to move it.</p>}
                 {saveError && <p role="alert" className="text-sm text-text-primary">{saveError}</p>}
               </div>

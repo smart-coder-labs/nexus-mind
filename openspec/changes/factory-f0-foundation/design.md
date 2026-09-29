@@ -235,7 +235,8 @@ Every adapter is a thin fetcher over a **pure normalizer**, and the normalizer i
 
 ### Rules
 
-- **Opt-in by label** (assumption, reversible): only items labeled `factory` enter, the same pattern as the Gmail decision. `Ok(None)` means "not for the factory"; `Err` means the item is malformed.
+- **Opt-in by label** (assumption, reversible): only items labeled `factory` (any case, in both sources) enter, the same pattern as the Gmail decision. `Ok(None)` means "not for the factory"; `Err` means the item is malformed.
+- **Only unstarted work:** GitHub asks for open issues; NexusMind tasks must be `backlog` or `todo`. A task someone is already working on (`in_progress`, `in_review`) or that is closed never enters. The NexusMind fetch paginates the whole project and filters in code, so closed tasks cannot crowd out open ones.
 - Pull requests returned by the issues API are skipped.
 - **Trust.**
   - GitHub issue: `trusted` only when `author_association` ∈ {`OWNER`, `MEMBER`, `COLLABORATOR`}; otherwise `untrusted` (design §2).
@@ -244,3 +245,38 @@ Every adapter is a thin fetcher over a **pure normalizer**, and the normalizer i
 - **Task class** is derived deterministically from labels. The most sensitive class wins when labels conflict: `security` > `migration` > `infra` > `bugfix` > `backend` > `ui` > `tests` > `docs`. With no known label the class is `unknown`, and the router treats that as needing more context.
 - **Acceptance criteria** are the Markdown checklist items (`- [ ] …`) of the description.
 - Every produced `TaskSpec` passes `Contract::validate()`. The description is truncated to the contract's 64 KiB.
+
+## 6. Telemetry
+
+### What exists
+
+Autonomous runs parse Claude Code's final `result` event only to enforce `max_cost_usd`. Nothing is stored. `usage_events.task_id` references NexusMind tasks (a foreign key), not factory task ids, so it cannot carry factory runs.
+
+### Table `factory_run_metrics` (migration v80)
+
+One row per finished autonomous run (`UNIQUE(run_id)`) with these columns:
+
+- `org_id`, `run_id`, `template_key`;
+- `task_id`: the factory `TaskSpec` id; nullable until the router (F3) assigns work by task;
+- `subject`: e.g. `acme/web#42`, from the run trigger;
+- `provider`, `model`;
+- `input_tokens`, `cached_input_tokens`, `cache_write_tokens`, `output_tokens` — the architecture doc asks for cache accounting separately, because it changes the economics;
+- `cost_usd`, `duration_ms`, `num_turns`, `outcome`, `created_at`.
+
+### Extraction
+
+`extract_run_metrics(result: &Value) -> RunMetrics` is a pure function over Claude Code's `result` event:
+
+- `total_cost_usd`, `duration_ms`, `num_turns`;
+- `usage.{input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens}`;
+- the model is the `modelUsage` entry with the highest cost.
+
+Every field is optional. A missing field is stored as `NULL`, never as `0`, so an unknown cost is never reported as free.
+
+### Recording
+
+The worker records metrics once the run has an outcome, including `budget_exhausted` and failures that still produced a result event. It is best-effort: a metrics write failure is logged and never changes the run's outcome.
+
+### Not in F0
+
+*Cost per accepted change* joins these rows with verification and human outcomes; that needs the router's task ids (F3) and the trajectory store (F5). F0 guarantees the raw data exists from now on.

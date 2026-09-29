@@ -29,8 +29,9 @@
 - [x] 4.5 Review fixes: `project_unresolved` instead of falling back past project-scoped policies; any non-allow re-review cancels the soak; each allow restarts it with the latest run
 
 ## 5. Intake
-- [ ] 5.1 `IntakeSource` trait, `TaskSpec` normalization
-- [ ] 5.2 GitHub issues adapter (`trusted` only for OWNER/MEMBER/COLLABORATOR authors), NexusMind tasks adapter
+- [x] 5.1 `IntakeSource` trait, `TaskSpec` normalization (`factory/intake.rs`): opt-in label, stable name-based task ids, sensitivity-ordered task class, checklist acceptance criteria
+- [x] 5.2 GitHub issues adapter (`trusted` only for OWNER/MEMBER/COLLABORATOR authors), NexusMind tasks adapter (only `backlog`/`todo`, paginated)
+- [x] 5.3 Review fixes: closed/started tasks excluded, case-insensitive label in both sources, UI warns that a project-scoped merge policy holds every autonomous merge
 
 ## 6. Telemetry
 - [ ] 6.1 Per-run cost and latency keyed by `task_id`

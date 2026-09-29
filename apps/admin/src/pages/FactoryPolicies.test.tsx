@@ -116,6 +116,15 @@ describe('FactoryPolicies', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not delete the merge policy/i)
   })
 
+  it('warns that a project-scoped merge policy holds every merge until runs carry a project', async () => {
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: /new policy/i }))
+    await userEvent.selectOptions(screen.getByLabelText('Action'), 'merge')
+    expect(screen.queryByText(/holds every autonomous merge/i)).not.toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Project'), 'web')
+    expect(screen.getByText(/holds every autonomous merge/i)).toBeInTheDocument()
+  })
+
   it('is read-only without the write permission', async () => {
     api.listFactoryPolicies.mockResolvedValue([docsMerge])
     renderPage(['factory_policy:read'])

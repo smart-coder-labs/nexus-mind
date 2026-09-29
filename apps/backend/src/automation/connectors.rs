@@ -359,6 +359,32 @@ pub async fn get_github_branch(token: &str, repository: &str, branch: &str) -> R
     github_get(token, &format!("/repos/{owner}/{repo}/branches/{branch}")).await
 }
 
+/// Open issues carrying `label`, newest first (at most 100). Pull requests are
+/// included by the API; callers skip entries with a `pull_request` key.
+pub async fn list_labeled_github_issues(
+    token: &str,
+    repository: &str,
+    label: &str,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        anyhow::bail!("invalid_label")
+    }
+    let value = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100"),
+    )
+    .await?;
+    value
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
+}
+
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
     github_get(
