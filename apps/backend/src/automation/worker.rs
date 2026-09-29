@@ -2208,12 +2208,15 @@ async fn auto_merge_pull(
     if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files) {
         return Ok(json!({"merged": false, "reason": reason}));
     }
-    let checks = super::connectors::get_github_check_runs(token, repository, reviewed_sha).await?;
-    let runs = checks
-        .get("check_runs")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // Every check-run page plus commit statuses; a partial or unreadable list declines.
+    let runs = match super::connectors::list_commit_ci_runs(token, repository, reviewed_sha).await {
+        Ok(runs) => runs,
+        Err(error) => {
+            return Ok(
+                json!({"merged": false, "reason": "checks_unavailable", "error": error.to_string()}),
+            )
+        }
+    };
     // A required check that never reported is a decline, not a pass.
     if let Err(reason) = super::merge_gate::required_checks_verdict(&required, &runs) {
         return Ok(json!({"merged": false, "reason": reason}));

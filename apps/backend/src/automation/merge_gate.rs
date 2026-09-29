@@ -62,6 +62,32 @@ pub fn required_checks_verdict(
     Ok(())
 }
 
+/// Converts GitHub's combined commit status (`GET /commits/{sha}/status`, used by
+/// Vercel, CircleCI and other non-Checks integrations) into check-run-shaped values
+/// so `required_checks_verdict` judges both APIs the same way.
+pub fn statuses_as_runs(combined: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    let statuses = combined
+        .get("statuses")
+        .and_then(|v| v.as_array())
+        .ok_or("commit_statuses_unreadable")?;
+    statuses
+        .iter()
+        .map(|status| {
+            let context = status
+                .get("context")
+                .and_then(|v| v.as_str())
+                .ok_or("commit_statuses_unreadable")?;
+            let (state, conclusion) = match status.get("state").and_then(|v| v.as_str()) {
+                Some("success") => ("completed", Some("success")),
+                Some("failure" | "error") => ("completed", Some("failure")),
+                Some("pending") => ("in_progress", None),
+                _ => return Err("commit_statuses_unreadable".to_string()),
+            };
+            Ok(serde_json::json!({"name": context, "status": state, "conclusion": conclusion}))
+        })
+        .collect()
+}
+
 /// Maximum files inspected before declining; larger PRs are never automatic.
 pub const MAX_PULL_FILES: usize = 300;
 
@@ -114,8 +140,8 @@ fn is_eligible_path(path: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     // Under `docs/` only prose and images count: `docs/conf.py` or a site config
     // is executable in a docs build and must not ride along as "documentation".
+    // `.mdx` is excluded everywhere: it compiles to JS and can be a live route.
     let is_doc = lower.ends_with(".md")
-        || lower.ends_with(".mdx")
         || (segments.first() == Some(&"docs")
             && [
                 ".txt", ".rst", ".adoc", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
@@ -143,7 +169,16 @@ fn is_never_eligible(path: &str) -> bool {
     // Dot-directories and dotfiles hold CI, editor, package-manager and agent
     // configuration (.github, .claude, .cursor, .npmrc, .mcp.json, .vitepress...).
     let hidden = path.split('/').any(|segment| segment.starts_with('.'));
-    let agent_instructions = (name.starts_with("claude") && name.ends_with(".md"))
+    // Plugin layouts keep agent instructions in ordinary directories
+    // (`plugins/x/commands/*.md`, `skills/*/references/*.md`, `agents/*.md`).
+    let in_agent_dir = path.split('/').any(|segment| {
+        matches!(
+            segment,
+            "agents" | "commands" | "skills" | "prompts" | "hooks" | "rules" | "plugins"
+        )
+    });
+    let agent_instructions = (in_agent_dir && name.ends_with(".md"))
+        || (name.starts_with("claude") && name.ends_with(".md"))
         || matches!(
             name,
             "agents.md" | "gemini.md" | "copilot-instructions.md" | "skill.md"
@@ -336,6 +371,65 @@ mod tests {
                 "{path} changes agent behavior"
             );
         }
+    }
+
+    #[test]
+    fn plugin_instruction_directories_are_never_eligible() {
+        for path in [
+            "plugins/x/commands/review.md",
+            "agents/fixer.md",
+            "skills/deploy/references/api.md",
+            "prompts/system.md",
+            "hooks/pre-commit.md",
+            "rules/style.md",
+        ] {
+            assert!(
+                auto_merge_path_verdict(&[file(path, "modified")]).is_err(),
+                "{path} is agent behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn mdx_is_code_not_docs() {
+        for path in ["docs/guide.mdx", "apps/landing/app/pricing/page.mdx"] {
+            assert!(
+                auto_merge_path_verdict(&[file(path, "modified")]).is_err(),
+                "{path} compiles to JS"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_statuses_become_check_runs() {
+        let combined = serde_json::json!({"statuses": [
+            {"context": "vercel", "state": "success"},
+            {"context": "ci/circleci", "state": "failure"},
+            {"context": "deploy", "state": "error"},
+            {"context": "preview", "state": "pending"}
+        ]});
+        assert_eq!(
+            statuses_as_runs(&combined),
+            Ok(vec![
+                run("vercel", "completed", Some("success")),
+                run("ci/circleci", "completed", Some("failure")),
+                run("deploy", "completed", Some("failure")),
+                run("preview", "in_progress", None),
+            ])
+        );
+        assert!(statuses_as_runs(&serde_json::json!({"message": "Not Found"})).is_err());
+    }
+
+    #[test]
+    fn a_red_commit_status_blocks_the_merge() {
+        let runs = [
+            run("ci", "completed", Some("success")),
+            run("vercel", "completed", Some("failure")),
+        ];
+        assert_eq!(
+            required_checks_verdict(&[], &runs),
+            Err("checks_not_green".into())
+        );
     }
 
     #[test]
