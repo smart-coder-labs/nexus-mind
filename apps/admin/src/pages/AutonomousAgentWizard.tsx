@@ -762,8 +762,8 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
             <Textarea className="text-sm" rows={3} value={state.customInstructions} onChange={event => set('customInstructions', event.target.value)} placeholder="e.g. Focus on error handling and auth checks; flag any missing input validation." />
           </Field>
           <div className="rounded-[12px] border border-border-primary p-3 space-y-2">
-            <Switch checked={state.autoMerge} onCheckedChange={value => set('autoMerge', value)} size="sm" label="Auto-merge if the review is clean" />
-            <p className="text-[11px] text-text-tertiary">When on, squash-merges the PR (keeping the branch) ONLY if the review found no blocking issues AND every required GitHub check is green. If there are no checks to verify, it does not merge.</p>
+            <Switch checked={state.autoMerge} onCheckedChange={value => set('autoMerge', value)} size="sm" label="Auto-merge docs and tests PRs if the review is clean" />
+            <p className="text-[11px] text-text-tertiary">When on, squash-merges the PR (keeping the branch) ONLY if every changed file is documentation or tests, the review found no blocking issues, and every required GitHub check is green on the reviewed commit. PRs that touch code, dependencies, CI or agent instructions, delete files, or received new commits after the review stay open for a person. If there are no checks to verify, it does not merge.</p>
           </div>
         </div>
       )}

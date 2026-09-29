@@ -2160,8 +2160,11 @@ async fn publish_template_output(
 }
 
 /// Decide whether a reviewed PR may be auto-merged and, if so, squash-merge it
-/// (keeping the branch). Merges only when every required check on the PR head is
-/// green; with no checks to verify it declines rather than merges blindly.
+/// (keeping the branch). Merges only the exact commit that was reviewed, only when
+/// every changed path is docs/tests (interim floor, see `merge_gate`), and only when
+/// every required check on that commit is green; with no checks to verify it
+/// declines rather than merges blindly. The merge is pinned to the reviewed SHA so
+/// a push landing between these checks and the merge is rejected by GitHub.
 async fn auto_merge_pull(
     store: &SqliteStore,
     claim: &queries::ClaimedAutonomousRun,
@@ -2184,41 +2187,47 @@ async fn auto_merge_pull(
     if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(json!({"merged": true, "reason": "already_merged"}));
     }
+    let Some(reviewed_sha) = super::merge_gate::reviewed_head_sha(&claim.config) else {
+        return Ok(json!({"merged": false, "reason": "reviewed_head_unknown"}));
+    };
     let head_sha = pull
         .pointer("/head/sha")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("head_sha_missing"))?;
-    let checks = super::connectors::get_github_check_runs(token, repository, head_sha).await?;
+    if head_sha != reviewed_sha {
+        return Ok(json!({"merged": false, "reason": "head_changed_since_review"}));
+    }
+    let files = match super::connectors::list_github_pull_files(token, repository, number).await {
+        Ok(files) => files,
+        Err(error) => {
+            return Ok(
+                json!({"merged": false, "reason": "pull_files_unavailable", "error": error.to_string()}),
+            )
+        }
+    };
+    if let Err(reason) = super::merge_gate::auto_merge_path_verdict(&files) {
+        return Ok(json!({"merged": false, "reason": reason}));
+    }
+    let checks = super::connectors::get_github_check_runs(token, repository, reviewed_sha).await?;
     let runs = checks
         .get("check_runs")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let relevant: Vec<&serde_json::Value> = runs
-        .iter()
-        .filter(|run| {
-            required.is_empty()
-                || required
-                    .iter()
-                    .any(|name| Some(name.as_str()) == run.get("name").and_then(|n| n.as_str()))
-        })
-        .collect();
-    // Guardrail: no checks means we cannot confirm green — decline the merge.
-    if relevant.is_empty() {
-        return Ok(json!({"merged": false, "reason": "no_checks_to_verify"}));
-    }
-    let all_green = relevant.iter().all(|run| {
-        run.get("status").and_then(|s| s.as_str()) == Some("completed")
-            && matches!(
-                run.get("conclusion").and_then(|c| c.as_str()),
-                Some("success" | "neutral" | "skipped")
-            )
-    });
-    if !all_green {
-        return Ok(json!({"merged": false, "reason": "checks_not_green"}));
+    // A required check that never reported is a decline, not a pass.
+    if let Err(reason) = super::merge_gate::required_checks_verdict(&required, &runs) {
+        return Ok(json!({"merged": false, "reason": reason}));
     }
     require_publish_authority(store, claim)?;
-    match super::connectors::merge_github_pull(token, repository, number, "squash").await {
+    match super::connectors::merge_github_pull(
+        token,
+        repository,
+        number,
+        "squash",
+        Some(reviewed_sha),
+    )
+    .await
+    {
         Ok(result) => Ok(json!({"merged": true, "detail": result})),
         Err(error) => {
             Ok(json!({"merged": false, "reason": "merge_rejected", "error": error.to_string()}))

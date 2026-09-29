@@ -1,12 +1,14 @@
 # Tasks — Factory F0: Foundation
 
 ## 1. Merge gate (design §1)
-- [ ] 1.1 RED: tests for `auto_merge_path_verdict` (docs, tests, never-eligible paths, removed, renamed)
-- [ ] 1.2 GREEN: implement `auto_merge_path_verdict`
-- [ ] 1.3 `merge_github_pull` takes `sha: Option<&str>`
-- [ ] 1.4 `list_github_pull_files` connector (paginated, capped at 300)
-- [ ] 1.5 `auto_merge_pull`: require reviewed SHA, head match, path verdict, CI on the reviewed SHA, pinned merge
-- [ ] 1.6 `cargo test` + `cargo clippy` green
+- [x] 1.1 RED: tests for `auto_merge_path_verdict` (docs, tests, never-eligible paths, removed, renamed)
+- [x] 1.2 GREEN: implement `auto_merge_path_verdict`
+- [x] 1.3 `merge_github_pull` takes `sha: Option<&str>`
+- [x] 1.4 `list_github_pull_files` connector (paginated, capped at 300)
+- [x] 1.5 `auto_merge_pull`: require reviewed SHA, head match, path verdict, CI on the reviewed SHA, pinned merge
+- [x] 1.5b Review fixes: agent-instruction files, executable files under `docs/`, multi-ecosystem manifests, missing required checks
+- [x] 1.5c Wizard copy states what auto-merge actually merges
+- [x] 1.6 `cargo test` full suite green (1593 passed, 0 failed); clippy clean on touched files (21 pre-existing clippy errors elsewhere)
 
 ## 2. Contracts
 - [ ] 2.1 `schemas/factory/*.schema.json` (6 contracts)

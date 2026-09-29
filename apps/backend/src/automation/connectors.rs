@@ -276,14 +276,49 @@ pub async fn merge_github_pull(
     repository: &str,
     number: i64,
     method: &str,
+    sha: Option<&str>,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    // With `sha`, GitHub refuses (409) if the head moved since it was verified.
+    let mut body = json!({ "merge_method": method });
+    if let Some(sha) = sha {
+        body["sha"] = json!(sha);
+    }
     github_put(
         token,
         &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
-        json!({ "merge_method": method }),
+        body,
     )
     .await
+}
+
+/// Every file changed by a pull request, following pagination. Fails with
+/// `too_many_files` past `MAX_PULL_FILES` rather than returning a partial list.
+pub async fn list_github_pull_files(
+    token: &str,
+    repository: &str,
+    number: i64,
+) -> Result<Vec<super::merge_gate::ChangedFile>> {
+    use super::merge_gate::{parse_changed_files, MAX_PULL_FILES};
+    let (owner, repo) = repository_parts(repository)?;
+    let mut files = Vec::new();
+    for page in 1.. {
+        let value = github_get(
+            token,
+            &format!("/repos/{owner}/{repo}/pulls/{number}/files?per_page=100&page={page}"),
+        )
+        .await?;
+        let batch = parse_changed_files(&value).map_err(|reason| anyhow::anyhow!(reason))?;
+        let last = batch.len() < 100;
+        files.extend(batch);
+        if files.len() > MAX_PULL_FILES {
+            anyhow::bail!("too_many_files")
+        }
+        if last {
+            break;
+        }
+    }
+    Ok(files)
 }
 
 /// Three-dot diff (`merge-base(base, head)…head`) for a pull request, pinned to a

@@ -22,11 +22,17 @@ There are two windows between steps 2 and 4 where unreviewed commits can be merg
   - `removed` → ineligible.
   - `renamed` → both `filename` and `previous_filename` must be eligible.
   - Eligible when the path matches one of:
-    - Docs: `*.md`, `*.mdx`, `*.txt` under `docs/`, anything under `docs/`.
-    - Tests: any path segment `tests`, `test`, `__tests__`, `e2e`; file names `*.test.*`, `*.spec.*`, `*_test.go`, `*_test.rs`, `test_*.py`, `*_test.py`.
-  - Explicitly **never** eligible, even under a docs or test path: `.github/`, lockfiles, `Dockerfile*`, `*.toml`, `package.json`, `openspec/config.yaml`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`.
+    - Docs: `*.md` / `*.mdx` anywhere. Under `docs/`, also prose and images (`.txt .rst .adoc .png .jpg .jpeg .gif .webp .svg`). Nothing else under `docs/` counts, because `docs/conf.py` or a site config is executable in a docs build.
+    - Tests: any directory segment `tests`, `test`, `__tests__`, `e2e`; file names `*.test.*`, `*.spec.*`, `*_test.go`, `*_test.rs`, `test_*.py`, `*_test.py`.
+  - Explicitly **never** eligible, even under a docs or test path. Matching is case-insensitive:
+    - Any dot-directory or dotfile segment: `.github`, `.claude`, `.cursor`, `.npmrc`, `.mcp.json`, `.vitepress`…
+    - Agent instructions: `claude*.md`, `agents.md`, `gemini.md`, `copilot-instructions.md`, `skill.md`.
+    - Dependency and build manifests across ecosystems: lockfiles, `package.json`, `pnpm-workspace.yaml`, `go.mod/go.sum`, `Gemfile*`, `pom.xml`, `*.gradle(.kts)`, `*.csproj`, `requirements*.txt`, `setup.py/cfg`, `conftest.py`, `Makefile`, `Dockerfile*`, `Containerfile*`, `*.toml`, `*.lock`, `*.sh`.
+    - `openspec/config.yaml`.
 
-  `CLAUDE.md` and `AGENTS.md` are agent instructions, so changing them changes agent behavior.
+  Agent instructions and dependency manifests change what later runs do, so they are never "just docs" or "just tests".
+
+- **Required checks.** Every configured `required_checks` name must be present on the reviewed commit and green. A missing required check declines with `required_check_missing:<name>`. Before this change, a configured check that had not reported was silently ignored. With none configured, every reported run must be green.
 
 - **Order of checks** in `auto_merge_pull`, cheapest and most decisive first: already merged → reviewed SHA known → head matches → paths eligible → CI green → publish authority → pinned merge.
 
