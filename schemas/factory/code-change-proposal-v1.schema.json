@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusmind.dev/schemas/factory/code-change-proposal-v1.schema.json",
+  "title": "Factory CodeChangeProposal v1",
+  "description": "The plan a Model Gateway patch lane must emit before any patch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "summary", "operations", "assumptions", "verification_plan", "needs_more_context", "requires_human_approval"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["path", "action", "rationale"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "action": { "enum": ["create", "modify", "delete"] },
+          "symbol": { "type": ["string", "null"], "maxLength": 512 },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        }
+      }
+    },
+    "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "verification_plan": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "needs_more_context": { "type": "boolean" },
+    "requires_human_approval": { "type": "boolean" }
+  }
+}

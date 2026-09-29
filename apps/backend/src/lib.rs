@@ -6,6 +6,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod embed;
+pub mod factory;
 pub mod email;
 pub mod indexer;
 pub mod migration;

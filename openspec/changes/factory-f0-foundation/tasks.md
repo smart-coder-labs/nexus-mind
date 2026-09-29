@@ -11,8 +11,9 @@
 - [x] 1.6 `cargo test` full suite green (1593 passed, 0 failed); clippy clean on touched files (21 pre-existing clippy errors elsewhere)
 
 ## 2. Contracts
-- [ ] 2.1 `schemas/factory/*.schema.json` (6 contracts)
-- [ ] 2.2 Rust types and schema round-trip tests
+- [x] 2.1 `schemas/factory/*.schema.json` (6 contracts) + 35 fixtures + `cases.json`
+- [x] 2.2 Rust types (`src/factory/contracts.rs`) + conformance test (schema ⇔ serde agree on every fixture, valid ones round-trip) + cross-field reason tests
+- [x] 2.3 Review fixes: plugin instruction dirs and `.mdx` not auto-mergeable; all check-run pages + commit statuses; integral-float parity
 
 ## 3. Policy storage and admin
 - [ ] 3.1 Migration: `factory_action_policies` table (org-scoped) and permissions `factory_policy:read/write` granted to `super_user_template` only
@@ -26,7 +27,7 @@
 
 ## 5. Intake
 - [ ] 5.1 `IntakeSource` trait, `TaskSpec` normalization
-- [ ] 5.2 GitHub issues adapter, NexusMind tasks adapter
+- [ ] 5.2 GitHub issues adapter (`trusted` only for OWNER/MEMBER/COLLABORATOR authors), NexusMind tasks adapter
 
 ## 6. Telemetry
 - [ ] 6.1 Per-run cost and latency keyed by `task_id`

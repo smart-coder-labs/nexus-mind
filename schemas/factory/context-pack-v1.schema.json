@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusmind.dev/schemas/factory/context-pack-v1.schema.json",
+  "title": "Factory ContextPack v1",
+  "description": "Explicitly assembled context for a coding model: symbols over whole files, each with a reason and a content hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "repository", "artifacts", "constraints", "acceptance_tests"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["commit"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "branch": { "type": "string", "minLength": 1, "maxLength": 255 }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["path", "kind", "reason", "content_hash"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "symbol": { "type": ["string", "null"], "maxLength": 512 },
+          "kind": { "enum": ["code", "test", "schema", "config", "documentation", "history"] },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "content_hash": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "retrieval_score": { "type": "number" }
+        }
+      }
+    },
+    "constraints": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "acceptance_tests": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  }
+}

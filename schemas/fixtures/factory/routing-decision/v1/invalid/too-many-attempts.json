@@ -1,0 +1,1 @@
+{"schema_version":1,"task_id":"7f1c2a9e-3b4d-4e5f-8a6b-1c2d3e4f5a6b","task_type":"docs","execution_tier":"LOCAL_SMALL","risk":0.1,"confidence":0.9,"required_checks":[],"max_attempts":9,"human_approval_required":false,"decided_by":{"provider":"rules"},"actions":{}}
