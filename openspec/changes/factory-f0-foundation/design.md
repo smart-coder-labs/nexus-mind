@@ -105,3 +105,100 @@ Both must match the expected validity. For valid fixtures, the test also checks 
 ### Not in item 2
 
 Persisting these contracts (tables) belongs to items 3–6. Item 2 only defines and verifies the wire contracts.
+
+## 3. Policy storage and admin
+
+### Table (migration v78)
+
+```sql
+factory_action_policies(
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  action TEXT NOT NULL CHECK (action IN (...10 actions...)),
+  mode TEXT NOT NULL CHECK (mode IN ('never','manual','criteria','after_fix','after_merge')),
+  scope_project TEXT NOT NULL DEFAULT '',      -- '' = any project
+  scope_task_class TEXT NOT NULL DEFAULT '',   -- '' = any class
+  allow_json TEXT NOT NULL, stop_json TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  updated_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE (org_id, action, scope_project, scope_task_class)
+)
+```
+
+`''` rather than `NULL` for "any": SQLite treats NULLs as distinct in `UNIQUE`, which would allow two "any project" rows for the same action.
+
+### Permissions
+
+- `factory_policy:read` and `factory_policy:write` go through `require_explicit_permission` and resolve against the **persisted role template**, the same mechanism `autonomous_agent:*` already uses. The legacy privileged-role bypass does not apply, so an `admin` is denied unless the grant exists (D16: permission, not role).
+- Migration v78 grants both only to `super_user_template`. They are added to the hard-coded `super_user` list, which is what `/v1/admin/auth/me` reports, and deliberately **not** to the `admin` list.
+- There is no MCP tool (D16). Only the admin UI edits policies.
+
+### API
+
+| Method | Path | Permission | Behavior |
+|---|---|---|---|
+| GET | `/v1/factory/policies` | `factory_policy:read` | List the org's policies as `ActionPolicy` + `id` |
+| PUT | `/v1/factory/policies` | `factory_policy:write` | Upsert by `(action, scope)`. Body is an `ActionPolicy` (validated with `Contract::validate`). **Optimistic concurrency:** `version` must be `1` for a new row and `current + 1` for an existing one, otherwise 409 `policy_version_conflict` |
+| DELETE | `/v1/factory/policies/:id` | `factory_policy:write` | Remove one policy |
+
+Every write is recorded with `log_audit` (`factory_policy.upsert` / `factory_policy.delete`), including the before/after mode.
+
+### Absence of a policy
+
+No row for an action means **`manual`** (hold for a human). Evaluation (item 4) fails closed, so an org with no policies gets no autonomy.
+
+### Admin UI
+
+A new page, `FactoryPolicies` at `/factory-policies`, gated by `factory_policy:read`. It shows one row per policy and an editor for action, mode, scope, allow and stop lines; saving requires `factory_policy:write`.
+
+The page states the states explicitly:
+
+- **Empty:** "No policies — every action waits for a person."
+- **409:** "Someone changed this policy; reload."
+- **No write permission:** read-only.
+
+## 4. Policy evaluation
+
+### Engine (`src/factory/policy_engine.rs`, pure)
+
+`evaluate(input, policies, model) -> ActionVerdict` in a fixed order. The first rule that decides wins:
+
+1. **Select the policy:** the most specific match for `(action, project, task_class)`, in this order: exact project + class → project only → class only → any. If there is no match, the mode is `manual`.
+2. **`never`** → `deny` (source `policy`). **`manual`** → `hold` (source `policy`).
+3. **Floors** (deterministic; any hit → `hold`, source `floor`). The caller computes them:
+   - a sensitive path is touched (the `merge_gate` never-eligible rules, plus paths outside docs/tests for merge);
+   - a blocking verification failure;
+   - a second failed repair attempt;
+   - an external source (`gmail`, `transcript`, `slack`, `sentry`) combined with `fix`.
+4. **`after_fix` / `after_merge`** → `allow` (source `policy`) only when the milestone is reached; otherwise `hold`. These are deterministic facts, not model judgments.
+5. **`criteria`** → the decision model (`DecisionProvider`):
+   - **not configured** → `hold` with reason `decision_model_not_configured` (decision above: an unevaluated written condition is never treated as met);
+   - error, timeout or schema violation → `hold` with reason `decision_model_failed`;
+   - `allow` with confidence ≥ threshold (default 0.8) → `allow` (source `decision_model`);
+   - otherwise → `hold` (source `decision_model`).
+
+The model can only turn an eligible item into `allow`, or keep it held. It is never consulted for items that steps 1–4 already decided.
+
+### Merge soak (D17)
+
+When every gate passes for `merge`, the merge does **not** happen yet:
+
+- A row in `factory_merge_soaks` records `(org_id, run_id, repository, pull_number, head_sha, required_checks, due_at = now + 10 min)`, and the verdict is `hold` with reason `soak_pending`.
+- The worker tick runs `process_due_soaks`. For each row that is due, it re-runs the **full** gate: PR head still equals `head_sha`, paths, CI (every page plus statuses), policy, model and publish authority. It then merges pinned to `head_sha`.
+- Any change or failure deletes the row with a recorded decision. A new push is reviewed again by the normal webhook flow.
+
+### Decision audit (`factory_decisions`)
+
+Every evaluation writes one row:
+
+- `org_id`, `subject` (e.g. `acme/web#42@<sha>`), `action`;
+- `verdict`, `source`, `reason`;
+- `policy_id` and `policy_version`;
+- `provider`, `model`, `confidence`;
+- `inputs_json`: floors hit, task class and source kind. It never includes diff content or secrets.
+
+This is the dataset for the *false-low-risk* metric (plan §4 step 5).
+
+### Integration in F0
+
+`auto_merge_pull` keeps the item-1 gates, then asks the engine for `merge`. Since no decision model exists until F3, auto-merge now always ends in `hold` (`decision_model_not_configured`, or `manual` when no policy exists), and the reason is visible in the run result. The soak and decision audit are exercised by tests with a fake provider, ready for F3.

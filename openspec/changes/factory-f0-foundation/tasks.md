@@ -16,9 +16,10 @@
 - [x] 2.3 Review fixes: plugin instruction dirs and `.mdx` not auto-mergeable; all check-run pages + commit statuses; integral-float parity
 
 ## 3. Policy storage and admin
-- [ ] 3.1 Migration: `factory_action_policies` table (org-scoped) and permissions `factory_policy:read/write` granted to `super_user_template` only
-- [ ] 3.2 Admin API gated by `require_permission`
-- [ ] 3.3 Admin UI page
+- [x] 3.1 Migration v78: `factory_action_policies` table (org-scoped) and permissions `factory_policy:read/write` granted to `super_user_template` only
+- [x] 3.2 Admin API gated by `require_explicit_permission` (no admin bypass); optimistic versioning; audit in the same transaction as the write
+- [x] 3.3 Admin UI page `/factory-policies` (read-only without write; 409 and failed-delete states), nav, role catalog, hidden in only-context
+- [x] 3.4 Review fixes: atomic audit (`append_audit_chained`), `/auth/me` reports template-governed grants (`autonomous_agent:*`, `factory_policy:*`) exactly as enforced
 
 ## 4. Policy evaluation
 - [ ] 4.1 Evaluation order (policy → floors → Jev stub → merge checks → audit)

@@ -10,7 +10,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::api::{
     admin, agents, audit, auth, automation, autonomous_agents, autonomous_webhooks, backup,
-    clients, code, context, conventions, docs, github_auth, harnesses, health, internal, memory,
+    clients, code, context, conventions, docs, factory, github_auth, harnesses, health, internal, memory,
     middleware as api_mw, migrations as migrations_api, policy, rate_limit, sdd, search, sessions,
     tasks, usage, users, webhooks,
 };
@@ -200,6 +200,11 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             patch(policy::update_policy).delete(policy::delete_policy),
         )
         .route("/v1/policy/check", post(policy::check_policy))
+        .route(
+            "/v1/factory/policies",
+            get(factory::list_policies).put(factory::put_policy),
+        )
+        .route("/v1/factory/policies/:id", delete(factory::delete_policy))
         .route("/v1/automation/profiles", get(automation::list_profiles))
         .route(
             "/v1/automation/authorize",

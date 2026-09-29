@@ -212,12 +212,13 @@ fn require_permission_inner(
                 )
             })?;
 
-    // Autonomous-agent endpoints deliberately do not inherit the legacy
-    // privileged-role bypass. Their built-in grants live in persisted role
+    // Autonomous-agent and factory-policy endpoints deliberately do not inherit
+    // the legacy privileged-role bypass. Their built-in grants live in persisted role
     // templates so an operator can remove a grant and the exact permission
     // check will fail closed even when the actor's role is named `admin`.
     if !privileged_bypass
-        && permission.starts_with("autonomous_agent:")
+        && (permission.starts_with("autonomous_agent:")
+            || permission.starts_with("factory_policy:"))
         && matches!(effective_role.as_str(), "admin" | "super_user")
     {
         let template_id = if effective_role.as_str() == "admin" {
@@ -437,6 +438,67 @@ mod tests {
         let auth = make_auth(Role::Admin);
         assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:read").is_err());
         assert!(require_explicit_permission(&conn, &auth, None, "autonomous_agent:create").is_ok());
+    }
+
+    #[test]
+    fn factory_policy_is_a_permission_not_a_role() {
+        let conn = setup_db();
+        let super_user = make_custom_auth("super_user");
+        let admin = make_auth(Role::Admin);
+        for permission in ["factory_policy:read", "factory_policy:write"] {
+            assert!(
+                require_explicit_permission(&conn, &super_user, None, permission).is_ok(),
+                "super_user template grants {permission}"
+            );
+            assert!(
+                require_explicit_permission(&conn, &admin, None, permission).is_err(),
+                "admin must not get {permission} from its role name"
+            );
+        }
+    }
+
+    #[test]
+    fn super_user_loses_factory_policy_write_when_the_grant_is_removed() {
+        let conn = setup_db();
+        let raw: String = conn
+            .query_row(
+                "SELECT permissions FROM roles WHERE id='super_user_template'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut permissions: Vec<String> = serde_json::from_str(&raw).unwrap();
+        permissions.retain(|permission| permission != "factory_policy:write");
+        conn.execute(
+            "UPDATE roles SET permissions=?1 WHERE id='super_user_template'",
+            [serde_json::to_string(&permissions).unwrap()],
+        )
+        .unwrap();
+        let auth = make_custom_auth("super_user");
+        assert!(require_explicit_permission(&conn, &auth, None, "factory_policy:write").is_err());
+        assert!(require_explicit_permission(&conn, &auth, None, "factory_policy:read").is_ok());
+    }
+
+    #[test]
+    fn custom_role_edits_factory_policy_only_with_the_exact_grant() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO organizations (id,name,slug) VALUES ('org1','Acme','acme')",
+            [],
+        )
+        .unwrap();
+        crate::db::queries::create_role(
+            &conn,
+            "org1",
+            "factory-steward",
+            "Factory steward",
+            &["factory_policy:read".to_string()],
+            None,
+        )
+        .unwrap();
+        let auth = make_custom_auth("factory-steward");
+        assert!(require_explicit_permission(&conn, &auth, None, "factory_policy:read").is_ok());
+        assert!(require_explicit_permission(&conn, &auth, None, "factory_policy:write").is_err());
     }
 
     #[test]

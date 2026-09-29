@@ -56,23 +56,26 @@ const AVAILABLE_PERMISSIONS = [
   { key: 'harness:download', name: 'Download Harnesses', description: 'Allows downloading approved harness manifests.' },
   { key: 'harness:install', name: 'Approve Harness Installs', description: 'Allows approving a harness version and manifest hash for local installation tools.' },
   { key: 'harness:review_config', name: 'Review Harness Config', description: 'Allows sharing and inspecting redacted Claude configuration reviews.' },
+  { key: 'factory_policy:read', name: 'Read Factory Policies', description: 'Allows viewing what autonomous agents may do on their own, action by action.' },
+  { key: 'factory_policy:write', name: 'Write Factory Policies', description: 'Allows changing how much autonomy agents get. Grant deliberately: it is not implied by the admin role.' },
 ]
 
 const MAX_VISIBLE_PERMISSION_CHIPS = 5
 
-// Mockup groups the create-role permission picker into 6 labeled, color-dot
+// Mockup groups the create-role permission picker into 7 labeled, color-dot
 // sections (Memories / Users & Access / Projects & Sessions / Code /
-// Harnesses / System). Rather than hand-duplicating each permission's
+// Harnesses / Factory / System). Rather than hand-duplicating each permission's
 // name/description a second time, this buckets the existing
 // `AVAILABLE_PERMISSIONS` catalog by key prefix — the prefixes below
-// partition all 33 real permissions with no leftovers (verified: 9 + 5 + 5 +
-// 3 + 5 + 6 = 33), so nothing is fabricated or silently dropped.
+// partition all 35 real permissions with no leftovers (verified: 9 + 5 + 5 +
+// 3 + 5 + 2 + 6 = 35), so nothing is fabricated or silently dropped.
 const PERMISSION_GROUPS: { label: string; color: string; prefixes: string[] }[] = [
   { label: 'MEMORIES', color: '#3b82f6', prefixes: ['memory', 'collection', 'tag', 'graph'] },
   { label: 'USERS & ACCESS', color: '#f97316', prefixes: ['user', 'api_key', 'policy'] },
   { label: 'PROJECTS & SESSIONS', color: '#6366f1', prefixes: ['project', 'session', 'convention'] },
   { label: 'CODE', color: '#a855f7', prefixes: ['code'] },
   { label: 'HARNESSES', color: '#a78bfa', prefixes: ['harness'] },
+  { label: 'FACTORY', color: '#22c55e', prefixes: ['factory_policy'] },
   { label: 'SYSTEM', color: '#facc15', prefixes: ['audit', 'settings', 'webhook', 'backup'] },
 ]
 
@@ -93,6 +96,7 @@ const PERMISSION_SECTION: Record<string, string> = {
   task: '/tasks',
   sdd: '/sdd',
   autonomous_agent: '/autonomous-agents',
+  factory_policy: '/factory-policies',
   usage: '/usage',
 }
 const isPermissionOffered = (key: string) => {

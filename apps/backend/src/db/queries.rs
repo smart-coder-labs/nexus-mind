@@ -1357,7 +1357,37 @@ pub fn insert_audit_log_chained(
     timestamp_override: Option<&str>,
 ) -> Result<AuditEntry> {
     let tx = conn.unchecked_transaction()?;
+    let entry = append_audit_chained(
+        &tx,
+        org_id,
+        user_id,
+        action,
+        resource_type,
+        resource_id,
+        metadata,
+        timestamp_override,
+    )?;
+    tx.commit()?;
+    Ok(entry)
+}
 
+/// Appends one entry to the org's audit hash chain WITHOUT opening a transaction.
+///
+/// For callers that must make a state change and its audit record atomic: they
+/// open the transaction, change state, call this, and commit — so either both
+/// land or neither does. The caller's transaction also serializes the chain read
+/// with the insert, which `insert_audit_log_chained` otherwise provides.
+#[allow(clippy::too_many_arguments)]
+pub fn append_audit_chained(
+    tx: &Connection,
+    org_id: &str,
+    user_id: &str,
+    action: &str,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    metadata: serde_json::Value,
+    timestamp_override: Option<&str>,
+) -> Result<AuditEntry> {
     // 1. Read the latest current_hash for this org (per-tenant chain).
     // Use rowid DESC as the tiebreaker: rowid is SQLite's implicit autoincrement
     // and reflects true insertion order regardless of timestamp precision.
@@ -1413,7 +1443,6 @@ pub fn insert_audit_log_chained(
             current_hash
         ],
     )?;
-    tx.commit()?;
 
     Ok(AuditEntry {
         id,
@@ -3839,6 +3868,36 @@ pub fn update_user_role(
     Ok(count > 0)
 }
 
+/// Permission domains checked by `require_explicit_permission` against the
+/// persisted role TEMPLATE (no privileged-role bypass). For these, the template is
+/// the source of truth, not the hard-coded lists below.
+const TEMPLATE_GOVERNED_DOMAINS: [&str; 2] = ["autonomous_agent:", "factory_policy:"];
+
+/// Replaces the template-governed grants in a hard-coded privileged list with
+/// exactly what the persisted template grants, so `/v1/admin/auth/me` reports
+/// what the backend enforces: a grant removed from the template disappears from
+/// the UI, and one added to it appears.
+fn with_template_explicit_grants(
+    conn: &Connection,
+    template_id: &str,
+    mut permissions: Vec<String>,
+) -> Result<Vec<String>> {
+    let governed = |p: &str| TEMPLATE_GOVERNED_DOMAINS.iter().any(|d| p.starts_with(d));
+    permissions.retain(|p| !governed(p));
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT permissions FROM roles WHERE id = ?1 AND enabled = 1",
+            [template_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let granted: Vec<String> = raw
+        .map(|raw| serde_json::from_str(&raw).unwrap_or_default())
+        .unwrap_or_default();
+    permissions.extend(granted.into_iter().filter(|p| governed(p)));
+    Ok(permissions)
+}
+
 /// Resolves the permissions associated with a standard or custom role.
 pub fn get_role_permissions(
     conn: &Connection,
@@ -3846,7 +3905,7 @@ pub fn get_role_permissions(
     role_name: &str,
 ) -> Result<Vec<String>> {
     if role_name == "admin" {
-        return Ok(vec![
+        return with_template_explicit_grants(conn, "admin_template", vec![
             "memory:read".to_string(),
             "memory:write".to_string(),
             "memory:delete".to_string(),
@@ -3897,7 +3956,7 @@ pub fn get_role_permissions(
             "autonomous_agent:manage_connectors".to_string(),
         ]);
     } else if role_name == "super_user" {
-        return Ok(vec![
+        return with_template_explicit_grants(conn, "super_user_template", vec![
             "memory:read".to_string(),
             "memory:write".to_string(),
             "memory:delete".to_string(),
@@ -3963,6 +4022,10 @@ pub fn get_role_permissions(
             "autonomous_agent:run".to_string(),
             "autonomous_agent:cancel".to_string(),
             "autonomous_agent:manage_connectors".to_string(),
+            // Factory policies (v78): granted to super_user only. Deliberately absent
+            // from the `admin` list — editing agent autonomy is a separate grant.
+            "factory_policy:read".to_string(),
+            "factory_policy:write".to_string(),
         ]);
     } else if role_name == "member" {
         return Ok(vec![
@@ -11805,6 +11868,51 @@ mod tests {
         let stats = fetch_daily_stats(&conn, &org.id).unwrap();
         assert_eq!(stats.requests_today, 0);
         assert_eq!(stats.tokens_today, 0);
+    }
+
+    fn set_template_grants(conn: &Connection, template: &str, edit: impl Fn(&mut Vec<String>)) {
+        let raw: String = conn
+            .query_row("SELECT permissions FROM roles WHERE id = ?1", [template], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mut permissions: Vec<String> = serde_json::from_str(&raw).unwrap();
+        edit(&mut permissions);
+        conn.execute(
+            "UPDATE roles SET permissions = ?1 WHERE id = ?2",
+            [serde_json::to_string(&permissions).unwrap(), template.to_string()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn reported_explicit_grants_follow_the_persisted_templates() {
+        // /v1/admin/auth/me reports get_role_permissions; require_explicit_permission
+        // checks the templates. They must agree, or the UI shows controls the
+        // backend rejects (or hides ones it allows).
+        let conn = setup();
+        let has = |role: &str, permission: &str| {
+            get_role_permissions(&conn, "irrelevant", role)
+                .unwrap()
+                .iter()
+                .any(|p| p == permission)
+        };
+        assert!(has("super_user", "factory_policy:write"));
+        assert!(!has("admin", "factory_policy:read"));
+        assert!(has("admin", "autonomous_agent:read"));
+
+        set_template_grants(&conn, "super_user_template", |p| {
+            p.retain(|x| x != "factory_policy:write")
+        });
+        set_template_grants(&conn, "admin_template", |p| {
+            p.push("factory_policy:read".into());
+            p.retain(|x| x != "autonomous_agent:read");
+        });
+        assert!(!has("super_user", "factory_policy:write"));
+        assert!(has("super_user", "factory_policy:read"));
+        assert!(has("admin", "factory_policy:read"));
+        assert!(!has("admin", "autonomous_agent:read"));
+        assert!(has("admin", "policy:write"), "non-explicit domains stay hard-coded");
     }
 
     #[test]
