@@ -78,6 +78,7 @@ tree-sitter-go = "0.25.0"
 rayon = "1.12.0"
 aes-gcm = "0.10"
 tempfile = "3"
+memchr = "2"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "macros"] }
 
 [dev-dependencies]

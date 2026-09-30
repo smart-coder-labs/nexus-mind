@@ -79,6 +79,41 @@ pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
     .collect()
 }
 
+/// Where an autonomous run executes. `isolation` in the agent config; absent means
+/// `local` until the F1 drill passes, after which the default flips to `sandbox`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    /// In the worker container: unsafe, kept as an explicit escape hatch.
+    Local,
+    /// In an ephemeral task pod.
+    Sandbox,
+}
+
+/// Templates migrated to the sandbox so far (design §4, migration order).
+pub const SANDBOX_TEMPLATES: &[&str] = &["github_pr_reviewer"];
+
+/// Parses and validates `isolation`. A sandbox request that cannot be honored is
+/// an error, never a silent fallback to local execution.
+pub fn autonomous_isolation(
+    config: &Value,
+    template_key: &str,
+    executor: &str,
+) -> anyhow::Result<Isolation> {
+    let isolation = match config.get("isolation") {
+        None => return Ok(Isolation::Local),
+        Some(Value::String(value)) if value == "local" => return Ok(Isolation::Local),
+        Some(Value::String(value)) if value == "sandbox" => Isolation::Sandbox,
+        _ => anyhow::bail!("invalid_isolation"),
+    };
+    if executor != "claude" {
+        anyhow::bail!("sandbox_unsupported_executor")
+    }
+    if !SANDBOX_TEMPLATES.contains(&template_key) {
+        anyhow::bail!("sandbox_unsupported_template")
+    }
+    Ok(isolation)
+}
+
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
     let env: Vec<Value> = task_env(request)
         .into_iter()
@@ -154,6 +189,57 @@ mod tests {
             image: "ghcr.io/acme/sandbox@sha256:abc".into(),
             run_token: "v2.org-1.run.1.sig".into(),
             wall_time_secs: 1800,
+        }
+    }
+
+    #[test]
+    fn isolation_defaults_to_local_and_sandbox_never_falls_back() {
+        let reviewer = "github_pr_reviewer";
+        assert_eq!(
+            autonomous_isolation(&json!({}), reviewer, "claude").unwrap(),
+            Isolation::Local
+        );
+        assert_eq!(
+            autonomous_isolation(&json!({"isolation": "local"}), "qa", "claude").unwrap(),
+            Isolation::Local
+        );
+        assert_eq!(
+            autonomous_isolation(&json!({"isolation": "sandbox"}), reviewer, "claude").unwrap(),
+            Isolation::Sandbox
+        );
+        for (config, template, executor, code) in [
+            (
+                json!({"isolation": "sandbox"}),
+                "github_issue_resolver",
+                "claude",
+                "sandbox_unsupported_template",
+            ),
+            (
+                json!({"isolation": "sandbox"}),
+                reviewer,
+                "nexus",
+                "sandbox_unsupported_executor",
+            ),
+            (
+                json!({"isolation": "docker"}),
+                reviewer,
+                "claude",
+                "invalid_isolation",
+            ),
+            (
+                json!({"isolation": true}),
+                reviewer,
+                "claude",
+                "invalid_isolation",
+            ),
+        ] {
+            assert_eq!(
+                autonomous_isolation(&config, template, executor)
+                    .unwrap_err()
+                    .to_string(),
+                code,
+                "{config} {template} {executor}"
+            );
         }
     }
 

@@ -2801,6 +2801,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "lettre",
+ "memchr",
  "rand 0.8.6",
  "rayon",
  "regex",

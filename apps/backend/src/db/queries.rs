@@ -16755,12 +16755,25 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
     }
 }
 
-fn validate_autonomous_executor(config: &serde_json::Value) -> Result<()> {
-    autonomous_executor(config).map(|_| ())
+fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
+    let executor = autonomous_executor(config)?;
+    crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
 }
 
 #[cfg(test)]
 mod autonomous_executor_tests {
+    #[test]
+    fn saved_configs_reject_a_sandbox_that_cannot_be_honored() {
+        let sandbox = serde_json::json!({"isolation": "sandbox"});
+        super::validate_autonomous_executor(&sandbox, "github_pr_reviewer").unwrap();
+        assert_eq!(
+            super::validate_autonomous_executor(&sandbox, "github_issue_resolver")
+                .unwrap_err()
+                .to_string(),
+            "sandbox_unsupported_template"
+        );
+    }
+
     use super::autonomous_executor;
     use serde_json::json;
 
@@ -16786,7 +16799,7 @@ pub fn create_autonomous_agent_definition(
     if !req.config.is_object() || !req.budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
-    validate_autonomous_executor(&req.config)?;
+    validate_autonomous_executor(&req.config, &req.template_key)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16842,7 +16855,7 @@ pub fn update_autonomous_agent_definition(
     if !config.is_object() || !budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
-    validate_autonomous_executor(config)?;
+    validate_autonomous_executor(config, &current.definition.template_key)?;
     let description = req
         .description
         .as_ref()

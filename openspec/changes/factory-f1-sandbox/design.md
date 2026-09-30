@@ -100,7 +100,7 @@ spec:
     volumeMounts: [workspace -> /workspace, home -> /home/task, tmp -> /tmp]   # emptyDir only
 ```
 
-The node has no kubelet `podPidsLimit` (S2), so every `exec` is wrapped in `ulimit -u 512`. That is effectively per pod under user namespaces (see Spike results).
+The node has no kubelet `podPidsLimit` (S2), so every `exec` is wrapped in `prlimit --nproc=512:512 --` (the image's `/bin/sh` is dash, where `ulimit -u` is unsupported and would fail open; `prlimit` exits non-zero if it cannot set the limit). That is effectively per pod under user namespaces (see Spike results).
 
 **Image:** v1 reuses the backend image (it already contains Claude Code, git, node, Python and the Playwright browsers) with the command overridden. A slim sandbox image is a follow-up.
 
@@ -123,10 +123,10 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
   trait SandboxRuntime {
       async fn create(&self, manifest: &Value) -> Result<PodHandle>;
       async fn wait_ready(&self, pod: &PodHandle, timeout: Duration) -> Result<()>;
-      /// argv runs as `sh -c 'ulimit -u 512; exec "$@"'`; stdin optional; stdout streamed line by line.
+      /// argv runs under `prlimit --nproc=512:512 --`; stdin optional; stdout streamed line by line.
       async fn exec(&self, pod: &PodHandle, argv: &[String], stdin: Option<Vec<u8>>, on_line: &mut (dyn FnMut(&[u8]) + Send)) -> Result<ExecOutput>;
       async fn delete(&self, pod: &PodHandle) -> Result<()>;
-      async fn list_expired(&self, now: DateTime<Utc>) -> Result<Vec<PodHandle>>;
+      async fn list_task_pods(&self) -> Result<Vec<TaskPodInfo>>;
   }
   ```
   - `KubeRuntime` implements it with kube-rs (`Api<Pod>::create`, `await_condition(is_pod_running)`, `exec` over WebSocket, `delete` with a grace period of 0).
@@ -136,9 +136,16 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
 - **Diff out:** `git diff --binary <base_sha>` plus untracked files (`git add -N .` first), capped at 5 MB. It is applied in the worker with `git apply --index` and then goes through the existing `ensure_diff_has_no_secrets`.
 - **GC:** a worker tick lists `role=task` pods older than `activeDeadlineSeconds + 5 min` and deletes them.
 
+### Known limits (to settle in the drill)
+
+- The worker's pre-lease probe (`probe_claude`, `claude_ready`) still checks the worker's own Claude login, so a worker that needs re-auth blocks sandboxed runs too, although they use the proxy's credential. Once every template runs sandboxed, the probe moves to the proxy.
+- Behavior that differs from local runs, all failing closed: output over 32 MiB fails (`output_too_large`) instead of being truncated, and a pod killed by OOM or eviction reports `command_status_unknown`.
+- The run budget in the sandbox is `wall_time` + 180 s (scheduling and image pull) + 120 s (unpack and cleanup). The pod and the run token live that long, and the worker's outer timeout is 30 s longer, so the sandbox's own deadline fires first and deletes the pod.
+- Pod names include the lease attempt id, so a run reclaimed after a worker crash never collides with the orphaned pod, which the GC sweep removes.
+
 ### Migration order
 
-`github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `executor: "sandbox"`, which is the default once the drill passes; `executor: "local"` stays as an explicit, UI-flagged unsafe escape hatch.
+`github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `isolation: "sandbox"` in its agent config (`executor` already names the provider, `claude` | `nexus`). Absent means `local` until the drill passes, then the default flips to `sandbox`; `isolation: "local"` stays as an explicit, UI-flagged unsafe escape hatch. A sandbox request that cannot be honored (template not migrated, `nexus` executor) is refused on save (422) and blocked at run time, never silently run locally.
 
 ## 5. VerificationReport gate
 
@@ -155,7 +162,7 @@ After items 3–4, no untrusted process runs in the worker container. What remai
 
 - the worker keeps `/data` and its secrets, because it publishes and records;
 - `restrict_claude_environment` and the local Claude path are removed for sandboxed templates;
-- the local path stays only behind an explicit `executor: "local"` config that the admin UI marks as unsafe, until every template is migrated.
+- the local path stays only behind an explicit `isolation: "local"` config that the admin UI marks as unsafe, until every template is migrated.
 
 ## 7. Recover
 

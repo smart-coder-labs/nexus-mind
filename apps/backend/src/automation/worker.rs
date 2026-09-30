@@ -107,7 +107,6 @@ async fn run_claude_capturing_transcript(
 ) -> std::io::Result<std::process::Output> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
-    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -152,49 +151,7 @@ async fn run_claude_capturing_transcript(
             let room = MAX_STREAM_BYTES - stdout_buf.len();
             stdout_buf.extend_from_slice(&line[..line.len().min(room)]);
         }
-        // Trim trailing CR/LF for a tidy stored turn.
-        let end = line
-            .iter()
-            .rposition(|b| *b != b'\n' && *b != b'\r')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let trimmed = &line[..end];
-        if trimmed.is_empty() {
-            continue;
-        }
-        sequence += 1;
-        let sanitized = sanitize_output_with_secrets(trimmed, MAX_LINE_BYTES, secret_values);
-        // Store valid JSON verbatim (sanitized); wrap anything else so the column
-        // stays parseable for the reader. `kind` mirrors the event `type`.
-        let (kind, payload_json) =
-            match serde_json::from_str::<serde_json::Value>(&sanitized) {
-                Ok(value) => {
-                    let kind = value
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("event")
-                        .to_string();
-                    (kind, sanitized)
-                }
-                Err(_) => (
-                    "raw".to_string(),
-                    serde_json::to_string(&json!({"type":"raw","text":sanitized}))
-                        .unwrap_or_else(|_| "{\"type\":\"raw\"}".to_string()),
-                ),
-            };
-        // Best-effort persistence: a transcript write must never fail the run.
-        let db = store.conn();
-        let locked = db.lock();
-        if let Ok(conn) = locked {
-            let _ = queries::append_autonomous_agent_transcript_turn(
-                &conn,
-                org_id,
-                run_id,
-                sequence,
-                &kind,
-                &payload_json,
-            );
-        }
+        record_transcript_line(store, org_id, run_id, secret_values, &mut sequence, &line);
     }
     if let Some(writer) = stdin_task {
         // A fast-failing child may close stdin before consuming the prompt.
@@ -208,6 +165,61 @@ async fn run_claude_capturing_transcript(
         stdout: stdout_buf,
         stderr: stderr_buf,
     })
+}
+
+/// Persists one stdout line of a Claude stream-json run as a transcript turn.
+/// Shared by the local runner and the sandbox runner.
+pub(crate) fn record_transcript_line(
+    store: &SqliteStore,
+    org_id: &str,
+    run_id: &str,
+    secret_values: &[String],
+    sequence: &mut i64,
+    line: &[u8],
+) {
+    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
+    // Trim trailing CR/LF for a tidy stored turn.
+    let end = line
+        .iter()
+        .rposition(|b| *b != b'\n' && *b != b'\r')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let trimmed = &line[..end];
+    if trimmed.is_empty() {
+        return;
+    }
+    *sequence += 1;
+    let sanitized = sanitize_output_with_secrets(trimmed, MAX_LINE_BYTES, secret_values);
+    // Store valid JSON verbatim (sanitized); wrap anything else so the column
+    // stays parseable for the reader. `kind` mirrors the event `type`.
+    let (kind, payload_json) = match serde_json::from_str::<serde_json::Value>(&sanitized) {
+        Ok(value) => {
+            let kind = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("event")
+                .to_string();
+            (kind, sanitized)
+        }
+        Err(_) => (
+            "raw".to_string(),
+            serde_json::to_string(&json!({"type":"raw","text":sanitized}))
+                .unwrap_or_else(|_| "{\"type\":\"raw\"}".to_string()),
+        ),
+    };
+    // Best-effort persistence: a transcript write must never fail the run.
+    let db = store.conn();
+    let locked = db.lock();
+    if let Ok(conn) = locked {
+        let _ = queries::append_autonomous_agent_transcript_turn(
+            &conn,
+            org_id,
+            run_id,
+            *sequence,
+            &kind,
+            &payload_json,
+        );
+    }
 }
 
 fn restrict_claude_environment(command: &mut Command) {
@@ -3560,6 +3572,15 @@ async fn execute_claim(
         Ok("claude") => false,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
     };
+    let sandboxed = match crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        if nexus_selected { "nexus" } else { "claude" },
+    ) {
+        Ok(isolation) => isolation == crate::factory::sandbox::Isolation::Sandbox,
+        // Never fall back to local execution when a sandbox was asked for.
+        Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+    };
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -4162,15 +4183,39 @@ async fn execute_claim(
     let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
     secret_values.extend(target_secret_values.iter().cloned());
     claude.current_dir(&workdir).kill_on_drop(true);
-    let invocation = run_claude_capturing_transcript(
-        &mut claude,
-        nexus_selected.then_some(prompt.as_str()),
-        store,
-        &claim.org_id,
-        &claim.run.id,
-        &secret_values,
-        (output_retry as i64) * 100_000,
-    );
+    let seq_base = (output_retry as i64) * 100_000;
+    let invocation: std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
+    > = if sandboxed {
+        let argv = super::sandboxed::sandbox_argv(&claude);
+        Box::pin(super::sandboxed::run_claude_sandboxed(
+            super::sandboxed::SandboxedRun {
+                store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: output_retry,
+                workdir: &workdir,
+                secret_values: &secret_values,
+                seq_base,
+                wall_time: Duration::from_secs(wall_time),
+            },
+            argv,
+        ))
+    } else {
+        Box::pin(async {
+            Ok(run_claude_capturing_transcript(
+                &mut claude,
+                nexus_selected.then_some(prompt.as_str()),
+                store,
+                &claim.org_id,
+                &claim.run.id,
+                &secret_values,
+                seq_base,
+            )
+            .await?)
+        })
+    };
     let cancelled = async {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -4204,8 +4249,12 @@ async fn execute_claim(
     };
     let mut outcome = tokio::select! {
         _ = cancelled => ("cancelled".into(),json!({"code":"cancelled_by_operator"})),
-        value = timeout(Duration::from_secs(wall_time), invocation) => match value {
+        // In the sandbox the budget also covers scheduling, pulling and unpacking;
+        // extend it so Claude gets the same time as a local run. The sandbox's own
+        // deadline fires first, so its pod is deleted before this one gives up.
+        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time)) + Duration::from_secs(30) } else { Duration::from_secs(wall_time) }, invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
+        Ok(Err(error)) if sandboxed => ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":super::sandboxed::failure_code(&claim.run.id, &error)})),
         Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
             let (value,stream)=match parse_claude_event_stream(&output.stdout){
@@ -6328,6 +6377,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;
+            if ticks == 1 || ticks.is_multiple_of(20) {
+                super::sandboxed::gc_task_pods().await;
+            }
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {

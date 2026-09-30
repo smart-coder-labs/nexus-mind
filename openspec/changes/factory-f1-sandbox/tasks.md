@@ -13,8 +13,8 @@
 - [x] 2.2 `factory-worker` ServiceAccount and Role (pods, pods/exec, pods/log in the sandbox namespace only); worker Deployment must adopt the ServiceAccount when the executor ships
 
 ## 3. Sandbox executor
-- [ ] 3.1 Pod template, create/wait/delete with kube-rs; drop guard; GC of expired task pods (template, executor, KubeRuntime done; GC pending)
-- [ ] 3.2 Workspace in (tar over exec, no credentials), Claude over exec with transcript capture, diff out and apply
+- [x] 3.1 Pod template, create/wait/delete with kube-rs; drop guard; GC of expired task pods (worker tick, deadline + 5 min)
+- [ ] 3.2 Workspace in (tar over exec, no credentials), Claude over exec with transcript capture, diff out and apply — reviewer wired behind `isolation: "sandbox"`; `apply_sandbox_diff` ready, wired when QA/resolver migrate
 
 ## 4. Tests and scanners in the sandbox
 - [ ] 4.1 `run_allowlisted_commands` and the security scanners execute inside the task pod

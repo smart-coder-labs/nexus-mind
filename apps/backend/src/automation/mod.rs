@@ -7,6 +7,7 @@ pub mod r2;
 pub mod profiles;
 pub mod provenance;
 pub mod runtime;
+pub mod sandboxed;
 pub mod scheduler;
 pub mod security_dast;
 pub mod security_scan;

@@ -40,6 +40,67 @@ pub trait SandboxRuntime: Send + Sync {
         on_line: &mut (dyn for<'l> FnMut(&'l [u8]) + Send),
     ) -> anyhow::Result<ExecOutput>;
     async fn delete(&self, pod: &PodHandle) -> anyhow::Result<()>;
+    /// Every task pod in the sandbox namespace (`role=task`), for the GC sweep.
+    async fn list_task_pods(&self) -> anyhow::Result<Vec<TaskPodInfo>>;
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskPodInfo {
+    pub handle: PodHandle,
+    pub created_unix: i64,
+    pub deadline_secs: Option<i64>,
+}
+
+/// Grace after a pod's deadline before the sweep deletes it.
+pub const GC_GRACE_SECS: i64 = 300;
+/// Deadline assumed for a task pod that lacks one (the worker's maximum wall time).
+const FALLBACK_DEADLINE_SECS: i64 = 3600;
+
+/// Deletes task pods left behind by a crashed or cancelled worker. Returns how
+/// many it deleted.
+pub async fn gc_expired_task_pods(
+    runtime: &dyn SandboxRuntime,
+    now_unix: i64,
+) -> anyhow::Result<usize> {
+    let mut deleted = 0;
+    for pod in runtime.list_task_pods().await? {
+        let deadline = pod.deadline_secs.unwrap_or(FALLBACK_DEADLINE_SECS);
+        if pod.created_unix + deadline + GC_GRACE_SECS < now_unix {
+            // One stuck pod must not stop the sweep of the others.
+            match runtime.delete(&pod.handle).await {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    tracing::warn!(target: "factory_sandbox", pod = %pod.handle.name, "gc delete failed: {error:#}")
+                }
+            }
+        }
+    }
+    Ok(deleted)
+}
+
+/// Deletes the pod if the job future is dropped before it finishes (worker
+/// timeout, operator cancel). The normal path disarms it and deletes inline.
+struct PodGuard {
+    runtime: std::sync::Arc<dyn SandboxRuntime>,
+    pod: Option<PodHandle>,
+}
+
+impl Drop for PodGuard {
+    fn drop(&mut self) {
+        let Some(pod) = self.pod.take() else { return };
+        let runtime = self.runtime.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(error) = runtime.delete(&pod).await {
+                        tracing::warn!(target: "factory_sandbox", pod = %pod.name, "delete after cancel failed: {error:#}");
+                    }
+                });
+            }
+            // No runtime to delete from: the GC sweep removes it.
+            Err(_) => tracing::warn!(target: "factory_sandbox", pod = %pod.name, "pod left for gc"),
+        }
+    }
 }
 
 /// What one sandboxed task needs.
@@ -53,6 +114,8 @@ pub struct SandboxJob {
     pub ready_timeout: Duration,
     /// Upper bound for the whole job (unpack, command, diff) before the pod is deleted.
     pub wall_time: Duration,
+    /// Read-only templates skip the diff: nothing they could change is kept.
+    pub collect_diff: bool,
 }
 
 #[derive(Debug)]
@@ -80,7 +143,7 @@ fn strings(parts: &[&str]) -> Vec<String> {
 }
 
 pub async fn run_in_sandbox(
-    runtime: &dyn SandboxRuntime,
+    runtime: std::sync::Arc<dyn SandboxRuntime>,
     job: &SandboxJob,
     on_line: &mut (dyn for<'l> FnMut(&'l [u8]) + Send),
 ) -> anyhow::Result<SandboxResult> {
@@ -88,15 +151,34 @@ pub async fn run_in_sandbox(
     if job.base_sha.len() != 40 || !job.base_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         anyhow::bail!("invalid_base_sha")
     }
+    // Armed before `create` returns: the name is fixed by the manifest, so a job
+    // cancelled mid-create still deletes the pod (a 404 counts as deleted).
+    let planned = PodHandle {
+        namespace: job.manifest["metadata"]["namespace"]
+            .as_str()
+            .unwrap_or(super::sandbox::SANDBOX_NAMESPACE)
+            .to_string(),
+        name: job.manifest["metadata"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    };
+    let mut guard = PodGuard {
+        runtime: runtime.clone(),
+        pod: (!planned.name.is_empty()).then_some(planned),
+    };
     let pod = runtime.create(&job.manifest).await?;
+    guard.pod = Some(pod.clone());
     // Dropping the in-flight exec on timeout closes its stream; the delete below
     // then kills whatever still runs in the pod.
-    let outcome = tokio::time::timeout(job.wall_time, drive(runtime, &pod, job, on_line))
+    let outcome = tokio::time::timeout(job.wall_time, drive(runtime.as_ref(), &pod, job, on_line))
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("sandbox_timeout")));
-    // Always delete, whatever happened inside. A failed delete is reported only if
-    // the task itself succeeded; the GC sweep removes any pod left behind.
-    let deleted = runtime.delete(&pod).await;
+    // Always delete, whatever happened inside. The guard stays armed until the
+    // delete completes, so a cancel during it still deletes. A failed delete is
+    // reported only if the task itself succeeded; the GC sweep removes leftovers.
+    let deleted = runtime.as_ref().delete(&pod).await;
+    guard.pod = None;
     match (outcome, deleted) {
         (Ok(result), Ok(())) => Ok(result),
         (Ok(_), Err(error)) => Err(error.context("sandbox_delete_failed")),
@@ -137,6 +219,12 @@ async fn drive(
     if output.exit_code < 0 {
         anyhow::bail!("command_status_unknown")
     }
+    if !job.collect_diff {
+        return Ok(SandboxResult {
+            output,
+            diff: Vec::new(),
+        });
+    }
     // Intent-to-add makes new files appear in the diff without staging content.
     let diff_script = format!(
         "cd {} && git add -A -N . && git diff --binary {}",
@@ -166,7 +254,7 @@ async fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct Fake {
@@ -174,6 +262,7 @@ mod tests {
         fail_ready: bool,
         fail_command: bool,
         hang_command: bool,
+        hang_create: bool,
         lost_status: bool,
         diff: Vec<u8>,
     }
@@ -182,6 +271,9 @@ mod tests {
     impl SandboxRuntime for Fake {
         async fn create(&self, _manifest: &Value) -> anyhow::Result<PodHandle> {
             self.calls.lock().unwrap().push("create".into());
+            if self.hang_create {
+                std::future::pending::<()>().await;
+            }
             Ok(PodHandle {
                 namespace: "ns".into(),
                 name: "task-1".into(),
@@ -236,32 +328,125 @@ mod tests {
             }
             Ok(ExecOutput::default())
         }
-        async fn delete(&self, _pod: &PodHandle) -> anyhow::Result<()> {
-            self.calls.lock().unwrap().push("delete".into());
+        async fn delete(&self, pod: &PodHandle) -> anyhow::Result<()> {
+            let entry = if pod.name == "task-1" {
+                "delete".to_string()
+            } else {
+                format!("delete {}", pod.name)
+            };
+            self.calls.lock().unwrap().push(entry);
             Ok(())
+        }
+        async fn list_task_pods(&self) -> anyhow::Result<Vec<TaskPodInfo>> {
+            let pod = |name: &str, created_unix: i64| TaskPodInfo {
+                handle: PodHandle {
+                    namespace: "ns".into(),
+                    name: name.into(),
+                },
+                created_unix,
+                deadline_secs: Some(600),
+            };
+            Ok(vec![
+                // Deadline + grace (600 + 300) long past.
+                pod("task-old", 1_000),
+                // Still inside its deadline.
+                pod("task-live", 10_000),
+                TaskPodInfo {
+                    deadline_secs: None,
+                    ..pod("task-no-deadline", 1_000)
+                },
+            ])
         }
     }
 
     fn job(base_sha: &str) -> SandboxJob {
         SandboxJob {
-            manifest: serde_json::json!({}),
+            manifest: serde_json::json!({"metadata": {"name": "task-1", "namespace": "ns"}}),
             workspace_tar: vec![1, 2, 3],
             command: vec!["claude".into(), "-p".into()],
             base_sha: base_sha.into(),
             ready_timeout: Duration::from_secs(5),
             wall_time: Duration::from_secs(5),
+            collect_diff: true,
         }
     }
 
     #[tokio::test]
-    async fn a_hung_task_times_out_and_the_pod_is_still_deleted() {
-        let fake = Fake {
+    async fn a_job_cancelled_while_creating_still_deletes_its_pod() {
+        let fake = Arc::new(Fake {
+            hang_create: true,
+            ..Default::default()
+        });
+        let job = job(SHA);
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(50),
+            run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {}),
+        )
+        .await;
+        assert!(dropped.is_err());
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fake.calls.lock().unwrap().last().unwrap(), "delete");
+    }
+
+    #[tokio::test]
+    async fn read_only_jobs_skip_the_diff() {
+        let fake = Arc::new(Fake::default());
+        let mut job = job(SHA);
+        job.collect_diff = false;
+        let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert!(result.diff.is_empty());
+        let calls = fake.calls.lock().unwrap();
+        assert!(!calls.iter().any(|c| c.contains("git diff")), "{calls:?}");
+        assert_eq!(calls.last().unwrap(), "delete");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_still_deletes_its_pod() {
+        let fake = Arc::new(Fake {
             hang_command: true,
             ..Default::default()
-        };
+        });
+        let job = job(SHA);
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(50),
+            run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {}),
+        )
+        .await;
+        assert!(dropped.is_err(), "the caller gave up first");
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fake.calls.lock().unwrap().last().unwrap(), "delete");
+    }
+
+    #[tokio::test]
+    async fn gc_deletes_only_pods_past_deadline_and_grace() {
+        let fake = Arc::new(Fake::default());
+        let deleted = gc_expired_task_pods(fake.as_ref(), 10_500).await.unwrap();
+        assert_eq!(deleted, 2);
+        let calls = fake.calls.lock().unwrap();
+        assert!(calls.contains(&"delete task-old".to_string()), "{calls:?}");
+        // No deadline: fall back to the maximum wall time, so it is expired too.
+        assert!(
+            calls.contains(&"delete task-no-deadline".to_string()),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.contains("task-live")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn a_hung_task_times_out_and_the_pod_is_still_deleted() {
+        let fake = Arc::new(Fake {
+            hang_command: true,
+            ..Default::default()
+        });
         let mut job = job(SHA);
         job.wall_time = Duration::from_millis(50);
-        let error = run_in_sandbox(&fake, &job, &mut |_: &[u8]| {})
+        let error = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "sandbox_timeout");
@@ -270,11 +455,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_without_exit_status_is_an_error_not_a_result() {
-        let fake = Fake {
+        let fake = Arc::new(Fake {
             lost_status: true,
             ..Default::default()
-        };
-        let error = run_in_sandbox(&fake, &job(SHA), &mut |_: &[u8]| {})
+        });
+        let error = run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "command_status_unknown");
@@ -287,12 +472,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_happy_path_streams_output_returns_the_diff_and_deletes_the_pod() {
-        let fake = Fake {
+        let fake = Arc::new(Fake {
             diff: b"diff --git a/x b/x".to_vec(),
             ..Default::default()
-        };
+        });
         let mut lines = Vec::new();
-        let result = run_in_sandbox(&fake, &job(SHA), &mut |line: &[u8]| {
+        let result = run_in_sandbox(fake.clone(), &job(SHA), &mut |line: &[u8]| {
             lines.push(line.to_vec())
         })
         .await
@@ -314,8 +499,8 @@ mod tests {
 
     #[tokio::test]
     async fn every_command_runs_under_the_process_limit() {
-        let fake = Fake::default();
-        run_in_sandbox(&fake, &job(SHA), &mut |_: &[u8]| {})
+        let fake = Arc::new(Fake::default());
+        run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
             .await
             .unwrap();
         for call in fake
@@ -336,11 +521,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_pod_is_deleted_when_it_never_becomes_ready() {
-        let fake = Fake {
+        let fake = Arc::new(Fake {
             fail_ready: true,
             ..Default::default()
-        };
-        assert!(run_in_sandbox(&fake, &job(SHA), &mut |_: &[u8]| {})
+        });
+        assert!(run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
             .await
             .is_err());
         assert_eq!(
@@ -351,11 +536,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_pod_is_deleted_when_the_task_fails() {
-        let fake = Fake {
+        let fake = Arc::new(Fake {
             fail_command: true,
             ..Default::default()
-        };
-        assert!(run_in_sandbox(&fake, &job(SHA), &mut |_: &[u8]| {})
+        });
+        assert!(run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
             .await
             .is_err());
         assert_eq!(fake.calls.lock().unwrap().last().unwrap(), "delete");
@@ -363,11 +548,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_diff_is_refused_and_the_pod_still_deleted() {
-        let fake = Fake {
+        let fake = Arc::new(Fake {
             diff: vec![b'x'; MAX_DIFF_BYTES + 1],
             ..Default::default()
-        };
-        let error = run_in_sandbox(&fake, &job(SHA), &mut |_: &[u8]| {})
+        });
+        let error = run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "diff_too_large");
@@ -376,10 +561,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_base_sha_is_refused_before_any_pod_exists() {
-        let fake = Fake::default();
+        let fake = Arc::new(Fake::default());
         for bad in ["main", "0123; rm -rf /", ""] {
             assert!(
-                run_in_sandbox(&fake, &job(bad), &mut |_: &[u8]| {})
+                run_in_sandbox(fake.clone(), &job(bad), &mut |_: &[u8]| {})
                     .await
                     .is_err(),
                 "{bad}"
@@ -574,6 +759,27 @@ impl SandboxRuntime for KubeRuntime {
             stdout,
             stderr,
         })
+    }
+
+    async fn list_task_pods(&self) -> anyhow::Result<Vec<TaskPodInfo>> {
+        let params = kube::api::ListParams::default().labels("role=task");
+        let pods = self.pods.list(&params).await?;
+        Ok(pods
+            .items
+            .into_iter()
+            .filter_map(|pod| {
+                let name = pod.metadata.name?;
+                let created_unix = pod.metadata.creation_timestamp?.0.as_second();
+                Some(TaskPodInfo {
+                    handle: PodHandle {
+                        namespace: super::sandbox::SANDBOX_NAMESPACE.to_string(),
+                        name,
+                    },
+                    created_unix,
+                    deadline_secs: pod.spec.and_then(|spec| spec.active_deadline_seconds),
+                })
+            })
+            .collect())
     }
 
     async fn delete(&self, pod: &PodHandle) -> anyhow::Result<()> {
