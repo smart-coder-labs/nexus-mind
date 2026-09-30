@@ -20,6 +20,7 @@ const Code      = lazy(() => import('./pages/Code'))
 const ApiKeys   = lazy(() => import('./pages/ApiKeys'))
 const Agents      = lazy(() => import('./pages/Agents'))
 const AutonomousAgents = lazy(() => import('./pages/AutonomousAgents'))
+const FactoryPolicies = lazy(() => import('./pages/FactoryPolicies'))
 const Policies    = lazy(() => import('./pages/Policies'))
 const Conventions = lazy(() => import('./pages/Conventions'))
 const Webhooks    = lazy(() => import('./pages/Webhooks'))
@@ -94,6 +95,7 @@ function AppRoutes() {
                 <Route path="/api-keys" element={<MaybeDisabled href="/api-keys"><AdminRoute><ApiKeys /></AdminRoute></MaybeDisabled>} />
                 <Route path="/agents"  element={<MaybeDisabled href="/agents"><AdminRoute><Agents /></AdminRoute></MaybeDisabled>} />
                 <Route path="/autonomous-agents" element={<MaybeDisabled href="/autonomous-agents"><AutonomousAgents /></MaybeDisabled>} />
+                <Route path="/factory-policies" element={<MaybeDisabled href="/factory-policies"><FactoryPolicies /></MaybeDisabled>} />
                 <Route path="/policies"     element={<MaybeDisabled href="/policies"><AdminRoute><Policies /></AdminRoute></MaybeDisabled>} />
                 <Route path="/conventions" element={<AdminRoute><Conventions /></AdminRoute>} />
                 <Route path="/webhooks"    element={<MaybeDisabled href="/webhooks"><AdminRoute><Webhooks /></AdminRoute></MaybeDisabled>} />

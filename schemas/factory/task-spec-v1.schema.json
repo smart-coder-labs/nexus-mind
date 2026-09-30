@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusmind.dev/schemas/factory/task-spec-v1.schema.json",
+  "title": "Factory TaskSpec v1",
+  "description": "A normalized intake item. Tenancy comes from the authenticated context, never from this payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "source", "origin_trust", "privacy_class", "repository", "title", "description", "task_class", "requirements", "acceptance_criteria", "created_at"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "$ref": "#/$defs/uuid" },
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "ref"],
+      "properties": {
+        "kind": { "enum": ["github_issue", "nexusmind_task", "slack", "sentry", "gmail", "transcript", "manual"] },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "url": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "origin_trust": { "enum": ["trusted", "untrusted"] },
+    "privacy_class": { "enum": ["public", "internal", "confidential", "restricted"] },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["remote", "base_ref"],
+      "properties": {
+        "remote": { "type": "string", "pattern": "^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$" },
+        "base_ref": { "type": "string", "minLength": 1, "maxLength": 255 }
+      }
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "description": { "type": "string", "maxLength": 65536 },
+    "task_class": { "enum": ["docs", "tests", "ui", "backend", "bugfix", "refactor", "migration", "infra", "security", "unknown"] },
+    "requirements": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "acceptance_criteria": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "$comment": "External authors can never be marked trusted.",
+      "if": { "properties": { "source": { "properties": { "kind": { "enum": ["slack", "sentry", "gmail", "transcript"] } } } } },
+      "then": { "properties": { "origin_trust": { "const": "untrusted" } } }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

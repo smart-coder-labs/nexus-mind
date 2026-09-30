@@ -276,14 +276,49 @@ pub async fn merge_github_pull(
     repository: &str,
     number: i64,
     method: &str,
+    sha: Option<&str>,
 ) -> Result<Value> {
     let (owner, repo) = repository_parts(repository)?;
+    // With `sha`, GitHub refuses (409) if the head moved since it was verified.
+    let mut body = json!({ "merge_method": method });
+    if let Some(sha) = sha {
+        body["sha"] = json!(sha);
+    }
     github_put(
         token,
         &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
-        json!({ "merge_method": method }),
+        body,
     )
     .await
+}
+
+/// Every file changed by a pull request, following pagination. Fails with
+/// `too_many_files` past `MAX_PULL_FILES` rather than returning a partial list.
+pub async fn list_github_pull_files(
+    token: &str,
+    repository: &str,
+    number: i64,
+) -> Result<Vec<super::merge_gate::ChangedFile>> {
+    use super::merge_gate::{parse_changed_files, MAX_PULL_FILES};
+    let (owner, repo) = repository_parts(repository)?;
+    let mut files = Vec::new();
+    for page in 1.. {
+        let value = github_get(
+            token,
+            &format!("/repos/{owner}/{repo}/pulls/{number}/files?per_page=100&page={page}"),
+        )
+        .await?;
+        let batch = parse_changed_files(&value).map_err(|reason| anyhow::anyhow!(reason))?;
+        let last = batch.len() < 100;
+        files.extend(batch);
+        if files.len() > MAX_PULL_FILES {
+            anyhow::bail!("too_many_files")
+        }
+        if last {
+            break;
+        }
+    }
+    Ok(files)
 }
 
 /// Three-dot diff (`merge-base(base, head)…head`) for a pull request, pinned to a
@@ -322,6 +357,32 @@ pub async fn get_github_branch(token: &str, repository: &str, branch: &str) -> R
         anyhow::bail!("invalid_branch")
     };
     github_get(token, &format!("/repos/{owner}/{repo}/branches/{branch}")).await
+}
+
+/// Open issues carrying `label`, newest first (at most 100). Pull requests are
+/// included by the API; callers skip entries with a `pull_request` key.
+pub async fn list_labeled_github_issues(
+    token: &str,
+    repository: &str,
+    label: &str,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        anyhow::bail!("invalid_label")
+    }
+    let value = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/issues?state=open&labels={label}&sort=updated&direction=desc&per_page=100"),
+    )
+    .await?;
+    value
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("issues_unreadable"))
 }
 
 pub async fn list_recent_github_issues(token: &str, repository: &str) -> Result<Value> {
@@ -591,6 +652,51 @@ pub async fn get_github_check_runs(token: &str, repository: &str, sha: &str) -> 
         &format!("/repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100"),
     )
     .await
+}
+
+/// Every CI signal on a commit, for merge decisions: all check-run pages plus the
+/// combined commit status (Vercel, CircleCI and other non-Checks integrations)
+/// converted to check-run shape. Fails closed past `MAX_CHECKS` or on any
+/// unreadable page instead of judging a partial list.
+pub async fn list_commit_ci_runs(token: &str, repository: &str, sha: &str) -> Result<Vec<Value>> {
+    const MAX_CHECKS: usize = 1000;
+    let (owner, repo) = repository_parts(repository)?;
+    if sha.len() != 40 || !sha.chars().all(|value| value.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid_commit_sha")
+    }
+    let mut runs = Vec::new();
+    for page in 1.. {
+        let value = github_get(
+            token,
+            &format!("/repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100&page={page}"),
+        )
+        .await?;
+        let batch = value
+            .get("check_runs")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("check_runs_unreadable"))?
+            .clone();
+        let last = batch.len() < 100;
+        runs.extend(batch);
+        if runs.len() > MAX_CHECKS {
+            anyhow::bail!("too_many_checks")
+        }
+        if last {
+            break;
+        }
+    }
+    let combined = github_get(
+        token,
+        &format!("/repos/{owner}/{repo}/commits/{sha}/status?per_page=100"),
+    )
+    .await?;
+    if combined.get("total_count").and_then(|v| v.as_u64()) > Some(100) {
+        anyhow::bail!("too_many_checks")
+    }
+    runs.extend(
+        super::merge_gate::statuses_as_runs(&combined).map_err(|reason| anyhow::anyhow!(reason))?,
+    );
+    Ok(runs)
 }
 
 /// Best-effort: ensure a label exists (needs push/triage). Ignored on failure.

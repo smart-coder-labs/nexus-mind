@@ -123,6 +123,8 @@ import type {
   AutonomousAgentTarget,
   AutonomousAgentOrgSettings,
   AutonomousAgentMetrics,
+  FactoryActionPolicy,
+  FactoryPolicy,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
 
@@ -1404,6 +1406,19 @@ export class NexusMindClient {
   unarchiveAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/unarchive`,{method:'POST'}) }
   archiveAllAutonomousAgentRuns(): Promise<{archived:number}> { return this.request('/v1/autonomous-agent-runs/archive-all',{method:'POST'}) }
   continueAutonomousAgentRun(id:string): Promise<AutonomousAgentRun> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/continue`,{method:'POST'}) }
+
+  // Software factory — per-action policies. Requires factory_policy:read / :write.
+  listFactoryPolicies(): Promise<FactoryPolicy[]> {
+    return this.request('/v1/factory/policies')
+  }
+
+  putFactoryPolicy(policy: FactoryActionPolicy): Promise<FactoryPolicy> {
+    return this.request('/v1/factory/policies', { method: 'PUT', body: JSON.stringify(policy) })
+  }
+
+  deleteFactoryPolicy(id: string): Promise<void> {
+    return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
   // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
   // poll incrementally with the last sequence they hold so each poll only pulls

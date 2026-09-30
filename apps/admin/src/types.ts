@@ -1467,3 +1467,32 @@ export interface MigrationRunReport {
   pending_index: number
   outcomes: MigrationRunReportEntry[]
 }
+
+// ── Software factory ─────────────────────────────────────────────────────────
+// Mirrors `schemas/factory/action-policy-v1.schema.json` plus the row identity.
+
+export type FactoryAction =
+  | 'fix' | 'publish' | 'open_pr' | 'reply' | 'close'
+  | 'approve' | 'merge' | 'deploy' | 'notify' | 'recover'
+
+export type FactoryPolicyMode = 'never' | 'manual' | 'criteria' | 'after_fix' | 'after_merge'
+
+export type FactoryTaskClass =
+  | 'docs' | 'tests' | 'ui' | 'backend' | 'bugfix'
+  | 'refactor' | 'migration' | 'infra' | 'security' | 'unknown'
+
+export interface FactoryActionPolicy {
+  schema_version: 1
+  action: FactoryAction
+  mode: FactoryPolicyMode
+  scope: { project?: string; task_class?: FactoryTaskClass }
+  allow: string[]
+  stop: string[]
+  version: number
+}
+
+export interface FactoryPolicy extends FactoryActionPolicy {
+  id: string
+  updated_by: string
+  updated_at: string
+}

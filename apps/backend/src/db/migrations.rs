@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 77;
+pub const LATEST_USER_VERSION: i32 = 80;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -90,6 +90,180 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v75(conn)?;
     run_v76(conn)?;
     run_v77(conn)?;
+    run_v78(conn)?;
+    run_v79(conn)?;
+    run_v80(conn)?;
+    Ok(())
+}
+
+/// Migration v80: software factory run telemetry (plan §7 F0).
+///
+/// One row per finished autonomous run with cost, cache accounting and latency.
+/// `usage_events.task_id` cannot carry these: it references NexusMind tasks, not
+/// factory task ids. Unknown values stay NULL so an unreported cost never reads
+/// as free. `task_id` is filled once the router (F3) assigns work by task.
+///
+/// Idempotent — guarded by PRAGMA user_version < 80, all-or-nothing.
+pub fn run_v80(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 80 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_run_metrics (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL UNIQUE,
+             template_key        TEXT NOT NULL,
+             task_id             TEXT,
+             subject             TEXT,
+             provider            TEXT NOT NULL,
+             model               TEXT,
+             input_tokens        INTEGER,
+             cached_input_tokens INTEGER,
+             cache_write_tokens  INTEGER,
+             output_tokens       INTEGER,
+             cost_usd            REAL,
+             duration_ms         INTEGER,
+             num_turns           INTEGER,
+             outcome             TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_run_metrics_org
+             ON factory_run_metrics(org_id, created_at);
+
+         PRAGMA user_version = 80;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v79: software factory decision audit and merge soaks (plan §4, D17).
+///
+/// * `factory_decisions` records every policy evaluation — verdict, source,
+///   reason, policy version and model answer — with non-sensitive inputs only.
+///   It is the dataset for the false-low-risk metric.
+/// * `factory_merge_soaks` holds merges that passed every gate and wait out the
+///   soak window. One row per PR (`UNIQUE(org_id, repository, pull_number)`); the
+///   worker re-runs the full gate when `due_at` passes, pinned to `head_sha`.
+///
+/// Idempotent — guarded by PRAGMA user_version < 79, all-or-nothing.
+pub fn run_v79(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 79 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_decisions (
+             id             TEXT PRIMARY KEY,
+             org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             subject        TEXT NOT NULL,
+             action         TEXT NOT NULL,
+             verdict        TEXT NOT NULL CHECK (verdict IN ('allow','hold','deny')),
+             source         TEXT NOT NULL CHECK (source IN ('policy','floor','decision_model','human')),
+             reason         TEXT NOT NULL,
+             policy_version INTEGER,
+             provider       TEXT,
+             model          TEXT,
+             confidence     REAL,
+             inputs_json    TEXT NOT NULL DEFAULT '{}',
+             created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_decisions_subject
+             ON factory_decisions(org_id, subject);
+
+         CREATE TABLE IF NOT EXISTS factory_merge_soaks (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL,
+             repository          TEXT NOT NULL,
+             pull_number         INTEGER NOT NULL,
+             head_sha            TEXT NOT NULL,
+             required_checks_json TEXT NOT NULL DEFAULT '[]',
+             due_at              TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, repository, pull_number)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_merge_soaks_due
+             ON factory_merge_soaks(due_at);
+
+         PRAGMA user_version = 79;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v78: software factory per-action policies (docs/factory/PLAN.md D12,
+/// D14, D16).
+///
+/// * `factory_action_policies` holds one control-plane policy per org, action and
+///   scope. "Any project" / "any task class" is stored as `''`, not NULL, because
+///   SQLite treats NULLs as distinct in a UNIQUE constraint and would allow two
+///   "any" rows for the same action.
+/// * `factory_policy:read` / `factory_policy:write` are granted ONLY to
+///   `super_user_template`. They are checked without the privileged-role bypass,
+///   so an `admin` has them only when an operator grants them explicitly.
+///
+/// Idempotent — guarded by PRAGMA user_version < 78, all-or-nothing in one
+/// transaction (the version bump is transactional in SQLite).
+pub fn run_v78(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 78 {
+        return Ok(());
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT permissions FROM roles WHERE id = 'super_user_template'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let granted = match raw {
+        Some(raw) => {
+            let mut permissions: Vec<String> = serde_json::from_str(&raw)?;
+            for permission in ["factory_policy:read", "factory_policy:write"] {
+                if !permissions.iter().any(|value| value == permission) {
+                    permissions.push(permission.to_string());
+                }
+            }
+            Some(serde_json::to_string(&permissions)?)
+        }
+        None => None,
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_action_policies (
+             id               TEXT PRIMARY KEY,
+             org_id           TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             action           TEXT NOT NULL CHECK (action IN
+                 ('fix','publish','open_pr','reply','close','approve','merge','deploy','notify','recover')),
+             mode             TEXT NOT NULL CHECK (mode IN
+                 ('never','manual','criteria','after_fix','after_merge')),
+             scope_project    TEXT NOT NULL DEFAULT '',
+             scope_task_class TEXT NOT NULL DEFAULT '' CHECK (scope_task_class IN
+                 ('','docs','tests','ui','backend','bugfix','refactor','migration','infra','security','unknown')),
+             allow_json       TEXT NOT NULL DEFAULT '[]',
+             stop_json        TEXT NOT NULL DEFAULT '[]',
+             version          INTEGER NOT NULL CHECK (version >= 1),
+             updated_by       TEXT NOT NULL,
+             created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, action, scope_project, scope_task_class)
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_action_policies_org
+             ON factory_action_policies(org_id, action);",
+    )?;
+    if let Some(permissions) = granted {
+        tx.execute(
+            "UPDATE roles SET permissions = ?1, version = version + 1, updated_at = datetime('now')
+              WHERE id = 'super_user_template'",
+            [permissions],
+        )?;
+    }
+    tx.execute_batch("PRAGMA user_version = 78;")?;
+    tx.commit()?;
     Ok(())
 }
 

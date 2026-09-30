@@ -69,3 +69,4 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+jsonschema = { version = "0.58", default-features = false }
