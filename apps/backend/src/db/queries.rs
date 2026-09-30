@@ -18131,7 +18131,14 @@ pub fn finish_autonomous_agent_run(
     )?;
     tx.execute("UPDATE autonomous_agent_leases SET released_at=datetime('now') WHERE run_id=?1 AND attempt_id=?2 AND released_at IS NULL", rusqlite::params![run_id,attempt_id])?;
     tx.commit()?;
-    append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+    // The run IS finished once the transaction commits. A failure to append the
+    // event afterwards must not be reported as a failed finish: callers would treat
+    // a finished run as unfinished (and skip work that depends on the finish).
+    if let Err(error) = append_autonomous_agent_event(conn, org_id, run_id, "run.finished", result)
+    {
+        tracing::warn!(run = run_id, "Could not append run.finished event: {error:#}");
+    }
+    Ok(())
 }
 
 fn autonomous_connector_from_row(

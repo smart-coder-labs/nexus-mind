@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 79;
+pub const LATEST_USER_VERSION: i32 = 80;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -92,6 +92,50 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v77(conn)?;
     run_v78(conn)?;
     run_v79(conn)?;
+    run_v80(conn)?;
+    Ok(())
+}
+
+/// Migration v80: software factory run telemetry (plan §7 F0).
+///
+/// One row per finished autonomous run with cost, cache accounting and latency.
+/// `usage_events.task_id` cannot carry these: it references NexusMind tasks, not
+/// factory task ids. Unknown values stay NULL so an unreported cost never reads
+/// as free. `task_id` is filled once the router (F3) assigns work by task.
+///
+/// Idempotent — guarded by PRAGMA user_version < 80, all-or-nothing.
+pub fn run_v80(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 80 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_run_metrics (
+             id                  TEXT PRIMARY KEY,
+             org_id              TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id              TEXT NOT NULL UNIQUE,
+             template_key        TEXT NOT NULL,
+             task_id             TEXT,
+             subject             TEXT,
+             provider            TEXT NOT NULL,
+             model               TEXT,
+             input_tokens        INTEGER,
+             cached_input_tokens INTEGER,
+             cache_write_tokens  INTEGER,
+             output_tokens       INTEGER,
+             cost_usd            REAL,
+             duration_ms         INTEGER,
+             num_turns           INTEGER,
+             outcome             TEXT NOT NULL,
+             created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_factory_run_metrics_org
+             ON factory_run_metrics(org_id, created_at);
+
+         PRAGMA user_version = 80;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

@@ -449,6 +449,55 @@ fn row_to_soak(row: &Row) -> rusqlite::Result<MergeSoak> {
     })
 }
 
+/// Persists the telemetry of one finished run. Idempotent per run: a retried
+/// finish replaces the row instead of double-counting.
+#[allow(clippy::too_many_arguments)]
+pub fn record_run_metrics(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    template_key: &str,
+    subject: Option<&str>,
+    provider: &str,
+    outcome: &str,
+    metrics: &crate::factory::telemetry::RunMetrics,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO factory_run_metrics
+           (id, org_id, run_id, template_key, subject, provider, model, input_tokens,
+            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, duration_ms,
+            num_turns, outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?15, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(run_id) DO UPDATE SET
+            template_key = excluded.template_key, subject = excluded.subject,
+            provider = excluded.provider,
+            model = excluded.model, input_tokens = excluded.input_tokens,
+            cached_input_tokens = excluded.cached_input_tokens,
+            cache_write_tokens = excluded.cache_write_tokens,
+            output_tokens = excluded.output_tokens, cost_usd = excluded.cost_usd,
+            duration_ms = excluded.duration_ms, num_turns = excluded.num_turns,
+            outcome = excluded.outcome, created_at = datetime('now')",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            org_id,
+            run_id,
+            template_key,
+            subject,
+            metrics.model,
+            metrics.input_tokens,
+            metrics.cached_input_tokens,
+            metrics.cache_write_tokens,
+            metrics.output_tokens,
+            metrics.cost_usd,
+            metrics.duration_ms,
+            metrics.num_turns,
+            outcome,
+            provider,
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +766,59 @@ mod tests {
         assert_eq!(due_merge_soaks(&conn, 10).unwrap(), vec![due.clone()]);
         finish_merge_soak(&conn, &due.id).unwrap();
         assert!(due_merge_soaks(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn run_metrics_are_one_row_per_run_and_keep_unknowns_null() {
+        let (conn, org, _) = setup();
+        let mut metrics = crate::factory::telemetry::RunMetrics {
+            model: Some("claude-sonnet-5".into()),
+            cost_usd: Some(0.42),
+            cached_input_tokens: Some(90_000),
+            ..Default::default()
+        };
+        record_run_metrics(
+            &conn,
+            &org,
+            "run-1",
+            "github_pr_reviewer",
+            Some("acme/web#42"),
+            "claude-code",
+            "succeeded",
+            &metrics,
+        )
+        .unwrap();
+        metrics.cost_usd = Some(0.5);
+        record_run_metrics(
+            &conn,
+            &org,
+            "run-1",
+            "github_pr_reviewer",
+            Some("acme/web#42"),
+            "nexus",
+            "succeeded",
+            &metrics,
+        )
+        .unwrap();
+        let provider: String = conn
+            .query_row(
+                "SELECT provider FROM factory_run_metrics WHERE run_id = 'run-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            provider, "nexus",
+            "the latest finish wins, provider included"
+        );
+        let rows: Vec<(f64, Option<i64>, i64)> = conn
+            .prepare("SELECT cost_usd, input_tokens, cached_input_tokens FROM factory_run_metrics WHERE run_id = 'run-1'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(0.5, None, 90_000)]);
     }
 
     #[test]

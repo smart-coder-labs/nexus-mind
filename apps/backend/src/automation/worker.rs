@@ -3486,7 +3486,14 @@ async fn execute_resolver_fanout(
     let issue_outcomes: Vec<serde_json::Value> = results
         .iter()
         .map(|(number, status, payload)| {
-            json!({"issue":number,"status":status,"code":payload.get("code")})
+            // Keep each session's result event so the run's telemetry can add up
+            // the cost of every issue (factory run metrics).
+            json!({
+                "issue":number,
+                "status":status,
+                "code":payload.get("code"),
+                "usage":crate::factory::telemetry::run_result_event(payload),
+            })
         })
         .collect();
     let status = if resolved > 0 && failed == 0 {
@@ -6434,7 +6441,7 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             let db = store.conn();
             if let Ok(conn) = db.lock() {
-                if let Err(error) = queries::finish_autonomous_agent_run(
+                match queries::finish_autonomous_agent_run(
                     &conn,
                     &claim.org_id,
                     &claim.run.id,
@@ -6442,10 +6449,13 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
                     &status,
                     &result,
                 ) {
-                    tracing::error!(
+                    // Only the attempt that actually finished the run records its
+                    // telemetry; a stale attempt must not overwrite it.
+                    Ok(()) => record_run_telemetry(&conn, &claim, &status, &result),
+                    Err(error) => tracing::error!(
                         "Failed to finish autonomous run {}: {error:#}",
                         claim.run.id
-                    );
+                    ),
                 }
             };
             // Agent-to-agent chaining: on a successful run, optionally enqueue the
@@ -6455,6 +6465,48 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
         }
     })
+}
+
+/// Best-effort run telemetry (plan §7 F0): cost, cache and latency of every
+/// finished run. A run without a result event is still recorded, with unknowns
+/// left NULL. Never changes the run's outcome.
+fn record_run_telemetry(
+    conn: &rusqlite::Connection,
+    claim: &queries::ClaimedAutonomousRun,
+    status: &str,
+    result: &serde_json::Value,
+) {
+    let metrics = crate::factory::telemetry::run_metrics(result);
+    // Same precedence as every other repository lookup in the worker.
+    let subject = match (
+        claim
+            .config
+            .get("repository")
+            .or_else(|| claim.config.pointer("/trigger/repository"))
+            .and_then(|v| v.as_str()),
+        claim.config.pointer("/trigger/number").and_then(|v| v.as_i64()),
+    ) {
+        (Some(repository), Some(number)) => Some(format!("{repository}#{number}")),
+        (Some(repository), None) => Some(repository.to_string()),
+        _ => None,
+    };
+    let provider = match queries::autonomous_executor(&claim.config) {
+        Ok("nexus") => "nexus",
+        Ok(_) => "claude-code",
+        Err(_) => "unknown",
+    };
+    if let Err(error) = crate::db::factory_queries::record_run_metrics(
+        conn,
+        &claim.org_id,
+        &claim.run.id,
+        &claim.template_key,
+        subject.as_deref(),
+        provider,
+        status,
+        &metrics,
+    ) {
+        tracing::warn!(run = %claim.run.id, "Could not record run telemetry: {error:#}");
+    }
 }
 
 /// If the finished run's agent has an `on_success_trigger_agent_id`, enqueue that
