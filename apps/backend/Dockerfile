@@ -169,6 +169,8 @@ RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmi
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
+# Sandbox egress proxy (factory F1): runs in the nexusmind-sandbox namespace.
+COPY --from=builder /app/target/release/factory-egress-proxy /app/factory-egress-proxy
 COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:

@@ -1,0 +1,135 @@
+# Factory F1 sandbox (openspec/changes/factory-f1-sandbox, design §2).
+#
+# Task pods run untrusted work (agent sessions, repository tests, scanners) with
+# no credentials and no egress except the egress proxy. The proxy is the only pod
+# here with internet access and the only holder of the real credentials.
+#
+# One-time secret, out of band (never commit values):
+#   kubectl -n nexusmind-sandbox create secret generic factory-egress-proxy \
+#     --from-literal=FACTORY_PROXY_SIGNING_KEY=<same value as the worker's> \
+#     --from-literal=FACTORY_ANTHROPIC_OAUTH_TOKEN=<claude setup-token> \
+#     --from-literal=FACTORY_NEXUSMIND_KEYS='{"<org_id>":"<nexus-bot key>"}'
+# The worker gets FACTORY_PROXY_SIGNING_KEY through nexusmind-env.
+# Image pull secret, copied from the main namespace:
+#   kubectl get secret ghcr-pull -n nexusmind -o json | jq '.metadata={name:"ghcr-pull",namespace:"nexusmind-sandbox"}' | kubectl apply -f -
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmind-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+# Default deny: nothing in, nothing out, unless a policy below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: nexusmind-sandbox}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Task pods may reach only the proxy and cluster DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: task-egress, namespace: nexusmind-sandbox}
+spec:
+  podSelector: {matchLabels: {role: task}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: factory-egress-proxy}}}]
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# The proxy accepts only task pods, and reaches the internet on 443 plus DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: proxy, namespace: nexusmind-sandbox}
+spec:
+  podSelector: {matchLabels: {app: factory-egress-proxy}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {role: task}}}]
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Never the cluster itself: pod and service networks (k3s defaults).
+            except: [10.42.0.0/16, 10.43.0.0/16]
+      ports: [{protocol: TCP, port: 443}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: factory-egress-proxy, namespace: nexusmind-sandbox}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: factory-egress-proxy}}
+  template:
+    metadata: {labels: {app: factory-egress-proxy}}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: ghcr-pull}]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: proxy
+          image: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+          imagePullPolicy: Always
+          command: ["/app/factory-egress-proxy"]
+          envFrom: [{secretRef: {name: factory-egress-proxy}}]
+          env:
+            - {name: FACTORY_PROXY_LISTEN, value: "0.0.0.0:8080"}
+            - {name: RUST_LOG, value: "factory_egress=info"}
+          ports: [{containerPort: 8080}]
+          readinessProbe: {tcpSocket: {port: 8080}, periodSeconds: 5}
+          livenessProbe: {tcpSocket: {port: 8080}, periodSeconds: 20}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: factory-egress-proxy, namespace: nexusmind-sandbox}
+spec:
+  selector: {app: factory-egress-proxy}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+# The worker's identity. It can manage task pods in the sandbox namespace and
+# nothing else: no secrets, no other namespaces, no cluster-wide rights.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: factory-worker, namespace: nexusmind}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: factory-task-pods, namespace: nexusmind-sandbox}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: factory-worker-task-pods, namespace: nexusmind-sandbox}
+subjects: [{kind: ServiceAccount, name: factory-worker, namespace: nexusmind}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: factory-task-pods}
