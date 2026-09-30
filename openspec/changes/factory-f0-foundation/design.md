@@ -280,3 +280,74 @@ The worker records metrics once the run has an outcome, including `budget_exhaus
 ### Not in F0
 
 *Cost per accepted change* joins these rows with verification and human outcomes; that needs the router's task ids (F3) and the trajectory store (F5). F0 guarantees the raw data exists from now on.
+
+## 8. Golden tasks
+
+### Where the data lives (decision)
+
+`scripts/factory/harvest_golden_tasks.py` lives in the repo and contains **no data**. It writes to `~/.nexusmind/evals/golden/v1/` (override with `--out`), outside git.
+
+- kasymir is a private client repository and nexusmind is going open source, so no client text can reach the repo.
+- An agent working in a nexusmind checkout cannot read the answers.
+
+### What a golden task is
+
+One merged PR becomes one JSONL record:
+
+- `id`: a name-based id of `repo#number`, the same scheme as intake;
+- `repository`, `pr_number`, `title`;
+- `task_text`: the body of the closing issue when there is one, otherwise the PR body. This is the ticket as a person wrote it;
+- `base_sha`: where the agent starts; `merge_sha`: the reference answer, never shown to the agent;
+- `changed_files` and `task_class`, from labels first, then a path heuristic;
+- `acceptance`: an empty list. Filling it with the per-task verification commands is a curation step, not automatic.
+
+### Selection
+
+The harvest samples merged PRs, newest first, and skips:
+
+- bot authors (dependabot, renovate, github-actions);
+- PRs touching more than 40 files;
+- PRs with no ticket text;
+- reverts.
+
+The defaults are 30 from `smart-coder-labs/nexus-mind` and 20 from `kasymir/kasymir-app-ui`, which gives 50 (plan F0). Repositories and counts are flags.
+
+### Replay rule
+
+Replaying a task clones the repository fresh at `base_sha` with `--depth 1`. A full clone contains `merge_sha`, which is the answer.
+
+### Tests
+
+The selection and normalization functions are pure and covered by `scripts/factory/test_harvest_golden_tasks.py` (stdlib `unittest`). The `gh` calls are a thin shell around them.
+
+## 7. Jev spike
+
+### What the public docs establish (https://docs.typesafe.ai/api.md, read 2026-09-29)
+
+- `POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer <key>`, body `{model, state, questions}`.
+- **Jev answers typed questions, not free-form JSON:**
+  - `noul` → a probability in 0–1;
+  - `choice` → the chosen option, with `probabilities` and `confidence`;
+  - `score` → a value on a 2–10 level rubric, with `probabilities` and `confidence`.
+- The response carries `usage.input_tokens` / `output_tokens`. Errors are 401, 422, 429 (back off) and 529 (overloaded).
+
+### Consequence for F3 (design change)
+
+The architecture doc imagines Jev emitting a `RoutingDecision` JSON. It cannot. The Rust `DecisionProvider` will instead ask **one call with several questions** and assemble the contract itself:
+
+- `task_class` → `choice`;
+- `risk` → `score` on a 4-level rubric;
+- `needs_human` → `noul`.
+
+The engine's `ModelDecision::Allow { confidence }` maps from `needs_human < threshold` together with the score confidence. The mapping and its thresholds are decided in F3, calibrated with the spike data.
+
+### The spike (`scripts/factory/jev_spike.py`)
+
+- Sends only **12 synthetic tasks**, one or more per class, 5 of them high-risk: auth, MFA bypass, a destructive migration, payment rounding, CI. No client or repository data is ever sent to the third party.
+- Measures p50/p95 latency, mean input tokens and cost at the published $0.042/MTok, class accuracy, schema violations, and **false-low-risk**: a high-risk task where Jev says no person is needed.
+- The key comes from `JEV_API_KEY` and is never printed. The report is written outside the repository.
+- The pure parts (request building, parsing, stats) are covered by `test_jev_spike.py`.
+
+### Pending
+
+The operator runs it (the agent sandbox has no key). Findings go into `docs/factory/jev-spike.md` and decide F3's thresholds.

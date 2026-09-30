@@ -34,10 +34,12 @@
 - [x] 5.3 Review fixes: closed/started tasks excluded, case-insensitive label in both sources, UI warns that a project-scoped merge policy holds every autonomous merge
 
 ## 6. Telemetry
-- [ ] 6.1 Per-run cost and latency keyed by `task_id`
+- [x] 6.1 `factory_run_metrics` (v80): cost, uncached/cached/cache-write/output tokens, latency, turns and outcome per finished run; unknowns stay NULL; `task_id` column ready for F3
+- [x] 6.2 Review fixes: only the attempt that finished the run records telemetry; provider from the run's executor; subject prefers `config.repository`; fan-out runs sum every per-issue session (unknown if any part is unknown); a failed `run.finished` event append no longer reports a committed finish as failed
 
 ## 7. Jev spike
 - [ ] 7.1 Validate API contract, typed output, latency and real price; write findings
 
 ## 8. Golden tasks
-- [ ] 8.1 Harvest 50 merged PRs (nexusmind + kasymir) into a replayable format
+- [x] 8.1 Harvest script `scripts/factory/harvest_golden_tasks.py` (+ unittest), writes outside the repo, refuses in-repo output; validated end-to-end on 3 nexusmind PRs
+- [ ] 8.2 Run the full harvest (30 nexusmind + 20 kasymir-app-ui) on the operator's machine — the agent sandbox cannot write to ~/.nexusmind
