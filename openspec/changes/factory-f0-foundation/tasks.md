@@ -38,7 +38,8 @@
 - [x] 6.2 Review fixes: only the attempt that finished the run records telemetry; provider from the run's executor; subject prefers `config.repository`; fan-out runs sum every per-issue session (unknown if any part is unknown); a failed `run.finished` event append no longer reports a committed finish as failed
 
 ## 7. Jev spike
-- [ ] 7.1 Validate API contract, typed output, latency and real price; write findings
+- [x] 7.1 API contract validated from public docs (typed questions choice/score/noul, not free-form JSON); spike script `scripts/factory/jev_spike.py` (+ unittest) over 12 synthetic tasks
+- [ ] 7.2 Run the spike with `JEV_API_KEY` on the operator's machine; write findings to `docs/factory/jev-spike.md` (latency, real price, accuracy, false-low-risk)
 
 ## 8. Golden tasks
 - [x] 8.1 Harvest script `scripts/factory/harvest_golden_tasks.py` (+ unittest), writes outside the repo, refuses in-repo output; validated end-to-end on 3 nexusmind PRs
