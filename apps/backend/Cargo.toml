@@ -17,6 +17,10 @@ name = "backfill-embeddings"
 path = "src/bin/backfill_embeddings.rs"
 
 [[bin]]
+name = "factory-egress-proxy"
+path = "src/bin/factory_egress_proxy.rs"
+
+[[bin]]
 name = "import-sdd"
 path = "src/bin/import_sdd.rs"
 
@@ -53,7 +57,13 @@ fastembed = { version = "4", default-features = false, features = ["ort-download
 dashmap = "5"
 csv = "1"
 ignore = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+# Sandbox egress proxy (factory F1): raw HTTP/1 server with CONNECT upgrades.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+futures-util = "0.3"
 jsonwebtoken = "9"
 async-trait = "0.1"
 tree-sitter = "0.26.10"

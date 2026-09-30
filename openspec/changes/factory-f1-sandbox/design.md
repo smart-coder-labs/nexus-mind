@@ -52,7 +52,18 @@
 - **No auth on tunnels.** CONNECT tunnels never carry injected credentials; they are for public registries only.
 - **Deny by default.** Anything not on the list is refused, and each refusal is logged (the drill in F1 success criteria checks this).
 
-**The NexusMind token** is issued by the backend per run, with `only_context` scope (plan D4) and expiring when the run ends. It is a narrower replacement for the org-wide `NEXUSMIND_API_KEY` that Claude receives today.
+**Run token (stateless).** `v1.<run_id>.<expires_unix>.<hex HMAC-SHA256(secret, "v1.<run_id>.<expires_unix>")>`.
+- The worker signs it and the proxy verifies it with a shared secret (`FACTORY_PROXY_SIGNING_KEY`, present only in the worker and the proxy): constant-time compare, rejected once expired, no database lookup.
+- **Where it travels:** clients cannot add custom headers (Claude Code, MCP servers), so for reverse routes it is **in the base-URL path**, `http://proxy/r/<token>/anthropic`. For tunnels it is in `Proxy-Authorization: Basic run:<token>` (`HTTPS_PROXY=http://run:<token>@proxy:8080`, which npm and pip support).
+- **Logging:** the token appears in logs only as its `run_id`, never whole.
+
+**NexusMind access: a bot user per organization (decision 2026-09-30).**
+
+- Each organization has a bot user (`nexus-bot`) whose permissions are set with a custom role, editable per organization without code changes.
+- Its API key exists **only** in the egress proxy, as a map `org_id → key` (`FACTORY_NEXUSMIND_KEYS`, JSON, from a Kubernetes secret).
+- The run token therefore also carries the org: `v2.<org_id>.<run_id>.<expires_unix>.<hmac>`. The proxy injects that org's key and fails closed (503) when the org has none.
+- The sandbox never sees a NexusMind credential.
+- Scoping the bot to one project is a follow-up; today its role limits it org-wide.
 
 ## 2. Namespace, policy and RBAC
 

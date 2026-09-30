@@ -5,8 +5,8 @@
 - [x] 0.2 S2: NetworkPolicy enforced, `hostUsers: false` works, PSA restricted admits the template; no kubelet PID limit → per-exec `ulimit -u 512` (design, spike results)
 
 ## 1. Egress proxy
-- [ ] 1.1 `factory_egress_proxy` binary: reverse routes with credential injection, header scrubbing, CONNECT allowlist, deny by default, per-run token, request log
-- [ ] 1.2 Per-run read-only NexusMind token (only_context scope, expires with the run)
+- [x] 1.1 `factory_egress_proxy` binary: reverse routes with credential injection, header scrubbing, CONNECT allowlist, deny by default, per-run HMAC token, request log (run_id only). Verified end to end with a real Claude session. Review fixes: resilient accept loop, tunnel connects before 200 (502 otherwise), case-insensitive Basic + 407 challenge, in-flight cap with 503 shedding, connect/read/tunnel timeouts
+- [ ] 1.2 Per-org `nexus-bot` user + custom role; proxy map `org_id → key`; run token v2 carries org_id
 
 ## 2. Cluster
 - [ ] 2.1 `nexusmind-sandbox` namespace (PSA restricted), NetworkPolicies, proxy Deployment/Service
