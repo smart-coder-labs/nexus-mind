@@ -1,7 +1,7 @@
 # Tasks — Factory F1: Secure executor and verification gate
 
 ## 0. Spikes
-- [ ] 0.1 S1: Claude Code through an auth-injecting reverse proxy (subscription OAuth, fallback API key); list every outbound host the CLI contacts
+- [x] 0.1 S1: passed with subscription OAuth injected by the proxy (CLI holds a placeholder); with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` the only outbound call is `/v1/messages`; sandbox needs `NO_PROXY=<proxy>`
 - [x] 0.2 S2: NetworkPolicy enforced, `hostUsers: false` works, PSA restricted admits the template; no kubelet PID limit → per-exec `ulimit -u 512` (design, spike results)
 
 ## 1. Egress proxy

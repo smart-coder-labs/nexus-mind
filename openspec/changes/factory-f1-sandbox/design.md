@@ -147,7 +147,7 @@ After items 3–4, no untrusted process runs in the worker container. What remai
 
 **PID limit decision:** setting `podPidsLimit` means restarting k3s on a node shared with other workloads. Instead, the executor wraps every `exec` in `ulimit -u 512`. `RLIMIT_NPROC` is counted per kernel UID, and with user namespaces each pod gets its own host UID range, so the limit is effectively per pod. The node-level limit stays a follow-up for a maintenance window.
 
-### S1 — Claude Code through an auth-injecting proxy (partial, 2026-09-30, CLI 2.1.280)
+### S1 — Claude Code through an auth-injecting proxy (passed, 2026-09-30, CLI 2.1.280)
 
 | Check | Result |
 |---|---|
@@ -155,6 +155,6 @@ After items 3–4, no untrusted process runs in the worker container. What remai
 | The CLI starts with a placeholder credential | ✅ `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>` is sent as `Authorization`; the proxy strips it (Anthropic answers 401 with no injection, as intended) |
 | Side traffic | ⚠️ Without flags the CLI also opens `CONNECT api.anthropic.com:443` (non-inference calls that bypass `ANTHROPIC_BASE_URL`). With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` **all** side traffic disappears: only `/v1/messages` through the proxy |
 | `HTTP_PROXY` + base URL | ⚠️ With `HTTP_PROXY` set, the base-URL request is sent in proxy form and misses the route: the sandbox must set `NO_PROXY=<proxy host>` (or not set `HTTP_PROXY`) |
-| Injected real OAuth token → 200 | ⏳ pending: needs a `claude setup-token` token provided by the operator through the environment |
+| Injected real OAuth token → 200 | ✅ With a `claude setup-token` token injected **only by the proxy** (the CLI held a placeholder), a Bash-tool task completed (`result: sandbox-ok`, 2 turns, both `/v1/messages` → 200, no side traffic). **Variant 1 (subscription OAuth) works; no API key needed.** |
 
 The sandbox env therefore becomes: `ANTHROPIC_BASE_URL`, a placeholder `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`, `HTTPS_PROXY` (registries only), and `NO_PROXY=<proxy service>`.
