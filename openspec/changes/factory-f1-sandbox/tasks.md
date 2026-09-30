@@ -2,7 +2,7 @@
 
 ## 0. Spikes
 - [ ] 0.1 S1: Claude Code through an auth-injecting reverse proxy (subscription OAuth, fallback API key); list every outbound host the CLI contacts
-- [ ] 0.2 S2: NetworkPolicy enforcement, `hostUsers: false` and the PID limit on the k3s node (throwaway namespace, torn down)
+- [x] 0.2 S2: NetworkPolicy enforced, `hostUsers: false` works, PSA restricted admits the template; no kubelet PID limit → per-exec `ulimit -u 512` (design, spike results)
 
 ## 1. Egress proxy
 - [ ] 1.1 `factory_egress_proxy` binary: reverse routes with credential injection, header scrubbing, CONNECT allowlist, deny by default, per-run token, request log

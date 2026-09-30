@@ -89,7 +89,7 @@ spec:
     volumeMounts: [workspace -> /workspace, home -> /home/task, tmp -> /tmp]   # emptyDir only
 ```
 
-The PID limit comes from the kubelet's `podPidsLimit`; S2 checks it is set, and sets it if not.
+The node has no kubelet `podPidsLimit` (S2), so every `exec` is wrapped in `ulimit -u 512`. That is effectively per pod under user namespaces (see Spike results).
 
 **Image:** v1 reuses the backend image (it already contains Claude Code, git, node, Python and the Playwright browsers) with the command overridden. A slim sandbox image is a follow-up.
 
@@ -132,3 +132,29 @@ After items 3–4, no untrusted process runs in the worker container. What remai
 3. The adversarial drill passes.
 4. Templates move one by one: the reviewer first (read-only), then QA, then the resolver.
 5. Local execution is disabled by default.
+
+## Spike results
+
+### S2 — k3s enforcement (run 2026-09-30 on `agency-os-production`, namespace torn down)
+
+| Check | Result |
+|---|---|
+| PSA `restricted` admits the hardened template (non-root, RO rootfs, drop ALL, seccomp) | ✅ admitted |
+| `hostUsers: false` | ✅ in-pod UID 0 maps to host UID 4110352384 (`uid_map: 0 4110352384 65536`) |
+| Default-deny egress + allow-list | ✅ allowed pod:port reachable; internet (1.1.1.1:443) and the Kubernetes API (10.43.0.1:443) **blocked**; DNS allowed |
+| Default-deny ingress | ✅ unlisted ingress blocked |
+| PID limit | ❌ `pids.max = 28686`: the kubelet has no `podPidsLimit` |
+
+**PID limit decision:** setting `podPidsLimit` means restarting k3s on a node shared with other workloads. Instead, the executor wraps every `exec` in `ulimit -u 512`. `RLIMIT_NPROC` is counted per kernel UID, and with user namespaces each pod gets its own host UID range, so the limit is effectively per pod. The node-level limit stays a follow-up for a maintenance window.
+
+### S1 — Claude Code through an auth-injecting proxy (partial, 2026-09-30, CLI 2.1.280)
+
+| Check | Result |
+|---|---|
+| `ANTHROPIC_BASE_URL` honored for inference | ✅ `POST /v1/messages?beta=true` goes to the proxy route |
+| The CLI starts with a placeholder credential | ✅ `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>` is sent as `Authorization`; the proxy strips it (Anthropic answers 401 with no injection, as intended) |
+| Side traffic | ⚠️ Without flags the CLI also opens `CONNECT api.anthropic.com:443` (non-inference calls that bypass `ANTHROPIC_BASE_URL`). With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` **all** side traffic disappears: only `/v1/messages` through the proxy |
+| `HTTP_PROXY` + base URL | ⚠️ With `HTTP_PROXY` set, the base-URL request is sent in proxy form and misses the route: the sandbox must set `NO_PROXY=<proxy host>` (or not set `HTTP_PROXY`) |
+| Injected real OAuth token → 200 | ⏳ pending: needs a `claude setup-token` token provided by the operator through the environment |
+
+The sandbox env therefore becomes: `ANTHROPIC_BASE_URL`, a placeholder `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`, `HTTPS_PROXY` (registries only), and `NO_PROXY=<proxy service>`.
