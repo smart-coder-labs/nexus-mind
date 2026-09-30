@@ -39,8 +39,8 @@
 
 ## 7. Jev spike
 - [x] 7.1 API contract validated from public docs (typed questions choice/score/noul, not free-form JSON); spike script `scripts/factory/jev_spike.py` (+ unittest) over 12 synthetic tasks
-- [ ] 7.2 Run the spike with `JEV_API_KEY` on the operator's machine; write findings to `docs/factory/jev-spike.md` (latency, real price, accuracy, false-low-risk)
+- [x] 7.2 Spike run (36 calls, 0 errors, p50 341 ms, $0.000027/decision, 11/12 class accuracy); findings in `docs/factory/jev-spike.md` — `risk` score separates well, `needs_human` does not
 
 ## 8. Golden tasks
 - [x] 8.1 Harvest script `scripts/factory/harvest_golden_tasks.py` (+ unittest), writes outside the repo, refuses in-repo output; validated end-to-end on 3 nexusmind PRs
-- [ ] 8.2 Run the full harvest (30 nexusmind + 20 kasymir-app-ui) on the operator's machine — the agent sandbox cannot write to ~/.nexusmind
+- [x] 8.2 Full harvest run by the operator: 50 tasks (30 nexusmind, 20 kasymir-app-ui) in ~/.nexusmind/evals/golden/v1; all with SHAs and ticket text. Skew: kasymir-app-ui tasks are all `ui` — add a backend kasymir repo before calibrating
