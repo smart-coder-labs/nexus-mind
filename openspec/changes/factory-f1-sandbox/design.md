@@ -114,6 +114,32 @@ The node has no kubelet `podPidsLimit` (S2), so every `exec` is wrapped in `ulim
 
 Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster ServiceAccount. It is a new dependency, and the alternative, shelling out to `kubectl`, would put a binary and a kubeconfig in the image.
 
+### Executor structure (implementation plan)
+
+- **`factory/sandbox.rs` (pure, done):** `task_pod_name`, `task_env` and `task_pod_manifest`. Tests pin every hardening field.
+- **`factory/sandbox_exec.rs`:** a `SandboxRuntime` trait, so the worker is tested with a fake runtime and never needs a cluster in unit tests:
+  ```rust
+  #[async_trait]
+  trait SandboxRuntime {
+      async fn create(&self, manifest: &Value) -> Result<PodHandle>;
+      async fn wait_ready(&self, pod: &PodHandle, timeout: Duration) -> Result<()>;
+      /// argv runs as `sh -c 'ulimit -u 512; exec "$@"'`; stdin optional; stdout streamed line by line.
+      async fn exec(&self, pod: &PodHandle, argv: &[String], stdin: Option<Vec<u8>>, on_line: &mut (dyn FnMut(&[u8]) + Send)) -> Result<ExecOutput>;
+      async fn delete(&self, pod: &PodHandle) -> Result<()>;
+      async fn list_expired(&self, now: DateTime<Utc>) -> Result<Vec<PodHandle>>;
+  }
+  ```
+  - `KubeRuntime` implements it with kube-rs (`Api<Pod>::create`, `await_condition(is_pod_running)`, `exec` over WebSocket, `delete` with a grace period of 0).
+  - `FakeRuntime` implements it for tests.
+- **`run_in_sandbox(runtime, request, workspace_tar, argv)`:** create → wait → `exec tar -x` (stdin) → `exec argv` (stream) → `exec git diff --binary` → delete. An RAII guard deletes the pod on every exit path, including errors and panics.
+- **Workspace in:** a `tar` of the checkout with `.git/config` rewritten to drop remotes that carry credentials (`git remote remove origin`), and without `.git/hooks`.
+- **Diff out:** `git diff --binary <base_sha>` plus untracked files (`git add -N .` first), capped at 5 MB. It is applied in the worker with `git apply --index` and then goes through the existing `ensure_diff_has_no_secrets`.
+- **GC:** a worker tick lists `role=task` pods older than `activeDeadlineSeconds + 5 min` and deletes them.
+
+### Migration order
+
+`github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `executor: "sandbox"`, which is the default once the drill passes; `executor: "local"` stays as an explicit, UI-flagged unsafe escape hatch.
+
 ## 5. VerificationReport gate
 
 A builder turns the results of tests, security scanners and DAST into the F0 `VerificationReport` contract for **one** `head_sha`:

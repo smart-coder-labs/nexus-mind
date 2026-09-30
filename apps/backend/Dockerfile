@@ -1,5 +1,6 @@
 # Build stage
-FROM rust:1.88-slim AS builder
+# kube-rs (factory sandbox executor) requires Rust >= 1.89; same toolchain as nexus-builder.
+FROM rust:1.98-slim AS builder
 
 RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 

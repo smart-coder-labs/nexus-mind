@@ -64,6 +64,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 futures-util = "0.3"
+# Sandbox executor (factory F1): task pods over the in-cluster Kubernetes API.
+kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "ws", "runtime"] }
+k8s-openapi = { version = "0.28", features = ["v1_35"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
 tree-sitter = "0.26.10"

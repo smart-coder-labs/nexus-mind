@@ -285,3 +285,87 @@ async fn a_streaming_response_keeps_its_slot_until_it_finishes() {
     );
     drop(first);
 }
+
+/// An upstream that echoes the body it received and how it was framed.
+async fn echo_upstream() -> String {
+    let app = Router::new().fallback(any(
+        |headers: HeaderMap, body: axum::body::Bytes| async move {
+            let framing = if headers.contains_key("content-length") {
+                "length"
+            } else {
+                "chunked"
+            };
+            format!("{framing}:{}", String::from_utf8_lossy(&body))
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{address}")
+}
+
+#[tokio::test]
+async fn request_bodies_are_forwarded_intact_whether_sized_or_streamed() {
+    let base = proxy(&echo_upstream().await, None).await;
+    let url = format!("{base}/r/{}/anthropic/v1/messages", run_token());
+    let client = reqwest::Client::new();
+    let payload = "x".repeat(300_000);
+
+    let sized = client
+        .post(&url)
+        .body(payload.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sized.status(), 200);
+    assert_eq!(sized.text().await.unwrap(), format!("length:{payload}"));
+
+    let chunks: Vec<Result<_, std::io::Error>> = vec![Ok("part-1,"), Ok("part-2")];
+    let streamed = client
+        .post(&url)
+        .body(reqwest::Body::wrap_stream(futures_util::stream::iter(
+            chunks,
+        )))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(streamed.status(), 200);
+    assert_eq!(streamed.text().await.unwrap(), "chunked:part-1,part-2");
+}
+
+#[tokio::test]
+async fn an_oversized_declared_body_is_refused_before_reaching_upstream() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let address = base.trim_start_matches("http://");
+    let path = format!("/r/{}/anthropic/v1/messages", run_token());
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream
+        .write_all(
+            format!("POST {path} HTTP/1.1\r\nHost: proxy\r\nContent-Length: 999999999\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head = [0u8; 12];
+    stream.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 413");
+    assert!(seen.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_anthropic_credential_only_reaches_inference_endpoints() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{base}/r/{}/anthropic/api/oauth/profile",
+            run_token()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert!(seen.0.lock().unwrap().is_empty());
+}

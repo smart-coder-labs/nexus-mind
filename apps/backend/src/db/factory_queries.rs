@@ -531,7 +531,9 @@ pub struct FactoryBotStatus {
 pub fn get_factory_bot(conn: &Connection, org_id: &str) -> Result<Option<FactoryBotStatus>> {
     let bot = conn
         .query_row(
-            "SELECT id, role, status FROM users WHERE org_id = ?1 AND email = ?2",
+            "SELECT id, role,
+                    CASE WHEN disabled_at IS NOT NULL THEN 'disabled' ELSE status END
+               FROM users WHERE org_id = ?1 AND email = ?2",
             [org_id, &factory_bot_email(org_id)],
             |row| {
                 Ok((
@@ -1059,6 +1061,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(still, 1, "the refused rotation must not revoke anything");
+        conn.execute(
+            "UPDATE users SET status = 'active', disabled_at = datetime('now') WHERE id = ?1",
+            [&status.user_id],
+        )
+        .unwrap();
+        assert_eq!(get_factory_bot(&conn, &org).unwrap().unwrap().status, "disabled");
         let _ = working;
     }
 

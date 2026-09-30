@@ -123,6 +123,9 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
 
 /// Classifies one request. `target` is the HTTP request target (origin-form for
 /// reverse routes, `host:port` authority-form for CONNECT).
+/// Exact paths the Anthropic route may reach.
+const ANTHROPIC_PATHS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
+
 pub fn decide(
     key: &[u8],
     method: &str,
@@ -189,6 +192,13 @@ pub fn decide(
     } else {
         format!("/{tail}")
     };
+    // The Anthropic credential is an account-wide subscription token: only the
+    // inference endpoints the CLI needs may use it. NexusMind needs no list here —
+    // the org's bot key is already bounded by the `factory-bot` role.
+    let path = path_and_query.split('?').next().unwrap_or("");
+    if upstream == Upstream::Anthropic && !ANTHROPIC_PATHS.contains(&path) {
+        return deny("path_not_allowed", Some(&run));
+    }
     Decision::Reverse {
         run,
         upstream,
@@ -491,6 +501,57 @@ mod tests {
                     Decision::Tunnel { .. }
                 ),
                 "{scheme}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_anthropic_route_only_reaches_inference_endpoints() {
+        let t = token("run-1", NOW + 60);
+        for allowed in [
+            "/v1/messages",
+            "/v1/messages?beta=true",
+            "/v1/messages/count_tokens?beta=true",
+        ] {
+            assert!(
+                matches!(
+                    decide(
+                        KEY,
+                        "POST",
+                        &format!("/r/{t}/anthropic{allowed}"),
+                        None,
+                        ALLOW,
+                        NOW
+                    ),
+                    Decision::Reverse {
+                        upstream: Upstream::Anthropic,
+                        ..
+                    }
+                ),
+                "{allowed}"
+            );
+        }
+        for denied in [
+            "/v1/organizations/keys",
+            "/api/oauth/profile",
+            "/v1/messages/../oauth",
+            "/v1/messagesX",
+            "/",
+        ] {
+            assert_eq!(
+                decide(
+                    KEY,
+                    "POST",
+                    &format!("/r/{t}/anthropic{denied}"),
+                    None,
+                    ALLOW,
+                    NOW
+                ),
+                Decision::Deny {
+                    reason: "path_not_allowed",
+                    run_id: Some("run-1".into())
+                },
+                "{denied}"
             );
         }
     }

@@ -10,7 +10,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
 use bytes::Bytes;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::{
     body::{Frame, Incoming},
@@ -234,7 +234,7 @@ async fn reverse(
         .clone()
         .unwrap_or_else(|| format!("https://{}", upstream.host()));
     let method = request.method().clone();
-    let mut headers: Vec<(String, String)> = request
+    let headers: Vec<(String, String)> = request
         .headers()
         .iter()
         .filter_map(|(name, value)| {
@@ -244,7 +244,19 @@ async fn reverse(
                 .map(|v| (name.to_string(), v.to_string()))
         })
         .collect();
-    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-length"));
+    // A declared length over the cap is refused up front; otherwise it is forwarded
+    // so the upstream receives a plain (non-chunked) body, as the client sent it.
+    let declared = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.parse::<usize>());
+    match declared {
+        Some(Ok(length)) if length > MAX_REQUEST_BYTES => {
+            return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n")
+        }
+        Some(Err(_)) => return text(StatusCode::BAD_REQUEST, "bad content-length\n"),
+        _ => {}
+    }
     let mut headers = scrub_request_headers(&headers);
     if matches!(
         (upstream, &config.anthropic),
@@ -266,13 +278,17 @@ async fn reverse(
     }
     headers.extend(injected);
 
-    let body = match http_body_util::Limited::new(request.into_body(), MAX_REQUEST_BYTES)
-        .collect()
-        .await
-    {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n"),
-    };
+    // Streamed, never buffered: 64 in-flight requests must fit the proxy's memory.
+    let mut forwarded = 0usize;
+    let body =
+        reqwest::Body::wrap_stream(request.into_body().into_data_stream().map(move |chunk| {
+            let chunk = chunk.map_err(std::io::Error::other)?;
+            forwarded += chunk.len();
+            if forwarded > MAX_REQUEST_BYTES {
+                return Err(std::io::Error::other("request too large"));
+            }
+            Ok::<_, std::io::Error>(chunk)
+        }));
     let mut outbound = client.request(method.clone(), format!("{base}{path_and_query}"));
     for (name, value) in &headers {
         outbound = outbound.header(name, value);
