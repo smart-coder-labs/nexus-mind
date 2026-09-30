@@ -141,7 +141,7 @@ factory_action_policies(
 | PUT | `/v1/factory/policies` | `factory_policy:write` | Upsert by `(action, scope)`. Body is an `ActionPolicy` (validated with `Contract::validate`). **Optimistic concurrency:** `version` must be `1` for a new row and `current + 1` for an existing one, otherwise 409 `policy_version_conflict` |
 | DELETE | `/v1/factory/policies/:id` | `factory_policy:write` | Remove one policy |
 
-Every write is recorded with `log_audit` (`factory_policy.upsert` / `factory_policy.delete`), including the before/after mode.
+Every write appends its audit entry (`factory_policy.upsert` / `factory_policy.delete`, with the before/after mode) **in the same transaction** via `append_audit_chained`, so a policy change can never exist without its audit record.
 
 ### Absence of a policy
 
@@ -194,7 +194,7 @@ Every evaluation writes one row:
 
 - `org_id`, `subject` (e.g. `acme/web#42@<sha>`), `action`;
 - `verdict`, `source`, `reason`;
-- `policy_id` and `policy_version`;
+- `policy_version`;
 - `provider`, `model`, `confidence`;
 - `inputs_json`: floors hit, task class and source kind. It never includes diff content or secrets.
 
