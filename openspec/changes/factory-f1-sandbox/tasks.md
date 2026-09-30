@@ -6,7 +6,7 @@
 
 ## 1. Egress proxy
 - [x] 1.1 `factory_egress_proxy` binary: reverse routes with credential injection, header scrubbing, CONNECT allowlist, deny by default, per-run HMAC token, request log (run_id only). Verified end to end with a real Claude session. Review fixes: resilient accept loop, tunnel connects before 200 (502 otherwise), case-insensitive Basic + 407 challenge, in-flight cap with 503 shedding, connect/read/tunnel timeouts
-- [ ] 1.2 Per-org `nexus-bot` user + custom role; proxy map `org_id → key`; run token v2 carries org_id
+- [x] 1.2 Per-org `nexus-bot` user (no password, `.invalid` email) + `factory-bot` role (default read-only grants, admin edits preserved); rotation revokes old keys atomically with audit; `GET /v1/factory/bot`, `POST /v1/factory/bot/key` (key shown once, `no-store`); proxy map `org_id → key`; run token v2 carries org_id; admin panel on Factory policies
 
 ## 2. Cluster
 - [ ] 2.1 `nexusmind-sandbox` namespace (PSA restricted), NetworkPolicies, proxy Deployment/Service

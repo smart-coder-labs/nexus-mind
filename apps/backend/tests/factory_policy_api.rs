@@ -237,3 +237,29 @@ async fn super_user_manages_policies_with_version_checks_and_audit() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn the_sandbox_bot_key_is_shown_once_and_only_to_policy_writers() {
+    let (admin_router, _) = app("admin");
+    let admin = login(&admin_router).await;
+    let (status, _) = call(&admin_router, &admin, "POST", "/v1/factory/bot/key", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (router, _) = app("super_user");
+    let cookie = login(&router).await;
+    let (status, body) = call(&router, &cookie, "GET", "/v1/factory/bot", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["bot"], Value::Null);
+
+    let (status, body) = call(&router, &cookie, "POST", "/v1/factory/bot/key", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key = body["api_key"].as_str().unwrap().to_string();
+    assert!(key.starts_with("nm_"));
+    assert_eq!(body["bot"]["role"], "factory-bot");
+
+    let (status, body) = call(&router, &cookie, "GET", "/v1/factory/bot", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["bot"]["role"], "factory-bot");
+    assert!(body.get("api_key").is_none(), "the key is never readable again");
+    assert!(!body.to_string().contains(&key));
+}

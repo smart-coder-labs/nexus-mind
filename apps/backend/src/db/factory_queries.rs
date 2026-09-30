@@ -498,6 +498,143 @@ pub fn record_run_metrics(
     Ok(())
 }
 
+/// The per-organization bot whose API key the sandbox egress proxy injects for
+/// NexusMind calls (decision 2026-09-30). Its permissions come from the custom
+/// role `factory-bot`, editable per org like any role.
+pub const FACTORY_BOT_NAME: &str = "nexus-bot";
+pub const FACTORY_BOT_ROLE: &str = "factory-bot";
+/// Initial grants when the role is first created: read-only project context.
+pub const FACTORY_BOT_DEFAULT_PERMISSIONS: [&str; 5] = [
+    "memory:read",
+    "memory:search",
+    "convention:read",
+    "code:read",
+    "project:read",
+];
+
+/// The bot's address uses the reserved `.invalid` TLD (RFC 2606): it can never
+/// receive mail, and without a password it can never log in.
+pub fn factory_bot_email(org_id: &str) -> String {
+    format!("{FACTORY_BOT_NAME}@{org_id}.bots.invalid")
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct FactoryBotStatus {
+    pub user_id: String,
+    pub role: String,
+    pub role_permissions: Vec<String>,
+    pub status: String,
+    /// When the active key was issued; `None` when the bot has no active key.
+    pub key_created_at: Option<String>,
+}
+
+pub fn get_factory_bot(conn: &Connection, org_id: &str) -> Result<Option<FactoryBotStatus>> {
+    let bot = conn
+        .query_row(
+            "SELECT id, role, status FROM users WHERE org_id = ?1 AND email = ?2",
+            [org_id, &factory_bot_email(org_id)],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((user_id, role, status)) = bot else {
+        return Ok(None);
+    };
+    let role_permissions = crate::db::queries::get_role_permissions(conn, org_id, &role)?;
+    let key_created_at = conn
+        .query_row(
+            "SELECT created_at FROM api_keys
+              WHERE org_id = ?1 AND user_id = ?2 AND revoked = 0
+              ORDER BY created_at DESC LIMIT 1",
+            [org_id, &user_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(Some(FactoryBotStatus {
+        user_id,
+        role,
+        role_permissions,
+        status,
+        key_created_at,
+    }))
+}
+
+/// Ensures the bot role and user exist, revokes every previous bot key and issues a
+/// new one, all in one transaction with its audit entry. Returns the raw key once.
+pub fn rotate_factory_bot_key(
+    conn: &Connection,
+    org_id: &str,
+    actor_user_id: &str,
+) -> Result<(FactoryBotStatus, String)> {
+    let tx = conn.unchecked_transaction()?;
+    let role_exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM roles WHERE org_id = ?1 AND name = ?2)",
+        [org_id, FACTORY_BOT_ROLE],
+        |row| row.get(0),
+    )?;
+    if !role_exists {
+        // Created once; later edits by an admin are never overwritten.
+        crate::db::queries::create_role(
+            &tx,
+            org_id,
+            FACTORY_BOT_ROLE,
+            "Factory bot",
+            &FACTORY_BOT_DEFAULT_PERMISSIONS.map(String::from),
+            Some("Identity of sandboxed factory agents when they call NexusMind. Its key lives only in the egress proxy."),
+        )?;
+    }
+    let email = factory_bot_email(org_id);
+    let existing: Option<(String, bool)> = tx
+        .query_row(
+            "SELECT id, status = 'active' AND disabled_at IS NULL
+               FROM users WHERE org_id = ?1 AND email = ?2",
+            [org_id, &email],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let user_id = match existing {
+        // A disabled bot's new key would never authenticate, and rotating would
+        // revoke the one that still works. Re-enabling is an explicit admin act.
+        Some((_, false)) => anyhow::bail!("factory_bot_disabled"),
+        Some((id, true)) => id,
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            // No password_hash: the bot can authenticate only with its API key.
+            tx.execute(
+                "INSERT INTO users (id, org_id, email, name, role, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', datetime('now'))",
+                params![id, org_id, email, FACTORY_BOT_NAME, FACTORY_BOT_ROLE],
+            )?;
+            id
+        }
+    };
+    let revoked = tx.execute(
+        "UPDATE api_keys SET revoked = 1 WHERE org_id = ?1 AND user_id = ?2 AND revoked = 0",
+        [org_id, &user_id],
+    )?;
+    let (_, raw_key) =
+        crate::db::queries::create_key_admin(&tx, org_id, &user_id, "factory-sandbox", None)?;
+    append_audit_chained(
+        &tx,
+        org_id,
+        actor_user_id,
+        "factory_bot.key_rotated",
+        "factory_bot",
+        Some(&user_id),
+        serde_json::json!({ "revoked_keys": revoked }),
+        None,
+    )?;
+    tx.commit()?;
+    let status = get_factory_bot(conn, org_id)?
+        .ok_or_else(|| anyhow::anyhow!("factory_bot_missing_after_rotation"))?;
+    Ok((status, raw_key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,6 +956,110 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows, vec![(0.5, None, 90_000)]);
+    }
+
+    fn key_role(conn: &Connection, raw: &str) -> Option<String> {
+        crate::db::queries::validate_api_key(conn, &crate::auth::api_keys::hash_key(raw))
+            .unwrap()
+            .map(|auth| auth.role.as_str().to_string())
+    }
+
+    #[test]
+    fn the_first_rotation_creates_a_read_only_bot_that_cannot_log_in() {
+        let (conn, org, admin) = setup();
+        assert_eq!(get_factory_bot(&conn, &org).unwrap(), None);
+        let (status, raw) = rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        assert_eq!(status.role, FACTORY_BOT_ROLE);
+        assert_eq!(
+            status.role_permissions,
+            FACTORY_BOT_DEFAULT_PERMISSIONS.map(String::from).to_vec()
+        );
+        assert!(status.key_created_at.is_some());
+        assert_eq!(key_role(&conn, &raw).as_deref(), Some(FACTORY_BOT_ROLE));
+        let password: Option<String> = conn
+            .query_row(
+                "SELECT password_hash FROM users WHERE id = ?1",
+                [&status.user_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(password.is_none(), "the bot must not be able to log in");
+        assert_eq!(get_factory_bot(&conn, &org).unwrap(), Some(status));
+    }
+
+    #[test]
+    fn rotation_revokes_the_previous_key_and_reuses_the_bot() {
+        let (conn, org, admin) = setup();
+        let (first, old) = rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        let (second, new) = rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        assert_eq!(first.user_id, second.user_id);
+        assert_eq!(key_role(&conn, &old), None, "old key revoked");
+        assert!(key_role(&conn, &new).is_some());
+        let bots: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE org_id = ?1 AND email = ?2",
+                [&org, &factory_bot_email(&org)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bots, 1);
+    }
+
+    #[test]
+    fn an_admin_edit_of_the_bot_role_survives_rotation() {
+        let (conn, org, admin) = setup();
+        rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        conn.execute(
+            "UPDATE roles SET permissions = '[\"memory:read\"]' WHERE org_id = ?1 AND name = ?2",
+            [&org, FACTORY_BOT_ROLE],
+        )
+        .unwrap();
+        let (status, _) = rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        assert_eq!(status.role_permissions, vec!["memory:read".to_string()]);
+    }
+
+    #[test]
+    fn bots_are_isolated_per_organization_and_rotations_are_audited() {
+        let (conn, org_a, admin_a) = setup();
+        conn.execute(
+            "INSERT INTO organizations (id, name, slug) VALUES ('org-b', 'Beta', 'beta')",
+            [],
+        )
+        .unwrap();
+        let (a, key_a) = rotate_factory_bot_key(&conn, &org_a, &admin_a).unwrap();
+        assert_eq!(get_factory_bot(&conn, "org-b").unwrap(), None);
+        assert!(key_role(&conn, &key_a).is_some());
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_logs WHERE org_id = ?1 AND action = 'factory_bot.key_rotated' AND resource_id = ?2",
+                [&org_a, &a.user_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audited, 1);
+    }
+
+    #[test]
+    fn a_disabled_bot_is_not_rotated_and_keeps_its_working_key() {
+        let (conn, org, admin) = setup();
+        let (status, working) = rotate_factory_bot_key(&conn, &org, &admin).unwrap();
+        for disable in [
+            "UPDATE users SET disabled_at = datetime('now') WHERE id = ?1",
+            "UPDATE users SET disabled_at = NULL, status = 'suspended' WHERE id = ?1",
+        ] {
+            conn.execute(disable, [&status.user_id]).unwrap();
+            let error = rotate_factory_bot_key(&conn, &org, &admin).unwrap_err();
+            assert_eq!(error.to_string(), "factory_bot_disabled");
+        }
+        let still: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = ?1 AND revoked = 0",
+                [&status.user_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still, 1, "the refused rotation must not revoke anything");
+        let _ = working;
     }
 
     #[test]

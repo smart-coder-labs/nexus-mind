@@ -11,6 +11,8 @@ const api = vi.hoisted(() => ({
   listFactoryPolicies: vi.fn(),
   putFactoryPolicy: vi.fn(),
   deleteFactoryPolicy: vi.fn(),
+  getFactoryBot: vi.fn(),
+  rotateFactoryBotKey: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ createClient: () => api }))
@@ -51,6 +53,7 @@ describe('FactoryPolicies', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.listFactoryPolicies.mockResolvedValue([])
+    api.getFactoryBot.mockResolvedValue({ bot: null })
   })
 
   it('does not infer access from the role name', () => {
@@ -123,6 +126,45 @@ describe('FactoryPolicies', () => {
     expect(screen.queryByText(/holds every autonomous merge/i)).not.toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('Project'), 'web')
     expect(screen.getByText(/holds every autonomous merge/i)).toBeInTheDocument()
+  })
+
+  it('shows the sandbox bot state without offering keys to readers', async () => {
+    renderPage(['factory_policy:read'])
+    expect(await screen.findByText(/no sandbox bot yet/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /generate bot key/i })).not.toBeInTheDocument()
+  })
+
+  it('shows a new bot key exactly once', async () => {
+    api.rotateFactoryBotKey.mockResolvedValue({
+      bot: { user_id: 'b1', role: 'factory-bot', role_permissions: ['memory:read'], status: 'active', key_created_at: '2026-09-30T12:00:00Z' },
+      api_key: 'nm_secret_once',
+    })
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: /generate bot key/i }))
+    expect(await screen.findByText('nm_secret_once')).toBeInTheDocument()
+    expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /i stored it/i }))
+    expect(screen.queryByText('nm_secret_once')).not.toBeInTheDocument()
+  })
+
+  it('never offers to rotate while the bot state is unknown', async () => {
+    api.getFactoryBot.mockRejectedValue(new Error('network down'))
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    expect(await screen.findByText(/could not load the sandbox bot/i)).toBeInTheDocument()
+    const button = screen.getByRole('button', { name: /bot key/i })
+    expect(button).toBeDisabled()
+    expect(api.rotateFactoryBotKey).not.toHaveBeenCalled()
+  })
+
+  it('asks before rotating an active bot key', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    api.getFactoryBot.mockResolvedValue({
+      bot: { user_id: 'b1', role: 'factory-bot', role_permissions: ['memory:read'], status: 'active', key_created_at: '2026-09-30T12:00:00Z' },
+    })
+    renderPage(['factory_policy:read', 'factory_policy:write'])
+    await userEvent.click(await screen.findByRole('button', { name: /rotate bot key/i }))
+    expect(confirm).toHaveBeenCalled()
+    expect(api.rotateFactoryBotKey).not.toHaveBeenCalled()
   })
 
   it('is read-only without the write permission', async () => {

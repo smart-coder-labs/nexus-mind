@@ -35,8 +35,9 @@ pub enum AnthropicAuth {
 pub struct EgressConfig {
     pub signing_key: Vec<u8>,
     pub anthropic: Option<AnthropicAuth>,
-    /// Per-run read-only NexusMind credential (F1 item 1.2); `None` fails closed.
-    pub nexusmind_token: Option<String>,
+    /// NexusMind bot API key per organization (`org_id → key`). A run whose org
+    /// has no key fails closed.
+    pub nexusmind_keys: std::collections::HashMap<String, String>,
     pub tunnel_allowlist: Vec<String>,
     /// Tests only: send every reverse route to this base URL instead of the real host.
     pub upstream_override: Option<String>,
@@ -178,7 +179,7 @@ async fn handle(
             path_and_query,
         } => {
             // Shed load instead of queueing: a saturated proxy answers fast.
-            let Ok(_slot) = slots.try_acquire_owned() else {
+            let Ok(slot) = slots.try_acquire_owned() else {
                 tracing::warn!(target: "factory_egress", run_id = %run.run_id, "shed: too many requests in flight");
                 return Ok(text(StatusCode::SERVICE_UNAVAILABLE, "egress busy\n"));
             };
@@ -186,9 +187,10 @@ async fn handle(
                 request,
                 &config,
                 &client,
-                &run.run_id,
+                &run,
                 upstream,
                 &path_and_query,
+                slot,
             )
             .await)
         }
@@ -199,13 +201,20 @@ async fn reverse(
     request: Request<Incoming>,
     config: &EgressConfig,
     client: &reqwest::Client,
-    run_id: &str,
+    run: &super::egress::RunToken,
     upstream: Upstream,
     path_and_query: &str,
+    // Held until the response body finishes or is dropped, so long streams count.
+    slot: tokio::sync::OwnedSemaphorePermit,
 ) -> Response<Body> {
+    let run_id = run.run_id.as_str();
     // Credential first: an upstream without one fails closed, before any byte is sent.
     let mut injected: Vec<(String, String)> = Vec::new();
-    match (upstream, &config.anthropic, &config.nexusmind_token) {
+    match (
+        upstream,
+        &config.anthropic,
+        config.nexusmind_keys.get(&run.org_id),
+    ) {
         (Upstream::Anthropic, Some(AnthropicAuth::OAuth(token)), _) => {
             injected.push(("authorization".into(), format!("Bearer {token}")));
         }
@@ -296,7 +305,11 @@ async fn reverse(
     // Stream the body: model responses are server-sent events.
     let stream = upstream_response
         .bytes_stream()
-        .map_ok(Frame::data)
+        .map_ok(move |chunk| {
+            // The permit lives as long as this closure, i.e. as long as the stream.
+            let _slot = &slot;
+            Frame::data(chunk)
+        })
         .map_err(std::io::Error::other);
     response
         .body(BodyExt::boxed(StreamBody::new(stream)))

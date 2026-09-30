@@ -39,7 +39,13 @@ async fn proxy_with(upstream: &str, nexusmind: Option<&str>, max_in_flight: usiz
     let config = EgressConfig {
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
-        nexusmind_token: nexusmind.map(str::to_string),
+        nexusmind_keys: nexusmind
+            .map(|key| {
+                [("org-1".to_string(), key.to_string())]
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default(),
         // 127.0.0.1:443 has no listener locally: an allow-listed but unreachable host.
         tunnel_allowlist: vec!["registry.npmjs.org".into(), "127.0.0.1".into()],
         upstream_override: Some(upstream.to_string()),
@@ -53,7 +59,7 @@ async fn proxy_with(upstream: &str, nexusmind: Option<&str>, max_in_flight: usiz
 
 fn run_token() -> String {
     let expires = chrono::Utc::now().timestamp() + 300;
-    sign_run_token(KEY, "run-42", expires).unwrap()
+    sign_run_token(KEY, "org-1", "run-42", expires).unwrap()
 }
 
 #[tokio::test]
@@ -212,4 +218,70 @@ async fn requests_beyond_the_in_flight_limit_are_shed() {
         .unwrap();
     assert_eq!(second.status(), 503);
     first.abort();
+}
+
+#[tokio::test]
+async fn nexusmind_gets_the_bot_key_of_the_runs_organization() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, Some("nm_bot_key_org_1")).await;
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{base}/r/{}/nexusmind/v1/context?project=web",
+            run_token()
+        ))
+        .header("authorization", "Bearer sandbox-guess")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let seen = seen.0.lock().unwrap();
+    assert_eq!(seen[0].0, "/v1/context?project=web");
+    assert_eq!(seen[0].1["authorization"], "Bearer nm_bot_key_org_1");
+    assert!(seen[0].1.get("anthropic-beta").is_none());
+}
+
+#[tokio::test]
+async fn a_streaming_response_keeps_its_slot_until_it_finishes() {
+    // An upstream that sends headers at once and then streams forever.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let streaming = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let mut held = Vec::new();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n")
+                .await
+                .unwrap();
+            held.push(socket);
+        }
+    });
+    let base = proxy_with(&streaming, None, 1).await;
+    let url = format!("{base}/r/{}/anthropic/v1/messages", run_token());
+    let first = reqwest::Client::new()
+        .post(&url)
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        first.status(),
+        200,
+        "headers arrive, the body keeps streaming"
+    );
+    let second = reqwest::Client::new()
+        .post(&url)
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        second.status(),
+        503,
+        "the open stream still holds the only slot"
+    );
+    drop(first);
 }

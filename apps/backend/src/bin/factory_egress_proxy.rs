@@ -4,7 +4,7 @@
 //! Environment:
 //! - `FACTORY_PROXY_SIGNING_KEY` (required, ≥ 32 bytes): verifies run tokens.
 //! - `FACTORY_ANTHROPIC_OAUTH_TOKEN` or `FACTORY_ANTHROPIC_API_KEY`: Claude credential.
-//! - `FACTORY_NEXUSMIND_TOKEN` (optional): read-only NexusMind credential.
+//! - `FACTORY_NEXUSMIND_KEYS` (optional): JSON object `{"<org_id>": "<nexus-bot API key>"}`.
 //! - `FACTORY_TUNNEL_ALLOWLIST` (optional): comma-separated CONNECT hosts.
 //! - `FACTORY_PROXY_LISTEN` (default `0.0.0.0:8080`).
 //! - `FACTORY_PROXY_MAX_IN_FLIGHT` (default 64): concurrent reverse requests.
@@ -63,7 +63,12 @@ async fn main() -> anyhow::Result<()> {
     let config = EgressConfig {
         signing_key: signing_key.into_bytes(),
         anthropic,
-        nexusmind_token: env("FACTORY_NEXUSMIND_TOKEN"),
+        nexusmind_keys: match env("FACTORY_NEXUSMIND_KEYS") {
+            Some(raw) => serde_json::from_str(&raw).map_err(|_| {
+                anyhow::anyhow!("FACTORY_NEXUSMIND_KEYS must be a JSON object of org_id -> key")
+            })?,
+            None => Default::default(),
+        },
         tunnel_allowlist,
         upstream_override: None,
         max_in_flight: env("FACTORY_PROXY_MAX_IN_FLIGHT")
@@ -72,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let listen = env("FACTORY_PROXY_LISTEN").unwrap_or_else(|| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&listen).await?;
-    tracing::info!(target: "factory_egress", %listen, anthropic = config.anthropic.is_some(), nexusmind = config.nexusmind_token.is_some(), tunnels = config.tunnel_allowlist.len(), "egress proxy listening");
+    tracing::info!(target: "factory_egress", %listen, anthropic = config.anthropic.is_some(), nexusmind_orgs = config.nexusmind_keys.len(), tunnels = config.tunnel_allowlist.len(), "egress proxy listening");
     serve(listener, Arc::new(config)).await?;
     Ok(())
 }

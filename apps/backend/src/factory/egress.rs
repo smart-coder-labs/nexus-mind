@@ -25,6 +25,8 @@ impl Upstream {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunToken {
+    /// Selects which organization's NexusMind bot key the proxy injects.
+    pub org_id: String,
     pub run_id: String,
     pub expires_unix: i64,
 }
@@ -56,13 +58,18 @@ pub enum Decision {
     },
 }
 
-/// Signs `v1.<run_id>.<expires_unix>.<hex hmac>`. `run_id` must be
+/// Signs `v2.<org_id>.<run_id>.<expires_unix>.<hex hmac>`. Both ids must be
 /// `[A-Za-z0-9-]{1,64}` so the dotted layout stays unambiguous.
-pub fn sign_run_token(key: &[u8], run_id: &str, expires_unix: i64) -> Result<String, TokenError> {
-    if !valid_run_id(run_id) {
+pub fn sign_run_token(
+    key: &[u8],
+    org_id: &str,
+    run_id: &str,
+    expires_unix: i64,
+) -> Result<String, TokenError> {
+    if !valid_run_id(org_id) || !valid_run_id(run_id) {
         return Err(TokenError::Malformed);
     }
-    let payload = format!("v1.{run_id}.{expires_unix}");
+    let payload = format!("v2.{org_id}.{run_id}.{expires_unix}");
     Ok(format!("{payload}.{}", hex::encode(mac(key, &payload))))
 }
 
@@ -83,7 +90,8 @@ fn mac(key: &[u8], payload: &str) -> Vec<u8> {
 /// Verifies signature (constant time) and expiry.
 pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunToken, TokenError> {
     let mut parts = token.split('.');
-    let (Some("v1"), Some(run_id), Some(expires), Some(signature), None) = (
+    let (Some("v2"), Some(org_id), Some(run_id), Some(expires), Some(signature), None) = (
+        parts.next(),
         parts.next(),
         parts.next(),
         parts.next(),
@@ -94,12 +102,12 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
     };
     let expires_unix: i64 = expires.parse().map_err(|_| TokenError::Malformed)?;
     let signature = hex::decode(signature).map_err(|_| TokenError::Malformed)?;
-    if !valid_run_id(run_id) {
+    if !valid_run_id(org_id) || !valid_run_id(run_id) {
         return Err(TokenError::Malformed);
     }
     use hmac::{Hmac, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(format!("v1.{run_id}.{expires_unix}").as_bytes());
+    mac.update(format!("v2.{org_id}.{run_id}.{expires_unix}").as_bytes());
     // Constant-time comparison.
     mac.verify_slice(&signature)
         .map_err(|_| TokenError::BadSignature)?;
@@ -107,6 +115,7 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
         return Err(TokenError::Expired);
     }
     Ok(RunToken {
+        org_id: org_id.to_string(),
         run_id: run_id.to_string(),
         expires_unix,
     })
@@ -234,7 +243,7 @@ mod tests {
     const ALLOW: &[&str] = &["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"];
 
     fn token(run: &str, expires: i64) -> String {
-        sign_run_token(KEY, run, expires).unwrap()
+        sign_run_token(KEY, "org-1", run, expires).unwrap()
     }
 
     fn basic(token: &str) -> String {
@@ -251,6 +260,7 @@ mod tests {
         assert_eq!(
             verify_run_token(KEY, &t, NOW),
             Ok(RunToken {
+                org_id: "org-1".into(),
                 run_id: "run-1".into(),
                 expires_unix: NOW + 60
             })
@@ -265,6 +275,11 @@ mod tests {
     fn a_tampered_or_foreign_token_is_rejected() {
         let t = token("run-1", NOW + 60);
         let other_run = t.replacen("run-1", "run-2", 1);
+        let other_org = t.replacen("org-1", "org-2", 1);
+        assert_eq!(
+            verify_run_token(KEY, &other_org, NOW),
+            Err(TokenError::BadSignature)
+        );
         assert_eq!(
             verify_run_token(KEY, &other_run, NOW),
             Err(TokenError::BadSignature)
@@ -280,10 +295,10 @@ mod tests {
         );
         for bad in [
             "",
-            "v1",
-            "v2.run-1.1.00",
-            "v1.run-1.notanumber.00",
-            "v1.run-1.1.zz",
+            "v2",
+            "v1.run-1.1.00",
+            "v2.org-1.run-1.notanumber.00",
+            "v2.org-1.run-1.1.zz",
         ] {
             assert_eq!(
                 verify_run_token(KEY, bad, NOW),
@@ -297,9 +312,14 @@ mod tests {
     fn run_ids_that_would_break_the_layout_cannot_be_signed() {
         for bad in ["", "a.b", "run/1", &"x".repeat(65)] {
             assert_eq!(
-                sign_run_token(KEY, bad, NOW),
+                sign_run_token(KEY, "org-1", bad, NOW),
                 Err(TokenError::Malformed),
                 "{bad:?}"
+            );
+            assert_eq!(
+                sign_run_token(KEY, bad, "run-1", NOW),
+                Err(TokenError::Malformed),
+                "org {bad:?}"
             );
         }
     }
@@ -318,6 +338,7 @@ mod tests {
             ),
             Decision::Reverse {
                 run: RunToken {
+                    org_id: "org-1".into(),
                     run_id: "run-1".into(),
                     expires_unix: NOW + 60
                 },
@@ -403,6 +424,7 @@ mod tests {
             ),
             Decision::Tunnel {
                 run: RunToken {
+                    org_id: "org-1".into(),
                     run_id: "run-1".into(),
                     expires_unix: NOW + 60
                 },
