@@ -14,11 +14,16 @@ pub const PROXY_AUTHORITY: &str = "factory-egress-proxy.nexusmind-sandbox.svc.cl
 pub const TASK_UID: i64 = 10001;
 /// Workspace mount inside the pod.
 pub const WORKSPACE: &str = "/workspace";
+/// Label carrying the run id on every task pod.
+pub const RUN_LABEL: &str = "factory.nexusmind/run";
 
 #[derive(Clone, Debug)]
 pub struct TaskPodRequest {
     pub org_id: String,
     pub run_id: String,
+    /// Distinguishes the pods of one run (lease attempt, retry); part of the name.
+    pub pod_suffix: String,
+    pub profile: PodProfile,
     pub image: String,
     /// Signed run token (see `egress::sign_run_token`).
     pub run_token: String,
@@ -79,6 +84,17 @@ pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
     .collect()
 }
 
+/// What a pod runs, which decides what its environment may hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PodProfile {
+    /// The agent: proxy routes to Claude and NexusMind with the full run token.
+    Agent,
+    /// Repository code (tests, builds): only a registry-only token. Any process in
+    /// a pod can read PID 1's environment, so untrusted code never shares a pod
+    /// with a token that reaches a credentialed upstream.
+    Commands,
+}
+
 /// Where an autonomous run executes. `isolation` in the agent config; absent means
 /// `local` until the F1 drill passes, after which the default flips to `sandbox`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,8 +130,37 @@ pub fn autonomous_isolation(
     Ok(isolation)
 }
 
+/// The complete environment of a verification command. Code under test gets a
+/// registry-only token (`egress::registry_only_run_id`): it can install packages
+/// but never reach Claude or NexusMind as the run.
+pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
+    let proxy_host = PROXY_AUTHORITY.split(':').next().unwrap_or(PROXY_AUTHORITY);
+    [
+        (
+            "PATH",
+            "/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                .to_string(),
+        ),
+        ("HOME", "/tmp".to_string()),
+        ("TMPDIR", "/tmp".to_string()),
+        ("CI", "1".to_string()),
+        (
+            "HTTPS_PROXY",
+            format!("http://run:{registry_token}@{PROXY_AUTHORITY}"),
+        ),
+        ("NO_PROXY", format!("{proxy_host},localhost,127.0.0.1")),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value))
+    .collect()
+}
+
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
-    let env: Vec<Value> = task_env(request)
+    let env = match request.profile {
+        PodProfile::Agent => task_env(request),
+        PodProfile::Commands => verification_env(&request.run_token),
+    };
+    let env: Vec<Value> = env
         .into_iter()
         .map(|(name, value)| json!({"name": name, "value": value}))
         .collect();
@@ -123,9 +168,14 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
-            "name": task_pod_name(&request.run_id),
+            "name": task_pod_name(&format!("{}-{}", request.run_id, request.pod_suffix)),
             "namespace": SANDBOX_NAMESPACE,
-            "labels": {"role": "task", "app": "factory-task"},
+            "labels": {
+                "role": "task",
+                "app": "factory-task",
+                // Lets a retried run delete the orphans of its earlier attempts.
+                (RUN_LABEL): request.run_id
+            },
             "annotations": {
                 "factory.nexusmind/run-id": request.run_id,
                 "factory.nexusmind/org-id": request.org_id
@@ -186,8 +236,10 @@ mod tests {
         TaskPodRequest {
             org_id: "org-1".into(),
             run_id: "0F9B7C2E-Run_42".into(),
+            pod_suffix: "a1b2c3d4-0".into(),
             image: "ghcr.io/acme/sandbox@sha256:abc".into(),
             run_token: "v2.org-1.run.1.sig".into(),
+            profile: PodProfile::Agent,
             wall_time_secs: 1800,
         }
     }
@@ -244,6 +296,56 @@ mod tests {
     }
 
     #[test]
+    fn a_commands_pod_holds_only_the_registry_token() {
+        let mut request = request();
+        request.profile = PodProfile::Commands;
+        request.run_token = "v2.org-1.run-registry.1.sig".into();
+        let pod = task_pod_manifest(&request);
+        let env: std::collections::HashMap<String, String> = pod["spec"]["containers"][0]["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["name"].as_str().unwrap().into(),
+                    e["value"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            env,
+            verification_env("v2.org-1.run-registry.1.sig")
+                .into_iter()
+                .collect()
+        );
+        let serialized = pod.to_string();
+        assert!(
+            !serialized.contains("/anthropic") && !serialized.contains("/nexusmind"),
+            "{serialized}"
+        );
+    }
+
+    #[test]
+    fn verification_gets_only_the_registry_token() {
+        let env: std::collections::HashMap<String, String> =
+            verification_env("v2.org-1.run-registry.1.sig")
+                .into_iter()
+                .collect();
+        assert_eq!(
+            env["HTTPS_PROXY"],
+            format!("http://run:v2.org-1.run-registry.1.sig@{PROXY_AUTHORITY}")
+        );
+        for inherited in [
+            "ANTHROPIC_BASE_URL",
+            "NEXUSMIND_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ] {
+            assert!(!env.contains_key(inherited), "{inherited}");
+        }
+        assert_eq!(env["HOME"], "/tmp");
+    }
+
+    #[test]
     fn pod_names_are_dns_safe() {
         assert_eq!(task_pod_name("0F9B7C2E-Run_42"), "task-0f9b7c2e-run-42");
         let long = task_pod_name(&"a".repeat(200));
@@ -257,6 +359,8 @@ mod tests {
         let spec = &pod["spec"];
         assert_eq!(pod["metadata"]["namespace"], SANDBOX_NAMESPACE);
         assert_eq!(pod["metadata"]["labels"]["role"], "task");
+        assert_eq!(pod["metadata"]["labels"][RUN_LABEL], "0F9B7C2E-Run_42");
+        assert_eq!(pod["metadata"]["name"], "task-0f9b7c2e-run-42-a1b2c3d4-0");
         assert_eq!(spec["automountServiceAccountToken"], false);
         assert_eq!(spec["imagePullSecrets"], json!([{"name": "ghcr-pull"}]));
         assert_eq!(spec["hostUsers"], false);

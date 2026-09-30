@@ -44,6 +44,8 @@ pub struct EgressConfig {
     /// Reverse requests served at once; beyond this they are shed with 503 so one
     /// sandbox cannot exhaust the proxy's memory or sockets.
     pub max_in_flight: usize,
+    /// Tests only: let tunnels reach private addresses. The binary never sets it.
+    pub allow_private_upstreams: bool,
 }
 
 /// Upper bound on a tunnel's lifetime (package downloads, not long-lived streams).
@@ -141,10 +143,38 @@ async fn handle(
             Ok(text(StatusCode::FORBIDDEN, "egress denied\n"))
         }
         Decision::Tunnel { run, host, port } => {
+            // Resolve, keep only public addresses and connect to one of those: the
+            // name is judged by where it points, and the checked address is the
+            // one used, so DNS rebinding cannot swap it afterwards.
+            let resolved: Vec<std::net::SocketAddr> = match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio::net::lookup_host((host.as_str(), port)),
+            )
+            .await
+            {
+                Ok(Ok(addresses)) => addresses.collect(),
+                _ => Vec::new(),
+            };
+            let allowed: Vec<std::net::SocketAddr> = resolved
+                .iter()
+                .copied()
+                .filter(|address| {
+                    config.allow_private_upstreams || super::egress::is_public_ip(address.ip())
+                })
+                .collect();
+            if allowed.is_empty() {
+                let reason = if resolved.is_empty() {
+                    "unresolvable"
+                } else {
+                    "private_address"
+                };
+                tracing::warn!(target: "factory_egress", run_id = %run.run_id, %host, reason, "tunnel denied");
+                return Ok(text(StatusCode::FORBIDDEN, "egress denied\n"));
+            }
             // Connect first: only a working tunnel is answered with 200.
             let server = match tokio::time::timeout(
                 CONNECT_TIMEOUT,
-                tokio::net::TcpStream::connect((host.as_str(), port)),
+                tokio::net::TcpStream::connect(allowed.as_slice()),
             )
             .await
             {

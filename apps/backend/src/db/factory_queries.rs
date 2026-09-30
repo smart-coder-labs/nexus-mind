@@ -637,6 +637,59 @@ pub fn rotate_factory_bot_key(
     Ok((status, raw_key))
 }
 
+/// Stores the verification report of a run for one head SHA, replacing an
+/// earlier one for the same pair (a retried run re-verifies the same head).
+pub fn save_verification_report(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    report: &crate::factory::contracts::VerificationReport,
+) -> Result<()> {
+    report
+        .validate()
+        .map_err(|reason| anyhow::anyhow!("invalid_verification_report: {reason}"))?;
+    conn.execute(
+        "INSERT INTO factory_verification_reports (id, org_id, run_id, head_sha, passed, report)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (org_id, run_id, head_sha) DO UPDATE SET
+             passed = excluded.passed,
+             report = excluded.report,
+             created_at = datetime('now')",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            org_id,
+            run_id,
+            report.head_sha,
+            report.passed,
+            serde_json::to_string(report)?
+        ],
+    )?;
+    Ok(())
+}
+
+/// The stored report for this run and head, if any. A stored report that no
+/// longer validates is treated as absent.
+pub fn get_verification_report(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+    head_sha: &str,
+) -> Result<Option<crate::factory::contracts::VerificationReport>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT report FROM factory_verification_reports
+              WHERE org_id = ?1 AND run_id = ?2 AND head_sha = ?3",
+            [org_id, run_id, head_sha],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(raw.and_then(|raw| {
+        serde_json::from_str::<crate::factory::contracts::VerificationReport>(&raw)
+            .ok()
+            .filter(|report| report.validate().is_ok() && report.head_sha == head_sha)
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +718,34 @@ mod tests {
             stop: vec![],
             version: NonZeroU32::new(version).unwrap(),
         }
+    }
+
+    #[test]
+    fn verification_reports_are_scoped_to_org_run_and_head() {
+        let (conn, org, _) = setup();
+        const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+        const OTHER: &str = "fedcba9876543210fedcba9876543210fedcba98";
+        let task = "0f9b7c2e-1d2a-4c3b-9e8f-0123456789ab";
+        let failing = crate::factory::verification::build_report(task, SHA, &[], &[], &[]).unwrap();
+        save_verification_report(&conn, &org, "run-1", &failing).unwrap();
+        let passing = crate::factory::verification::build_report(
+            task,
+            SHA,
+            &[crate::factory::verification::VerificationReceipt {
+                argv: vec!["npm".into(), "test".into()],
+                exit_code: Some(0),
+                duration_ms: 5,
+            }],
+            &[],
+            &[],
+        )
+        .unwrap();
+        // A re-verification of the same head replaces the earlier report.
+        save_verification_report(&conn, &org, "run-1", &passing).unwrap();
+        assert_eq!(get_verification_report(&conn, &org, "run-1", SHA).unwrap(), Some(passing));
+        assert_eq!(get_verification_report(&conn, &org, "run-1", OTHER).unwrap(), None);
+        assert_eq!(get_verification_report(&conn, &org, "run-2", SHA).unwrap(), None);
+        assert_eq!(get_verification_report(&conn, "other-org", "run-1", SHA).unwrap(), None);
     }
 
     #[test]

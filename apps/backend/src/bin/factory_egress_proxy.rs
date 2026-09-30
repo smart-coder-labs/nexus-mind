@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         },
         tunnel_allowlist,
         upstream_override: None,
+        allow_private_upstreams: false,
         max_in_flight: env("FACTORY_PROXY_MAX_IN_FLIGHT")
             .and_then(|value| value.parse().ok())
             .unwrap_or(64),

@@ -36,6 +36,15 @@ async fn proxy(upstream: &str, nexusmind: Option<&str>) -> String {
 }
 
 async fn proxy_with(upstream: &str, nexusmind: Option<&str>, max_in_flight: usize) -> String {
+    proxy_with_options(upstream, nexusmind, max_in_flight, false).await
+}
+
+async fn proxy_with_options(
+    upstream: &str,
+    nexusmind: Option<&str>,
+    max_in_flight: usize,
+    allow_private_upstreams: bool,
+) -> String {
     let config = EgressConfig {
         signing_key: KEY.to_vec(),
         anthropic: Some(AnthropicAuth::OAuth("real-oauth-token".into())),
@@ -50,6 +59,7 @@ async fn proxy_with(upstream: &str, nexusmind: Option<&str>, max_in_flight: usiz
         tunnel_allowlist: vec!["registry.npmjs.org".into(), "127.0.0.1".into()],
         upstream_override: Some(upstream.to_string()),
         max_in_flight,
+        allow_private_upstreams,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -186,9 +196,19 @@ async fn a_tunnel_without_credentials_gets_a_407_challenge() {
 #[tokio::test]
 async fn an_unreachable_allowlisted_host_gets_502_not_200() {
     let (upstream, _) = fake_upstream().await;
-    let base = proxy(&upstream, None).await;
+    // Private destinations allowed only to reach a local, closed port.
+    let base = proxy_with_options(&upstream, None, 64, true).await;
     let head = raw_connect(&base, "127.0.0.1:443", Some(basic_auth())).await;
     assert!(head.starts_with("HTTP/1.1 502"), "{head}");
+}
+
+#[tokio::test]
+async fn an_allowlisted_name_that_resolves_inside_is_refused() {
+    let (upstream, _) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    // Allow-listed, but it resolves to loopback: never a tunnel destination.
+    let head = raw_connect(&base, "127.0.0.1:443", Some(basic_auth())).await;
+    assert!(head.starts_with("HTTP/1.1 403"), "{head}");
 }
 
 #[tokio::test]

@@ -17,14 +17,14 @@
 - [ ] 3.2 Workspace in (tar over exec, no credentials), Claude over exec with transcript capture, diff out and apply — reviewer wired behind `isolation: "sandbox"`; `apply_sandbox_diff` ready, wired when QA/resolver migrate
 
 ## 4. Tests and scanners in the sandbox
-- [ ] 4.1 `run_allowlisted_commands` and the security scanners execute inside the task pod
+- [ ] 4.1 `run_allowlisted_commands` and the security scanners execute inside the task pod — verification commands run for sandboxed runs in a separate commands pod holding only a registry-only token (env on stdin); the local resolver path and the scanners move with the QA/resolver migration
 
 ## 5. Verification gate
-- [ ] 5.1 `VerificationReport` builder bound to `head_sha`; the merge path requires it
+- [x] 5.1 `VerificationReport` builder bound to `head_sha`; the merge path requires it (stored per run and head, v81; required again after the soak; local reviewers decline)
 
 ## 6. De-privileging and drill
-- [ ] 6.1 Adversarial drill script: from a task pod try the DB, the worker environment, credential files, non-allowlisted hosts and the Kubernetes API; every attempt must fail
+- [ ] 6.1 Adversarial drill script: from a task pod try the DB, the worker environment, credential files, non-allowlisted hosts and the Kubernetes API; every attempt must fail — `scripts/factory/sandbox_drill.py` written (confinement, userns, PID ns, SA token, /data, RO rootfs, env credentials, direct network, proxy denials, registry token scope, fork limit); **run in the cluster pending**
 - [ ] 6.2 Migrate templates (reviewer → QA → resolver); local execution only behind an explicit unsafe flag
 
 ## 7. Recover
-- [ ] 7.1 Resume only with an owned lease and a live pod; never repeat completed writes
+- [x] 7.1 Never resume in place (the exec stream dies with the worker): lease expiry requeues from scratch; a retry deletes its orphan pods first; delivery keys are attempt-independent

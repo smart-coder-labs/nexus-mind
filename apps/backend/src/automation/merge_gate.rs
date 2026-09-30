@@ -223,9 +223,97 @@ fn is_never_eligible(path: &str) -> bool {
     hidden || agent_instructions || manifest || path == "openspec/config.yaml"
 }
 
+/// The verification report for a merge candidate (F1 §5). Only a sandboxed run
+/// has evidence: repository commands never run in the worker. The returned report
+/// is stored whether or not it passes; the caller merges only an eligible one.
+pub fn verification_report_for_merge(
+    sandboxed: bool,
+    receipts: Option<&serde_json::Value>,
+    task_id: &str,
+    head_sha: &str,
+    required: &[String],
+    runs: &[serde_json::Value],
+) -> Result<crate::factory::contracts::VerificationReport, String> {
+    if !sandboxed {
+        return Err("verification_requires_sandbox".into());
+    }
+    let receipts: Vec<crate::factory::verification::VerificationReceipt> = receipts
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .ok_or_else(|| "verification_missing".to_string())?;
+    crate::factory::verification::build_report(task_id, head_sha, &receipts, required, runs)
+        .map_err(|_| "verification_report_invalid".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod verification {
+        use super::super::verification_report_for_merge;
+        use serde_json::json;
+
+        const TASK: &str = "0f9b7c2e-1d2a-4c3b-9e8f-0123456789ab";
+        const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+        fn green() -> Vec<serde_json::Value> {
+            vec![json!({"name": "build", "status": "completed", "conclusion": "success"})]
+        }
+
+        #[test]
+        fn a_local_run_has_no_evidence_and_never_merges() {
+            let receipts = json!([{"argv": ["npm", "test"], "exit_code": 0, "duration_ms": 1}]);
+            assert_eq!(
+                verification_report_for_merge(false, Some(&receipts), TASK, SHA, &[], &green())
+                    .unwrap_err(),
+                "verification_requires_sandbox"
+            );
+        }
+
+        #[test]
+        fn missing_or_malformed_receipts_decline() {
+            for receipts in [None, Some(json!({"not": "a list"}))] {
+                assert_eq!(
+                    verification_report_for_merge(
+                        true,
+                        receipts.as_ref(),
+                        TASK,
+                        SHA,
+                        &[],
+                        &green()
+                    )
+                    .unwrap_err(),
+                    "verification_missing"
+                );
+            }
+        }
+
+        #[test]
+        fn pod_evidence_and_ci_fold_into_the_report() {
+            let pass = json!([{"argv": ["npm", "test"], "exit_code": 0, "duration_ms": 1}]);
+            let report = verification_report_for_merge(
+                true,
+                Some(&pass),
+                TASK,
+                SHA,
+                &["build".into()],
+                &green(),
+            )
+            .unwrap();
+            assert!(report.eligible_for_merge);
+            let fail = json!([{"argv": ["npm", "test"], "exit_code": 2, "duration_ms": 1}]);
+            let report = verification_report_for_merge(
+                true,
+                Some(&fail),
+                TASK,
+                SHA,
+                &["build".into()],
+                &green(),
+            )
+            .unwrap();
+            assert!(!report.eligible_for_merge);
+            assert_eq!(report.blocking_failures, ["cmd:npm test"]);
+        }
+    }
 
     fn file(filename: &str, status: &str) -> ChangedFile {
         ChangedFile {

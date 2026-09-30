@@ -352,30 +352,11 @@ async fn run_allowlisted_commands(
     workdir: &Path,
     value: Option<&serde_json::Value>,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let Some(commands) = value.and_then(|v| v.as_array()) else {
-        return Ok(Vec::new());
-    };
     let mut receipts = Vec::new();
-    if commands.len() > 8 {
-        anyhow::bail!("too_many_verification_commands")
-    }
-    for argv in commands {
-        let parts = argv
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("command_must_be_argv"))?;
-        let args = parts
-            .iter()
-            .map(|v| {
-                v.as_str()
-                    .ok_or_else(|| anyhow::anyhow!("command_arg_invalid"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+    for args in crate::factory::verification::parse_verification_commands(value)? {
         let Some((program, rest)) = args.split_first() else {
             anyhow::bail!("empty_command")
         };
-        if !matches!(*program, "npm" | "npx" | "pnpm" | "yarn" | "bun" | "cargo") {
-            anyhow::bail!("command_not_allowlisted")
-        }
         let mut command = Command::new(program);
         command.current_dir(workdir).args(rest);
         restrict_test_environment(&mut command, workdir, &[]);
@@ -2155,7 +2136,7 @@ async fn publish_template_output(
                 auto_merge = if has_blocking {
                     json!({"merged": false, "reason": "review_found_issues"})
                 } else {
-                    match auto_merge_pull(store, claim, &token, repository, number).await {
+                    match auto_merge_pull(store, claim, &token, repository, number, result).await {
                         Ok(value) => value,
                         Err(error) => {
                             json!({"merged": false, "reason": "merge_check_failed", "error": error.to_string()})
@@ -2206,7 +2187,7 @@ async fn merge_gates(
     number: i64,
     reviewed_sha: &str,
     required: &[String],
-) -> anyhow::Result<Result<Vec<super::merge_gate::ChangedFile>, serde_json::Value>> {
+) -> anyhow::Result<Result<MergeEvidence, serde_json::Value>> {
     let pull = super::connectors::get_github_pull(token, repository, number).await?;
     if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(Err(json!({"merged": true, "reason": "already_merged"})));
@@ -2242,7 +2223,13 @@ async fn merge_gates(
     if let Err(reason) = super::merge_gate::required_checks_verdict(required, &runs) {
         return Ok(Err(json!({"merged": false, "reason": reason})));
     }
-    Ok(Ok(files))
+    Ok(Ok(MergeEvidence { files, runs }))
+}
+
+/// What the merge gates read from GitHub for the reviewed head.
+struct MergeEvidence {
+    files: Vec<super::merge_gate::ChangedFile>,
+    runs: Vec<serde_json::Value>,
 }
 
 /// Asks the policy engine whether this gated commit may be merged, and records the
@@ -2303,6 +2290,7 @@ async fn auto_merge_pull(
     token: &str,
     repository: &str,
     number: i64,
+    result: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     let required: Vec<String> = claim
         .config
@@ -2318,11 +2306,39 @@ async fn auto_merge_pull(
     let Some(reviewed_sha) = super::merge_gate::reviewed_head_sha(&claim.config) else {
         return Ok(json!({"merged": false, "reason": "reviewed_head_unknown"}));
     };
-    let files = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
-        Ok(files) => files,
+    let evidence = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
+        Ok(evidence) => evidence,
         Err(declined) => return Ok(declined),
     };
     require_publish_authority(store, claim)?;
+    // F1 §5: a passing verification report for this exact head, produced in the
+    // sandbox, is required. It is stored either way for the timeline and the soak.
+    let sandboxed = crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        queries::autonomous_executor(&claim.config).unwrap_or("invalid"),
+    )
+    .is_ok_and(|isolation| isolation == crate::factory::sandbox::Isolation::Sandbox);
+    let report = match super::merge_gate::verification_report_for_merge(
+        sandboxed,
+        result.get("verification_receipts"),
+        &claim.run.id,
+        reviewed_sha,
+        &required,
+        &evidence.runs,
+    ) {
+        Ok(report) => report,
+        Err(reason) => return Ok(json!({"merged": false, "reason": reason})),
+    };
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        crate::db::factory_queries::save_verification_report(&conn, &claim.org_id, &claim.run.id, &report)?;
+    }
+    if !report.eligible_for_merge {
+        return Ok(json!({"merged": false, "reason": "verification_failed", "blocking": report.blocking_failures}));
+    }
+    let files = evidence.files;
     let verdict = decide_merge(store, &claim.org_id, repository, number, reviewed_sha, &files)?;
     if verdict.verdict != crate::factory::contracts::Verdict::Allow {
         return Ok(json!({"merged": false, "reason": verdict.reason, "decided_by": verdict.source}));
@@ -2361,7 +2377,7 @@ async fn merge_after_soak(
     )
     .await?
     {
-        Ok(files) => files,
+        Ok(evidence) => evidence.files,
         Err(declined) => return Ok(declined),
     };
     {
@@ -2369,6 +2385,17 @@ async fn merge_after_soak(
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
         if !queries::autonomous_agent_run_publish_authorized(&conn, &soak.org_id, &soak.run_id)? {
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
+        }
+        // The report that started the soak must still be there and still pass.
+        let eligible = crate::db::factory_queries::get_verification_report(
+            &conn,
+            &soak.org_id,
+            &soak.run_id,
+            &soak.head_sha,
+        )?
+        .is_some_and(|report| report.eligible_for_merge);
+        if !eligible {
+            return Ok(json!({"merged": false, "reason": "verification_missing"}));
         }
     }
     let verdict = decide_merge(
@@ -3581,6 +3608,19 @@ async fn execute_claim(
         // Never fall back to local execution when a sandbox was asked for.
         Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
     };
+    // Verification runs only in the sandbox: repository commands never run in the
+    // worker for a sandboxed template.
+    let sandbox_verification = if sandboxed {
+        match crate::factory::verification::parse_verification_commands(
+            claim.config.get("verification_commands"),
+        ) {
+            Ok(commands) => commands,
+            Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+    } else {
+        Vec::new()
+    };
+    let sandbox_receipts = std::sync::Mutex::new(Vec::new());
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -4187,7 +4227,7 @@ async fn execute_claim(
     let invocation: std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
     > = if sandboxed {
-        let argv = super::sandboxed::sandbox_argv(&claude);
+        let argv = super::sandboxed::sandbox_invocation(&claude);
         Box::pin(super::sandboxed::run_claude_sandboxed(
             super::sandboxed::SandboxedRun {
                 store,
@@ -4199,6 +4239,13 @@ async fn execute_claim(
                 secret_values: &secret_values,
                 seq_base,
                 wall_time: Duration::from_secs(wall_time),
+                // Evidence is gathered once per head: retries reuse the receipts.
+                verification: if sandbox_receipts.lock().map(|r| r.is_empty()).unwrap_or(true) {
+                    &sandbox_verification
+                } else {
+                    &[]
+                },
+                receipts: &sandbox_receipts,
             },
             argv,
         ))
@@ -4252,7 +4299,7 @@ async fn execute_claim(
         // In the sandbox the budget also covers scheduling, pulling and unpacking;
         // extend it so Claude gets the same time as a local run. The sandbox's own
         // deadline fires first, so its pod is deleted before this one gives up.
-        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time)) + Duration::from_secs(30) } else { Duration::from_secs(wall_time) }, invocation) => match value {
+        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), sandbox_verification.len(), false) + Duration::from_secs(30) } else { Duration::from_secs(wall_time) }, invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
         Ok(Err(error)) if sandboxed => ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":super::sandboxed::failure_code(&claim.run.id, &error)})),
         Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
@@ -4300,6 +4347,11 @@ async fn execute_claim(
         }
         }
     };
+        if sandboxed {
+            if let (Some(object), Ok(receipts)) = (outcome.1.as_object_mut(), sandbox_receipts.lock()) {
+                object.insert("verification_receipts".into(), json!(*receipts));
+            }
+        }
         // Evaluate the structured output inside the run loop so a malformed
         // reviewer response can be retried. Resolver and reviewer share the
         // evaluator, but only the (read-only) reviewer re-runs; re-running a

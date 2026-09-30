@@ -14,7 +14,7 @@ use tokio::process::Command;
 
 use crate::factory::{
     egress::sign_run_token,
-    sandbox::{task_pod_manifest, TaskPodRequest},
+    sandbox::{task_pod_manifest, PodProfile, TaskPodRequest},
     sandbox_exec::{run_in_sandbox, KubeRuntime, SandboxJob},
     workspace::pack_workspace,
 };
@@ -38,25 +38,59 @@ pub(crate) struct SandboxedRun<'a> {
     pub secret_values: &'a [String],
     pub seq_base: i64,
     pub wall_time: Duration,
+    /// Allowlisted verification commands to run in the pod.
+    pub verification: &'a [Vec<String>],
+    /// Receives the verification receipts when the run completes.
+    pub receipts: &'a std::sync::Mutex<Vec<crate::factory::verification::VerificationReceipt>>,
 }
 
-/// The pod-side argv for a locally prepared Claude command: same arguments, the
-/// binary resolved from the pod's `PATH`.
-pub(crate) fn sandbox_argv(command: &Command) -> Vec<String> {
-    std::iter::once("claude".to_string())
-        .chain(
-            command
-                .as_std()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned()),
-        )
-        .collect()
+/// The pod-side invocation for a locally prepared Claude command: the same
+/// arguments with the binary resolved from the pod's `PATH`, and the `-p` prompt
+/// moved to stdin so it never travels in the exec request.
+pub(crate) fn sandbox_invocation(command: &Command) -> (Vec<String>, Option<Vec<u8>>) {
+    let mut argv = vec!["claude".to_string()];
+    let mut prompt = None;
+    let mut args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned());
+    while let Some(arg) = args.next() {
+        if arg == "-p" && prompt.is_none() {
+            argv.push(arg);
+            prompt = args.next().map(String::into_bytes);
+        } else {
+            argv.push(arg);
+        }
+    }
+    (argv, prompt)
 }
 
-/// How long the pod and its run token live for a run with `wall_time` for Claude:
-/// scheduling and image pull, then the run, then unpack/cleanup slack.
-pub(crate) fn sandbox_lifetime(wall_time: Duration) -> Duration {
+/// Lifetime of the agent pod and its token: scheduling and image pull, the run
+/// with its full `wall_time`, then cleanup slack.
+fn agent_lifetime(wall_time: Duration) -> Duration {
     wall_time + READY_TIMEOUT + Duration::from_secs(SLACK_SECS)
+}
+
+/// Lifetime of the commands pod: every command at its budget, twice when
+/// failures are reproduced.
+fn commands_lifetime(commands: usize, reproduce_failures: bool) -> Duration {
+    let runs = commands as u64 * if reproduce_failures { 2 } else { 1 };
+    READY_TIMEOUT
+        + Duration::from_secs(SLACK_SECS + crate::factory::verification::COMMAND_BUDGET_SECS * runs)
+}
+
+/// Total budget of a sandboxed run: the agent pod, then the commands pod if any.
+pub(crate) fn sandbox_lifetime(
+    wall_time: Duration,
+    commands: usize,
+    reproduce_failures: bool,
+) -> Duration {
+    let commands = if commands == 0 {
+        Duration::ZERO
+    } else {
+        commands_lifetime(commands, reproduce_failures)
+    };
+    agent_lifetime(wall_time) + commands
 }
 
 #[cfg(unix)]
@@ -80,7 +114,7 @@ pub(crate) fn failure_code(run_id: &str, error: &anyhow::Error) -> String {
 
 pub(crate) async fn run_claude_sandboxed(
     run: SandboxedRun<'_>,
-    argv: Vec<String>,
+    (argv, prompt): (Vec<String>, Option<Vec<u8>>),
 ) -> anyhow::Result<std::process::Output> {
     let image = std::env::var("FACTORY_SANDBOX_IMAGE")
         .map_err(|_| anyhow::anyhow!("sandbox_unconfigured"))?;
@@ -100,51 +134,128 @@ pub(crate) async fn run_claude_sandboxed(
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
     let workspace_tar = pack_workspace(run.workdir, run.secret_values).await?;
-    let pod_lifetime = sandbox_lifetime(run.wall_time).as_secs();
-    let expires = chrono::Utc::now().timestamp() + pod_lifetime as i64;
-    let run_token = sign_run_token(signing_key.as_bytes(), run.org_id, run.run_id, expires)
-        .map_err(|error| anyhow::anyhow!("run_token_failed: {error:?}"))?;
-    let job_token = run_token.clone();
-    let manifest = task_pod_manifest(&TaskPodRequest {
-        org_id: run.org_id.to_string(),
-        run_id: format!(
-            "{}-{}-{}",
-            run.run_id,
-            run.attempt_id.chars().take(8).collect::<String>(),
-            run.retry
-        ),
-        image,
-        run_token,
-        wall_time_secs: pod_lifetime as i64,
-    });
-    let runtime = Arc::new(KubeRuntime::in_cluster().await?);
-    let job = SandboxJob {
-        manifest,
-        workspace_tar,
-        command: argv,
-        base_sha,
-        ready_timeout: READY_TIMEOUT,
-        wall_time: Duration::from_secs(pod_lifetime),
-        // Only read-only templates run here so far.
-        collect_diff: false,
+    // Kubernetes label values are at most 63 characters (RUN_LABEL).
+    if run.run_id.len() > 63 {
+        anyhow::bail!("run_id_too_long")
+    }
+    let now = chrono::Utc::now().timestamp();
+    let attempt = run.attempt_id.chars().take(8).collect::<String>();
+    let sign = |run_id: &str, lifetime: Duration| {
+        sign_run_token(
+            signing_key.as_bytes(),
+            run.org_id,
+            run_id,
+            now + lifetime.as_secs() as i64,
+        )
+        .map_err(|error| anyhow::anyhow!("run_token_failed: {error:?}"))
     };
-    let mut sequence = run.seq_base;
-    // The run token is live until the pod expires: redact it like any secret.
+    let agent_life = agent_lifetime(run.wall_time);
+    let run_token = sign(run.run_id, agent_life)?;
+    let commands_life = commands_lifetime(run.verification.len(), false);
+    // The registry-only token outlives both pods: the commands pod starts after
+    // the agent pod.
+    let registry_token = sign(
+        &crate::factory::egress::registry_only_run_id(run.run_id),
+        agent_life + commands_life,
+    )?;
+    // Everything a transcript or error could echo that is still live: redact it.
     let secrets: Vec<String> = run
         .secret_values
         .iter()
         .cloned()
-        .chain(std::iter::once(job_token.clone()))
+        .chain([run_token.clone(), registry_token.clone()])
         .collect();
-    let (store, org_id, run_id, secrets) = (run.store, run.org_id, run.run_id, secrets.as_slice());
-    let result = run_in_sandbox(runtime, &job, &mut |line: &[u8]| {
-        super::worker::record_transcript_line(store, org_id, run_id, secrets, &mut sequence, line)
+    let runtime = Arc::new(KubeRuntime::in_cluster().await?);
+    let pod = |profile, token: &str, suffix: String, lifetime: Duration| {
+        task_pod_manifest(&TaskPodRequest {
+            org_id: run.org_id.to_string(),
+            run_id: run.run_id.to_string(),
+            pod_suffix: suffix,
+            profile,
+            image: image.clone(),
+            run_token: token.to_string(),
+            wall_time_secs: lifetime.as_secs() as i64,
+        })
+    };
+    let job =
+        |manifest, command, command_stdin, verification: Vec<Vec<String>>, lifetime: Duration| {
+            SandboxJob {
+                manifest,
+                workspace_tar: workspace_tar.clone(),
+                command,
+                command_stdin,
+                base_sha: base_sha.clone(),
+                ready_timeout: READY_TIMEOUT,
+                wall_time: lifetime,
+                // Only read-only templates run here so far.
+                collect_diff: false,
+                verification,
+                verification_env: crate::factory::sandbox::verification_env(&registry_token),
+                command_timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+                reproduce_failures: false,
+            }
+        };
+
+    // 1. The agent, in a pod that runs no repository code.
+    let agent_job = job(
+        pod(
+            PodProfile::Agent,
+            &run_token,
+            format!("{attempt}-{}", run.retry),
+            agent_life,
+        ),
+        Some(argv),
+        prompt,
+        Vec::new(),
+        agent_life,
+    );
+    let mut sequence = run.seq_base;
+    let (store, org_id, run_id) = (run.store, run.org_id, run.run_id);
+    let secrets_ref = secrets.as_slice();
+    let agent = run_in_sandbox(runtime.clone(), &agent_job, &mut |line: &[u8]| {
+        super::worker::record_transcript_line(
+            store,
+            org_id,
+            run_id,
+            secrets_ref,
+            &mut sequence,
+            line,
+        )
     })
     .await?;
+    let output = agent
+        .output
+        .ok_or_else(|| anyhow::anyhow!("sandbox_agent_missing"))?;
+
+    // 2. Repository commands, in their own pod holding only the registry token.
+    // Output-format retries pass no commands: the head is the same, so the first
+    // run's receipts stand.
+    if !run.verification.is_empty() {
+        let commands_job = job(
+            pod(
+                PodProfile::Commands,
+                &registry_token,
+                format!("{attempt}-{}-v", run.retry),
+                commands_life,
+            ),
+            None,
+            None,
+            run.verification.to_vec(),
+            commands_life,
+        );
+        let commands = run_in_sandbox(runtime, &commands_job, &mut |_: &[u8]| {}).await?;
+        if let Ok(mut slot) = run.receipts.lock() {
+            *slot = commands
+                .verification
+                .iter()
+                .map(|run| run.receipt())
+                .collect();
+        }
+    }
     Ok(std::process::Output {
-        status: exit_status(result.output.exit_code),
-        stdout: result.output.stdout,
-        stderr: result.output.stderr,
+        status: exit_status(output.exit_code),
+        stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 
@@ -175,13 +286,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pod_argv_keeps_the_arguments_and_resolves_claude_from_path() {
+    fn the_prompt_moves_to_stdin_and_claude_resolves_from_path() {
         let mut command = Command::new("/usr/local/bin/claude");
         command.args(["-p", "review this", "--permission-mode", "plan"]);
-        assert_eq!(
-            sandbox_argv(&command),
-            ["claude", "-p", "review this", "--permission-mode", "plan"]
-        );
+        let (argv, prompt) = sandbox_invocation(&command);
+        assert_eq!(argv, ["claude", "-p", "--permission-mode", "plan"]);
+        assert_eq!(prompt.as_deref(), Some(&b"review this"[..]));
     }
 
     #[test]

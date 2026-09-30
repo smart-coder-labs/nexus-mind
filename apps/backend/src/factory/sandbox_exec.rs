@@ -47,6 +47,8 @@ pub trait SandboxRuntime: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct TaskPodInfo {
     pub handle: PodHandle,
+    /// The run the pod belongs to (`factory.nexusmind/run` label).
+    pub run_id: Option<String>,
     pub created_unix: i64,
     pub deadline_secs: Option<i64>,
 }
@@ -76,6 +78,25 @@ pub async fn gc_expired_task_pods(
         }
     }
     Ok(deleted)
+}
+
+async fn delete_run_orphans(runtime: &dyn SandboxRuntime, run_id: &str) {
+    let pods = match runtime.list_task_pods().await {
+        Ok(pods) => pods,
+        Err(error) => {
+            tracing::warn!(target: "factory_sandbox", run_id, "orphan listing failed: {error:#}");
+            return;
+        }
+    };
+    for pod in pods
+        .into_iter()
+        .filter(|pod| pod.run_id.as_deref() == Some(run_id))
+    {
+        // Best effort: the GC sweep removes anything left behind.
+        if let Err(error) = runtime.delete(&pod.handle).await {
+            tracing::warn!(target: "factory_sandbox", pod = %pod.handle.name, "orphan delete failed: {error:#}");
+        }
+    }
 }
 
 /// Deletes the pod if the job future is dropped before it finishes (worker
@@ -108,7 +129,10 @@ pub struct SandboxJob {
     pub manifest: Value,
     /// `tar` of the checkout, without credentials (see design §4).
     pub workspace_tar: Vec<u8>,
-    pub command: Vec<String>,
+    /// The agent. `None` for a commands-only pod (QA tests run apart from the agent).
+    pub command: Option<Vec<String>>,
+    /// Written to the agent's stdin: the prompt, so it never travels in the exec URL.
+    pub command_stdin: Option<Vec<u8>>,
     /// Commit the checkout is at; the diff is taken against it.
     pub base_sha: String,
     pub ready_timeout: Duration,
@@ -116,11 +140,67 @@ pub struct SandboxJob {
     pub wall_time: Duration,
     /// Read-only templates skip the diff: nothing they could change is kept.
     pub collect_diff: bool,
+    /// Allowlisted commands (see `verification::parse_verification_commands`).
+    /// They run after the agent and after the diff, so code under test can never
+    /// influence what the agent sees or what change is kept.
+    pub verification: Vec<Vec<String>>,
+    /// The whole environment of a verification command (`env -i`): it never
+    /// inherits the pod's run token, only a registry-only one.
+    pub verification_env: Vec<(String, String)>,
+    /// Per-command limit, seconds.
+    pub command_timeout_secs: u64,
+    /// Re-run a failing command once and keep both outcomes (QA flakiness).
+    pub reproduce_failures: bool,
+}
+
+/// One command run in the pod, with its (bounded) output.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandRun {
+    pub argv: Vec<String>,
+    /// `None` when the command could not be run or its status was lost.
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub reproduction: Option<Box<CommandRun>>,
+}
+
+impl CommandRun {
+    pub fn receipt(&self) -> super::verification::VerificationReceipt {
+        super::verification::VerificationReceipt {
+            argv: self.argv.clone(),
+            exit_code: self.exit_code,
+            duration_ms: self.duration_ms,
+        }
+    }
+}
+
+/// Runs argv with an environment read from stdin (`NAME=value` entries separated
+/// by NUL) and nothing inherited, so secrets never appear in the exec request.
+const ENV_FROM_STDIN: &str = "import os,sys\nenv={}\nfor item in sys.stdin.buffer.read().split(b'\\0'):\n    if item:\n        name,_,value=item.partition(b'=')\n        env[name.decode()]=value.decode()\nos.execvpe(sys.argv[1],sys.argv[1:],env)";
+
+fn with_env_from_stdin(argv: &[String]) -> Vec<String> {
+    let mut command = strings(&["python3", "-c", ENV_FROM_STDIN]);
+    command.extend(argv.iter().cloned());
+    command
+}
+
+fn env_stdin(env: &[(String, String)]) -> Vec<u8> {
+    let mut data = Vec::new();
+    for (name, value) in env {
+        data.extend_from_slice(name.as_bytes());
+        data.push(b'=');
+        data.extend_from_slice(value.as_bytes());
+        data.push(0);
+    }
+    data
 }
 
 #[derive(Debug)]
 pub struct SandboxResult {
-    pub output: ExecOutput,
+    /// The agent's output; `None` for a commands-only pod.
+    pub output: Option<ExecOutput>,
+    pub verification: Vec<CommandRun>,
     /// `git diff --binary` against `base_sha`, including new files.
     pub diff: Vec<u8>,
 }
@@ -167,6 +247,11 @@ pub async fn run_in_sandbox(
         runtime: runtime.clone(),
         pod: (!planned.name.is_empty()).then_some(planned),
     };
+    // A retried run first removes the pods of its earlier attempts: a crashed
+    // worker's pod may still be running the agent and spending its budget.
+    if let Some(run_id) = job.manifest["metadata"]["labels"][super::sandbox::RUN_LABEL].as_str() {
+        delete_run_orphans(runtime.as_ref(), run_id).await;
+    }
     let pod = runtime.create(&job.manifest).await?;
     guard.pod = Some(pod.clone());
     // Dropping the in-flight exec on timeout closes its stream; the delete below
@@ -211,25 +296,45 @@ async fn drive(
     if unpack.exit_code != 0 {
         anyhow::bail!("workspace_unpack_failed")
     }
-    let output = runtime
-        .exec(pod, &limited(&job.command), None, on_line)
-        .await?;
-    // No status means the stream broke: the output may be partial and the process
-    // may still be editing, so neither the transcript nor a diff can be trusted.
-    if output.exit_code < 0 {
-        anyhow::bail!("command_status_unknown")
-    }
-    if !job.collect_diff {
-        return Ok(SandboxResult {
-            output,
-            diff: Vec::new(),
-        });
-    }
+    let output = match &job.command {
+        Some(command) => {
+            let output = runtime
+                .exec(pod, &limited(command), job.command_stdin.clone(), on_line)
+                .await?;
+            // No status means the stream broke: the output may be partial and the
+            // process may still be editing, so neither transcript nor diff is trusted.
+            if output.exit_code < 0 {
+                anyhow::bail!("command_status_unknown")
+            }
+            Some(output)
+        }
+        None => None,
+    };
+    // The diff is taken before any later verification, whose installs and builds
+    // may touch tracked files (lockfiles) that are not part of the change.
+    let diff = if job.collect_diff {
+        take_diff(runtime, pod, &job.base_sha).await?
+    } else {
+        Vec::new()
+    };
+    let verification = verify(runtime, pod, job).await;
+    Ok(SandboxResult {
+        output,
+        verification,
+        diff,
+    })
+}
+
+async fn take_diff(
+    runtime: &dyn SandboxRuntime,
+    pod: &PodHandle,
+    base_sha: &str,
+) -> anyhow::Result<Vec<u8>> {
     // Intent-to-add makes new files appear in the diff without staging content.
     let diff_script = format!(
         "cd {} && git add -A -N . && git diff --binary {}",
         super::sandbox::WORKSPACE,
-        job.base_sha
+        base_sha
     );
     let diff = runtime
         .exec(
@@ -245,10 +350,72 @@ async fn drive(
     if diff.stdout.len() > MAX_DIFF_BYTES {
         anyhow::bail!("diff_too_large")
     }
-    Ok(SandboxResult {
-        output,
-        diff: diff.stdout,
-    })
+    Ok(diff.stdout)
+}
+
+/// Runs each command under a per-command timeout. A failing command or a broken
+/// exec is recorded as evidence (the report blocks on it), not a job failure.
+async fn verify(
+    runtime: &dyn SandboxRuntime,
+    pod: &PodHandle,
+    job: &SandboxJob,
+) -> Vec<CommandRun> {
+    let mut runs = Vec::new();
+    for argv in &job.verification {
+        let mut run = run_command(runtime, pod, job, argv).await;
+        if job.reproduce_failures && run.exit_code != Some(0) {
+            run.reproduction = Some(Box::new(run_command(runtime, pod, job, argv).await));
+        }
+        runs.push(run);
+    }
+    runs
+}
+
+/// Largest stdout kept per command; stderr is capped by the runtime.
+const MAX_COMMAND_STDOUT: usize = 200_000;
+
+/// A failing command or a broken exec is evidence, not a job failure.
+async fn run_command(
+    runtime: &dyn SandboxRuntime,
+    pod: &PodHandle,
+    job: &SandboxJob,
+    argv: &[String],
+) -> CommandRun {
+    let mut timed = strings(&[
+        "timeout",
+        "--kill-after=10",
+        &job.command_timeout_secs.to_string(),
+    ]);
+    timed.extend(argv.iter().cloned());
+    let started = std::time::Instant::now();
+    let result = runtime
+        .exec(
+            pod,
+            &limited(&with_env_from_stdin(&timed)),
+            Some(env_stdin(&job.verification_env)),
+            &mut |_: &[u8]| {},
+        )
+        .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(output) => CommandRun {
+            argv: argv.to_vec(),
+            exit_code: (output.exit_code >= 0).then_some(output.exit_code),
+            duration_ms,
+            stdout: output.stdout.into_iter().take(MAX_COMMAND_STDOUT).collect(),
+            stderr: output.stderr,
+            reproduction: None,
+        },
+        Err(error) => {
+            tracing::warn!(target: "factory_sandbox", pod = %pod.name, "command exec failed: {error:#}");
+            CommandRun {
+                argv: argv.to_vec(),
+                exit_code: None,
+                duration_ms,
+                ..Default::default()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +430,8 @@ mod tests {
         fail_command: bool,
         hang_command: bool,
         hang_create: bool,
+        failing_npm: bool,
+        has_orphan: bool,
         lost_status: bool,
         diff: Vec<u8>,
     }
@@ -299,6 +468,15 @@ mod tests {
                 stdin.map(|s| s.len()).unwrap_or(0),
                 joined
             ));
+            if joined.contains(" npm ") {
+                return Ok(ExecOutput {
+                    exit_code: if self.failing_npm { 1 } else { 0 },
+                    ..Default::default()
+                });
+            }
+            if joined.contains(" cargo ") {
+                anyhow::bail!("exec_stream_broken")
+            }
             if joined.contains("git diff") {
                 return Ok(ExecOutput {
                     exit_code: 0,
@@ -345,8 +523,9 @@ mod tests {
                 },
                 created_unix,
                 deadline_secs: Some(600),
+                run_id: Some("run-other".into()),
             };
-            Ok(vec![
+            let mut pods = vec![
                 // Deadline + grace (600 + 300) long past.
                 pod("task-old", 1_000),
                 // Still inside its deadline.
@@ -355,20 +534,101 @@ mod tests {
                     deadline_secs: None,
                     ..pod("task-no-deadline", 1_000)
                 },
-            ])
+            ];
+            if self.has_orphan {
+                // An orphan of an earlier attempt of the run under test.
+                pods.push(TaskPodInfo {
+                    run_id: Some("run-A".into()),
+                    ..pod("task-orphan", 10_000)
+                });
+            }
+            Ok(pods)
         }
     }
 
     fn job(base_sha: &str) -> SandboxJob {
         SandboxJob {
-            manifest: serde_json::json!({"metadata": {"name": "task-1", "namespace": "ns"}}),
+            manifest: serde_json::json!({"metadata": {
+                "name": "task-1",
+                "namespace": "ns",
+                "labels": {"factory.nexusmind/run": "run-A"}
+            }}),
             workspace_tar: vec![1, 2, 3],
-            command: vec!["claude".into(), "-p".into()],
+            command: Some(vec!["claude".into(), "-p".into()]),
+            command_stdin: Some(b"the prompt".to_vec()),
             base_sha: base_sha.into(),
             ready_timeout: Duration::from_secs(5),
             wall_time: Duration::from_secs(5),
             collect_diff: true,
+            verification: Vec::new(),
+            verification_env: Vec::new(),
+            command_timeout_secs: 300,
+            reproduce_failures: false,
         }
+    }
+
+    fn with_checks(mut job: SandboxJob) -> SandboxJob {
+        job.verification = vec![strings(&["npm", "test"]), strings(&["cargo", "test"])];
+        job.verification_env = vec![("HTTPS_PROXY".into(), "http://run:registry@proxy".into())];
+        job
+    }
+
+    #[tokio::test]
+    async fn verification_runs_after_the_agent_and_diff_in_a_clean_environment() {
+        let fake = Arc::new(Fake {
+            failing_npm: true,
+            ..Default::default()
+        });
+        let result = run_in_sandbox(fake.clone(), &with_checks(job(SHA)), &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        let exit_codes: Vec<Option<i32>> =
+            result.verification.iter().map(|r| r.exit_code).collect();
+        // A failing command and a broken exec are evidence, not a job failure.
+        assert_eq!(exit_codes, [Some(1), None]);
+        assert_eq!(result.verification[0].argv, ["npm", "test"]);
+        let calls = fake.calls.lock().unwrap();
+        let position = |needle: &str| calls.iter().position(|c| c.contains(needle)).unwrap();
+        assert!(position("claude") < position("git diff"), "{calls:?}");
+        assert!(position("git diff") < position(" npm "), "{calls:?}");
+        let npm = &calls[position(" npm ")];
+        // The environment travels on stdin: nothing of it is in the exec request.
+        assert!(
+            npm.starts_with("exec[38]prlimit --nproc=512:512 -- python3 -c"),
+            "{npm}"
+        );
+        assert!(
+            npm.ends_with("timeout --kill-after=10 300 npm test"),
+            "{npm}"
+        );
+        assert!(!npm.contains("HTTPS_PROXY"), "{npm}");
+        // The prompt too.
+        assert!(
+            calls[position("claude")].starts_with("exec[10]"),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commands_only_pod_runs_no_agent_and_can_reproduce_failures() {
+        let fake = Arc::new(Fake {
+            failing_npm: true,
+            ..Default::default()
+        });
+        let mut job = with_checks(job(SHA));
+        job.command = None;
+        job.reproduce_failures = true;
+        job.verification.truncate(1);
+        let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert!(result.output.is_none());
+        let run = &result.verification[0];
+        assert_eq!(run.exit_code, Some(1));
+        assert_eq!(run.reproduction.as_ref().unwrap().exit_code, Some(1));
+        let calls = fake.calls.lock().unwrap();
+        assert!(!calls.iter().any(|c| c.contains("claude")), "{calls:?}");
+        assert_eq!(calls.iter().filter(|c| c.contains(" npm ")).count(), 2);
     }
 
     #[tokio::test]
@@ -435,6 +695,26 @@ mod tests {
             calls.contains(&"delete task-no-deadline".to_string()),
             "{calls:?}"
         );
+        assert!(!calls.iter().any(|c| c.contains("task-live")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn orphans_of_earlier_attempts_are_deleted_before_the_new_pod() {
+        let fake = Arc::new(Fake {
+            has_orphan: true,
+            ..Default::default()
+        });
+        run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        let calls = fake.calls.lock().unwrap();
+        let orphan = calls
+            .iter()
+            .position(|c| c == "delete task-orphan")
+            .expect("orphan deleted");
+        let create = calls.iter().position(|c| c == "create").unwrap();
+        assert!(orphan < create, "{calls:?}");
+        // Pods of other runs are the GC's business, not this run's.
         assert!(!calls.iter().any(|c| c.contains("task-live")), "{calls:?}");
     }
 
@@ -777,6 +1057,10 @@ impl SandboxRuntime for KubeRuntime {
                     },
                     created_unix,
                     deadline_secs: pod.spec.and_then(|spec| spec.active_deadline_seconds),
+                    run_id: pod
+                        .metadata
+                        .labels
+                        .and_then(|labels| labels.get(super::sandbox::RUN_LABEL).cloned()),
                 })
             })
             .collect())

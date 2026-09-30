@@ -156,6 +156,22 @@ A builder turns the results of tests, security scanners and DAST into the F0 `Ve
 
 The merge path (F0 item 4) requires a report whose `head_sha` equals the reviewed SHA.
 
+**Decision (ADR "Sandboxed reviewer produces the VerificationReport the merge requires"):**
+
+- Only a sandboxed run produces evidence. `verification_commands` (allowlisted argv) run **inside the task pod**, and required CI checks are folded in. A reviewer running locally declines auto-merge with `verification_requires_sandbox`: repository code never runs in the worker.
+- **Two pods per run.** The agent runs in an *agent pod* (profile `Agent`: proxy routes with the full run token) that never runs repository code. Verification commands run afterwards in a separate *commands pod* (profile `Commands`) whose manifest holds only a **registry-only run token** (run id + `-registry`). One pod is not enough: every process in a pod runs as the same UID and can read PID 1's environment (`/proc/1/environ`), so untrusted code must never share a pod with a token that reaches a credentialed upstream.
+- The proxy opens registry tunnels for the registry-only token but denies every credentialed route (`token_scope`), so code under test can install packages but never spends the run's Claude budget or calls NexusMind as the run.
+- Commands run as `prlimit … python3 -c <env-from-stdin> timeout --kill-after=10 <secs> <argv>`: the environment (and, for QA, target credentials) is written to stdin, never placed in the exec request. The agent's prompt also travels on stdin.
+- A failing command or a broken exec is evidence (it blocks), not a job failure. Every check is blocking. A pending or missing required CI check blocks, and a report with no passing check is `no_verification_evidence`.
+- Reports are stored per `(org, run, head_sha)` (migration v81). `auto_merge_pull` stores the report and merges only an eligible one; `merge_after_soak` requires the stored report again. Soaks started before v81 decline with `verification_missing`.
+- Budget: agent pod = `wall_time` + 180 s + 120 s; commands pod = 180 s + 120 s + 310 s per command (twice with failure reproduction). Output-format retries reuse the first run's receipts (same head) and do not start a commands pod again.
+
+### Tunnel destinations
+
+Tunnels are judged by where a name resolves, not by its spelling: the proxy resolves the host, keeps only globally routable addresses (no private, loopback, link-local/metadata, CGNAT, ULA, IPv4-mapped or NAT64 forms of those) and connects to one of the checked addresses, so DNS rebinding cannot swap it afterwards. A name with no public address is refused (403).
+
+Run token **v3** (`v3.<org>.<run>.<exp>.<base64url hosts>.<hmac>`) carries extra tunnel hosts for that run only (QA targets). Hosts must be lowercase DNS names; IP literals are refused at signing.
+
 ## 6. Worker de-privileging
 
 After items 3–4, no untrusted process runs in the worker container. What remains:
@@ -166,8 +182,9 @@ After items 3–4, no untrusted process runs in the worker container. What remai
 
 ## 7. Recover
 
-- A run interrupted mid-task (worker restart) is resumed **only** when its lease is still owned and its pod still exists. Otherwise it is retried from scratch.
-- Completed external writes (PR opened, comment posted) are never repeated: the existing delivery idempotency keys are checked before each write.
+- A run interrupted mid-task (worker restart) is **never resumed in place**: the agent streams through the worker's `exec`, and a crashed worker loses that stream, so there is nothing to re-attach to. When the lease expires, the attempt is revoked and the run is requeued and retried from scratch (existing behavior, bounded by `max_attempts`).
+- The pods of earlier attempts are deleted before the new pod is created (label `factory.nexusmind/run`), so an orphan cannot keep running the agent and spending the run's budget while the retry runs. The GC sweep covers pods of runs that are never retried.
+- Completed external writes are never repeated: delivery idempotency keys do not depend on the run or attempt (`review:<definition>:<repo>:<pr>:<head>`, `resolver:<definition>:<repo>:<issue>`, …) and `delivered` deliveries are skipped.
 
 ## 8. Rollout
 

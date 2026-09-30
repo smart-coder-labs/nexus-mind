@@ -29,6 +29,8 @@ pub struct RunToken {
     pub org_id: String,
     pub run_id: String,
     pub expires_unix: i64,
+    /// Extra hosts this run may tunnel to (v3 tokens: the agent's targets).
+    pub hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +75,95 @@ pub fn sign_run_token(
     Ok(format!("{payload}.{}", hex::encode(mac(key, &payload))))
 }
 
+/// Signs a v3 token: like v2 plus `hosts`, extra tunnel destinations for this
+/// run only (the agent's target hosts). Hosts must be lowercase DNS names; IP
+/// literals are refused so no token can ever name a metadata or node address.
+pub fn sign_run_token_with_hosts(
+    key: &[u8],
+    org_id: &str,
+    run_id: &str,
+    expires_unix: i64,
+    hosts: &[String],
+) -> Result<String, TokenError> {
+    if !valid_run_id(org_id)
+        || !valid_run_id(run_id)
+        || hosts.is_empty()
+        || hosts.len() > MAX_TOKEN_HOSTS
+        || !hosts.iter().all(|host| valid_host(host))
+    {
+        return Err(TokenError::Malformed);
+    }
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hosts.join(","));
+    let payload = format!("v3.{org_id}.{run_id}.{expires_unix}.{encoded}");
+    Ok(format!("{payload}.{}", hex::encode(mac(key, &payload))))
+}
+
+/// Whether a tunnel may connect to `ip`. A name is checked by where it resolves,
+/// not by its spelling: `metadata.google.internal`, `*.nip.io` or a rebinding
+/// domain can all point inside. Only globally routable addresses pass.
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => {
+            // IPv4-mapped and NAT64 addresses are judged by the IPv4 inside.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let segments = v6.segments();
+            if segments[0] == 0x64 && segments[1] == 0xff9b {
+                return false;
+            }
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // fc00::/7 unique local, fe80::/10 link local, 2001:db8::/32 documentation.
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
+}
+
+fn is_public_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+        || a == 0
+        // 100.64.0.0/10 carrier-grade NAT (also some cloud internal ranges).
+        || (a == 100 && (64..=127).contains(&b))
+        // 198.18.0.0/15 benchmarking, 192.0.0.0/24 protocol assignments, 240/4 reserved.
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 192 && b == 0 && c == 0)
+        || a >= 240)
+}
+
+/// Most target hosts one token may carry.
+const MAX_TOKEN_HOSTS: usize = 16;
+
+/// A lowercase DNS name with at least one dot and no IP literal.
+fn valid_host(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    (1..=253).contains(&host.len())
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        // All-numeric labels throughout would be an IPv4 literal.
+        && !labels.iter().all(|label| label.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn valid_run_id(run_id: &str) -> bool {
     (1..=64).contains(&run_id.len())
         && run_id
@@ -89,25 +180,32 @@ fn mac(key: &[u8], payload: &str) -> Vec<u8> {
 
 /// Verifies signature (constant time) and expiry.
 pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunToken, TokenError> {
-    let mut parts = token.split('.');
-    let (Some("v2"), Some(org_id), Some(run_id), Some(expires), Some(signature), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return Err(TokenError::Malformed);
+    let parts: Vec<&str> = token.split('.').collect();
+    let (payload_len, hosts) = match parts.as_slice() {
+        ["v2", _, _, _, _] => (4, Vec::new()),
+        ["v3", _, _, _, encoded, _] => {
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .map_err(|_| TokenError::Malformed)?;
+            let joined = String::from_utf8(decoded).map_err(|_| TokenError::Malformed)?;
+            let hosts: Vec<String> = joined.split(',').map(str::to_string).collect();
+            if hosts.len() > MAX_TOKEN_HOSTS || !hosts.iter().all(|host| valid_host(host)) {
+                return Err(TokenError::Malformed);
+            }
+            (5, hosts)
+        }
+        _ => return Err(TokenError::Malformed),
     };
-    let expires_unix: i64 = expires.parse().map_err(|_| TokenError::Malformed)?;
-    let signature = hex::decode(signature).map_err(|_| TokenError::Malformed)?;
+    let (org_id, run_id) = (parts[1], parts[2]);
+    let expires_unix: i64 = parts[3].parse().map_err(|_| TokenError::Malformed)?;
+    let signature = hex::decode(parts[payload_len]).map_err(|_| TokenError::Malformed)?;
     if !valid_run_id(org_id) || !valid_run_id(run_id) {
         return Err(TokenError::Malformed);
     }
     use hmac::{Hmac, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(format!("v2.{org_id}.{run_id}.{expires_unix}").as_bytes());
+    mac.update(parts[..payload_len].join(".").as_bytes());
     // Constant-time comparison.
     mac.verify_slice(&signature)
         .map_err(|_| TokenError::BadSignature)?;
@@ -118,11 +216,22 @@ pub fn verify_run_token(key: &[u8], token: &str, now_unix: i64) -> Result<RunTok
         org_id: org_id.to_string(),
         run_id: run_id.to_string(),
         expires_unix,
+        hosts,
     })
 }
 
 /// Classifies one request. `target` is the HTTP request target (origin-form for
 /// reverse routes, `host:port` authority-form for CONNECT).
+/// Marks a run token that may only open registry tunnels, never reach a
+/// credentialed upstream: the token handed to code under test (a UUID run id never
+/// ends with it).
+pub const REGISTRY_ONLY_SUFFIX: &str = "-registry";
+
+/// The run id of the registry-only token for `run_id`.
+pub fn registry_only_run_id(run_id: &str) -> String {
+    format!("{run_id}{REGISTRY_ONLY_SUFFIX}")
+}
+
 /// Exact paths the Anthropic route may reach.
 const ANTHROPIC_PATHS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
 
@@ -156,6 +265,7 @@ pub fn decide(
         if !tunnel_allowlist
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+            && !run.hosts.contains(&host)
         {
             return deny("host_not_allowlisted", Some(&run));
         }
@@ -187,6 +297,10 @@ pub fn decide(
         "nexusmind" => Upstream::Nexusmind,
         _ => return deny("unknown_route", Some(&run)),
     };
+    // Code under test holds a registry-only token: no credentialed upstream.
+    if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) {
+        return deny("token_scope", Some(&run));
+    }
     let path_and_query = if tail.starts_with('/') {
         tail.to_string()
     } else {
@@ -272,7 +386,8 @@ mod tests {
             Ok(RunToken {
                 org_id: "org-1".into(),
                 run_id: "run-1".into(),
-                expires_unix: NOW + 60
+                expires_unix: NOW + 60,
+                hosts: vec![],
             })
         );
         assert_eq!(
@@ -350,7 +465,8 @@ mod tests {
                 run: RunToken {
                     org_id: "org-1".into(),
                     run_id: "run-1".into(),
-                    expires_unix: NOW + 60
+                    expires_unix: NOW + 60,
+                    hosts: vec![],
                 },
                 upstream: Upstream::Anthropic,
                 path_and_query: "/v1/messages?beta=true".into(),
@@ -436,7 +552,8 @@ mod tests {
                 run: RunToken {
                     org_id: "org-1".into(),
                     run_id: "run-1".into(),
-                    expires_unix: NOW + 60
+                    expires_unix: NOW + 60,
+                    hosts: vec![],
                 },
                 host: "registry.npmjs.org".into(),
                 port: 443,
@@ -502,6 +619,170 @@ mod tests {
                 ),
                 "{scheme}"
             );
+        }
+    }
+
+    #[test]
+    fn a_registry_only_token_opens_tunnels_but_never_reaches_upstreams() {
+        let registry = token(&registry_only_run_id("run-1"), NOW + 60);
+        for route in ["anthropic/v1/messages", "nexusmind/v1/context"] {
+            assert_eq!(
+                decide(
+                    KEY,
+                    "POST",
+                    &format!("/r/{registry}/{route}"),
+                    None,
+                    ALLOW,
+                    NOW
+                ),
+                Decision::Deny {
+                    reason: "token_scope",
+                    run_id: Some("run-1-registry".into())
+                },
+                "{route}"
+            );
+        }
+        use base64::Engine;
+        let basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("run:{registry}"))
+        );
+        assert!(matches!(
+            decide(
+                KEY,
+                "CONNECT",
+                "registry.npmjs.org:443",
+                Some(&basic),
+                ALLOW,
+                NOW
+            ),
+            Decision::Tunnel { .. }
+        ));
+    }
+
+    fn connect(token: &str, target: &str) -> Decision {
+        use base64::Engine;
+        let basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("run:{token}"))
+        );
+        decide(KEY, "CONNECT", target, Some(&basic), ALLOW, NOW)
+    }
+
+    #[test]
+    fn v3_tokens_open_tunnels_to_their_own_hosts_only() {
+        let hosts = vec!["app.acme.test".to_string(), "staging.acme.test".to_string()];
+        let v3 = sign_run_token_with_hosts(KEY, "org-1", "run-1", NOW + 60, &hosts).unwrap();
+        let run = verify_run_token(KEY, &v3, NOW).unwrap();
+        assert_eq!(run.hosts, hosts);
+        assert!(matches!(
+            connect(&v3, "app.acme.test:443"),
+            Decision::Tunnel { .. }
+        ));
+        assert!(matches!(
+            connect(&v3, "APP.ACME.TEST:443"),
+            Decision::Tunnel { .. }
+        ));
+        assert!(matches!(
+            connect(&v3, "registry.npmjs.org:443"),
+            Decision::Tunnel { .. }
+        ));
+        assert!(matches!(
+            connect(&v3, "other.acme.test:443"),
+            Decision::Deny {
+                reason: "host_not_allowlisted",
+                ..
+            }
+        ));
+        // A v2 token (no hosts) cannot reach the targets.
+        assert!(matches!(
+            connect(&token("run-1", NOW + 60), "app.acme.test:443"),
+            Decision::Deny {
+                reason: "host_not_allowlisted",
+                ..
+            }
+        ));
+        // Reverse routes still work with v3.
+        assert!(matches!(
+            decide(
+                KEY,
+                "POST",
+                &format!("/r/{v3}/anthropic/v1/messages"),
+                None,
+                ALLOW,
+                NOW
+            ),
+            Decision::Reverse { .. }
+        ));
+    }
+
+    #[test]
+    fn signed_hosts_cannot_be_altered_and_must_be_dns_names() {
+        let v3 =
+            sign_run_token_with_hosts(KEY, "org-1", "run-1", NOW + 60, &["app.acme.test".into()])
+                .unwrap();
+        let mut parts: Vec<&str> = v3.split('.').collect();
+        let forged_hosts = {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("evil.example")
+        };
+        parts[4] = &forged_hosts;
+        assert_eq!(
+            verify_run_token(KEY, &parts.join("."), NOW),
+            Err(TokenError::BadSignature)
+        );
+        for bad in [
+            "169.254.169.254",
+            "10.0.0.1",
+            "[::1]",
+            "Evil.Example",
+            "a..b",
+            "*.acme.test",
+            "host:443",
+            "",
+        ] {
+            assert_eq!(
+                sign_run_token_with_hosts(KEY, "org-1", "run-1", NOW + 60, &[bad.to_string()]),
+                Err(TokenError::Malformed),
+                "{bad}"
+            );
+        }
+        let many: Vec<String> = (0..17).map(|i| format!("h{i}.acme.test")).collect();
+        assert_eq!(
+            sign_run_token_with_hosts(KEY, "org-1", "run-1", NOW + 60, &many),
+            Err(TokenError::Malformed)
+        );
+    }
+
+    #[test]
+    fn only_globally_routable_addresses_are_tunnel_destinations() {
+        let ip = |text: &str| text.parse::<std::net::IpAddr>().unwrap();
+        for public in ["104.18.32.7", "140.82.112.3", "2606:4700::6810:84e5"] {
+            assert!(is_public_ip(ip(public)), "{public}");
+        }
+        for internal in [
+            "127.0.0.1",
+            "10.43.0.1",
+            "10.42.3.9",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12:3456::1",
+            "::ffff:169.254.169.254",
+            "::ffff:10.0.0.1",
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(!is_public_ip(ip(internal)), "{internal}");
         }
     }
 
