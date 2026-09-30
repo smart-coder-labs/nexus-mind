@@ -9,8 +9,8 @@
 - [x] 1.2 Per-org `nexus-bot` user (no password, `.invalid` email) + `factory-bot` role (default read-only grants, admin edits preserved); rotation revokes old keys atomically with audit; `GET /v1/factory/bot`, `POST /v1/factory/bot/key` (key shown once, `no-store`); proxy map `org_id → key`; run token v2 carries org_id; admin panel on Factory policies
 
 ## 2. Cluster
-- [ ] 2.1 `nexusmind-sandbox` namespace (PSA restricted), NetworkPolicies, proxy Deployment/Service
-- [ ] 2.2 `factory-worker` ServiceAccount and Role (pods, pods/exec and pods/log only, in the sandbox namespace)
+- [x] 2.1 `deploy/oracle/k8s/factory-sandbox.yaml`: namespace (PSA restricted), default-deny + task/proxy NetworkPolicies (proxy never reaches cluster CIDRs), proxy Deployment/Service; strict schema validation passed; **not applied yet**
+- [x] 2.2 `factory-worker` ServiceAccount and Role (pods, pods/exec, pods/log in the sandbox namespace only); worker Deployment must adopt the ServiceAccount when the executor ships
 
 ## 3. Sandbox executor
 - [ ] 3.1 Pod template, create/wait/delete with kube-rs; drop guard; GC of expired task pods
