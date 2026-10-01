@@ -810,18 +810,33 @@ impl ScannerKind {
 }
 
 /// Runs each argv and returns its stdout, in order.
+/// One batch of scanner invocations.
+struct ScanBatch<'a> {
+    kind: ScannerKind,
+    argvs: &'a [Vec<String>],
+    timeout_secs: u64,
+    /// Sandbox only: hosts the scanners may reach through the proxy.
+    hosts: &'a [String],
+    /// Sandbox only: write the nuclei proxy file into the pod.
+    nuclei_proxy: bool,
+    /// Sandbox only: commands that must all succeed before the scanners' output
+    /// is trusted (target reachability through the proxy).
+    probes: &'a [Vec<String>],
+}
+
 async fn capture_scanners(
     runner: &ScannerRunner<'_>,
-    kind: ScannerKind,
     workdir: &Path,
-    argvs: &[Vec<String>],
-    timeout_secs: u64,
-    hosts: &[String],
-    nuclei_proxy: bool,
-    // Sandbox only: commands that must all succeed before the scanners' output
-    // is trusted (target reachability through the proxy).
-    probes: &[Vec<String>],
+    batch: ScanBatch<'_>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
+    let ScanBatch {
+        kind,
+        argvs,
+        timeout_secs,
+        hosts,
+        nuclei_proxy,
+        probes,
+    } = batch;
     match runner {
         ScannerRunner::Local => {
             let mut outputs = Vec::new();
@@ -910,13 +925,15 @@ async fn run_security_scanners(
     let hosts: Vec<String> = SCANNER_HOSTS.iter().map(|host| host.to_string()).collect();
     let outputs = capture_scanners(
         runner,
-        ScannerKind::Static,
         workdir,
-        &argvs,
-        SECURITY_SCANNER_TIMEOUT_SECS,
-        &hosts,
-        false,
-        &[],
+        ScanBatch {
+            kind: ScannerKind::Static,
+            argvs: &argvs,
+            timeout_secs: SECURITY_SCANNER_TIMEOUT_SECS,
+            hosts: &hosts,
+            nuclei_proxy: false,
+            probes: &[],
+        },
     )
     .await?;
     let mut findings = Vec::new();
@@ -1014,13 +1031,15 @@ async fn run_dast_scan(
     };
     let outputs = capture_scanners(
         runner,
-        ScannerKind::Dynamic,
         workdir,
-        &argvs,
-        DAST_SCAN_TIMEOUT_SECS,
-        &tunnel_hosts,
-        sandboxed,
-        &probes,
+        ScanBatch {
+            kind: ScannerKind::Dynamic,
+            argvs: &argvs,
+            timeout_secs: DAST_SCAN_TIMEOUT_SECS,
+            hosts: &tunnel_hosts,
+            nuclei_proxy: sandboxed,
+            probes: &probes,
+        },
     )
     .await?;
     let mut findings = Vec::new();
