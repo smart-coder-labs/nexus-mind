@@ -1,6 +1,8 @@
 # Build stage
 # kube-rs (factory sandbox executor) requires Rust >= 1.89; same toolchain as nexus-builder.
-FROM rust:1.98-slim AS builder
+# Pinned to bookworm, the runtime's Debian release: a newer builder links against a
+# newer glibc and the binaries fail to start on the runtime (GLIBC_2.39 not found).
+FROM rust:1.98-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -12,7 +14,7 @@ RUN cargo build --release 2>/dev/null; rm -rf src
 COPY apps/backend/src ./src
 RUN cargo build --release
 
-FROM rust:1.98-slim AS nexus-builder
+FROM rust:1.98-slim-bookworm AS nexus-builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY apps/nexus-cli/Cargo.toml apps/nexus-cli/Cargo.lock ./
@@ -193,6 +195,14 @@ COPY --from=builder /app/target/release/nexusmind-seed /app/nexusmind-seed
 #   backfill-embeddings --db-path /data/nexusmind.db
 # Safe to re-run; it skips memories that already have an embedding.
 COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embeddings
+
+# Fail the build, not the deploy, if any binary needs a library or glibc version
+# the runtime does not have.
+RUN for bin in nexusmind autonomous_worker factory-egress-proxy nexus import-sdd nexusmind-seed backfill-embeddings; do \
+      if ldd "/app/$bin" 2>&1 | grep -q "not found"; then \
+        ldd "/app/$bin"; echo "incompatible binary: $bin"; exit 1; \
+      fi; \
+    done
 
 RUN mkdir -p /data /claude-home
 
