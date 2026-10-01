@@ -20,6 +20,9 @@ use crate::factory::{
 };
 use crate::store::sqlite::SqliteStore;
 
+/// WIP checkpoint interval, as on the local path.
+const CHECKPOINT_EVERY: Duration = Duration::from_secs(180);
+
 /// How long a pod may take to be scheduled and pull its image.
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Extra lifetime for the pod and token beyond the run's wall time (unpack, diff).
@@ -46,6 +49,20 @@ pub(crate) struct SandboxedRun<'a> {
     pub qa: Option<QaSandbox<'a>>,
     /// The pod slot within the run (`main`, or `issue-<n>` in a resolver fanout).
     pub slot: &'a str,
+    /// Code-writing templates: every diff of the agent's work, periodic and
+    /// final, goes to this channel in order. The caller applies them to its
+    /// checkout (and pushes WIP checkpoints); when the run returns, the channel is
+    /// closed and the last diff received is the result.
+    pub writes: Option<tokio::sync::mpsc::UnboundedSender<SandboxWrite>>,
+}
+
+/// A diff of the agent's work, in the order it was taken.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SandboxWrite {
+    /// Work in progress (periodic, or the last state of a timed-out run).
+    Checkpoint(Vec<u8>),
+    /// The finished run's change.
+    Final(Vec<u8>),
 }
 
 pub(crate) struct QaSandbox<'a> {
@@ -128,7 +145,6 @@ pub(crate) fn failure_code(run_id: &str, error: &anyhow::Error) -> String {
 struct Prepared {
     image: String,
     signing_key: String,
-    base_sha: String,
     workspace_tar: Vec<u8>,
     runtime: Arc<KubeRuntime>,
     attempt: String,
@@ -146,22 +162,9 @@ async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     if run.run_id.len() > 63 {
         anyhow::bail!("run_id_too_long")
     }
-    let output = Command::new("git")
-        .current_dir(run.workdir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .await?;
-    // QA and judge may run without a repository. No sandboxed template takes a
-    // diff yet, so the base only has to be well formed.
-    let base_sha = if output.status.success() {
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    } else {
-        "0".repeat(40)
-    };
     Ok(Prepared {
         image,
         signing_key,
-        base_sha,
         workspace_tar: pack_workspace(run.workdir, run.secret_values).await?,
         runtime: Arc::new(KubeRuntime::in_cluster().await?),
         attempt: run.attempt_id.chars().take(8).collect(),
@@ -200,7 +203,7 @@ impl Prepared {
             manifest: task_pod_manifest(&TaskPodRequest {
                 org_id: run.org_id.to_string(),
                 run_id: run.run_id.to_string(),
-                pod_suffix: format!("{}-{suffix}", self.attempt),
+                pod_suffix: format!("{}-{}-{suffix}", self.attempt, run.slot),
                 profile,
                 slot: run.slot.to_string(),
                 image: self.image.clone(),
@@ -210,10 +213,8 @@ impl Prepared {
             workspace_tar: self.workspace_tar.clone(),
             command: None,
             command_stdin: None,
-            base_sha: self.base_sha.clone(),
             ready_timeout: READY_TIMEOUT,
             wall_time: lifetime,
-            // Only read-only templates run here so far.
             collect_diff: false,
             verification: Vec::new(),
             verification_env: Vec::new(),
@@ -341,6 +342,26 @@ pub(crate) async fn run_claude_sandboxed(
         )];
         agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
     }
+    // Checkpoint diffs from the executor are forwarded in order; the forwarder
+    // ends (its channel closes with the job) before the final diff is sent.
+    let forwarder = run.writes.as_ref().map(|sink| {
+        argv.extend([
+            "--mcp-config".to_string(),
+            crate::factory::sandbox::nexusmind_mcp(),
+        ]);
+        agent_job.collect_diff = true;
+        let (inner, mut received) = tokio::sync::mpsc::unbounded_channel();
+        agent_job.checkpoints = Some(crate::factory::sandbox_exec::Checkpoints {
+            every: CHECKPOINT_EVERY,
+            sink: inner,
+        });
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            while let Some(diff) = received.recv().await {
+                let _ = sink.send(SandboxWrite::Checkpoint(diff));
+            }
+        })
+    });
     agent_job.command = Some(argv);
     agent_job.command_stdin = prompt;
     let mut sequence = run.seq_base;
@@ -367,6 +388,12 @@ pub(crate) async fn run_claude_sandboxed(
             // Names were validated as plain file names by the executor.
             tokio::fs::write(qa.artifacts_dir.join(name), content).await?;
         }
+    }
+    drop(agent_job);
+    if let (Some(sink), Some(forwarder)) = (&run.writes, forwarder) {
+        let _ = forwarder.await;
+        // The final state, after every checkpoint already sent.
+        let _ = sink.send(SandboxWrite::Final(agent.diff.clone()));
     }
     let output = agent
         .output

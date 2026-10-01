@@ -1,12 +1,14 @@
 //! Moving a checkout into and out of a task pod (factory F1, design §4).
 //!
-//! In: a `tar` of the worker's checkout, without `.git/hooks`. The clone
-//! credential travels in environment variables (`authenticated_git`), so it is
-//! never on disk; as a second line, the archive is refused if any known secret
-//! value appears in it.
+//! In: a `tar` of the worker's checkout files, without `.git` (the pod builds its
+//! own baseline commit; it never needs history, and a worktree's `.git` is a file
+//! pointing outside the directory). The clone credential travels in environment
+//! variables (`authenticated_git`), so it is never on disk; as a second line, the
+//! archive is refused if any known secret value appears in it.
 //!
-//! Out: the pod's `git diff --binary`, applied to the worker's checkout with
-//! `git apply --index`, after which the usual secret scan and gates run.
+//! Out: the pod's `git diff --binary`, applied to the worker's working tree
+//! (symlinks and gitlinks refused), after which the usual secret scan and gates
+//! run exactly as for a local agent's edits.
 
 use std::path::Path;
 
@@ -30,8 +32,9 @@ async fn pack_workspace_limited(
     use tokio::io::AsyncReadExt;
     let mut child = Command::new("tar")
         .current_dir(workdir)
-        // Hooks would run inside the pod on git commands; they are never needed.
-        .args(["-c", "-f", "-", "--exclude=.git/hooks", "."])
+        // Any `.git` at any depth: the top-level repository, a worktree's `.git`
+        // file, submodules and vendored repositories. The pod builds its own.
+        .args(["-c", "-f", "-", "--exclude=.git", "."])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -61,14 +64,62 @@ async fn pack_workspace_limited(
     Ok(archive)
 }
 
+/// Puts `workdir` back at `HEAD` (tracked and untracked changes dropped), then
+/// applies `diff`: every diff from the pod is the whole change so far, so the
+/// checkout always mirrors the pod's latest state.
+pub async fn reset_and_apply(workdir: &Path, diff: &[u8]) -> anyhow::Result<()> {
+    for args in [
+        &["reset", "-q", "--hard", "HEAD"][..],
+        &["clean", "-q", "-fd"][..],
+    ] {
+        let status = Command::new("git")
+            .current_dir(workdir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .status()
+            .await?;
+        if !status.success() {
+            anyhow::bail!("workspace_reset_failed")
+        }
+    }
+    apply_sandbox_diff(workdir, diff).await
+}
+
+/// Whether a diff creates or changes a symlink (120000) or a gitlink (160000).
+/// The pod is untrusted: a symlink written into the worker's checkout could make
+/// the worker read and publish any file it can reach (its environment, tokens).
+fn has_refused_mode(diff: &[u8]) -> bool {
+    diff.split(|b| *b == b'\n').any(|line| {
+        let line = String::from_utf8_lossy(line);
+        let mode = if let Some(rest) = line.strip_prefix("new file mode ") {
+            Some(rest)
+        } else if let Some(rest) = line.strip_prefix("new mode ") {
+            Some(rest)
+        } else if line.starts_with("index ") {
+            // `index <old>..<new> <mode>` on a modification of an existing file.
+            line.split_whitespace().nth(2)
+        } else {
+            None
+        };
+        matches!(mode.map(str::trim), Some("120000" | "160000"))
+    })
+}
+
 /// Applies a diff produced in the pod to `workdir`. An empty diff is a no-op.
 pub async fn apply_sandbox_diff(workdir: &Path, diff: &[u8]) -> anyhow::Result<()> {
     if diff.is_empty() {
         return Ok(());
     }
+    if has_refused_mode(diff) {
+        anyhow::bail!("sandbox_diff_mode_refused")
+    }
+    // Working tree only, as if the agent had edited the files here: the publish
+    // gates (secret scan, limits, excluded paths) diff the tree against the index.
     let mut child = Command::new("git")
         .current_dir(workdir)
-        .args(["apply", "--index", "--binary", "-"])
+        .args(["apply", "--binary", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -135,18 +186,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_archive_carries_the_checkout_and_git_objects_but_no_hooks() {
+    async fn the_archive_carries_the_files_but_no_git_metadata() {
         let dir = repo().await;
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/.gitkeep"), "").unwrap();
         let archive = pack_workspace(dir.path(), &[]).await.unwrap();
         let entries = list(&archive).await;
         assert!(entries.iter().any(|e| e == "a.txt"), "{entries:?}");
+        assert!(entries.iter().any(|e| e == "src/.gitkeep"), "{entries:?}");
         assert!(
-            entries.iter().any(|e| e.starts_with(".git/objects")),
+            !entries
+                .iter()
+                .any(|e| e == ".git" || e.starts_with(".git/")),
             "{entries:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_worktree_git_file_is_left_out_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/x\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let entries = list(&pack_workspace(dir.path(), &[]).await.unwrap()).await;
+        assert!(!entries.iter().any(|e| e == ".git"), "{entries:?}");
+    }
+
+    #[tokio::test]
+    async fn each_checkpoint_replaces_the_previous_one() {
+        let dir = repo().await;
+        let pod = repo().await;
+        let diff_of = |dir: std::path::PathBuf| async move {
+            git(&dir, &["add", "-A", "-N", "."]).await;
+            Command::new("git")
+                .current_dir(&dir)
+                .args(["diff", "--binary", "HEAD"])
+                .output()
+                .await
+                .unwrap()
+                .stdout
+        };
+        std::fs::write(pod.path().join("first.txt"), "1\n").unwrap();
+        let first = diff_of(pod.path().to_path_buf()).await;
+        reset_and_apply(dir.path(), &first).await.unwrap();
+        assert!(dir.path().join("first.txt").exists());
+
+        std::fs::remove_file(pod.path().join("first.txt")).unwrap();
+        std::fs::write(pod.path().join("a.txt"), "two\n").unwrap();
+        let second = diff_of(pod.path().to_path_buf()).await;
+        reset_and_apply(dir.path(), &second).await.unwrap();
         assert!(
-            !entries.iter().any(|e| e.contains(".git/hooks")),
-            "{entries:?}"
+            !dir.path().join("first.txt").exists(),
+            "earlier checkpoint must not linger"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "two\n"
+        );
+
+        reset_and_apply(dir.path(), b"").await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "one\n"
         );
     }
 
@@ -201,6 +305,52 @@ mod tests {
             [0u8, 159, 146, 150]
         );
         apply_sandbox_diff(dir.path(), b"").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn applied_changes_stay_unstaged_so_publish_gates_see_them() {
+        let dir = repo().await;
+        let pod = repo().await;
+        std::fs::write(pod.path().join("a.txt"), "two\n").unwrap();
+        git(pod.path(), &["add", "-A", "-N", "."]).await;
+        let diff = Command::new("git")
+            .current_dir(pod.path())
+            .args(["diff", "--binary", "HEAD"])
+            .output()
+            .await
+            .unwrap()
+            .stdout;
+        reset_and_apply(dir.path(), &diff).await.unwrap();
+        // Publish gates diff the working tree against the index.
+        let numstat = Command::new("git")
+            .current_dir(dir.path())
+            .args(["diff", "--numstat"])
+            .output()
+            .await
+            .unwrap()
+            .stdout;
+        assert!(
+            String::from_utf8_lossy(&numstat).contains("a.txt"),
+            "{numstat:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn symlinks_and_gitlinks_from_the_pod_are_refused() {
+        let dir = repo().await;
+        for diff in [
+            "diff --git a/PENDING.md b/PENDING.md\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n+++ b/PENDING.md\n@@ -0,0 +1 @@\n+/proc/self/environ\n\\ No newline at end of file\n",
+            "diff --git a/a.txt b/a.txt\nold mode 100644\nnew mode 120000\n",
+            "diff --git a/link b/link\nindex 1111111..2222222 120000\n--- a/link\n+++ b/link\n@@ -1 +1 @@\n-x\n+/etc/passwd\n",
+            "diff --git a/vendor b/vendor\nnew file mode 160000\nindex 0000000..1111111\n--- /dev/null\n+++ b/vendor\n@@ -0,0 +1 @@\n+Subproject commit 1111111111111111111111111111111111111111\n",
+        ] {
+            assert_eq!(
+                apply_sandbox_diff(dir.path(), diff.as_bytes()).await.unwrap_err().to_string(),
+                "sandbox_diff_mode_refused",
+                "{diff}"
+            );
+        }
+        assert!(!dir.path().join("PENDING.md").exists());
     }
 
     #[tokio::test]

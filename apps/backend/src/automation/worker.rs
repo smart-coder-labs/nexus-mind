@@ -317,6 +317,118 @@ async fn command_ok(mut command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Applies the pod's diffs to `workdir` in order. Checkpoints are also pushed to
+/// the WIP branch when `push` is given (token, branch, base); the final diff is
+/// only applied, as the local path never pushes a finished run as WIP. Resolves
+/// with the outcome of the last application.
+fn sandbox_write_consumer(
+    workdir: PathBuf,
+    push: Option<(String, String, String)>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<super::sandboxed::SandboxWrite>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let consumer = tokio::spawn(async move {
+        let mut last = Ok(());
+        while let Some(write) = received.recv().await {
+            let (diff, is_checkpoint) = match write {
+                super::sandboxed::SandboxWrite::Checkpoint(diff) => (diff, true),
+                super::sandboxed::SandboxWrite::Final(diff) => (diff, false),
+            };
+            last = crate::factory::workspace::reset_and_apply(&workdir, &diff).await;
+            if let (Ok(()), true, Some((token, branch, base))) = (&last, is_checkpoint, &push) {
+                let _ = checkpoint_wip_push(&workdir, token, branch, base).await;
+            }
+        }
+        last
+    });
+    (sink, consumer)
+}
+
+/// Extra time the worker gives a sandboxed run beyond its pods' lifetime: the
+/// workspace pack and kube client before the pod exists, and after the inner
+/// deadline the last diff (up to 60 s) and the pod delete. The inner deadline
+/// must always fire first so partial work is kept.
+const SANDBOX_OUTER_MARGIN: Duration = Duration::from_secs(180);
+
+/// The outcome of a sandboxed agent that did not return: running out of time
+/// is a budget outcome (partial work is kept), anything else a runtime block.
+fn sandbox_failure_outcome(run_id: &str, error: &anyhow::Error) -> (String, serde_json::Value) {
+    let code = super::sandboxed::failure_code(run_id, error);
+    if code == "sandbox_timeout" {
+        ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"}))
+    } else {
+        ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":code}))
+    }
+}
+
+/// The resolver's verification commands over its change. Sandboxed runs execute
+/// them in a commands pod over the applied checkout (never in the worker); a
+/// failing command blocks the publish, as it does locally.
+async fn resolver_verification(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let value = claim.config.get("verification_commands");
+    let sandboxed = crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        queries::autonomous_executor(&claim.config).unwrap_or("invalid"),
+    )
+    .is_ok_and(|isolation| isolation == crate::factory::sandbox::Isolation::Sandbox);
+    if !sandboxed {
+        return run_allowlisted_commands(workdir, value).await;
+    }
+    let commands = crate::factory::verification::parse_verification_commands(value)?;
+    if commands.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slot = claim
+        .config
+        .pointer("/trigger/number")
+        .and_then(|value| value.as_i64())
+        .map_or_else(|| "main".to_string(), |number| format!("issue-{number}"));
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let run = super::sandboxed::SandboxedRun {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        retry: 0,
+        workdir,
+        secret_values: &[],
+        seq_base: 0,
+        wall_time: Duration::ZERO,
+        verification: &[],
+        receipts: &unused_receipts,
+        qa: None,
+        slot: &slot,
+        writes: None,
+    };
+    let runs = super::sandboxed::run_commands_sandboxed(
+        &run,
+        &super::sandboxed::CommandsSpec {
+            commands: &commands,
+            extra_env: &[],
+            timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+            reproduce_failures: false,
+            hosts: &[],
+            label: "v",
+        },
+    )
+    .await?;
+    let mut receipts = Vec::new();
+    for run in runs {
+        if run.exit_code != Some(0) {
+            anyhow::bail!("verification_failed")
+        }
+        receipts.push(json!({"argv": run.argv, "status": "passed", "duration_ms": run.duration_ms}));
+    }
+    Ok(receipts)
+}
+
 /// Resolves when the run must stop: its lease is lost (the heartbeat, renewed
 /// here every 2 s, failed) or an operator cancelled it.
 async fn run_stop_signal(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) {
@@ -384,6 +496,7 @@ async fn qa_results_sandboxed(
         receipts: &unused_receipts,
         qa: None,
         slot: "main",
+        writes: None,
     };
     let runs = super::sandboxed::run_commands_sandboxed(
         &run,
@@ -1628,9 +1741,7 @@ async fn publish_template_output(
             // and the budget-exhausted partial PR). It must never land in a finished
             // PR, so drop it from the working tree before we diff and commit.
             let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
-            let verification =
-                run_allowlisted_commands(workdir, claim.config.get("verification_commands"))
-                    .await?;
+            let verification = resolver_verification(store, claim, workdir).await?;
             ensure_diff_has_no_secrets(workdir).await?;
             let diff = Command::new("git")
                 .current_dir(workdir)
@@ -3067,9 +3178,17 @@ async fn open_partial_pr(
         .get("base_branch")
         .and_then(|v| v.as_str())
         .unwrap_or("main");
-    let pending = tokio::fs::read_to_string(workdir.join("PENDING.md"))
+    // Only a regular file: a symlink planted by an agent must never make the
+    // worker read and publish something outside the checkout.
+    let pending_path = workdir.join("PENDING.md");
+    let regular = tokio::fs::symlink_metadata(&pending_path)
         .await
-        .ok()
+        .is_ok_and(|meta| meta.file_type().is_file());
+    let pending = (if regular {
+        tokio::fs::read_to_string(&pending_path).await.ok()
+    } else {
+        None
+    })
         .map(|body| body.chars().take(8000).collect::<String>())
         .filter(|body| !body.trim().is_empty())
         .unwrap_or_else(|| {
@@ -3162,6 +3281,7 @@ async fn resolve_issue_worktree(
     store: SqliteStore,
     worker_bin: String,
     nexus_selected: bool,
+    sandboxed: bool,
     mut claim: queries::ClaimedAutonomousRun,
     repository: String,
     number: i64,
@@ -3236,9 +3356,10 @@ async fn resolve_issue_worktree(
     }
     // Register the NexusMind MCP so the resolver can actually load the tools its
     // allowedTools/prompt reference (without this the server is never spawned).
+    // Sandboxed runs get a NexusMind MCP that goes through the proxy instead.
     let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
         .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
-    if std::path::Path::new(&nexusmind_mcp).exists() {
+    if !sandboxed && std::path::Path::new(&nexusmind_mcp).exists() {
         claude.args(["--mcp-config", &nexusmind_mcp]);
     }
     let secret_values: Vec<String> = token.iter().cloned().collect();
@@ -3280,7 +3401,7 @@ async fn resolve_issue_worktree(
     let wip_branch = continue_branch
         .clone()
         .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
-    let committer = (!nexus_selected).then(|| token.clone()).flatten().map(|checkpoint_token| {
+    let committer = (!nexus_selected && !sandboxed).then(|| token.clone()).flatten().map(|checkpoint_token| {
         let workdir = workdir.clone();
         let branch = wip_branch.clone();
         let base = base_sha.clone();
@@ -3291,19 +3412,66 @@ async fn resolve_issue_worktree(
             }
         })
     });
-    let invocation = run_claude_capturing_transcript(
-        &mut claude,
-        nexus_selected.then_some(prompt.as_str()),
-        &store,
-        &claim.org_id,
-        &claim.run.id,
-        &secret_values,
-        seq_base,
-    );
+    // Sandboxed: the pod's diffs drive this checkout (and the WIP pushes).
+    let (write_sink, write_consumer) = if sandboxed {
+        let (sink, consumer) = sandbox_write_consumer(
+            workdir.clone(),
+            token.clone().map(|token| (token, wip_branch.clone(), base_sha.clone())),
+        );
+        (Some(sink), Some(consumer))
+    } else {
+        (None, None)
+    };
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let slot = format!("issue-{number}");
+    let invocation: std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
+    > = if sandboxed {
+        let invocation = super::sandboxed::sandbox_invocation(&claude);
+        Box::pin(super::sandboxed::run_claude_sandboxed(
+            super::sandboxed::SandboxedRun {
+                store: &store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: 0,
+                workdir: &workdir,
+                secret_values: &secret_values,
+                seq_base,
+                wall_time: Duration::from_secs(wall_time),
+                verification: &[],
+                receipts: &unused_receipts,
+                qa: None,
+                slot: &slot,
+                writes: write_sink,
+            },
+            invocation,
+        ))
+    } else {
+        Box::pin(async {
+            Ok(run_claude_capturing_transcript(
+                &mut claude,
+                nexus_selected.then_some(prompt.as_str()),
+                &store,
+                &claim.org_id,
+                &claim.run.id,
+                &secret_values,
+                seq_base,
+            )
+            .await?)
+        })
+    };
+    let outer_wall = if sandboxed {
+        super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), 0, false)
+            + SANDBOX_OUTER_MARGIN
+    } else {
+        Duration::from_secs(wall_time)
+    };
     let mut outcome: (String, serde_json::Value) = tokio::select! {
         _ = cancelled => ("cancelled".into(), json!({"code":"cancelled_by_operator"})),
-        value = timeout(Duration::from_secs(wall_time), invocation) => match value {
+        value = timeout(outer_wall, invocation) => match value {
             Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
+            Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
             Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
                 match parse_claude_event_stream(&output.stdout) {
@@ -3323,6 +3491,14 @@ async fn resolve_issue_worktree(
     };
     if let Some(handle) = committer {
         handle.abort();
+    }
+    // The checkout must hold the pod's last state before anything is published.
+    if let Some(consumer) = write_consumer {
+        if let Ok(Err(error)) = consumer.await {
+            if outcome.0 == "succeeded" {
+                outcome = ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":error.to_string()}));
+            }
+        }
     }
     // The deterministic evaluator requires the context manifest on the result;
     // without it every fanout issue was rejected as `evaluator_context_missing`
@@ -3428,6 +3604,7 @@ async fn execute_resolver_fanout(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
+    sandboxed: bool,
 ) -> (String, serde_json::Value) {
     let nexus_selected = queries::autonomous_executor(&claim.config).ok() == Some("nexus");
     // One issue per run: keeps each run small and cheap (avoids blowing the Claude
@@ -3581,6 +3758,7 @@ async fn execute_resolver_fanout(
                 store.clone(),
                 if nexus_selected { config.nexus_worker_bin.clone() } else { config.claude_code_bin.clone() },
                 nexus_selected,
+                sandboxed,
                 claim.clone(),
                 repository,
                 number,
@@ -3750,7 +3928,7 @@ async fn execute_claim(
             .and_then(|v| v.as_bool())
             != Some(true)
     {
-        return execute_resolver_fanout(store, config, claim).await;
+        return execute_resolver_fanout(store, config, claim, sandboxed).await;
     }
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
@@ -4336,7 +4514,8 @@ async fn execute_claim(
     if matches!(
         claim.template_key.as_str(),
         "github_issue_resolver" | "lead_generation"
-    ) {
+    ) && !sandboxed
+    {
         let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
         if std::path::Path::new(&nexusmind_mcp).exists() {
@@ -4375,6 +4554,15 @@ async fn execute_claim(
     secret_values.extend(target_secret_values.iter().cloned());
     claude.current_dir(&workdir).kill_on_drop(true);
     let seq_base = (output_retry as i64) * 100_000;
+    // A sandboxed resolver's checkout follows the pod's diffs (no WIP pushes on
+    // this single-issue path, as locally).
+    let writes_to_checkout = sandboxed && claim.template_key == "github_issue_resolver";
+    let (write_sink, write_consumer) = if writes_to_checkout {
+        let (sink, consumer) = sandbox_write_consumer(workdir.clone(), None);
+        (Some(sink), Some(consumer))
+    } else {
+        (None, None)
+    };
     let invocation: std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
     > = if sandboxed {
@@ -4398,12 +4586,17 @@ async fn execute_claim(
                         artifacts_dir: &qa_screenshots_dir,
                     },
                 ),
-                verification: if sandbox_receipts.lock().map(|r| r.is_empty()).unwrap_or(true) {
-                    &sandbox_verification
-                } else {
+                // The resolver verifies the applied change at publish time; others
+                // verify the checked-out head here. Evidence is gathered once.
+                verification: if writes_to_checkout
+                    || !sandbox_receipts.lock().map(|r| r.is_empty()).unwrap_or(true)
+                {
                     &[]
+                } else {
+                    &sandbox_verification
                 },
                 receipts: &sandbox_receipts,
+                writes: write_sink,
             },
             argv,
         ))
@@ -4427,9 +4620,9 @@ async fn execute_claim(
         // In the sandbox the budget also covers scheduling, pulling and unpacking;
         // extend it so Claude gets the same time as a local run. The sandbox's own
         // deadline fires first, so its pod is deleted before this one gives up.
-        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), sandbox_verification.len(), false) + Duration::from_secs(30) } else { Duration::from_secs(wall_time) }, invocation) => match value {
+        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), sandbox_verification.len(), false) + SANDBOX_OUTER_MARGIN } else { Duration::from_secs(wall_time) }, invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
-        Ok(Err(error)) if sandboxed => ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":super::sandboxed::failure_code(&claim.run.id, &error)})),
+        Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
         Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
             let (value,stream)=match parse_claude_event_stream(&output.stdout){
@@ -4475,6 +4668,14 @@ async fn execute_claim(
         }
         }
     };
+    // The checkout must hold the pod's last state before anything is published.
+    if let Some(consumer) = write_consumer {
+        if let Ok(Err(error)) = consumer.await {
+            if outcome.0 == "succeeded" {
+                outcome = ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":error.to_string()}));
+            }
+        }
+    }
         if sandboxed {
             if let (Some(object), Ok(receipts)) = (outcome.1.as_object_mut(), sandbox_receipts.lock()) {
                 object.insert("verification_receipts".into(), json!(*receipts));

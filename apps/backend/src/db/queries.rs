@@ -16785,7 +16785,7 @@ mod autonomous_executor_tests {
         let sandbox = serde_json::json!({"isolation": "sandbox"});
         super::validate_autonomous_executor(&sandbox, "github_pr_reviewer").unwrap();
         assert_eq!(
-            super::validate_autonomous_executor(&sandbox, "github_issue_resolver")
+            super::validate_autonomous_executor(&sandbox, "lead_generation")
                 .unwrap_err()
                 .to_string(),
             "sandbox_unsupported_template"

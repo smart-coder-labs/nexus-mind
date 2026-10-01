@@ -152,6 +152,16 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
 - **Slack**: no Slack MCP exists; delivery stays worker-side via the connector webhook, so sandboxed runs do not list `mcp__slack__*`.
 - Target credentials reach the agent only through the prompt (on stdin) and are redacted from transcripts.
 
+### Resolver in the sandbox (ADR a8882f51)
+
+- **Files, not history.** The pod receives the checkout's files without any `.git` (at any depth: repository, worktree file, submodules, vendored repos). When the job keeps a diff, the executor commits the unpacked tree as a baseline in a fresh repository and every diff is `git diff --binary HEAD`. This works the same for clones and fanout worktrees and never exposes history to the pod.
+- **Applying.** Pod diffs are untrusted: any diff that creates or changes a symlink (120000) or a gitlink (160000) is refused (a planted symlink could make the worker read and publish its own files). Diffs are applied to the working tree only, so the existing publish gates (secret scan, excluded paths, size limits) see them exactly like a local agent's edits. `PENDING.md` is read only if it is a regular file.
+- **Checkpoints.** Every 180 s the executor sends a diff of the agent's work; on sandbox timeout it sends a last one before deleting the pod. The worker resets its checkout to `HEAD`, applies the diff and, in the fanout, pushes the WIP branch as before. The finished run's diff arrives last (`Final`) and is applied without a WIP push. `sandbox_timeout` maps to `budget_exhausted`, so the partial-PR path runs as locally.
+- **Fanout.** One pod per issue (`slot = issue-<n>`); pod names are `task-<run prefix>-<sha256(run/suffix)>`, so parallel issues, retries and commands pods never collide or treat each other as orphans.
+- **NexusMind MCP.** The agent pod runs `nexusmind-mcp` with an inline config holding only a placeholder key; it inherits the proxy route in `NEXUSMIND_BASE_URL`, and the proxy replaces `Authorization` with the org's bot key (verified: nexusmind-mcp 0.15.0 uses `NEXUSMIND_BASE_URL` and `Authorization`).
+- **Verification at publish** runs in a commands pod over the applied checkout; a failing command blocks the publish, as locally.
+- The worker's outer timeout is the pods' lifetime + 180 s, so the inner deadline (and its last diff) always fires first.
+
 ### Migration order
 
 `github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `isolation: "sandbox"` in its agent config (`executor` already names the provider, `claude` | `nexus`). Absent means `local` until the drill passes, then the default flips to `sandbox`; `isolation: "local"` stays as an explicit, UI-flagged unsafe escape hatch. A sandbox request that cannot be honored (template not migrated, `nexus` executor) is refused on save (422) and blocked at run time, never silently run locally.

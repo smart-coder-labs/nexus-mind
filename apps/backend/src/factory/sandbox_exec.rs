@@ -130,14 +130,12 @@ impl Drop for PodGuard {
 /// What one sandboxed task needs.
 pub struct SandboxJob {
     pub manifest: Value,
-    /// `tar` of the checkout, without credentials (see design §4).
+    /// `tar` of the checkout's files, without `.git` (see `workspace::pack_workspace`).
     pub workspace_tar: Vec<u8>,
     /// The agent. `None` for a commands-only pod (QA tests run apart from the agent).
     pub command: Option<Vec<String>>,
     /// Written to the agent's stdin: the prompt, so it never travels in the exec URL.
     pub command_stdin: Option<Vec<u8>>,
-    /// Commit the checkout is at; the diff is taken against it.
-    pub base_sha: String,
     pub ready_timeout: Duration,
     /// Upper bound for the whole job (unpack, command, diff) before the pod is deleted.
     pub wall_time: Duration,
@@ -167,6 +165,10 @@ pub struct Checkpoints {
     pub every: Duration,
     pub sink: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 }
+
+/// Commits the unpacked workspace as the diff baseline. Hooks cannot run: the
+/// repository is created here, with none.
+const BASELINE_SCRIPT: &str = "cd /workspace && git init -q && git add -A && git -c user.name=sandbox -c user.email=sandbox@invalid commit -q --no-verify --allow-empty -m baseline";
 
 /// How long the last diff of a timed-out job may take.
 const FINAL_DIFF_TIMEOUT: Duration = Duration::from_secs(60);
@@ -232,7 +234,7 @@ pub struct SandboxResult {
     /// Artifacts from `collect_dir`, names validated.
     pub artifacts: Vec<(String, Vec<u8>)>,
     pub verification: Vec<CommandRun>,
-    /// `git diff --binary` against `base_sha`, including new files.
+    /// `git diff --binary` against the baseline commit, including new files.
     pub diff: Vec<u8>,
 }
 
@@ -258,10 +260,6 @@ pub async fn run_in_sandbox(
     job: &SandboxJob,
     on_line: &mut (dyn for<'l> FnMut(&'l [u8]) + Send),
 ) -> anyhow::Result<SandboxResult> {
-    // Validated before any pod exists: it is interpolated into the diff command.
-    if job.base_sha.len() != 40 || !job.base_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-        anyhow::bail!("invalid_base_sha")
-    }
     // Armed before `create` returns: the name is fixed by the manifest, so a job
     // cancelled mid-create still deletes the pod (a 404 counts as deleted).
     let planned = PodHandle {
@@ -303,11 +301,9 @@ pub async fn run_in_sandbox(
         Err(_) => {
             // Out of time: keep the partial work if anyone is collecting it.
             if let (true, Some(checkpoints)) = (job.collect_diff, &job.checkpoints) {
-                if let Ok(Ok(diff)) = tokio::time::timeout(
-                    FINAL_DIFF_TIMEOUT,
-                    take_diff(runtime.as_ref(), &pod, &job.base_sha),
-                )
-                .await
+                if let Ok(Ok(diff)) =
+                    tokio::time::timeout(FINAL_DIFF_TIMEOUT, take_diff(runtime.as_ref(), &pod))
+                        .await
                 {
                     let _ = checkpoints.sink.send(diff);
                 }
@@ -352,6 +348,21 @@ async fn drive(
     if unpack.exit_code != 0 {
         anyhow::bail!("workspace_unpack_failed")
     }
+    if job.collect_diff {
+        // The pod gets files, not history: a fresh repository with one commit is
+        // the baseline every diff is taken against.
+        let baseline = runtime
+            .exec(
+                pod,
+                &limited(&strings(&["sh", "-c", BASELINE_SCRIPT])),
+                None,
+                &mut |_: &[u8]| {},
+            )
+            .await?;
+        if baseline.exit_code != 0 {
+            anyhow::bail!("workspace_baseline_failed")
+        }
+    }
     for (path, content) in &job.files {
         let written = runtime
             .exec(
@@ -371,7 +382,7 @@ async fn drive(
             let agent = runtime.exec(pod, &argv, job.command_stdin.clone(), on_line);
             let output = match (&job.checkpoints, job.collect_diff) {
                 (Some(checkpoints), true) => {
-                    with_checkpoints(runtime, pod, &job.base_sha, checkpoints, agent).await?
+                    with_checkpoints(runtime, pod, checkpoints, agent).await?
                 }
                 _ => agent.await?,
             };
@@ -398,7 +409,7 @@ async fn drive(
     // The diff is taken before any later verification, whose installs and builds
     // may touch tracked files (lockfiles) that are not part of the change.
     let diff = if job.collect_diff {
-        take_diff(runtime, pod, &job.base_sha).await?
+        take_diff(runtime, pod).await?
     } else {
         Vec::new()
     };
@@ -464,7 +475,6 @@ async fn collect_artifacts(
 async fn with_checkpoints(
     runtime: &dyn SandboxRuntime,
     pod: &PodHandle,
-    base_sha: &str,
     checkpoints: &Checkpoints,
     agent: impl std::future::Future<Output = anyhow::Result<ExecOutput>>,
 ) -> anyhow::Result<ExecOutput> {
@@ -475,7 +485,7 @@ async fn with_checkpoints(
         tokio::select! {
             output = &mut agent => return output,
             _ = ticker.tick() => {
-                match take_diff(runtime, pod, base_sha).await {
+                match take_diff(runtime, pod).await {
                     Ok(diff) if !diff.is_empty() => {
                         let _ = checkpoints.sink.send(diff);
                     }
@@ -487,16 +497,12 @@ async fn with_checkpoints(
     }
 }
 
-async fn take_diff(
-    runtime: &dyn SandboxRuntime,
-    pod: &PodHandle,
-    base_sha: &str,
-) -> anyhow::Result<Vec<u8>> {
-    // Intent-to-add makes new files appear in the diff without staging content.
+async fn take_diff(runtime: &dyn SandboxRuntime, pod: &PodHandle) -> anyhow::Result<Vec<u8>> {
+    // Against the baseline commit made after unpacking; intent-to-add makes new
+    // files appear in the diff without staging their content.
     let diff_script = format!(
-        "cd {} && git add -A -N . && git diff --binary {}",
-        super::sandbox::WORKSPACE,
-        base_sha
+        "cd {} && git add -A -N . && git diff --binary HEAD",
+        super::sandbox::WORKSPACE
     );
     let diff = runtime
         .exec(
@@ -735,7 +741,7 @@ mod tests {
         }
     }
 
-    fn job(base_sha: &str) -> SandboxJob {
+    fn job() -> SandboxJob {
         SandboxJob {
             manifest: serde_json::json!({"metadata": {
                 "name": "task-1",
@@ -745,7 +751,6 @@ mod tests {
             workspace_tar: vec![1, 2, 3],
             command: Some(vec!["claude".into(), "-p".into()]),
             command_stdin: Some(b"the prompt".to_vec()),
-            base_sha: base_sha.into(),
             ready_timeout: Duration::from_secs(5),
             wall_time: Duration::from_secs(5),
             collect_diff: true,
@@ -760,6 +765,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diffs_are_taken_against_a_fresh_baseline_commit() {
+        let fake = Arc::new(Fake::default());
+        run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        let calls = fake.calls.lock().unwrap().clone();
+        let position = |needle: &str| calls.iter().position(|c| c.contains(needle)).unwrap();
+        assert!(position("tar -x") < position("git init"), "{calls:?}");
+        assert!(position("git init") < position("claude"), "{calls:?}");
+        assert!(
+            calls[position("git diff")].ends_with("git diff --binary HEAD"),
+            "{calls:?}"
+        );
+
+        let read_only = Arc::new(Fake::default());
+        let mut job = job();
+        job.collect_diff = false;
+        run_in_sandbox(read_only.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert!(!read_only
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("git init")));
+    }
+
+    #[tokio::test]
     async fn checkpoints_stream_diffs_while_the_agent_works() {
         let fake = Arc::new(Fake {
             slow_command: Some(Duration::from_millis(120)),
@@ -767,7 +801,7 @@ mod tests {
             ..Default::default()
         });
         let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let mut job = job(SHA);
+        let mut job = job();
         job.checkpoints = Some(Checkpoints {
             every: Duration::from_millis(30),
             sink,
@@ -792,7 +826,7 @@ mod tests {
             ..Default::default()
         });
         let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let mut job = job(SHA);
+        let mut job = job();
         job.wall_time = Duration::from_millis(50);
         job.checkpoints = Some(Checkpoints {
             every: Duration::from_secs(3600),
@@ -817,7 +851,7 @@ mod tests {
     #[tokio::test]
     async fn files_go_in_on_stdin_and_artifacts_come_back_validated() {
         let fake = Arc::new(Fake::default());
-        let mut job = job(SHA);
+        let mut job = job();
         job.files = vec![("/tmp/cfg.json".into(), b"{\"secret\":1}".to_vec())];
         job.collect_dir = Some("/tmp/out".into());
         let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
@@ -863,7 +897,7 @@ mod tests {
             failing_npm: true,
             ..Default::default()
         });
-        let result = run_in_sandbox(fake.clone(), &with_checks(job(SHA)), &mut |_: &[u8]| {})
+        let result = run_in_sandbox(fake.clone(), &with_checks(job()), &mut |_: &[u8]| {})
             .await
             .unwrap();
         let exit_codes: Vec<Option<i32>> =
@@ -899,7 +933,7 @@ mod tests {
             failing_npm: true,
             ..Default::default()
         });
-        let mut job = with_checks(job(SHA));
+        let mut job = with_checks(job());
         job.command = None;
         job.reproduce_failures = true;
         job.verification.truncate(1);
@@ -921,7 +955,7 @@ mod tests {
             hang_create: true,
             ..Default::default()
         });
-        let job = job(SHA);
+        let job = job();
         let dropped = tokio::time::timeout(
             Duration::from_millis(50),
             run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {}),
@@ -937,7 +971,7 @@ mod tests {
     #[tokio::test]
     async fn read_only_jobs_skip_the_diff() {
         let fake = Arc::new(Fake::default());
-        let mut job = job(SHA);
+        let mut job = job();
         job.collect_diff = false;
         let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
             .await
@@ -954,7 +988,7 @@ mod tests {
             hang_command: true,
             ..Default::default()
         });
-        let job = job(SHA);
+        let job = job();
         let dropped = tokio::time::timeout(
             Duration::from_millis(50),
             run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {}),
@@ -988,7 +1022,7 @@ mod tests {
             has_orphan: true,
             ..Default::default()
         });
-        run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .unwrap();
         let calls = fake.calls.lock().unwrap();
@@ -1013,7 +1047,7 @@ mod tests {
             hang_command: true,
             ..Default::default()
         });
-        let mut job = job(SHA);
+        let mut job = job();
         job.wall_time = Duration::from_millis(50);
         let error = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
             .await
@@ -1028,7 +1062,7 @@ mod tests {
             lost_status: true,
             ..Default::default()
         });
-        let error = run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        let error = run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "command_status_unknown");
@@ -1037,8 +1071,6 @@ mod tests {
         assert_eq!(calls.last().unwrap(), "delete");
     }
 
-    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
-
     #[tokio::test]
     async fn the_happy_path_streams_output_returns_the_diff_and_deletes_the_pod() {
         let fake = Arc::new(Fake {
@@ -1046,7 +1078,7 @@ mod tests {
             ..Default::default()
         });
         let mut lines = Vec::new();
-        let result = run_in_sandbox(fake.clone(), &job(SHA), &mut |line: &[u8]| {
+        let result = run_in_sandbox(fake.clone(), &job(), &mut |line: &[u8]| {
             lines.push(line.to_vec())
         })
         .await
@@ -1061,15 +1093,16 @@ mod tests {
             "{}",
             calls[2]
         );
-        assert!(calls[3].contains("claude"));
-        assert!(calls[4].contains("git diff --binary") && calls[4].contains(SHA));
+        assert!(calls[3].contains("git init"));
+        assert!(calls[4].contains("claude"));
+        assert!(calls[5].contains("git diff --binary HEAD"));
         assert_eq!(calls.last().unwrap(), "delete");
     }
 
     #[tokio::test]
     async fn every_command_runs_under_the_process_limit() {
         let fake = Arc::new(Fake::default());
-        run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .unwrap();
         for call in fake
@@ -1094,7 +1127,7 @@ mod tests {
             fail_ready: true,
             ..Default::default()
         });
-        assert!(run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        assert!(run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .is_err());
         assert_eq!(
@@ -1109,7 +1142,7 @@ mod tests {
             fail_command: true,
             ..Default::default()
         });
-        assert!(run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        assert!(run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .is_err());
         assert_eq!(fake.calls.lock().unwrap().last().unwrap(), "delete");
@@ -1121,25 +1154,11 @@ mod tests {
             diff: vec![b'x'; MAX_DIFF_BYTES + 1],
             ..Default::default()
         });
-        let error = run_in_sandbox(fake.clone(), &job(SHA), &mut |_: &[u8]| {})
+        let error = run_in_sandbox(fake.clone(), &job(), &mut |_: &[u8]| {})
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "diff_too_large");
         assert_eq!(fake.calls.lock().unwrap().last().unwrap(), "delete");
-    }
-
-    #[tokio::test]
-    async fn an_invalid_base_sha_is_refused_before_any_pod_exists() {
-        let fake = Arc::new(Fake::default());
-        for bad in ["main", "0123; rm -rf /", ""] {
-            assert!(
-                run_in_sandbox(fake.clone(), &job(bad), &mut |_: &[u8]| {})
-                    .await
-                    .is_err(),
-                "{bad}"
-            );
-        }
-        assert!(fake.calls.lock().unwrap().is_empty());
     }
 }
 

@@ -51,6 +51,16 @@ pub fn task_pod_name(run_id: &str) -> String {
     name.trim_end_matches('-').to_string()
 }
 
+/// A short, unique pod name: the run id's first segment for humans, then a hash
+/// of the full run id and suffix, so nothing distinguishing is lost to the
+/// 63-character limit (parallel issues, retries, commands pods).
+fn unique_pod_name(run_id: &str, pod_suffix: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(format!("{run_id}/{pod_suffix}").as_bytes()));
+    let prefix: String = run_id.chars().take(8).collect();
+    task_pod_name(&format!("{prefix}-{}", &digest[..16]))
+}
+
 /// The pod's environment: proxy routes for Claude and NexusMind, a placeholder
 /// Claude credential (the proxy replaces it), and no other secret.
 pub fn task_env(request: &TaskPodRequest) -> Vec<(String, String)> {
@@ -110,7 +120,8 @@ pub enum Isolation {
 }
 
 /// Templates migrated to the sandbox so far (design §4, migration order).
-pub const SANDBOX_TEMPLATES: &[&str] = &["github_pr_reviewer", "qa", "judge"];
+pub const SANDBOX_TEMPLATES: &[&str] =
+    &["github_pr_reviewer", "qa", "judge", "github_issue_resolver"];
 
 /// Parses and validates `isolation`. A sandbox request that cannot be honored is
 /// an error, never a silent fallback to local execution.
@@ -258,6 +269,20 @@ pub fn playwright_mcp(proxy_token: &str) -> (String, Vec<u8>) {
     (mcp.to_string(), file.to_string().into_bytes())
 }
 
+/// The `--mcp-config` value for NexusMind in an agent pod. It holds no secret:
+/// the server inherits the pod's `NEXUSMIND_BASE_URL` (the proxy route) and sends
+/// a placeholder key that the proxy replaces with the org's bot key.
+pub fn nexusmind_mcp() -> String {
+    json!({"mcpServers": {"plugin_nexusmind_nexusmind": {
+        "command": "nexusmind-mcp",
+        "env": {
+            "NEXUSMIND_API_KEY": "sandbox-placeholder-not-a-credential",
+            "NEXUSMIND_MCP_TOOL_PROFILE": "only_context"
+        }
+    }}})
+    .to_string()
+}
+
 /// A file name the pod may hand back: a plain screenshot/trace name, never a path.
 pub fn valid_artifact_name(name: &str) -> bool {
     let Some((stem, extension)) = name.rsplit_once('.') else {
@@ -285,7 +310,7 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
-            "name": task_pod_name(&format!("{}-{}", request.run_id, request.pod_suffix)),
+            "name": unique_pod_name(&request.run_id, &request.pod_suffix),
             "namespace": SANDBOX_NAMESPACE,
             "labels": {
                 "role": "task",
@@ -381,7 +406,7 @@ mod tests {
         for (config, template, executor, code) in [
             (
                 json!({"isolation": "sandbox"}),
-                "github_issue_resolver",
+                "lead_generation",
                 "claude",
                 "sandbox_unsupported_template",
             ),
@@ -571,6 +596,18 @@ mod tests {
     }
 
     #[test]
+    fn the_nexusmind_mcp_reaches_the_api_only_through_the_proxy() {
+        let mcp: Value = serde_json::from_str(&nexusmind_mcp()).unwrap();
+        let env = &mcp["mcpServers"]["plugin_nexusmind_nexusmind"]["env"];
+        // No base URL of its own: it must inherit the proxy route from the pod.
+        assert!(env.get("NEXUSMIND_BASE_URL").is_none());
+        assert!(env["NEXUSMIND_API_KEY"]
+            .as_str()
+            .unwrap()
+            .starts_with("sandbox-placeholder"));
+    }
+
+    #[test]
     fn artifact_names_are_plain_file_names() {
         for good in ["page-2026.png", "login_step.jpeg", "trace.webp"] {
             assert!(valid_artifact_name(good), "{good}");
@@ -603,7 +640,21 @@ mod tests {
         assert_eq!(pod["metadata"]["namespace"], SANDBOX_NAMESPACE);
         assert_eq!(pod["metadata"]["labels"]["role"], "task");
         assert_eq!(pod["metadata"]["labels"][RUN_LABEL], "0F9B7C2E-Run_42");
-        assert_eq!(pod["metadata"]["name"], "task-0f9b7c2e-run-42-a1b2c3d4-0");
+        let name = pod["metadata"]["name"].as_str().unwrap();
+        assert!(
+            name.starts_with("task-0f9b7c2e-") && name.len() <= 63,
+            "{name}"
+        );
+        // Every distinguishing part counts, even for long run ids and suffixes.
+        let mut other = request();
+        other.run_id = "0f9b7c2e-1d2a-4c3b-9e8f-0123456789ab".into();
+        other.pod_suffix = "a1b2c3d4-issue-123456-10-v".into();
+        let mut sibling = other.clone();
+        sibling.pod_suffix = "a1b2c3d4-issue-123456-11-v".into();
+        assert_ne!(
+            task_pod_manifest(&other)["metadata"]["name"],
+            task_pod_manifest(&sibling)["metadata"]["name"]
+        );
         assert_eq!(spec["automountServiceAccountToken"], false);
         assert_eq!(spec["imagePullSecrets"], json!([{"name": "ghcr-pull"}]));
         assert_eq!(spec["hostUsers"], false);
