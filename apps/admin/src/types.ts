@@ -1496,3 +1496,12 @@ export interface FactoryPolicy extends FactoryActionPolicy {
   updated_by: string
   updated_at: string
 }
+
+/** The per-organization identity sandboxed agents use to call NexusMind. */
+export interface FactoryBot {
+  user_id: string
+  role: string
+  role_permissions: string[]
+  status: string
+  key_created_at: string | null
+}

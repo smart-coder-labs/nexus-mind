@@ -107,7 +107,6 @@ async fn run_claude_capturing_transcript(
 ) -> std::io::Result<std::process::Output> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     const MAX_STREAM_BYTES: usize = 32 * 1_048_576;
-    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -152,49 +151,7 @@ async fn run_claude_capturing_transcript(
             let room = MAX_STREAM_BYTES - stdout_buf.len();
             stdout_buf.extend_from_slice(&line[..line.len().min(room)]);
         }
-        // Trim trailing CR/LF for a tidy stored turn.
-        let end = line
-            .iter()
-            .rposition(|b| *b != b'\n' && *b != b'\r')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let trimmed = &line[..end];
-        if trimmed.is_empty() {
-            continue;
-        }
-        sequence += 1;
-        let sanitized = sanitize_output_with_secrets(trimmed, MAX_LINE_BYTES, secret_values);
-        // Store valid JSON verbatim (sanitized); wrap anything else so the column
-        // stays parseable for the reader. `kind` mirrors the event `type`.
-        let (kind, payload_json) =
-            match serde_json::from_str::<serde_json::Value>(&sanitized) {
-                Ok(value) => {
-                    let kind = value
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("event")
-                        .to_string();
-                    (kind, sanitized)
-                }
-                Err(_) => (
-                    "raw".to_string(),
-                    serde_json::to_string(&json!({"type":"raw","text":sanitized}))
-                        .unwrap_or_else(|_| "{\"type\":\"raw\"}".to_string()),
-                ),
-            };
-        // Best-effort persistence: a transcript write must never fail the run.
-        let db = store.conn();
-        let locked = db.lock();
-        if let Ok(conn) = locked {
-            let _ = queries::append_autonomous_agent_transcript_turn(
-                &conn,
-                org_id,
-                run_id,
-                sequence,
-                &kind,
-                &payload_json,
-            );
-        }
+        record_transcript_line(store, org_id, run_id, secret_values, &mut sequence, &line);
     }
     if let Some(writer) = stdin_task {
         // A fast-failing child may close stdin before consuming the prompt.
@@ -208,6 +165,61 @@ async fn run_claude_capturing_transcript(
         stdout: stdout_buf,
         stderr: stderr_buf,
     })
+}
+
+/// Persists one stdout line of a Claude stream-json run as a transcript turn.
+/// Shared by the local runner and the sandbox runner.
+pub(crate) fn record_transcript_line(
+    store: &SqliteStore,
+    org_id: &str,
+    run_id: &str,
+    secret_values: &[String],
+    sequence: &mut i64,
+    line: &[u8],
+) {
+    const MAX_LINE_BYTES: usize = 4 * 1_048_576;
+    // Trim trailing CR/LF for a tidy stored turn.
+    let end = line
+        .iter()
+        .rposition(|b| *b != b'\n' && *b != b'\r')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let trimmed = &line[..end];
+    if trimmed.is_empty() {
+        return;
+    }
+    *sequence += 1;
+    let sanitized = sanitize_output_with_secrets(trimmed, MAX_LINE_BYTES, secret_values);
+    // Store valid JSON verbatim (sanitized); wrap anything else so the column
+    // stays parseable for the reader. `kind` mirrors the event `type`.
+    let (kind, payload_json) = match serde_json::from_str::<serde_json::Value>(&sanitized) {
+        Ok(value) => {
+            let kind = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("event")
+                .to_string();
+            (kind, sanitized)
+        }
+        Err(_) => (
+            "raw".to_string(),
+            serde_json::to_string(&json!({"type":"raw","text":sanitized}))
+                .unwrap_or_else(|_| "{\"type\":\"raw\"}".to_string()),
+        ),
+    };
+    // Best-effort persistence: a transcript write must never fail the run.
+    let db = store.conn();
+    let locked = db.lock();
+    if let Ok(conn) = locked {
+        let _ = queries::append_autonomous_agent_transcript_turn(
+            &conn,
+            org_id,
+            run_id,
+            *sequence,
+            &kind,
+            &payload_json,
+        );
+    }
 }
 
 fn restrict_claude_environment(command: &mut Command) {
@@ -305,6 +317,257 @@ async fn command_ok(mut command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Applies the pod's diffs to `workdir` in order. Checkpoints are also pushed to
+/// the WIP branch when `push` is given (token, branch, base); the final diff is
+/// only applied, as the local path never pushes a finished run as WIP. Resolves
+/// with the outcome of the last application.
+fn sandbox_write_consumer(
+    workdir: PathBuf,
+    push: Option<(String, String, String)>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<super::sandboxed::SandboxWrite>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let consumer = tokio::spawn(async move {
+        let mut last = Ok(());
+        while let Some(write) = received.recv().await {
+            let (diff, is_checkpoint) = match write {
+                super::sandboxed::SandboxWrite::Checkpoint(diff) => (diff, true),
+                super::sandboxed::SandboxWrite::Final(diff) => (diff, false),
+            };
+            last = crate::factory::workspace::reset_and_apply(&workdir, &diff).await;
+            if let (Ok(()), true, Some((token, branch, base))) = (&last, is_checkpoint, &push) {
+                let _ = checkpoint_wip_push(&workdir, token, branch, base).await;
+            }
+        }
+        last
+    });
+    (sink, consumer)
+}
+
+/// Extra time the worker gives a sandboxed run beyond its pods' lifetime: the
+/// workspace pack and kube client before the pod exists, and after the inner
+/// deadline the last diff (up to 60 s) and the pod delete. The inner deadline
+/// must always fire first so partial work is kept.
+const SANDBOX_OUTER_MARGIN: Duration = Duration::from_secs(180);
+
+/// A scanner template that could not produce a report. Scanner and policy codes
+/// stay policy blocks as before; sandbox infrastructure failures are runtime
+/// blocks with only a code (never raw cluster text).
+fn scanner_failure_outcome(
+    sandboxed: bool,
+    run_id: &str,
+    error: &anyhow::Error,
+) -> (String, serde_json::Value) {
+    let code = error.to_string();
+    let policy = code.starts_with("scanner_")
+        || matches!(
+            code.as_str(),
+            "command_not_allowlisted"
+                | "target_not_sandboxable"
+                | "too_many_sandbox_hosts"
+                | "invalid_sandbox_allowed_hosts"
+                | "no_authorized_target"
+                | "dast_target_unreachable"
+        );
+    if !sandboxed || policy {
+        ("blocked_policy".into(), json!({"code":code}))
+    } else {
+        (
+            "blocked_runtime".into(),
+            json!({"code":"sandbox_failed","detail":super::sandboxed::failure_code(run_id, error)}),
+        )
+    }
+}
+
+/// The outcome of a sandboxed agent that did not return: running out of time
+/// is a budget outcome (partial work is kept), anything else a runtime block.
+fn sandbox_failure_outcome(run_id: &str, error: &anyhow::Error) -> (String, serde_json::Value) {
+    let code = super::sandboxed::failure_code(run_id, error);
+    if code == "sandbox_timeout" {
+        ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"}))
+    } else {
+        ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":code}))
+    }
+}
+
+/// The resolver's verification commands over its change. Sandboxed runs execute
+/// them in a commands pod over the applied checkout (never in the worker); a
+/// failing command blocks the publish, as it does locally.
+async fn resolver_verification(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let value = claim.config.get("verification_commands");
+    let sandboxed = crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        queries::autonomous_executor(&claim.config).unwrap_or("invalid"),
+    )
+    .is_ok_and(|isolation| isolation == crate::factory::sandbox::Isolation::Sandbox);
+    if !sandboxed {
+        return run_allowlisted_commands(workdir, value).await;
+    }
+    let commands = crate::factory::verification::parse_verification_commands(value)?;
+    if commands.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slot = claim
+        .config
+        .pointer("/trigger/number")
+        .and_then(|value| value.as_i64())
+        .map_or_else(|| "main".to_string(), |number| format!("issue-{number}"));
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let run = super::sandboxed::SandboxedRun {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        retry: 0,
+        workdir,
+        secret_values: &[],
+        seq_base: 0,
+        wall_time: Duration::ZERO,
+        verification: &[],
+        receipts: &unused_receipts,
+        qa: None,
+        slot: &slot,
+        writes: None,
+    };
+    let runs = super::sandboxed::run_commands_sandboxed(
+        &run,
+        &super::sandboxed::CommandsSpec {
+            commands: &commands,
+            extra_env: &[],
+            timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+            reproduce_failures: false,
+            hosts: &[],
+            label: "v",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
+        },
+    )
+    .await?;
+    let mut receipts = Vec::new();
+    for run in runs {
+        if run.exit_code != Some(0) {
+            anyhow::bail!("verification_failed")
+        }
+        receipts.push(json!({"argv": run.argv, "status": "passed", "duration_ms": run.duration_ms}));
+    }
+    Ok(receipts)
+}
+
+/// Resolves when the run must stop: its lease is lost (the heartbeat, renewed
+/// here every 2 s, failed) or an operator cancelled it.
+async fn run_stop_signal(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let db = store.conn();
+        let should_stop = db
+            .lock()
+            .ok()
+            .map(|conn| {
+                let alive = queries::heartbeat_autonomous_agent_run(
+                    &conn,
+                    &claim.org_id,
+                    &claim.run.id,
+                    &claim.attempt_id,
+                    &claim.claim_token,
+                    120,
+                )
+                .unwrap_or(false);
+                !alive
+                    || queries::autonomous_agent_run_is_cancelled(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                    )
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true);
+        if should_stop {
+            return;
+        }
+    }
+}
+
+/// QA test commands in a sandbox commands pod, formatted like
+/// [`collect_qa_results`] so the prompt and evaluation are unchanged.
+#[allow(clippy::too_many_arguments)]
+async fn qa_results_sandboxed(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    value: Option<&serde_json::Value>,
+    environment: &[(String, String)],
+    timeout_seconds: u64,
+    reproduce_failures: bool,
+    hosts: &[String],
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let commands = crate::factory::verification::parse_verification_commands(value)?;
+    if commands.is_empty() {
+        return Ok(Vec::new());
+    }
+    let secret_values: Vec<String> = environment.iter().map(|(_, value)| value.clone()).collect();
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let run = super::sandboxed::SandboxedRun {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        retry: 0,
+        workdir,
+        secret_values: &secret_values,
+        seq_base: 0,
+        wall_time: Duration::ZERO,
+        verification: &[],
+        receipts: &unused_receipts,
+        qa: None,
+        slot: "main",
+        writes: None,
+    };
+    let runs = super::sandboxed::run_commands_sandboxed(
+        &run,
+        &super::sandboxed::CommandsSpec {
+            commands: &commands,
+            extra_env: environment,
+            timeout_secs: timeout_seconds.clamp(10, 900),
+            reproduce_failures,
+            hosts,
+            label: "t",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
+        },
+    )
+    .await?;
+    let render = |run: &crate::factory::sandbox_exec::CommandRun, stdout_cap: usize, stderr_cap: usize| {
+        json!({
+            "success": run.exit_code == Some(0),
+            "exit_code": run.exit_code,
+            "stdout": sanitize_output_with_secrets(&run.stdout, stdout_cap, &secret_values),
+            "stderr": sanitize_output_with_secrets(&run.stderr, stderr_cap, &secret_values),
+        })
+    };
+    Ok(runs
+        .iter()
+        .map(|run| {
+            let mut result = render(run, 200_000, 100_000);
+            result["argv"] = json!(run.argv);
+            result["reproduction"] = run
+                .reproduction
+                .as_deref()
+                .map(|again| render(again, 50_000, 50_000))
+                .unwrap_or(serde_json::Value::Null);
+            result
+        })
+        .collect())
+}
+
 fn restrict_test_environment(
     command: &mut Command,
     workdir: &Path,
@@ -340,30 +603,11 @@ async fn run_allowlisted_commands(
     workdir: &Path,
     value: Option<&serde_json::Value>,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let Some(commands) = value.and_then(|v| v.as_array()) else {
-        return Ok(Vec::new());
-    };
     let mut receipts = Vec::new();
-    if commands.len() > 8 {
-        anyhow::bail!("too_many_verification_commands")
-    }
-    for argv in commands {
-        let parts = argv
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("command_must_be_argv"))?;
-        let args = parts
-            .iter()
-            .map(|v| {
-                v.as_str()
-                    .ok_or_else(|| anyhow::anyhow!("command_arg_invalid"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+    for args in crate::factory::verification::parse_verification_commands(value)? {
         let Some((program, rest)) = args.split_first() else {
             anyhow::bail!("empty_command")
         };
-        if !matches!(*program, "npm" | "npx" | "pnpm" | "yarn" | "bun" | "cargo") {
-            anyhow::bail!("command_not_allowlisted")
-        }
         let mut command = Command::new(program);
         command.current_dir(workdir).args(rest);
         restrict_test_environment(&mut command, workdir, &[]);
@@ -498,6 +742,24 @@ async fn spawn_capture(
     }
 }
 
+/// Where scanners run: in the worker (local isolation) or in a sandbox commands
+/// pod, where the worker only parses their reports.
+enum ScannerRunner<'a> {
+    Local,
+    Sandbox {
+        store: &'a SqliteStore,
+        claim: &'a queries::ClaimedAutonomousRun,
+    },
+}
+
+/// Hosts the scanners themselves need: Semgrep's rule registry and the OSV and
+/// deps.dev vulnerability APIs. Their own telemetry endpoints stay unreachable.
+const SCANNER_HOSTS: &[&str] = &["semgrep.dev", "api.osv.dev", "api.deps.dev"];
+/// nuclei takes its proxy from a file, so the pod token never enters argv.
+const NUCLEI_PROXY_FILE: &str = "/tmp/nuclei-proxy.txt";
+/// Scanner JSON reports can be large; anything beyond is an error, not a cut.
+const SCANNER_MAX_STDOUT: usize = 16 * 1024 * 1024;
+
 /// Run one allowlisted security scanner. `argv[0]` MUST be an allowlisted program
 /// (built by `security_scan::build_*_argv`, the only place fixed flags live); any
 /// other program is rejected before spawn.
@@ -514,59 +776,6 @@ async fn run_scanner_capture(
     }
     spawn_capture(program, rest, workdir, timeout_secs).await
 }
-
-/// Worker-driven security scan: run the allowlisted scanners over the checkout and
-/// return canonical findings for the agent to triage. SAST always runs; SCA runs
-/// unless explicitly disabled. A missing scanner fails the run closed
-/// (`scanner_unavailable`) instead of silently passing.
-async fn run_security_scanners(
-    workdir: &Path,
-    config: &serde_json::Value,
-) -> anyhow::Result<Vec<serde_json::Value>> {
-    let mut findings = Vec::new();
-    let mut invocations = 0usize;
-
-    // SAST — always.
-    // Default to `p/ci` rather than `auto`: `auto` contacts the Semgrep registry
-    // and emits pseudonymous telemetry, which is inappropriate as the default for a
-    // security tool. `p/ci` is a curated offline-capable ruleset; the admin can
-    // still opt into `auto` explicitly.
-    let ruleset = config
-        .pointer("/sast/ruleset")
-        .and_then(|value| value.as_str())
-        .unwrap_or("p/ci");
-    let semgrep_argv = super::security_scan::build_semgrep_argv(ruleset, ".", 30)?;
-    invocations += 1;
-    let semgrep_out =
-        run_scanner_capture(&semgrep_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&semgrep_out) {
-        findings.extend(super::security_scan::map_semgrep_json(&value));
-    }
-
-    // SCA — unless explicitly disabled in the definition config.
-    let sca_enabled = config
-        .pointer("/sca/enabled")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    if sca_enabled {
-        let osv_argv = super::security_scan::build_osv_argv(".");
-        invocations += 1;
-        let osv_out =
-            run_scanner_capture(&osv_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&osv_out) {
-            findings.extend(super::security_scan::map_osv_json(&value));
-        }
-    }
-
-    debug_assert!(invocations <= super::security_scan::MAX_SCANNER_INVOCATIONS);
-    Ok(findings)
-}
-
-/// How long a single nuclei scan of one target may run before it is killed. The scan
-/// is scoped to a fast tag set, so a well-behaved run finishes in minutes; this is the
-/// backstop for an unreachable or very slow target.
-const DAST_SCAN_TIMEOUT_SECS: u64 = 900;
-
 /// Run one allowlisted DAST scanner. `argv[0]` MUST be an allowlisted program (built
 /// by `security_dast::build_nuclei_argv`); anything else is rejected before spawn.
 async fn run_dast_capture(
@@ -583,6 +792,173 @@ async fn run_dast_capture(
     spawn_capture(program, rest, workdir, timeout_secs).await
 }
 
+#[derive(Clone, Copy)]
+enum ScannerKind {
+    /// SAST/SCA over the checkout (security_scan allowlist).
+    Static,
+    /// nuclei against authorized targets (security_dast allowlist).
+    Dynamic,
+}
+
+impl ScannerKind {
+    fn allows(self, argv: &[String]) -> bool {
+        argv.first().is_some_and(|program| match self {
+            ScannerKind::Static => super::security_scan::is_allowlisted_program(program),
+            ScannerKind::Dynamic => super::security_dast::is_allowlisted_program(program),
+        })
+    }
+}
+
+/// Runs each argv and returns its stdout, in order.
+/// One batch of scanner invocations.
+struct ScanBatch<'a> {
+    kind: ScannerKind,
+    argvs: &'a [Vec<String>],
+    timeout_secs: u64,
+    /// Sandbox only: hosts the scanners may reach through the proxy.
+    hosts: &'a [String],
+    /// Sandbox only: write the nuclei proxy file into the pod.
+    nuclei_proxy: bool,
+    /// Sandbox only: commands that must all succeed before the scanners' output
+    /// is trusted (target reachability through the proxy).
+    probes: &'a [Vec<String>],
+}
+
+async fn capture_scanners(
+    runner: &ScannerRunner<'_>,
+    workdir: &Path,
+    batch: ScanBatch<'_>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let ScanBatch {
+        kind,
+        argvs,
+        timeout_secs,
+        hosts,
+        nuclei_proxy,
+        probes,
+    } = batch;
+    match runner {
+        ScannerRunner::Local => {
+            let mut outputs = Vec::new();
+            for argv in argvs {
+                outputs.push(match kind {
+                    ScannerKind::Static => run_scanner_capture(argv, workdir, timeout_secs).await?,
+                    ScannerKind::Dynamic => run_dast_capture(argv, workdir, timeout_secs).await?,
+                });
+            }
+            Ok(outputs)
+        }
+        ScannerRunner::Sandbox { store, claim } => {
+            if !argvs.iter().all(|argv| kind.allows(argv)) {
+                anyhow::bail!("command_not_allowlisted")
+            }
+            let unused_receipts = std::sync::Mutex::new(Vec::new());
+            let run = super::sandboxed::SandboxedRun {
+                store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: 0,
+                workdir,
+                secret_values: &[],
+                seq_base: 0,
+                wall_time: Duration::ZERO,
+                verification: &[],
+                receipts: &unused_receipts,
+                qa: None,
+                slot: "main",
+                writes: None,
+            };
+            let commands: Vec<Vec<String>> = probes.iter().chain(argvs).cloned().collect();
+            let runs = super::sandboxed::run_commands_sandboxed(
+                &run,
+                &super::sandboxed::CommandsSpec {
+                    commands: &commands,
+                    extra_env: &[],
+                    timeout_secs,
+                    reproduce_failures: false,
+                    hosts,
+                    label: "s",
+                    max_stdout: SCANNER_MAX_STDOUT,
+                    files: Vec::new(),
+                    proxy_file: nuclei_proxy.then_some(NUCLEI_PROXY_FILE),
+                },
+            )
+            .await?;
+            super::sandboxed::check_probes(&runs[..probes.len()])?;
+            runs[probes.len()..]
+                .iter()
+                .map(super::sandboxed::scanner_output)
+                .collect()
+        }
+    }
+}
+
+/// Worker-driven security scan: run the allowlisted scanners over the checkout and
+/// return canonical findings for the agent to triage. SAST always runs; SCA runs
+/// unless explicitly disabled. A missing scanner fails the run closed
+/// (`scanner_unavailable`) instead of silently passing.
+async fn run_security_scanners(
+    workdir: &Path,
+    config: &serde_json::Value,
+    runner: &ScannerRunner<'_>,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    // SAST — always.
+    // Default to `p/ci` rather than `auto`: `auto` contacts the Semgrep registry
+    // and emits pseudonymous telemetry, which is inappropriate as the default for a
+    // security tool. `p/ci` is a curated offline-capable ruleset; the admin can
+    // still opt into `auto` explicitly.
+    let ruleset = config
+        .pointer("/sast/ruleset")
+        .and_then(|value| value.as_str())
+        .unwrap_or("p/ci");
+    let mut argvs = vec![super::security_scan::build_semgrep_argv(ruleset, ".", 30)?];
+    // SCA — unless explicitly disabled in the definition config.
+    let sca_enabled = config
+        .pointer("/sca/enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    if sca_enabled {
+        argvs.push(super::security_scan::build_osv_argv("."));
+    }
+    debug_assert!(argvs.len() <= super::security_scan::MAX_SCANNER_INVOCATIONS);
+    let hosts: Vec<String> = SCANNER_HOSTS.iter().map(|host| host.to_string()).collect();
+    let outputs = capture_scanners(
+        runner,
+        workdir,
+        ScanBatch {
+            kind: ScannerKind::Static,
+            argvs: &argvs,
+            timeout_secs: SECURITY_SCANNER_TIMEOUT_SECS,
+            hosts: &hosts,
+            nuclei_proxy: false,
+            probes: &[],
+        },
+    )
+    .await?;
+    let mut findings = Vec::new();
+    for (index, output) in outputs.iter().enumerate() {
+        let parsed = serde_json::from_slice::<serde_json::Value>(output);
+        if index == 0 {
+            // SAST must prove it scanned: an unreadable report or one with only
+            // fatal errors (rules not loaded, network) would otherwise read as clean.
+            let value = parsed.map_err(|_| anyhow::anyhow!("scanner_failed"))?;
+            if super::security_scan::semgrep_report_failed(&value) {
+                anyhow::bail!("scanner_failed")
+            }
+            findings.extend(super::security_scan::map_semgrep_json(&value));
+        } else if let Ok(value) = parsed {
+            findings.extend(super::security_scan::map_osv_json(&value));
+        }
+    }
+    Ok(findings)
+}
+
+/// How long a single nuclei scan of one target may run before it is killed. The scan
+/// is scoped to a fast tag set, so a well-behaved run finishes in minutes; this is the
+/// backstop for an unreachable or very slow target.
+const DAST_SCAN_TIMEOUT_SECS: u64 = 900;
+
 /// Worker-driven active DAST: for each authorized `web_application` target, run nuclei
 /// against the target's registered URL (never free-form run input), keep only findings
 /// on the authorized host (scope guard lives in `map_nuclei_jsonl`), and return canonical
@@ -591,6 +967,7 @@ async fn run_dast_capture(
 async fn run_dast_scan(
     workdir: &Path,
     config: &serde_json::Value,
+    runner: &ScannerRunner<'_>,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let selected = config
         .get("target_name")
@@ -623,20 +1000,52 @@ async fn run_dast_scan(
         .unwrap_or(20)
         .clamp(1, 500) as u32;
 
-    let mut findings = Vec::new();
-    let mut invocations = 0usize;
+    let sandboxed = matches!(runner, ScannerRunner::Sandbox { .. });
+    let mut scans: Vec<(String, Vec<String>)> = Vec::new();
+    let mut tunnel_hosts: Vec<String> = Vec::new();
     for target in targets
         .into_iter()
         .take(super::security_dast::MAX_DAST_INVOCATIONS)
     {
         let target_config = target.get("config").cloned().unwrap_or(serde_json::json!({}));
         let (host, url) = super::security_dast::authorized_target_url(&target_config)?;
-        let argv = super::security_dast::build_nuclei_argv(&url, severity, rate_limit, 10)?;
-        invocations += 1;
-        let out = run_dast_capture(&argv, workdir, DAST_SCAN_TIMEOUT_SECS).await?;
-        findings.extend(super::security_dast::map_nuclei_jsonl(&out, &host));
+        let mut argv = super::security_dast::build_nuclei_argv(&url, severity, rate_limit, 10)?;
+        if sandboxed {
+            // The proxy tunnels HTTPS on 443 only, to this run's signed hosts.
+            let reachable = crate::factory::sandbox::sandbox_hosts(
+                &serde_json::json!({"targets": [{"kind": "web_application", "enabled": true, "config": target_config}]}),
+            )?;
+            tunnel_hosts.extend(reachable);
+            argv.extend(["-proxy".to_string(), NUCLEI_PROXY_FILE.to_string()]);
+        }
+        scans.push((host, argv));
     }
-    debug_assert!(invocations <= super::security_dast::MAX_DAST_INVOCATIONS);
+    let argvs: Vec<Vec<String>> = scans.iter().map(|(_, argv)| argv.clone()).collect();
+    let probes: Vec<Vec<String>> = if sandboxed {
+        tunnel_hosts
+            .iter()
+            .map(|host| super::sandboxed::reachability_probe(host))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let outputs = capture_scanners(
+        runner,
+        workdir,
+        ScanBatch {
+            kind: ScannerKind::Dynamic,
+            argvs: &argvs,
+            timeout_secs: DAST_SCAN_TIMEOUT_SECS,
+            hosts: &tunnel_hosts,
+            nuclei_proxy: sandboxed,
+            probes: &probes,
+        },
+    )
+    .await?;
+    let mut findings = Vec::new();
+    for ((host, _), output) in scans.iter().zip(outputs.iter()) {
+        findings.extend(super::security_dast::map_nuclei_jsonl(output, host));
+    }
     Ok(findings)
 }
 
@@ -1532,9 +1941,7 @@ async fn publish_template_output(
             // and the budget-exhausted partial PR). It must never land in a finished
             // PR, so drop it from the working tree before we diff and commit.
             let _ = tokio::fs::remove_file(workdir.join("PENDING.md")).await;
-            let verification =
-                run_allowlisted_commands(workdir, claim.config.get("verification_commands"))
-                    .await?;
+            let verification = resolver_verification(store, claim, workdir).await?;
             ensure_diff_has_no_secrets(workdir).await?;
             let diff = Command::new("git")
                 .current_dir(workdir)
@@ -2143,7 +2550,7 @@ async fn publish_template_output(
                 auto_merge = if has_blocking {
                     json!({"merged": false, "reason": "review_found_issues"})
                 } else {
-                    match auto_merge_pull(store, claim, &token, repository, number).await {
+                    match auto_merge_pull(store, claim, &token, repository, number, result).await {
                         Ok(value) => value,
                         Err(error) => {
                             json!({"merged": false, "reason": "merge_check_failed", "error": error.to_string()})
@@ -2194,7 +2601,7 @@ async fn merge_gates(
     number: i64,
     reviewed_sha: &str,
     required: &[String],
-) -> anyhow::Result<Result<Vec<super::merge_gate::ChangedFile>, serde_json::Value>> {
+) -> anyhow::Result<Result<MergeEvidence, serde_json::Value>> {
     let pull = super::connectors::get_github_pull(token, repository, number).await?;
     if pull.get("merged").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(Err(json!({"merged": true, "reason": "already_merged"})));
@@ -2230,7 +2637,13 @@ async fn merge_gates(
     if let Err(reason) = super::merge_gate::required_checks_verdict(required, &runs) {
         return Ok(Err(json!({"merged": false, "reason": reason})));
     }
-    Ok(Ok(files))
+    Ok(Ok(MergeEvidence { files, runs }))
+}
+
+/// What the merge gates read from GitHub for the reviewed head.
+struct MergeEvidence {
+    files: Vec<super::merge_gate::ChangedFile>,
+    runs: Vec<serde_json::Value>,
 }
 
 /// Asks the policy engine whether this gated commit may be merged, and records the
@@ -2291,6 +2704,7 @@ async fn auto_merge_pull(
     token: &str,
     repository: &str,
     number: i64,
+    result: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     let required: Vec<String> = claim
         .config
@@ -2306,11 +2720,39 @@ async fn auto_merge_pull(
     let Some(reviewed_sha) = super::merge_gate::reviewed_head_sha(&claim.config) else {
         return Ok(json!({"merged": false, "reason": "reviewed_head_unknown"}));
     };
-    let files = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
-        Ok(files) => files,
+    let evidence = match merge_gates(token, repository, number, reviewed_sha, &required).await? {
+        Ok(evidence) => evidence,
         Err(declined) => return Ok(declined),
     };
     require_publish_authority(store, claim)?;
+    // F1 §5: a passing verification report for this exact head, produced in the
+    // sandbox, is required. It is stored either way for the timeline and the soak.
+    let sandboxed = crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        queries::autonomous_executor(&claim.config).unwrap_or("invalid"),
+    )
+    .is_ok_and(|isolation| isolation == crate::factory::sandbox::Isolation::Sandbox);
+    let report = match super::merge_gate::verification_report_for_merge(
+        sandboxed,
+        result.get("verification_receipts"),
+        &claim.run.id,
+        reviewed_sha,
+        &required,
+        &evidence.runs,
+    ) {
+        Ok(report) => report,
+        Err(reason) => return Ok(json!({"merged": false, "reason": reason})),
+    };
+    {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        crate::db::factory_queries::save_verification_report(&conn, &claim.org_id, &claim.run.id, &report)?;
+    }
+    if !report.eligible_for_merge {
+        return Ok(json!({"merged": false, "reason": "verification_failed", "blocking": report.blocking_failures}));
+    }
+    let files = evidence.files;
     let verdict = decide_merge(store, &claim.org_id, repository, number, reviewed_sha, &files)?;
     if verdict.verdict != crate::factory::contracts::Verdict::Allow {
         return Ok(json!({"merged": false, "reason": verdict.reason, "decided_by": verdict.source}));
@@ -2349,7 +2791,7 @@ async fn merge_after_soak(
     )
     .await?
     {
-        Ok(files) => files,
+        Ok(evidence) => evidence.files,
         Err(declined) => return Ok(declined),
     };
     {
@@ -2357,6 +2799,17 @@ async fn merge_after_soak(
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
         if !queries::autonomous_agent_run_publish_authorized(&conn, &soak.org_id, &soak.run_id)? {
             return Ok(json!({"merged": false, "reason": "publish_authority_revoked"}));
+        }
+        // The report that started the soak must still be there and still pass.
+        let eligible = crate::db::factory_queries::get_verification_report(
+            &conn,
+            &soak.org_id,
+            &soak.run_id,
+            &soak.head_sha,
+        )?
+        .is_some_and(|report| report.eligible_for_merge);
+        if !eligible {
+            return Ok(json!({"merged": false, "reason": "verification_missing"}));
         }
     }
     let verdict = decide_merge(
@@ -2925,9 +3378,17 @@ async fn open_partial_pr(
         .get("base_branch")
         .and_then(|v| v.as_str())
         .unwrap_or("main");
-    let pending = tokio::fs::read_to_string(workdir.join("PENDING.md"))
+    // Only a regular file: a symlink planted by an agent must never make the
+    // worker read and publish something outside the checkout.
+    let pending_path = workdir.join("PENDING.md");
+    let regular = tokio::fs::symlink_metadata(&pending_path)
         .await
-        .ok()
+        .is_ok_and(|meta| meta.file_type().is_file());
+    let pending = (if regular {
+        tokio::fs::read_to_string(&pending_path).await.ok()
+    } else {
+        None
+    })
         .map(|body| body.chars().take(8000).collect::<String>())
         .filter(|body| !body.trim().is_empty())
         .unwrap_or_else(|| {
@@ -3020,6 +3481,7 @@ async fn resolve_issue_worktree(
     store: SqliteStore,
     worker_bin: String,
     nexus_selected: bool,
+    sandboxed: bool,
     mut claim: queries::ClaimedAutonomousRun,
     repository: String,
     number: i64,
@@ -3094,9 +3556,10 @@ async fn resolve_issue_worktree(
     }
     // Register the NexusMind MCP so the resolver can actually load the tools its
     // allowedTools/prompt reference (without this the server is never spawned).
+    // Sandboxed runs get a NexusMind MCP that goes through the proxy instead.
     let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
         .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
-    if std::path::Path::new(&nexusmind_mcp).exists() {
+    if !sandboxed && std::path::Path::new(&nexusmind_mcp).exists() {
         claude.args(["--mcp-config", &nexusmind_mcp]);
     }
     let secret_values: Vec<String> = token.iter().cloned().collect();
@@ -3138,7 +3601,7 @@ async fn resolve_issue_worktree(
     let wip_branch = continue_branch
         .clone()
         .unwrap_or_else(|| resolver_wip_branch(&claim.run.id, number));
-    let committer = (!nexus_selected).then(|| token.clone()).flatten().map(|checkpoint_token| {
+    let committer = (!nexus_selected && !sandboxed).then(|| token.clone()).flatten().map(|checkpoint_token| {
         let workdir = workdir.clone();
         let branch = wip_branch.clone();
         let base = base_sha.clone();
@@ -3149,19 +3612,66 @@ async fn resolve_issue_worktree(
             }
         })
     });
-    let invocation = run_claude_capturing_transcript(
-        &mut claude,
-        nexus_selected.then_some(prompt.as_str()),
-        &store,
-        &claim.org_id,
-        &claim.run.id,
-        &secret_values,
-        seq_base,
-    );
+    // Sandboxed: the pod's diffs drive this checkout (and the WIP pushes).
+    let (write_sink, write_consumer) = if sandboxed {
+        let (sink, consumer) = sandbox_write_consumer(
+            workdir.clone(),
+            token.clone().map(|token| (token, wip_branch.clone(), base_sha.clone())),
+        );
+        (Some(sink), Some(consumer))
+    } else {
+        (None, None)
+    };
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let slot = format!("issue-{number}");
+    let invocation: std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
+    > = if sandboxed {
+        let invocation = super::sandboxed::sandbox_invocation(&claude);
+        Box::pin(super::sandboxed::run_claude_sandboxed(
+            super::sandboxed::SandboxedRun {
+                store: &store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: 0,
+                workdir: &workdir,
+                secret_values: &secret_values,
+                seq_base,
+                wall_time: Duration::from_secs(wall_time),
+                verification: &[],
+                receipts: &unused_receipts,
+                qa: None,
+                slot: &slot,
+                writes: write_sink,
+            },
+            invocation,
+        ))
+    } else {
+        Box::pin(async {
+            Ok(run_claude_capturing_transcript(
+                &mut claude,
+                nexus_selected.then_some(prompt.as_str()),
+                &store,
+                &claim.org_id,
+                &claim.run.id,
+                &secret_values,
+                seq_base,
+            )
+            .await?)
+        })
+    };
+    let outer_wall = if sandboxed {
+        super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), 0, false)
+            + SANDBOX_OUTER_MARGIN
+    } else {
+        Duration::from_secs(wall_time)
+    };
     let mut outcome: (String, serde_json::Value) = tokio::select! {
         _ = cancelled => ("cancelled".into(), json!({"code":"cancelled_by_operator"})),
-        value = timeout(Duration::from_secs(wall_time), invocation) => match value {
+        value = timeout(outer_wall, invocation) => match value {
             Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
+            Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
             Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
             Ok(Ok(output)) if output.status.success() => {
                 match parse_claude_event_stream(&output.stdout) {
@@ -3181,6 +3691,14 @@ async fn resolve_issue_worktree(
     };
     if let Some(handle) = committer {
         handle.abort();
+    }
+    // The checkout must hold the pod's last state before anything is published.
+    if let Some(consumer) = write_consumer {
+        if let Ok(Err(error)) = consumer.await {
+            if outcome.0 == "succeeded" {
+                outcome = ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":error.to_string()}));
+            }
+        }
     }
     // The deterministic evaluator requires the context manifest on the result;
     // without it every fanout issue was rejected as `evaluator_context_missing`
@@ -3286,6 +3804,7 @@ async fn execute_resolver_fanout(
     store: &SqliteStore,
     config: &Config,
     claim: &queries::ClaimedAutonomousRun,
+    sandboxed: bool,
 ) -> (String, serde_json::Value) {
     let nexus_selected = queries::autonomous_executor(&claim.config).ok() == Some("nexus");
     // One issue per run: keeps each run small and cheap (avoids blowing the Claude
@@ -3439,6 +3958,7 @@ async fn execute_resolver_fanout(
                 store.clone(),
                 if nexus_selected { config.nexus_worker_bin.clone() } else { config.claude_code_bin.clone() },
                 nexus_selected,
+                sandboxed,
                 claim.clone(),
                 repository,
                 number,
@@ -3560,6 +4080,38 @@ async fn execute_claim(
         Ok("claude") => false,
         _ => return ("blocked_policy".into(), json!({"code":"invalid_executor"})),
     };
+    let sandboxed = match crate::factory::sandbox::autonomous_isolation(
+        &claim.config,
+        &claim.template_key,
+        if nexus_selected { "nexus" } else { "claude" },
+    ) {
+        Ok(isolation) => isolation == crate::factory::sandbox::Isolation::Sandbox,
+        // Never fall back to local execution when a sandbox was asked for.
+        Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+    };
+    // Verification runs only in the sandbox: repository commands never run in the
+    // worker for a sandboxed template.
+    let sandbox_verification = if sandboxed {
+        match crate::factory::verification::parse_verification_commands(
+            claim.config.get("verification_commands"),
+        ) {
+            Ok(commands) => commands,
+            Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+    } else {
+        Vec::new()
+    };
+    let sandbox_receipts = std::sync::Mutex::new(Vec::new());
+    // Browser-driven templates reach their targets through the proxy: HTTPS on
+    // 443 only. A target that cannot be reached that way blocks the run.
+    let sandbox_hosts = if sandboxed && matches!(claim.template_key.as_str(), "qa" | "judge") {
+        match crate::factory::sandbox::sandbox_hosts(&claim.config) {
+            Ok(hosts) => hosts,
+            Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+    } else {
+        Vec::new()
+    };
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -3576,7 +4128,7 @@ async fn execute_claim(
             .and_then(|v| v.as_bool())
             != Some(true)
     {
-        return execute_resolver_fanout(store, config, claim).await;
+        return execute_resolver_fanout(store, config, claim, sandboxed).await;
     }
     let mut runtime_config = claim.config.clone();
     if claim.template_key == "github_issue_resolver" {
@@ -3904,21 +4456,46 @@ async fn execute_claim(
                 return ("blocked_policy".into(), json!({"code":error.to_string()}));
             }
         };
-        match collect_qa_results(
-            &workdir,
-            runtime_config.get("test_commands"),
-            &environment,
-            runtime_config
-                .get("test_timeout_seconds")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(900),
-            runtime_config
-                .get("reproduce_failures")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true),
-        )
-        .await
-        {
+        let test_timeout = runtime_config
+            .get("test_timeout_seconds")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(900);
+        let reproduce = runtime_config
+            .get("reproduce_failures")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let results = if sandboxed {
+            // The tests pod can outlast the lease: keep it alive and honor cancel.
+            let tests = qa_results_sandboxed(
+                store,
+                claim,
+                &workdir,
+                runtime_config.get("test_commands"),
+                &environment,
+                test_timeout,
+                reproduce,
+                &sandbox_hosts,
+            );
+            tokio::select! {
+                _ = run_stop_signal(store, claim) => {
+                    let _ = tokio::fs::remove_dir_all(&workdir).await;
+                    return ("cancelled".into(), json!({"code":"cancelled_by_operator"}));
+                }
+                results = tests => results.map_err(|error| {
+                    anyhow::anyhow!("sandbox:{}", super::sandboxed::failure_code(&claim.run.id, &error))
+                }),
+            }
+        } else {
+            collect_qa_results(
+                &workdir,
+                runtime_config.get("test_commands"),
+                &environment,
+                test_timeout,
+                reproduce,
+            )
+            .await
+        };
+        match results {
             Ok(results) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("test_results".into(), json!(results));
@@ -3926,7 +4503,16 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                // Sandbox infrastructure failures are runtime blocks, not policy.
+                return match error.to_string().strip_prefix("sandbox:") {
+                    Some(code) if code != "command_not_allowlisted"
+                        && code != "too_many_verification_commands" =>
+                    {
+                        ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":code}))
+                    }
+                    Some(code) => ("blocked_policy".into(), json!({"code":code})),
+                    None => ("blocked_policy".into(), json!({"code":error.to_string()})),
+                };
             }
         }
     }
@@ -3934,7 +4520,12 @@ async fn execute_claim(
         // Worker-driven: run the allowlisted scanners over the checkout and inject
         // their canonical findings for the agent to triage. A missing scanner fails
         // the run closed rather than passing silently.
-        match run_security_scanners(&workdir, &runtime_config).await {
+        let runner = if sandboxed {
+            ScannerRunner::Sandbox { store, claim }
+        } else {
+            ScannerRunner::Local
+        };
+        match run_security_scanners(&workdir, &runtime_config, &runner).await {
             Ok(scanner_findings) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("scanner_findings".into(), json!(scanner_findings));
@@ -3942,7 +4533,7 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                return scanner_failure_outcome(sandboxed, &claim.run.id, &error);
             }
         }
     }
@@ -3951,7 +4542,12 @@ async fn execute_claim(
         // web_application target(s); the URL never comes from run input and findings
         // are scope-guarded to the authorized host. No authorized target or a missing
         // scanner fails the run closed.
-        match run_dast_scan(&workdir, &runtime_config).await {
+        let runner = if sandboxed {
+            ScannerRunner::Sandbox { store, claim }
+        } else {
+            ScannerRunner::Local
+        };
+        match run_dast_scan(&workdir, &runtime_config, &runner).await {
             Ok(scanner_findings) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("scanner_findings".into(), json!(scanner_findings));
@@ -3959,7 +4555,7 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                return scanner_failure_outcome(sandboxed, &claim.run.id, &error);
             }
         }
     }
@@ -4042,6 +4638,9 @@ async fn execute_claim(
     // QA runs use `default` (not `plan`) so the agent can actually drive the
     // Playwright MCP; repo mutation is still impossible because the allowlist
     // omits Edit/Write/Bash and non-listed tools are denied in headless mode.
+    // No Slack MCP exists (Slack delivery is worker-side, after the run); a
+    // sandboxed run never lists tools that could not be served.
+    let slack_enabled = slack_enabled && !sandboxed;
     let (permission_mode, allowed_tools) = match (claim.template_key.as_str(), slack_enabled) {
         ("github_issue_resolver", _) => {
             (
@@ -4125,7 +4724,8 @@ async fn execute_claim(
     if matches!(
         claim.template_key.as_str(),
         "github_issue_resolver" | "lead_generation"
-    ) {
+    ) && !sandboxed
+    {
         let nexusmind_mcp = std::env::var("AUTONOMOUS_NEXUSMIND_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/nexusmind-mcp.json".to_string());
         if std::path::Path::new(&nexusmind_mcp).exists() {
@@ -4135,7 +4735,8 @@ async fn execute_claim(
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
     // the per-run directory (declared before the loop) the worker reads back
     // afterwards for evidence upload.
-    if matches!(claim.template_key.as_str(), "qa" | "judge") {
+    // Sandboxed runs get their Playwright MCP from the sandbox runner.
+    if matches!(claim.template_key.as_str(), "qa" | "judge") && !sandboxed {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
@@ -4162,50 +4763,76 @@ async fn execute_claim(
     let mut secret_values: Vec<String> = repo_token.iter().cloned().collect();
     secret_values.extend(target_secret_values.iter().cloned());
     claude.current_dir(&workdir).kill_on_drop(true);
-    let invocation = run_claude_capturing_transcript(
-        &mut claude,
-        nexus_selected.then_some(prompt.as_str()),
-        store,
-        &claim.org_id,
-        &claim.run.id,
-        &secret_values,
-        (output_retry as i64) * 100_000,
-    );
-    let cancelled = async {
-        loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            let db = store.conn();
-            let should_stop = db
-                .lock()
-                .ok()
-                .map(|conn| {
-                    let alive = queries::heartbeat_autonomous_agent_run(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                        &claim.attempt_id,
-                        &claim.claim_token,
-                        120,
-                    )
-                    .unwrap_or(false);
-                    !alive
-                        || queries::autonomous_agent_run_is_cancelled(
-                            &conn,
-                            &claim.org_id,
-                            &claim.run.id,
-                        )
-                        .unwrap_or(true)
-                })
-                .unwrap_or(true);
-            if should_stop {
-                break;
-            }
-        }
+    let seq_base = (output_retry as i64) * 100_000;
+    // A sandboxed resolver's checkout follows the pod's diffs (no WIP pushes on
+    // this single-issue path, as locally).
+    let writes_to_checkout = sandboxed && claim.template_key == "github_issue_resolver";
+    let (write_sink, write_consumer) = if writes_to_checkout {
+        let (sink, consumer) = sandbox_write_consumer(workdir.clone(), None);
+        (Some(sink), Some(consumer))
+    } else {
+        (None, None)
     };
+    let invocation: std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<std::process::Output>> + Send + '_>,
+    > = if sandboxed {
+        let argv = super::sandboxed::sandbox_invocation(&claude);
+        Box::pin(super::sandboxed::run_claude_sandboxed(
+            super::sandboxed::SandboxedRun {
+                store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: output_retry,
+                workdir: &workdir,
+                secret_values: &secret_values,
+                seq_base,
+                wall_time: Duration::from_secs(wall_time),
+                // Evidence is gathered once per head: retries reuse the receipts.
+                slot: "main",
+                qa: matches!(claim.template_key.as_str(), "qa" | "judge").then_some(
+                    super::sandboxed::QaSandbox {
+                        hosts: &sandbox_hosts,
+                        artifacts_dir: &qa_screenshots_dir,
+                    },
+                ),
+                // The resolver verifies the applied change at publish time; others
+                // verify the checked-out head here. Evidence is gathered once.
+                verification: if writes_to_checkout
+                    || !sandbox_receipts.lock().map(|r| r.is_empty()).unwrap_or(true)
+                {
+                    &[]
+                } else {
+                    &sandbox_verification
+                },
+                receipts: &sandbox_receipts,
+                writes: write_sink,
+            },
+            argv,
+        ))
+    } else {
+        Box::pin(async {
+            Ok(run_claude_capturing_transcript(
+                &mut claude,
+                nexus_selected.then_some(prompt.as_str()),
+                store,
+                &claim.org_id,
+                &claim.run.id,
+                &secret_values,
+                seq_base,
+            )
+            .await?)
+        })
+    };
+    let cancelled = run_stop_signal(store, claim);
     let mut outcome = tokio::select! {
         _ = cancelled => ("cancelled".into(),json!({"code":"cancelled_by_operator"})),
-        value = timeout(Duration::from_secs(wall_time), invocation) => match value {
+        // In the sandbox the budget also covers scheduling, pulling and unpacking;
+        // extend it so Claude gets the same time as a local run. The sandbox's own
+        // deadline fires first, so its pod is deleted before this one gives up.
+        value = timeout(if sandboxed { super::sandboxed::sandbox_lifetime(Duration::from_secs(wall_time), sandbox_verification.len(), false) + SANDBOX_OUTER_MARGIN } else { Duration::from_secs(wall_time) }, invocation) => match value {
         Err(_) => ("budget_exhausted".into(), json!({"code":"wall_time_exceeded"})),
+        Ok(Err(error)) if sandboxed => sandbox_failure_outcome(&claim.run.id, &error),
         Ok(Err(_)) => ("blocked_runtime".into(), json!({"code":if nexus_selected {"nexus_cli_unavailable"} else {"claude_spawn_failed"}})),
         Ok(Ok(output)) if output.status.success() => {
             let (value,stream)=match parse_claude_event_stream(&output.stdout){
@@ -4251,6 +4878,19 @@ async fn execute_claim(
         }
         }
     };
+    // The checkout must hold the pod's last state before anything is published.
+    if let Some(consumer) = write_consumer {
+        if let Ok(Err(error)) = consumer.await {
+            if outcome.0 == "succeeded" {
+                outcome = ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":error.to_string()}));
+            }
+        }
+    }
+        if sandboxed {
+            if let (Some(object), Ok(receipts)) = (outcome.1.as_object_mut(), sandbox_receipts.lock()) {
+                object.insert("verification_receipts".into(), json!(*receipts));
+            }
+        }
         // Evaluate the structured output inside the run loop so a malformed
         // reviewer response can be retried. Resolver and reviewer share the
         // evaluator, but only the (read-only) reviewer re-runs; re-running a
@@ -6328,6 +6968,9 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;
+            if ticks == 1 || ticks.is_multiple_of(20) {
+                super::sandboxed::gc_task_pods().await;
+            }
             let claim = {
                 let db = store.conn();
                 let Ok(conn) = db.lock() else {
@@ -6840,7 +7483,9 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("bad.py"), "eval(user_input)\n").unwrap();
         let config = json!({"sast":{"ruleset":"rule.yml"},"sca":{"enabled":false}});
-        let findings = run_security_scanners(root, &config).await.unwrap();
+        let findings = run_security_scanners(root, &config, &ScannerRunner::Local)
+            .await
+            .unwrap();
         assert!(
             findings
                 .iter()
@@ -6898,7 +7543,7 @@ mod tests {
     async fn run_dast_scan_fails_closed_without_authorized_target() {
         let dir = std::env::temp_dir();
         // No web_application targets at all.
-        let err = run_dast_scan(&dir, &json!({"targets": []}))
+        let err = run_dast_scan(&dir, &json!({"targets": []}), &ScannerRunner::Local)
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "no_authorized_target");
@@ -6906,6 +7551,7 @@ mod tests {
         let err2 = run_dast_scan(
             &dir,
             &json!({"targets": [{"kind":"repository","name":"r","enabled":true,"config":{}}]}),
+            &ScannerRunner::Local,
         )
         .await
         .unwrap_err();

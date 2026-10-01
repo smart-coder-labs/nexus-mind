@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Input, Textarea } from '../components/ui/Input'
 import { Modal, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
+import { SandboxBotPanel } from './factory/SandboxBotPanel'
 import type {
   FactoryAction,
   FactoryActionPolicy,
@@ -160,6 +161,8 @@ export default function FactoryPolicies() {
 
       {policies.isLoading && <p className="text-sm text-text-tertiary">Loading policies…</p>}
       {policies.isError && <p role="alert" className="text-sm text-text-secondary">Policies could not be loaded. Try again in a moment.</p>}
+
+      <SandboxBotPanel client={client} canWrite={canWrite} />
 
       {deleteError && <p role="alert" className="text-sm text-text-primary">{deleteError}</p>}
 

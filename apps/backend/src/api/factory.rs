@@ -120,3 +120,46 @@ pub async fn delete_policy(
         )),
     }
 }
+
+/// Status of this organization's sandbox bot (`null` until its first key).
+pub async fn get_bot(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:read")?;
+    let bot = factory_queries::get_factory_bot(&conn, &auth.org_id).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "bot": bot })))
+}
+
+/// Issues a new key for the sandbox bot, revoking the previous one. The raw key is
+/// returned exactly once, never cached, and is meant only for the egress proxy's
+/// secret: it is what sandboxed agents' NexusMind calls authenticate as.
+pub async fn rotate_bot_key(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<(
+    [(axum::http::HeaderName, &'static str); 1],
+    Json<serde_json::Value>,
+)> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "factory_policy:write")?;
+    let (bot, api_key) =
+        match factory_queries::rotate_factory_bot_key(&conn, &auth.org_id, &auth.user_id) {
+            Ok(result) => result,
+            Err(failure) if failure.to_string() == "factory_bot_disabled" => {
+                return Err(error(
+                    StatusCode::CONFLICT,
+                    "factory_bot_disabled",
+                    "The nexus-bot user is disabled. Re-enable it in Users before issuing a key.",
+                ))
+            }
+            Err(failure) => return Err(internal(failure)),
+        };
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "bot": bot, "api_key": api_key })),
+    ))
+}

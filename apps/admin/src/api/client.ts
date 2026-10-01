@@ -124,6 +124,7 @@ import type {
   AutonomousAgentOrgSettings,
   AutonomousAgentMetrics,
   FactoryActionPolicy,
+  FactoryBot,
   FactoryPolicy,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
@@ -1418,6 +1419,15 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  getFactoryBot(): Promise<{ bot: FactoryBot | null }> {
+    return this.request('/v1/factory/bot')
+  }
+
+  /** Returns the raw key exactly once; it is never readable again. */
+  rotateFactoryBotKey(): Promise<{ bot: FactoryBot; api_key: string }> {
+    return this.request('/v1/factory/bot/key', { method: 'POST' })
   }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
   // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers

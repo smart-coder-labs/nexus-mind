@@ -56,7 +56,13 @@ fn store_error(value: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         | "interval_too_short"
         | "invalid_timezone"
         | "invalid_daily_time"
-        | "invalid_misfire_policy" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
+        | "invalid_misfire_policy"
+        | "invalid_executor"
+        | "invalid_isolation"
+        | "sandbox_unsupported_template"
+        | "sandbox_unsupported_executor"
+        | "invalid_sandbox_allowed_hosts"
+        | "too_many_sandbox_hosts" => (StatusCode::UNPROCESSABLE_ENTITY, message.as_str()),
         "invalid_connector_kind" | "invalid_connector" | "invalid_connector_secret" => {
             (StatusCode::UNPROCESSABLE_ENTITY, message.as_str())
         }

@@ -9,6 +9,7 @@ import { Input, Textarea } from '../components/ui/Input'
 import { Switch } from '../components/ui/Switch'
 import { Badge } from '../components/ui/Badge'
 import type { AutonomousAgentDetail, AutonomousAgentTemplate, AutonomousAgentTemplateKey } from '../types'
+import { isolationConfig, isolationFromConfig, parseAllowedHosts, sandboxSupported, type IsolationChoice } from './factory/isolation'
 
 /**
  * Guided create/edit wizard for autonomous agents.
@@ -46,6 +47,9 @@ interface FormState {
   description: string
   template: AutonomousAgentTemplateKey
   executor: 'claude' | 'nexus'
+  // execution isolation (software factory sandbox)
+  isolation: IsolationChoice
+  allowedHosts: string
   // target
   targetKind: string
   targetName: string
@@ -125,6 +129,8 @@ function defaultState(template: AutonomousAgentTemplateKey): FormState {
     description: '',
     template,
     executor: 'claude',
+    isolation: 'default',
+    allowedHosts: '',
     targetKind: template === 'qa' || template === 'judge' ? 'web_application' : template === 'lead_generation' || template === 'ai_content_manager' ? 'none' : 'repository',
     targetName: '',
     targetPrimary: '',
@@ -288,7 +294,7 @@ function buildConfig(state: FormState): Record<string, unknown> {
     if (state.onSuccessTriggerDelaySeconds.trim()) config.on_success_trigger_delay_seconds = Math.max(0, Number(state.onSuccessTriggerDelaySeconds) || 0)
   }
   const extra = parseJsonObject(state.extraConfig)
-  return { ...config, ...(extra ?? {}), executor: state.executor }
+  return { ...config, ...(extra ?? {}), ...isolationConfig(state, state.template), executor: state.executor }
 }
 
 /** Split a shell-like command string into argv (whitespace, no shell). */
@@ -321,6 +327,7 @@ function stateFromAgent(agent: AutonomousAgentDetail): FormState {
     name: agent.name,
     description: agent.description ?? '',
     executor: config.executor === 'nexus' ? 'nexus' : 'claude',
+    ...isolationFromConfig(config),
     outputSlack: outputs.includes('slack'),
     outputGithubIssue: outputs.includes('github_issue'),
     testAdapter: config.test_adapter === 'allowlisted_command' ? 'allowlisted_command' : 'playwright',
@@ -531,6 +538,8 @@ function validateStep(id: StepId, state: FormState): boolean {
     case 'template': return Boolean(state.template)
     case 'target': return true // target is optional
     case 'config':
+      if ('error' in parseAllowedHosts(state.allowedHosts)) return false
+      if (state.isolation === 'sandbox' && !sandboxSupported(state.template, state.executor)) return false
       if (state.template === 'qa') return state.testAdapter === 'playwright' || csvArgv(state.testCommand).length > 0
       if (state.template === 'lead_generation') return state.product.trim().length > 0 && state.icp.trim().length > 0
       if (state.template === 'judge') return csv(state.repositories).length > 0
@@ -694,6 +703,7 @@ function StepConfig({ state, set, template, extraError, config }: { state: FormS
           <option value="nexus">Nexus harness (OpenShell)</option>
         </NativeSelect>
       </Field>
+      <IsolationFields state={state} set={set} template={template} />
       {template === 'qa' && (
         <>
           <Field label="Test adapter" hint="Playwright: the agent drives the browser via the Playwright MCP — no command needed. Allowlisted command: the worker runs a pinned argv.">
@@ -1058,6 +1068,52 @@ function minutesToInterval(minutes: number): { value: string; unit: 'minutes' | 
   return { value: String(minutes), unit: 'minutes' }
 }
 
+function IsolationFields({ state, set, template }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; template: AutonomousAgentTemplateKey }) {
+  const supported = sandboxSupported(template, state.executor)
+  const hosts = parseAllowedHosts(state.allowedHosts)
+  return (
+    <>
+      <Field
+        label="Isolation"
+        hint={supported
+          ? 'Sandbox runs the agent in a throwaway pod with no credentials; the egress proxy adds them per request. Server default follows the server setting.'
+          : 'This template or executor cannot run in the sandbox yet; it runs inside the worker.'}
+      >
+        <NativeSelect value={state.isolation} onChange={value => set('isolation', value as IsolationChoice)}>
+          <option value="default">Server default</option>
+          {(supported || state.isolation === 'sandbox') && (
+            <option value="sandbox" disabled={!supported}>
+              {supported ? 'Sandbox (isolated pod)' : 'Sandbox (unavailable here)'}
+            </option>
+          )}
+          <option value="local">Local worker (unsafe)</option>
+        </NativeSelect>
+      </Field>
+      {state.isolation === 'local' && (
+        <p role="alert" className="flex items-start gap-2 rounded-[10px] border border-border-secondary p-2 text-[12px] text-text-primary">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          Local runs execute repository code and the agent inside the worker, next to its database and secrets. Use only for repositories you fully trust.
+        </p>
+      )}
+      {state.isolation === 'sandbox' && !supported && (
+        <p role="alert" className="text-[12px] text-text-primary">The sandbox is not available for this template or executor. Choose another isolation.</p>
+      )}
+      {(template === 'qa' || template === 'judge') && (
+        <Field label="Extra hosts for the sandbox" hint="Third-party hosts the app under test loads (CDN, sign-in, payments), comma or line separated. Targets and the preview URL are added automatically.">
+          <Textarea
+            className="font-mono text-xs"
+            rows={2}
+            value={state.allowedHosts}
+            onChange={event => set('allowedHosts', event.target.value)}
+            placeholder="cdn.example.com, auth.example.com"
+            error={'error' in hosts ? hosts.error : undefined}
+          />
+        </Field>
+      )}
+    </>
+  )
+}
+
 function StepSchedule({ state, set }: { state: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void }) {
   const manual = state.scheduleKind === 'manual'
   const interval = state.scheduleKind === 'interval'
@@ -1115,6 +1171,7 @@ function StepReview({ state, set, template, isEdit, budgetsError }: { state: For
       </div>
       <div className="rounded-[12px] border border-border-primary bg-white/[0.02] p-3 text-[12px] text-text-secondary">
         Executor: <span className="font-medium text-text-primary">{state.executor === 'nexus' ? 'Nexus harness (OpenShell)' : 'Claude pure'}</span>
+        {' · '}Isolation: <span className="font-medium text-text-primary">{state.isolation === 'sandbox' ? 'Sandbox' : state.isolation === 'local' ? 'Local worker (unsafe)' : 'Server default'}</span>
       </div>
       <Field label="Budgets (JSON)" hint="Defaults come from the template; adjust wall-time, attempts, cost, concurrency.">
         <Textarea className="font-mono text-xs" rows={5} value={state.budgets || JSON.stringify(template?.default_budgets ?? {}, null, 2)} onChange={event => set('budgets', event.target.value)} error={budgetsError ? 'Must be a JSON object' : undefined} />

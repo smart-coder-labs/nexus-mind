@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 80;
+pub const LATEST_USER_VERSION: i32 = 81;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -93,6 +93,39 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v78(conn)?;
     run_v79(conn)?;
     run_v80(conn)?;
+    run_v81(conn)?;
+    Ok(())
+}
+
+/// Migration v81: software factory verification reports (F1 §5).
+///
+/// One `VerificationReport` per run and head SHA, produced by a sandboxed run
+/// (commands executed in the task pod plus required CI checks). The merge path
+/// requires a passing report for the exact reviewed SHA. `report` is the contract
+/// JSON; `passed` is denormalized for inspection only, never trusted on read.
+///
+/// Idempotent — guarded by PRAGMA user_version < 81, all-or-nothing.
+pub fn run_v81(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 81 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factory_verification_reports (
+             id          TEXT PRIMARY KEY,
+             org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+             run_id      TEXT NOT NULL,
+             head_sha    TEXT NOT NULL,
+             passed      INTEGER NOT NULL,
+             report      TEXT NOT NULL,
+             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE (org_id, run_id, head_sha)
+         );
+
+         PRAGMA user_version = 81;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

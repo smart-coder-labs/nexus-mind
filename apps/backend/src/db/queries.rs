@@ -16755,12 +16755,53 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
     }
 }
 
-fn validate_autonomous_executor(config: &serde_json::Value) -> Result<()> {
-    autonomous_executor(config).map(|_| ())
+fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
+    let executor = autonomous_executor(config)?;
+    crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
+    crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
 }
 
 #[cfg(test)]
 mod autonomous_executor_tests {
+    #[test]
+    fn saved_configs_reject_invalid_sandbox_hosts() {
+        let bad = serde_json::json!({"sandbox_allowed_hosts": ["*.acme.test"]});
+        assert_eq!(
+            super::validate_autonomous_executor(&bad, "qa").unwrap_err().to_string(),
+            "invalid_sandbox_allowed_hosts"
+        );
+    }
+
+    #[test]
+    fn saved_configs_reject_too_many_sandbox_hosts() {
+        let hosts: Vec<String> = (0..17).map(|i| format!("h{i}.acme.test")).collect();
+        let config = serde_json::json!({"sandbox_allowed_hosts": hosts});
+        assert_eq!(
+            super::validate_autonomous_executor(&config, "qa").unwrap_err().to_string(),
+            "too_many_sandbox_hosts"
+        );
+    }
+
+    #[test]
+    fn run_input_cannot_override_agent_config() {
+        assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
+        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor"] {
+            assert!(!super::RUN_INPUT_KEYS.contains(&protected), "{protected}");
+        }
+    }
+
+    #[test]
+    fn saved_configs_reject_a_sandbox_that_cannot_be_honored() {
+        let sandbox = serde_json::json!({"isolation": "sandbox"});
+        super::validate_autonomous_executor(&sandbox, "github_pr_reviewer").unwrap();
+        assert_eq!(
+            super::validate_autonomous_executor(&sandbox, "lead_generation")
+                .unwrap_err()
+                .to_string(),
+            "sandbox_unsupported_template"
+        );
+    }
+
     use super::autonomous_executor;
     use serde_json::json;
 
@@ -16786,7 +16827,7 @@ pub fn create_autonomous_agent_definition(
     if !req.config.is_object() || !req.budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
-    validate_autonomous_executor(&req.config)?;
+    validate_autonomous_executor(&req.config, &req.template_key)?;
     let capabilities = autonomous_agent_capabilities(&req.template_key)?;
     let definition_id = Uuid::new_v4().to_string();
     let revision_id = Uuid::new_v4().to_string();
@@ -16842,7 +16883,7 @@ pub fn update_autonomous_agent_definition(
     if !config.is_object() || !budgets.is_object() {
         anyhow::bail!("invalid_configuration");
     }
-    validate_autonomous_executor(config)?;
+    validate_autonomous_executor(config, &current.definition.template_key)?;
     let description = req
         .description
         .as_ref()
@@ -17736,6 +17777,9 @@ pub struct ClaimedAutonomousRun {
     pub config: serde_json::Value,
 }
 
+/// Keys a run's input may set over the agent config for that run.
+const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url"];
+
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
     worker_id: &str,
@@ -17871,8 +17915,12 @@ pub fn claim_next_autonomous_agent_run(
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         {
             if let Some(input_obj) = input.as_object() {
+                // Only per-run inputs: an input can never override agent config
+                // such as isolation, allowed hosts, auto-merge or commands.
                 for (key, value) in input_obj {
-                    object.insert(key.clone(), value.clone());
+                    if RUN_INPUT_KEYS.contains(&key.as_str()) {
+                        object.insert(key.clone(), value.clone());
+                    }
                 }
             }
         }

@@ -1,5 +1,6 @@
 # Build stage
-FROM rust:1.88-slim AS builder
+# kube-rs (factory sandbox executor) requires Rust >= 1.89; same toolchain as nexus-builder.
+FROM rust:1.98-slim AS builder
 
 RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -90,7 +91,8 @@ RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
     fi
 
 # nuclei (active DAST) for the security_dast template. Templates are baked at build
-# time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime
+# time into /opt/nuclei-home/nuclei-templates (world-readable: sandbox task pods
+# run as a non-root UID; the public templates hold no secret) — a path NOT shadowed by the runtime
 # volume mounts on /claude-home — so runs use them via `-t` with update checks
 # disabled and never download templates or phone home at run time.
 #
@@ -109,6 +111,7 @@ RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
       && chmod +x /usr/local/bin/nuclei \
       && rm -f /tmp/nuclei.zip \
       && HOME=/opt/nuclei-home nuclei -update-templates \
+      && chmod -R a+rX /opt/nuclei-home \
       && nuclei -version \
       && rm -rf /var/lib/apt/lists/* ; \
     else \
@@ -149,6 +152,7 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
       && chmod +x "${PKG}/${BIN}" \
       && playwright install --with-deps chromium \
       && mcp-server-playwright install-browser chrome-for-testing \
+      && chmod -R a+rX /ms-playwright \
       && ls -la /ms-playwright/ \
       && npm cache clean --force \
       && rm -rf /var/lib/apt/lists/* ; \
@@ -169,6 +173,8 @@ RUN printf '%s' '{"mcpServers":{"plugin_nexusmind_nexusmind":{"command":"nexusmi
 
 COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
+# Sandbox egress proxy (factory F1): runs in the nexusmind-sandbox namespace.
+COPY --from=builder /app/target/release/factory-egress-proxy /app/factory-egress-proxy
 COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
