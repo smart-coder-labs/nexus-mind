@@ -317,6 +317,109 @@ async fn command_ok(mut command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolves when the run must stop: its lease is lost (the heartbeat, renewed
+/// here every 2 s, failed) or an operator cancelled it.
+async fn run_stop_signal(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let db = store.conn();
+        let should_stop = db
+            .lock()
+            .ok()
+            .map(|conn| {
+                let alive = queries::heartbeat_autonomous_agent_run(
+                    &conn,
+                    &claim.org_id,
+                    &claim.run.id,
+                    &claim.attempt_id,
+                    &claim.claim_token,
+                    120,
+                )
+                .unwrap_or(false);
+                !alive
+                    || queries::autonomous_agent_run_is_cancelled(
+                        &conn,
+                        &claim.org_id,
+                        &claim.run.id,
+                    )
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true);
+        if should_stop {
+            return;
+        }
+    }
+}
+
+/// QA test commands in a sandbox commands pod, formatted like
+/// [`collect_qa_results`] so the prompt and evaluation are unchanged.
+#[allow(clippy::too_many_arguments)]
+async fn qa_results_sandboxed(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    value: Option<&serde_json::Value>,
+    environment: &[(String, String)],
+    timeout_seconds: u64,
+    reproduce_failures: bool,
+    hosts: &[String],
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let commands = crate::factory::verification::parse_verification_commands(value)?;
+    if commands.is_empty() {
+        return Ok(Vec::new());
+    }
+    let secret_values: Vec<String> = environment.iter().map(|(_, value)| value.clone()).collect();
+    let unused_receipts = std::sync::Mutex::new(Vec::new());
+    let run = super::sandboxed::SandboxedRun {
+        store,
+        org_id: &claim.org_id,
+        run_id: &claim.run.id,
+        attempt_id: &claim.attempt_id,
+        retry: 0,
+        workdir,
+        secret_values: &secret_values,
+        seq_base: 0,
+        wall_time: Duration::ZERO,
+        verification: &[],
+        receipts: &unused_receipts,
+        qa: None,
+        slot: "main",
+    };
+    let runs = super::sandboxed::run_commands_sandboxed(
+        &run,
+        &super::sandboxed::CommandsSpec {
+            commands: &commands,
+            extra_env: environment,
+            timeout_secs: timeout_seconds.clamp(10, 900),
+            reproduce_failures,
+            hosts,
+            label: "t",
+        },
+    )
+    .await?;
+    let render = |run: &crate::factory::sandbox_exec::CommandRun, stdout_cap: usize, stderr_cap: usize| {
+        json!({
+            "success": run.exit_code == Some(0),
+            "exit_code": run.exit_code,
+            "stdout": sanitize_output_with_secrets(&run.stdout, stdout_cap, &secret_values),
+            "stderr": sanitize_output_with_secrets(&run.stderr, stderr_cap, &secret_values),
+        })
+    };
+    Ok(runs
+        .iter()
+        .map(|run| {
+            let mut result = render(run, 200_000, 100_000);
+            result["argv"] = json!(run.argv);
+            result["reproduction"] = run
+                .reproduction
+                .as_deref()
+                .map(|again| render(again, 50_000, 50_000))
+                .unwrap_or(serde_json::Value::Null);
+            result
+        })
+        .collect())
+}
+
 fn restrict_test_environment(
     command: &mut Command,
     workdir: &Path,
@@ -3621,6 +3724,16 @@ async fn execute_claim(
         Vec::new()
     };
     let sandbox_receipts = std::sync::Mutex::new(Vec::new());
+    // Browser-driven templates reach their targets through the proxy: HTTPS on
+    // 443 only. A target that cannot be reached that way blocks the run.
+    let sandbox_hosts = if sandboxed && matches!(claim.template_key.as_str(), "qa" | "judge") {
+        match crate::factory::sandbox::sandbox_hosts(&claim.config) {
+            Ok(hosts) => hosts,
+            Err(error) => return ("blocked_policy".into(), json!({"code":error.to_string()})),
+        }
+    } else {
+        Vec::new()
+    };
     // A manual issue-resolver run (no target issue in the trigger) resolves EVERY
     // assigned eligible issue in ONE run — each in its own git worktree, opening a
     // draft PR per issue — orchestrated by the worker so the safety gates still
@@ -3965,21 +4078,46 @@ async fn execute_claim(
                 return ("blocked_policy".into(), json!({"code":error.to_string()}));
             }
         };
-        match collect_qa_results(
-            &workdir,
-            runtime_config.get("test_commands"),
-            &environment,
-            runtime_config
-                .get("test_timeout_seconds")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(900),
-            runtime_config
-                .get("reproduce_failures")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true),
-        )
-        .await
-        {
+        let test_timeout = runtime_config
+            .get("test_timeout_seconds")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(900);
+        let reproduce = runtime_config
+            .get("reproduce_failures")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let results = if sandboxed {
+            // The tests pod can outlast the lease: keep it alive and honor cancel.
+            let tests = qa_results_sandboxed(
+                store,
+                claim,
+                &workdir,
+                runtime_config.get("test_commands"),
+                &environment,
+                test_timeout,
+                reproduce,
+                &sandbox_hosts,
+            );
+            tokio::select! {
+                _ = run_stop_signal(store, claim) => {
+                    let _ = tokio::fs::remove_dir_all(&workdir).await;
+                    return ("cancelled".into(), json!({"code":"cancelled_by_operator"}));
+                }
+                results = tests => results.map_err(|error| {
+                    anyhow::anyhow!("sandbox:{}", super::sandboxed::failure_code(&claim.run.id, &error))
+                }),
+            }
+        } else {
+            collect_qa_results(
+                &workdir,
+                runtime_config.get("test_commands"),
+                &environment,
+                test_timeout,
+                reproduce,
+            )
+            .await
+        };
+        match results {
             Ok(results) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("test_results".into(), json!(results));
@@ -3987,7 +4125,16 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                // Sandbox infrastructure failures are runtime blocks, not policy.
+                return match error.to_string().strip_prefix("sandbox:") {
+                    Some(code) if code != "command_not_allowlisted"
+                        && code != "too_many_verification_commands" =>
+                    {
+                        ("blocked_runtime".into(), json!({"code":"sandbox_failed","detail":code}))
+                    }
+                    Some(code) => ("blocked_policy".into(), json!({"code":code})),
+                    None => ("blocked_policy".into(), json!({"code":error.to_string()})),
+                };
             }
         }
     }
@@ -4103,6 +4250,9 @@ async fn execute_claim(
     // QA runs use `default` (not `plan`) so the agent can actually drive the
     // Playwright MCP; repo mutation is still impossible because the allowlist
     // omits Edit/Write/Bash and non-listed tools are denied in headless mode.
+    // No Slack MCP exists (Slack delivery is worker-side, after the run); a
+    // sandboxed run never lists tools that could not be served.
+    let slack_enabled = slack_enabled && !sandboxed;
     let (permission_mode, allowed_tools) = match (claim.template_key.as_str(), slack_enabled) {
         ("github_issue_resolver", _) => {
             (
@@ -4196,7 +4346,8 @@ async fn execute_claim(
     // Register the Playwright MCP for QA runs, pointing its screenshot output at
     // the per-run directory (declared before the loop) the worker reads back
     // afterwards for evidence upload.
-    if matches!(claim.template_key.as_str(), "qa" | "judge") {
+    // Sandboxed runs get their Playwright MCP from the sandbox runner.
+    if matches!(claim.template_key.as_str(), "qa" | "judge") && !sandboxed {
         let base_config = std::env::var("AUTONOMOUS_QA_MCP_CONFIG")
             .unwrap_or_else(|_| "/app/qa-mcp.json".to_string());
         if std::path::Path::new(&base_config).exists() {
@@ -4240,6 +4391,13 @@ async fn execute_claim(
                 seq_base,
                 wall_time: Duration::from_secs(wall_time),
                 // Evidence is gathered once per head: retries reuse the receipts.
+                slot: "main",
+                qa: matches!(claim.template_key.as_str(), "qa" | "judge").then_some(
+                    super::sandboxed::QaSandbox {
+                        hosts: &sandbox_hosts,
+                        artifacts_dir: &qa_screenshots_dir,
+                    },
+                ),
                 verification: if sandbox_receipts.lock().map(|r| r.is_empty()).unwrap_or(true) {
                     &sandbox_verification
                 } else {
@@ -4263,37 +4421,7 @@ async fn execute_claim(
             .await?)
         })
     };
-    let cancelled = async {
-        loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            let db = store.conn();
-            let should_stop = db
-                .lock()
-                .ok()
-                .map(|conn| {
-                    let alive = queries::heartbeat_autonomous_agent_run(
-                        &conn,
-                        &claim.org_id,
-                        &claim.run.id,
-                        &claim.attempt_id,
-                        &claim.claim_token,
-                        120,
-                    )
-                    .unwrap_or(false);
-                    !alive
-                        || queries::autonomous_agent_run_is_cancelled(
-                            &conn,
-                            &claim.org_id,
-                            &claim.run.id,
-                        )
-                        .unwrap_or(true)
-                })
-                .unwrap_or(true);
-            if should_stop {
-                break;
-            }
-        }
-    };
+    let cancelled = run_stop_signal(store, claim);
     let mut outcome = tokio::select! {
         _ = cancelled => ("cancelled".into(),json!({"code":"cancelled_by_operator"})),
         // In the sandbox the budget also covers scheduling, pulling and unpacking;

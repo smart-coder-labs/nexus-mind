@@ -16,6 +16,8 @@ pub const TASK_UID: i64 = 10001;
 pub const WORKSPACE: &str = "/workspace";
 /// Label carrying the run id on every task pod.
 pub const RUN_LABEL: &str = "factory.nexusmind/run";
+/// Label separating parallel pods of one run (resolver fanout: one per issue).
+pub const SLOT_LABEL: &str = "factory.nexusmind/slot";
 
 #[derive(Clone, Debug)]
 pub struct TaskPodRequest {
@@ -24,6 +26,8 @@ pub struct TaskPodRequest {
     /// Distinguishes the pods of one run (lease attempt, retry); part of the name.
     pub pod_suffix: String,
     pub profile: PodProfile,
+    /// Parallel pods of one run each get their own slot (`main` otherwise).
+    pub slot: String,
     pub image: String,
     /// Signed run token (see `egress::sign_run_token`).
     pub run_token: String,
@@ -106,7 +110,7 @@ pub enum Isolation {
 }
 
 /// Templates migrated to the sandbox so far (design §4, migration order).
-pub const SANDBOX_TEMPLATES: &[&str] = &["github_pr_reviewer"];
+pub const SANDBOX_TEMPLATES: &[&str] = &["github_pr_reviewer", "qa", "judge"];
 
 /// Parses and validates `isolation`. A sandbox request that cannot be honored is
 /// an error, never a silent fallback to local execution.
@@ -155,6 +159,119 @@ pub fn verification_env(registry_token: &str) -> Vec<(String, String)> {
     .collect()
 }
 
+/// Most hosts one run may tunnel to (the run token's limit).
+pub const MAX_SANDBOX_HOSTS: usize = 16;
+
+/// Hosts a sandboxed QA/judge run may reach: its enabled `web_application`
+/// targets, the run's preview (`app_base_url`) and the agent's extra list
+/// (`sandbox_allowed_hosts`: CDNs, SSO, payment providers). The proxy tunnels only
+/// HTTPS on 443 and still refuses any name resolving to a non-public address.
+pub fn sandbox_hosts(config: &Value) -> anyhow::Result<Vec<String>> {
+    fn https_host(url: &str) -> Option<String> {
+        reqwest::Url::parse(url)
+            .ok()
+            .filter(|url| url.scheme() == "https" && url.port_or_known_default() == Some(443))
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .filter(|host| super::egress::valid_host(host))
+    }
+    let mut hosts: Vec<String> = Vec::new();
+    fn add(hosts: &mut Vec<String>, host: String) {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    let targets = config
+        .get("targets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| target.get("kind").and_then(Value::as_str) == Some("web_application"))
+        .filter(|target| target.get("enabled").and_then(Value::as_bool) == Some(true));
+    for target in targets {
+        // A target the proxy cannot reach is skipped: another one may be the one
+        // this run needs. A run with nothing reachable fails below.
+        if let Some(host) = target
+            .pointer("/config/url")
+            .and_then(Value::as_str)
+            .and_then(https_host)
+        {
+            add(&mut hosts, host);
+        }
+    }
+    if let Some(url) = config.get("app_base_url").and_then(Value::as_str) {
+        let host = https_host(url).ok_or_else(|| anyhow::anyhow!("target_not_sandboxable"))?;
+        add(&mut hosts, host);
+    }
+    if hosts.is_empty() {
+        anyhow::bail!("target_not_sandboxable")
+    }
+    for host in parse_allowed_hosts(config.get("sandbox_allowed_hosts"))? {
+        add(&mut hosts, host);
+    }
+    if hosts.len() > MAX_SANDBOX_HOSTS {
+        anyhow::bail!("too_many_sandbox_hosts")
+    }
+    Ok(hosts)
+}
+
+/// `sandbox_allowed_hosts`: lowercase DNS names, no wildcards or IP literals.
+pub fn parse_allowed_hosts(value: Option<&Value>) -> anyhow::Result<Vec<String>> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("invalid_sandbox_allowed_hosts"))?
+        .iter()
+        .map(|host| {
+            host.as_str()
+                .map(str::to_ascii_lowercase)
+                .filter(|host| super::egress::valid_host(host))
+                .ok_or_else(|| anyhow::anyhow!("invalid_sandbox_allowed_hosts"))
+        })
+        .collect()
+}
+
+/// Where the Playwright MCP writes screenshots inside the pod.
+pub const QA_OUTPUT_DIR: &str = "/tmp/qa-output";
+/// Playwright config written into the pod: it carries the proxy credential, so it
+/// lives in a file, never in the exec request.
+pub const PLAYWRIGHT_CONFIG_PATH: &str = "/tmp/playwright-config.json";
+
+/// The `--mcp-config` value (no secret) and the Playwright config file content
+/// (the browser's proxy credential) for a sandboxed QA/judge run.
+pub fn playwright_mcp(proxy_token: &str) -> (String, Vec<u8>) {
+    let mcp = json!({"mcpServers": {"playwright": {
+        "command": "mcp-server-playwright",
+        "args": [
+            "--headless", "--isolated", "--no-sandbox", "--browser", "chromium",
+            "--output-dir", QA_OUTPUT_DIR,
+            "--config", PLAYWRIGHT_CONFIG_PATH
+        ]
+    }}});
+    // Playwright answers the proxy's 407 challenge with these credentials.
+    let file = json!({"browser": {"launchOptions": {"proxy": {
+        "server": format!("http://{PROXY_AUTHORITY}"),
+        "username": "run",
+        "password": proxy_token
+    }}}});
+    (mcp.to_string(), file.to_string().into_bytes())
+}
+
+/// A file name the pod may hand back: a plain screenshot/trace name, never a path.
+pub fn valid_artifact_name(name: &str) -> bool {
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    (1..=128).contains(&name.len())
+        && !stem.is_empty()
+        && matches!(extension, "png" | "jpg" | "jpeg" | "webp")
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        && !stem.starts_with('.')
+}
+
 pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
     let env = match request.profile {
         PodProfile::Agent => task_env(request),
@@ -174,7 +291,8 @@ pub fn task_pod_manifest(request: &TaskPodRequest) -> Value {
                 "role": "task",
                 "app": "factory-task",
                 // Lets a retried run delete the orphans of its earlier attempts.
-                (RUN_LABEL): request.run_id
+                (RUN_LABEL): request.run_id,
+                (SLOT_LABEL): request.slot
             },
             "annotations": {
                 "factory.nexusmind/run-id": request.run_id,
@@ -240,6 +358,7 @@ mod tests {
             image: "ghcr.io/acme/sandbox@sha256:abc".into(),
             run_token: "v2.org-1.run.1.sig".into(),
             profile: PodProfile::Agent,
+            slot: "main".into(),
             wall_time_secs: 1800,
         }
     }
@@ -343,6 +462,130 @@ mod tests {
             assert!(!env.contains_key(inherited), "{inherited}");
         }
         assert_eq!(env["HOME"], "/tmp");
+    }
+
+    #[test]
+    fn sandbox_hosts_come_from_targets_preview_and_extra_list() {
+        let config = json!({
+            "targets": [
+                {"kind": "web_application", "enabled": true, "config": {"url": "https://App.Acme.test/login"}},
+                // Unusable targets are skipped, not fatal.
+                {"kind": "web_application", "enabled": true, "config": {"url": "http://legacy.acme.test"}},
+                {"kind": "web_application", "enabled": true, "config": {"url": "https://acme.test:3000"}},
+                {"kind": "web_application", "enabled": true, "config": {}},
+                {"kind": "web_application", "enabled": false, "config": {"url": "https://off.acme.test"}},
+                {"kind": "repository", "enabled": true, "config": {"repository": "a/b"}}
+            ],
+            "app_base_url": "https://pr-42.preview.acme.test/",
+            "sandbox_allowed_hosts": ["cdn.acme.test", "app.acme.test", "auth.example.com"]
+        });
+        assert_eq!(
+            sandbox_hosts(&config).unwrap(),
+            [
+                "app.acme.test",
+                "pr-42.preview.acme.test",
+                "cdn.acme.test",
+                "auth.example.com"
+            ]
+        );
+    }
+
+    #[test]
+    fn sandbox_hosts_fail_closed() {
+        let target =
+            |url: &str| json!({"kind": "web_application", "enabled": true, "config": {"url": url}});
+        // Nothing reachable: the run cannot do its job in the sandbox.
+        for config in [
+            json!({}),
+            json!({"targets": [target("http://app.acme.test")]}),
+            json!({"targets": [target("https://10.0.0.5")]}),
+        ] {
+            assert_eq!(
+                sandbox_hosts(&config).unwrap_err().to_string(),
+                "target_not_sandboxable",
+                "{config}"
+            );
+        }
+        // An explicit preview that cannot be reached is an error, not a skip.
+        for url in [
+            "http://pr.acme.test",
+            "https://localhost",
+            "https://pr.acme.test:8443",
+            "nope",
+        ] {
+            let config = json!({"targets": [target("https://app.acme.test")], "app_base_url": url});
+            assert_eq!(
+                sandbox_hosts(&config).unwrap_err().to_string(),
+                "target_not_sandboxable",
+                "{url}"
+            );
+        }
+        for extra in [
+            json!(["*.acme.test"]),
+            json!(["10.0.0.1"]),
+            json!("cdn.acme.test"),
+            json!([1]),
+        ] {
+            let config = json!({"targets": [target("https://app.acme.test")], "sandbox_allowed_hosts": extra});
+            assert_eq!(
+                sandbox_hosts(&config).unwrap_err().to_string(),
+                "invalid_sandbox_allowed_hosts",
+                "{extra}"
+            );
+        }
+        let many: Vec<String> = (0..16).map(|i| format!("h{i}.acme.test")).collect();
+        let config =
+            json!({"targets": [target("https://app.acme.test")], "sandbox_allowed_hosts": many});
+        assert_eq!(
+            sandbox_hosts(&config).unwrap_err().to_string(),
+            "too_many_sandbox_hosts"
+        );
+    }
+
+    #[test]
+    fn the_playwright_credential_stays_in_the_file() {
+        let (mcp, file) = playwright_mcp("v3.org.run.1.aG9zdA.sig");
+        assert!(!mcp.contains("v3.org"), "{mcp}");
+        let mcp: Value = serde_json::from_str(&mcp).unwrap();
+        let args: Vec<&str> = mcp["mcpServers"]["playwright"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--config", PLAYWRIGHT_CONFIG_PATH]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--output-dir", QA_OUTPUT_DIR]),
+            "{args:?}"
+        );
+        let file: Value = serde_json::from_slice(&file).unwrap();
+        let proxy = &file["browser"]["launchOptions"]["proxy"];
+        assert_eq!(proxy["server"], format!("http://{PROXY_AUTHORITY}"));
+        assert_eq!(proxy["username"], "run");
+        assert_eq!(proxy["password"], "v3.org.run.1.aG9zdA.sig");
+    }
+
+    #[test]
+    fn artifact_names_are_plain_file_names() {
+        for good in ["page-2026.png", "login_step.jpeg", "trace.webp"] {
+            assert!(valid_artifact_name(good), "{good}");
+        }
+        for bad in [
+            "../x.png",
+            "a/b.png",
+            ".png",
+            "x.sh",
+            "",
+            "x.png\n",
+            &"a".repeat(200),
+        ] {
+            assert!(!valid_artifact_name(bad), "{bad}");
+        }
     }
 
     #[test]

@@ -148,7 +148,7 @@ fn is_public_v4(ip: std::net::Ipv4Addr) -> bool {
 const MAX_TOKEN_HOSTS: usize = 16;
 
 /// A lowercase DNS name with at least one dot and no IP literal.
-fn valid_host(host: &str) -> bool {
+pub(crate) fn valid_host(host: &str) -> bool {
     let labels: Vec<&str> = host.split('.').collect();
     (1..=253).contains(&host.len())
         && labels.len() >= 2

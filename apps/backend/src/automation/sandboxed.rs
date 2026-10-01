@@ -42,6 +42,15 @@ pub(crate) struct SandboxedRun<'a> {
     pub verification: &'a [Vec<String>],
     /// Receives the verification receipts when the run completes.
     pub receipts: &'a std::sync::Mutex<Vec<crate::factory::verification::VerificationReceipt>>,
+    /// Browser-driven templates (QA, judge): target hosts and where screenshots go.
+    pub qa: Option<QaSandbox<'a>>,
+    /// The pod slot within the run (`main`, or `issue-<n>` in a resolver fanout).
+    pub slot: &'a str,
+}
+
+pub(crate) struct QaSandbox<'a> {
+    pub hosts: &'a [String],
+    pub artifacts_dir: &'a Path,
 }
 
 /// The pod-side invocation for a locally prepared Claude command: the same
@@ -71,12 +80,11 @@ fn agent_lifetime(wall_time: Duration) -> Duration {
     wall_time + READY_TIMEOUT + Duration::from_secs(SLACK_SECS)
 }
 
-/// Lifetime of the commands pod: every command at its budget, twice when
-/// failures are reproduced.
-fn commands_lifetime(commands: usize, reproduce_failures: bool) -> Duration {
+/// Lifetime of a commands pod: every command at its timeout plus the kill
+/// grace, twice when failures are reproduced.
+fn commands_lifetime(commands: usize, reproduce_failures: bool, timeout_secs: u64) -> Duration {
     let runs = commands as u64 * if reproduce_failures { 2 } else { 1 };
-    READY_TIMEOUT
-        + Duration::from_secs(SLACK_SECS + crate::factory::verification::COMMAND_BUDGET_SECS * runs)
+    READY_TIMEOUT + Duration::from_secs(SLACK_SECS + (timeout_secs + 10) * runs)
 }
 
 /// Total budget of a sandboxed run: the agent pod, then the commands pod if any.
@@ -88,7 +96,11 @@ pub(crate) fn sandbox_lifetime(
     let commands = if commands == 0 {
         Duration::ZERO
     } else {
-        commands_lifetime(commands, reproduce_failures)
+        commands_lifetime(
+            commands,
+            reproduce_failures,
+            crate::factory::verification::COMMAND_TIMEOUT_SECS,
+        )
     };
     agent_lifetime(wall_time) + commands
 }
@@ -112,144 +124,269 @@ pub(crate) fn failure_code(run_id: &str, error: &anyhow::Error) -> String {
     }
 }
 
-pub(crate) async fn run_claude_sandboxed(
-    run: SandboxedRun<'_>,
-    (argv, prompt): (Vec<String>, Option<Vec<u8>>),
-) -> anyhow::Result<std::process::Output> {
+/// What every sandboxed pod of a run shares.
+struct Prepared {
+    image: String,
+    signing_key: String,
+    base_sha: String,
+    workspace_tar: Vec<u8>,
+    runtime: Arc<KubeRuntime>,
+    attempt: String,
+    now: i64,
+}
+
+async fn prepare(run: &SandboxedRun<'_>) -> anyhow::Result<Prepared> {
     let image = std::env::var("FACTORY_SANDBOX_IMAGE")
         .map_err(|_| anyhow::anyhow!("sandbox_unconfigured"))?;
     let signing_key = std::env::var("FACTORY_PROXY_SIGNING_KEY")
         .ok()
         .filter(|key| key.len() >= 32)
         .ok_or_else(|| anyhow::anyhow!("sandbox_unconfigured"))?;
-    let base_sha = {
-        let output = Command::new("git")
-            .current_dir(run.workdir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await?;
-        if !output.status.success() {
-            anyhow::bail!("snapshot_resolution_failed")
-        }
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
-    let workspace_tar = pack_workspace(run.workdir, run.secret_values).await?;
     // Kubernetes label values are at most 63 characters (RUN_LABEL).
     if run.run_id.len() > 63 {
         anyhow::bail!("run_id_too_long")
     }
-    let now = chrono::Utc::now().timestamp();
-    let attempt = run.attempt_id.chars().take(8).collect::<String>();
-    let sign = |run_id: &str, lifetime: Duration| {
-        sign_run_token(
-            signing_key.as_bytes(),
-            run.org_id,
-            run_id,
-            now + lifetime.as_secs() as i64,
-        )
-        .map_err(|error| anyhow::anyhow!("run_token_failed: {error:?}"))
+    let output = Command::new("git")
+        .current_dir(run.workdir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await?;
+    // QA and judge may run without a repository. No sandboxed template takes a
+    // diff yet, so the base only has to be well formed.
+    let base_sha = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        "0".repeat(40)
     };
-    let agent_life = agent_lifetime(run.wall_time);
-    let run_token = sign(run.run_id, agent_life)?;
-    let commands_life = commands_lifetime(run.verification.len(), false);
-    // The registry-only token outlives both pods: the commands pod starts after
-    // the agent pod.
-    let registry_token = sign(
+    Ok(Prepared {
+        image,
+        signing_key,
+        base_sha,
+        workspace_tar: pack_workspace(run.workdir, run.secret_values).await?,
+        runtime: Arc::new(KubeRuntime::in_cluster().await?),
+        attempt: run.attempt_id.chars().take(8).collect(),
+        now: chrono::Utc::now().timestamp(),
+    })
+}
+
+impl Prepared {
+    /// A run token living `lifetime`, carrying `hosts` (v3) when there are any.
+    fn token(
+        &self,
+        org_id: &str,
+        run_id: &str,
+        lifetime: Duration,
+        hosts: &[String],
+    ) -> anyhow::Result<String> {
+        let expires = self.now + lifetime.as_secs() as i64;
+        let key = self.signing_key.as_bytes();
+        if hosts.is_empty() {
+            sign_run_token(key, org_id, run_id, expires)
+        } else {
+            crate::factory::egress::sign_run_token_with_hosts(key, org_id, run_id, expires, hosts)
+        }
+        .map_err(|error| anyhow::anyhow!("run_token_failed: {error:?}"))
+    }
+
+    fn job(
+        &self,
+        run: &SandboxedRun<'_>,
+        profile: PodProfile,
+        token: &str,
+        suffix: String,
+        lifetime: Duration,
+    ) -> SandboxJob {
+        SandboxJob {
+            manifest: task_pod_manifest(&TaskPodRequest {
+                org_id: run.org_id.to_string(),
+                run_id: run.run_id.to_string(),
+                pod_suffix: format!("{}-{suffix}", self.attempt),
+                profile,
+                slot: run.slot.to_string(),
+                image: self.image.clone(),
+                run_token: token.to_string(),
+                wall_time_secs: lifetime.as_secs() as i64,
+            }),
+            workspace_tar: self.workspace_tar.clone(),
+            command: None,
+            command_stdin: None,
+            base_sha: self.base_sha.clone(),
+            ready_timeout: READY_TIMEOUT,
+            wall_time: lifetime,
+            // Only read-only templates run here so far.
+            collect_diff: false,
+            verification: Vec::new(),
+            verification_env: Vec::new(),
+            command_timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+            reproduce_failures: false,
+            files: Vec::new(),
+            collect_dir: None,
+            checkpoints: None,
+        }
+    }
+}
+
+/// Repository commands in a commands pod: only a registry-only token (plus the
+/// run's target hosts, for end-to-end tests) and `extra_env` on stdin.
+pub(crate) struct CommandsSpec<'a> {
+    pub commands: &'a [Vec<String>],
+    pub extra_env: &'a [(String, String)],
+    pub timeout_secs: u64,
+    pub reproduce_failures: bool,
+    pub hosts: &'a [String],
+    /// Distinguishes this commands pod from the run's others (e.g. "t", "v").
+    pub label: &'a str,
+}
+
+pub(crate) async fn run_commands_sandboxed(
+    run: &SandboxedRun<'_>,
+    spec: &CommandsSpec<'_>,
+) -> anyhow::Result<Vec<crate::factory::sandbox_exec::CommandRun>> {
+    let prepared = prepare(run).await?;
+    run_commands(&prepared, run, spec).await
+}
+
+async fn run_commands(
+    prepared: &Prepared,
+    run: &SandboxedRun<'_>,
+    spec: &CommandsSpec<'_>,
+) -> anyhow::Result<Vec<crate::factory::sandbox_exec::CommandRun>> {
+    let lifetime = commands_lifetime(
+        spec.commands.len(),
+        spec.reproduce_failures,
+        spec.timeout_secs,
+    );
+    let token = prepared.token(
+        run.org_id,
         &crate::factory::egress::registry_only_run_id(run.run_id),
-        agent_life + commands_life,
+        lifetime,
+        spec.hosts,
     )?;
+    let mut job = prepared.job(
+        run,
+        PodProfile::Commands,
+        &token,
+        format!("{}-{}", run.retry, spec.label),
+        lifetime,
+    );
+    job.verification = spec.commands.to_vec();
+    job.verification_env = crate::factory::sandbox::verification_env(&token);
+    job.verification_env.extend(spec.extra_env.iter().cloned());
+    job.command_timeout_secs = spec.timeout_secs;
+    job.reproduce_failures = spec.reproduce_failures;
+    let mut runs = run_in_sandbox(prepared.runtime.clone(), &job, &mut |_: &[u8]| {})
+        .await?
+        .verification;
+    // Test output may echo the environment; the pod's token is live until expiry.
+    for run in &mut runs {
+        scrub(run, token.as_bytes());
+    }
+    Ok(runs)
+}
+
+fn scrub(run: &mut crate::factory::sandbox_exec::CommandRun, secret: &[u8]) {
+    fn replace(haystack: &mut Vec<u8>, secret: &[u8]) {
+        if secret.is_empty() || memchr::memmem::find(haystack, secret).is_none() {
+            return;
+        }
+        let mut out = Vec::with_capacity(haystack.len());
+        let mut rest = haystack.as_slice();
+        while let Some(at) = memchr::memmem::find(rest, secret) {
+            out.extend_from_slice(&rest[..at]);
+            out.extend_from_slice(b"[REDACTED]");
+            rest = &rest[at + secret.len()..];
+        }
+        out.extend_from_slice(rest);
+        *haystack = out;
+    }
+    replace(&mut run.stdout, secret);
+    replace(&mut run.stderr, secret);
+    if let Some(again) = run.reproduction.as_deref_mut() {
+        scrub(again, secret);
+    }
+}
+
+pub(crate) async fn run_claude_sandboxed(
+    run: SandboxedRun<'_>,
+    (mut argv, prompt): (Vec<String>, Option<Vec<u8>>),
+) -> anyhow::Result<std::process::Output> {
+    let prepared = prepare(&run).await?;
+    let agent_life = agent_lifetime(run.wall_time);
+    let hosts: &[String] = run.qa.as_ref().map_or(&[], |qa| qa.hosts);
+    let run_token = prepared.token(run.org_id, run.run_id, agent_life, hosts)?;
     // Everything a transcript or error could echo that is still live: redact it.
     let secrets: Vec<String> = run
         .secret_values
         .iter()
         .cloned()
-        .chain([run_token.clone(), registry_token.clone()])
+        .chain([run_token.clone()])
         .collect();
-    let runtime = Arc::new(KubeRuntime::in_cluster().await?);
-    let pod = |profile, token: &str, suffix: String, lifetime: Duration| {
-        task_pod_manifest(&TaskPodRequest {
-            org_id: run.org_id.to_string(),
-            run_id: run.run_id.to_string(),
-            pod_suffix: suffix,
-            profile,
-            image: image.clone(),
-            run_token: token.to_string(),
-            wall_time_secs: lifetime.as_secs() as i64,
-        })
-    };
-    let job =
-        |manifest, command, command_stdin, verification: Vec<Vec<String>>, lifetime: Duration| {
-            SandboxJob {
-                manifest,
-                workspace_tar: workspace_tar.clone(),
-                command,
-                command_stdin,
-                base_sha: base_sha.clone(),
-                ready_timeout: READY_TIMEOUT,
-                wall_time: lifetime,
-                // Only read-only templates run here so far.
-                collect_diff: false,
-                verification,
-                verification_env: crate::factory::sandbox::verification_env(&registry_token),
-                command_timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
-                reproduce_failures: false,
-            }
-        };
 
     // 1. The agent, in a pod that runs no repository code.
-    let agent_job = job(
-        pod(
-            PodProfile::Agent,
-            &run_token,
-            format!("{attempt}-{}", run.retry),
-            agent_life,
-        ),
-        Some(argv),
-        prompt,
-        Vec::new(),
+    let mut agent_job = prepared.job(
+        &run,
+        PodProfile::Agent,
+        &run_token,
+        run.retry.to_string(),
         agent_life,
     );
+    if run.qa.is_some() {
+        // The browser reaches the targets through the proxy with the run token,
+        // which goes into a file in the pod, never into the exec request.
+        let (mcp, config) = crate::factory::sandbox::playwright_mcp(&run_token);
+        argv.extend(["--mcp-config".to_string(), mcp]);
+        agent_job.files = vec![(
+            crate::factory::sandbox::PLAYWRIGHT_CONFIG_PATH.to_string(),
+            config,
+        )];
+        agent_job.collect_dir = Some(crate::factory::sandbox::QA_OUTPUT_DIR.to_string());
+    }
+    agent_job.command = Some(argv);
+    agent_job.command_stdin = prompt;
     let mut sequence = run.seq_base;
     let (store, org_id, run_id) = (run.store, run.org_id, run.run_id);
     let secrets_ref = secrets.as_slice();
-    let agent = run_in_sandbox(runtime.clone(), &agent_job, &mut |line: &[u8]| {
-        super::worker::record_transcript_line(
-            store,
-            org_id,
-            run_id,
-            secrets_ref,
-            &mut sequence,
-            line,
-        )
-    })
+    let agent = run_in_sandbox(
+        prepared.runtime.clone(),
+        &agent_job,
+        &mut |line: &[u8]| {
+            super::worker::record_transcript_line(
+                store,
+                org_id,
+                run_id,
+                secrets_ref,
+                &mut sequence,
+                line,
+            )
+        },
+    )
     .await?;
+    if let Some(qa) = &run.qa {
+        tokio::fs::create_dir_all(qa.artifacts_dir).await?;
+        for (name, content) in &agent.artifacts {
+            // Names were validated as plain file names by the executor.
+            tokio::fs::write(qa.artifacts_dir.join(name), content).await?;
+        }
+    }
     let output = agent
         .output
         .ok_or_else(|| anyhow::anyhow!("sandbox_agent_missing"))?;
 
-    // 2. Repository commands, in their own pod holding only the registry token.
+    // 2. Verification commands, in their own pod holding only the registry token.
     // Output-format retries pass no commands: the head is the same, so the first
     // run's receipts stand.
     if !run.verification.is_empty() {
-        let commands_job = job(
-            pod(
-                PodProfile::Commands,
-                &registry_token,
-                format!("{attempt}-{}-v", run.retry),
-                commands_life,
-            ),
-            None,
-            None,
-            run.verification.to_vec(),
-            commands_life,
-        );
-        let commands = run_in_sandbox(runtime, &commands_job, &mut |_: &[u8]| {}).await?;
+        let spec = CommandsSpec {
+            commands: run.verification,
+            extra_env: &[],
+            timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
+            reproduce_failures: false,
+            hosts: &[],
+            label: "v",
+        };
+        let runs = run_commands(&prepared, &run, &spec).await?;
         if let Ok(mut slot) = run.receipts.lock() {
-            *slot = commands
-                .verification
-                .iter()
-                .map(|run| run.receipt())
-                .collect();
+            *slot = runs.iter().map(|run| run.receipt()).collect();
         }
     }
     Ok(std::process::Output {
@@ -307,6 +444,27 @@ mod tests {
             ),
             "sandbox_internal_error"
         );
+    }
+
+    #[test]
+    fn command_output_never_carries_the_pod_token() {
+        let mut run = crate::factory::sandbox_exec::CommandRun {
+            stdout: b"HTTPS_PROXY=http://run:v2.o.r-registry.1.sig@p and v2.o.r-registry.1.sig"
+                .to_vec(),
+            stderr: b"clean".to_vec(),
+            reproduction: Some(Box::new(crate::factory::sandbox_exec::CommandRun {
+                stderr: b"v2.o.r-registry.1.sig".to_vec(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        scrub(&mut run, b"v2.o.r-registry.1.sig");
+        assert_eq!(
+            run.stdout,
+            b"HTTPS_PROXY=http://run:[REDACTED]@p and [REDACTED]"
+        );
+        assert_eq!(run.stderr, b"clean");
+        assert_eq!(run.reproduction.unwrap().stderr, b"[REDACTED]");
     }
 
     #[test]

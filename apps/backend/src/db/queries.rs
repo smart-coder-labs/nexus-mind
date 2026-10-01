@@ -16757,11 +16757,29 @@ pub fn autonomous_executor(config: &serde_json::Value) -> Result<&str> {
 
 fn validate_autonomous_executor(config: &serde_json::Value, template_key: &str) -> Result<()> {
     let executor = autonomous_executor(config)?;
+    crate::factory::sandbox::parse_allowed_hosts(config.get("sandbox_allowed_hosts"))?;
     crate::factory::sandbox::autonomous_isolation(config, template_key, executor).map(|_| ())
 }
 
 #[cfg(test)]
 mod autonomous_executor_tests {
+    #[test]
+    fn saved_configs_reject_invalid_sandbox_hosts() {
+        let bad = serde_json::json!({"sandbox_allowed_hosts": ["*.acme.test"]});
+        assert_eq!(
+            super::validate_autonomous_executor(&bad, "qa").unwrap_err().to_string(),
+            "invalid_sandbox_allowed_hosts"
+        );
+    }
+
+    #[test]
+    fn run_input_cannot_override_agent_config() {
+        assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
+        for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor"] {
+            assert!(!super::RUN_INPUT_KEYS.contains(&protected), "{protected}");
+        }
+    }
+
     #[test]
     fn saved_configs_reject_a_sandbox_that_cannot_be_honored() {
         let sandbox = serde_json::json!({"isolation": "sandbox"});
@@ -17749,6 +17767,9 @@ pub struct ClaimedAutonomousRun {
     pub config: serde_json::Value,
 }
 
+/// Keys a run's input may set over the agent config for that run.
+const RUN_INPUT_KEYS: &[&str] = &["trigger", "judge_targets", "app_base_url"];
+
 pub fn claim_next_autonomous_agent_run(
     conn: &Connection,
     worker_id: &str,
@@ -17884,8 +17905,12 @@ pub fn claim_next_autonomous_agent_run(
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         {
             if let Some(input_obj) = input.as_object() {
+                // Only per-run inputs: an input can never override agent config
+                // such as isolation, allowed hosts, auto-merge or commands.
                 for (key, value) in input_obj {
-                    object.insert(key.clone(), value.clone());
+                    if RUN_INPUT_KEYS.contains(&key.as_str()) {
+                        object.insert(key.clone(), value.clone());
+                    }
                 }
             }
         }

@@ -143,6 +143,15 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
 - The run budget in the sandbox is `wall_time` + 180 s (scheduling and image pull) + 120 s (unpack and cleanup). The pod and the run token live that long, and the worker's outer timeout is 30 s longer, so the sandbox's own deadline fires first and deletes the pod.
 - Pod names include the lease attempt id, so a run reclaimed after a worker crash never collides with the orphaned pod, which the GC sweep removes.
 
+### QA and judge in the sandbox (ADRs 1201aa7f, 7877a09b)
+
+- **Reachable hosts** (signed into a v3 run token): enabled `web_application` targets that are HTTPS on 443 (others are skipped), the run's preview `app_base_url` (HTTPS on 443, else the run is blocked), and the agent's `sandbox_allowed_hosts` (admin-edited: CDNs, SSO, payment providers; validated on save). At most 16; none usable → `target_not_sandboxable`. The proxy still refuses any name resolving to a non-public address. Plain-HTTP subresources are not supported (the proxy only tunnels CONNECT).
+- **Run input** may only set `trigger`, `judge_targets` and `app_base_url` over the agent config, so an input can never add hosts or change isolation, auto-merge or commands.
+- **Test commands** (`test_commands`) run before the agent in a commands pod: registry-only token signed with the same hosts, target credentials on stdin, per-command timeout and optional failure reproduction. Output is scrubbed of the pod's token and formatted as before. The worker keeps the lease alive and honors cancel while it runs; infrastructure failures are `blocked_runtime`.
+- **Browser**: the agent pod gets a Playwright config file (written on stdin after unpack) whose `launchOptions.proxy` carries the run token; `--mcp-config` holds no secret. Screenshots come back as `name<TAB>base64` (image files only, ≤50, ≤20 MiB); invalid names are skipped, and collection never fails a finished run.
+- **Slack**: no Slack MCP exists; delivery stays worker-side via the connector webhook, so sandboxed runs do not list `mcp__slack__*`.
+- Target credentials reach the agent only through the prompt (on stdin) and are redacted from transcripts.
+
 ### Migration order
 
 `github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `isolation: "sandbox"` in its agent config (`executor` already names the provider, `claude` | `nexus`). Absent means `local` until the drill passes, then the default flips to `sandbox`; `isolation: "local"` stays as an explicit, UI-flagged unsafe escape hatch. A sandbox request that cannot be honored (template not migrated, `nexus` executor) is refused on save (422) and blocked at run time, never silently run locally.

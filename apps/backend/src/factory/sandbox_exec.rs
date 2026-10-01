@@ -47,6 +47,9 @@ pub trait SandboxRuntime: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct TaskPodInfo {
     pub handle: PodHandle,
+    /// The pod's slot within its run (`factory.nexusmind/slot`): parallel pods of
+    /// one run (resolver fanout) never treat each other as orphans.
+    pub slot: Option<String>,
     /// The run the pod belongs to (`factory.nexusmind/run` label).
     pub run_id: Option<String>,
     pub created_unix: i64,
@@ -80,7 +83,7 @@ pub async fn gc_expired_task_pods(
     Ok(deleted)
 }
 
-async fn delete_run_orphans(runtime: &dyn SandboxRuntime, run_id: &str) {
+async fn delete_run_orphans(runtime: &dyn SandboxRuntime, run_id: &str, slot: Option<&str>) {
     let pods = match runtime.list_task_pods().await {
         Ok(pods) => pods,
         Err(error) => {
@@ -90,7 +93,7 @@ async fn delete_run_orphans(runtime: &dyn SandboxRuntime, run_id: &str) {
     };
     for pod in pods
         .into_iter()
-        .filter(|pod| pod.run_id.as_deref() == Some(run_id))
+        .filter(|pod| pod.run_id.as_deref() == Some(run_id) && pod.slot.as_deref() == slot)
     {
         // Best effort: the GC sweep removes anything left behind.
         if let Err(error) = runtime.delete(&pod.handle).await {
@@ -151,7 +154,33 @@ pub struct SandboxJob {
     pub command_timeout_secs: u64,
     /// Re-run a failing command once and keep both outcomes (QA flakiness).
     pub reproduce_failures: bool,
+    /// Files written into the pod after the workspace (path, content), on stdin.
+    pub files: Vec<(String, Vec<u8>)>,
+    /// A pod directory whose artifacts (screenshots) are returned after the agent.
+    pub collect_dir: Option<String>,
+    /// Periodic diffs of the agent's work while it runs (WIP checkpoints), and a
+    /// last one when the job times out. Requires `collect_diff`.
+    pub checkpoints: Option<Checkpoints>,
 }
+
+pub struct Checkpoints {
+    pub every: Duration,
+    pub sink: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+/// How long the last diff of a timed-out job may take.
+const FINAL_DIFF_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Most artifacts returned from a pod, and their total size.
+pub const MAX_ARTIFACTS: usize = 50;
+pub const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
+
+/// Writes stdin to the path in argv[1].
+const WRITE_FILE: &str =
+    "import sys\nwith open(sys.argv[1],'wb') as f: f.write(sys.stdin.buffer.read())";
+/// Prints `name<TAB>base64` for the image files of argv[1] (regular files only,
+/// no links), stopping at the byte budget so one exec stays under its output cap.
+const LIST_ARTIFACTS: &str = "import base64,os,sys\nd=sys.argv[1]\nleft=20971520\nif os.path.isdir(d):\n    for n in sorted(os.listdir(d))[:50]:\n        p=os.path.join(d,n)\n        if not n.lower().endswith(('.png','.jpg','.jpeg','.webp')) or os.path.islink(p) or not os.path.isfile(p):\n            continue\n        size=os.path.getsize(p)\n        if size>5242880 or size>left:\n            continue\n        left-=size\n        print(n+'\\t'+base64.b64encode(open(p,'rb').read()).decode())";
 
 /// One command run in the pod, with its (bounded) output.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -200,6 +229,8 @@ fn env_stdin(env: &[(String, String)]) -> Vec<u8> {
 pub struct SandboxResult {
     /// The agent's output; `None` for a commands-only pod.
     pub output: Option<ExecOutput>,
+    /// Artifacts from `collect_dir`, names validated.
+    pub artifacts: Vec<(String, Vec<u8>)>,
     pub verification: Vec<CommandRun>,
     /// `git diff --binary` against `base_sha`, including new files.
     pub diff: Vec<u8>,
@@ -249,16 +280,41 @@ pub async fn run_in_sandbox(
     };
     // A retried run first removes the pods of its earlier attempts: a crashed
     // worker's pod may still be running the agent and spending its budget.
-    if let Some(run_id) = job.manifest["metadata"]["labels"][super::sandbox::RUN_LABEL].as_str() {
-        delete_run_orphans(runtime.as_ref(), run_id).await;
+    let labels = &job.manifest["metadata"]["labels"];
+    if let Some(run_id) = labels[super::sandbox::RUN_LABEL].as_str() {
+        delete_run_orphans(
+            runtime.as_ref(),
+            run_id,
+            labels[super::sandbox::SLOT_LABEL].as_str(),
+        )
+        .await;
     }
     let pod = runtime.create(&job.manifest).await?;
     guard.pod = Some(pod.clone());
     // Dropping the in-flight exec on timeout closes its stream; the delete below
     // then kills whatever still runs in the pod.
-    let outcome = tokio::time::timeout(job.wall_time, drive(runtime.as_ref(), &pod, job, on_line))
-        .await
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("sandbox_timeout")));
+    let outcome = match tokio::time::timeout(
+        job.wall_time,
+        drive(runtime.as_ref(), &pod, job, on_line),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            // Out of time: keep the partial work if anyone is collecting it.
+            if let (true, Some(checkpoints)) = (job.collect_diff, &job.checkpoints) {
+                if let Ok(Ok(diff)) = tokio::time::timeout(
+                    FINAL_DIFF_TIMEOUT,
+                    take_diff(runtime.as_ref(), &pod, &job.base_sha),
+                )
+                .await
+                {
+                    let _ = checkpoints.sink.send(diff);
+                }
+            }
+            Err(anyhow::anyhow!("sandbox_timeout"))
+        }
+    };
     // Always delete, whatever happened inside. The guard stays armed until the
     // delete completes, so a cancel during it still deletes. A failed delete is
     // reported only if the task itself succeeded; the GC sweep removes leftovers.
@@ -296,11 +352,29 @@ async fn drive(
     if unpack.exit_code != 0 {
         anyhow::bail!("workspace_unpack_failed")
     }
+    for (path, content) in &job.files {
+        let written = runtime
+            .exec(
+                pod,
+                &limited(&strings(&["python3", "-c", WRITE_FILE, path])),
+                Some(content.clone()),
+                &mut |_: &[u8]| {},
+            )
+            .await?;
+        if written.exit_code != 0 {
+            anyhow::bail!("sandbox_file_write_failed")
+        }
+    }
     let output = match &job.command {
         Some(command) => {
-            let output = runtime
-                .exec(pod, &limited(command), job.command_stdin.clone(), on_line)
-                .await?;
+            let argv = limited(command);
+            let agent = runtime.exec(pod, &argv, job.command_stdin.clone(), on_line);
+            let output = match (&job.checkpoints, job.collect_diff) {
+                (Some(checkpoints), true) => {
+                    with_checkpoints(runtime, pod, &job.base_sha, checkpoints, agent).await?
+                }
+                _ => agent.await?,
+            };
             // No status means the stream broke: the output may be partial and the
             // process may still be editing, so neither transcript nor diff is trusted.
             if output.exit_code < 0 {
@@ -309,6 +383,17 @@ async fn drive(
             Some(output)
         }
         None => None,
+    };
+    // Evidence is best effort: a finished, paid-for agent run is never failed
+    // because a screenshot could not be brought back.
+    let artifacts = match &job.collect_dir {
+        Some(dir) => collect_artifacts(runtime, pod, dir)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(target: "factory_sandbox", pod = %pod.name, "artifact collection failed: {error:#}");
+                Vec::new()
+            }),
+        None => Vec::new(),
     };
     // The diff is taken before any later verification, whose installs and builds
     // may touch tracked files (lockfiles) that are not part of the change.
@@ -320,9 +405,86 @@ async fn drive(
     let verification = verify(runtime, pod, job).await;
     Ok(SandboxResult {
         output,
+        artifacts,
         verification,
         diff,
     })
+}
+
+async fn collect_artifacts(
+    runtime: &dyn SandboxRuntime,
+    pod: &PodHandle,
+    dir: &str,
+) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    use base64::Engine;
+    let listed = runtime
+        .exec(
+            pod,
+            &limited(&strings(&["python3", "-c", LIST_ARTIFACTS, dir])),
+            None,
+            &mut |_: &[u8]| {},
+        )
+        .await?;
+    if listed.exit_code != 0 {
+        anyhow::bail!("artifact_collection_failed")
+    }
+    let mut artifacts = Vec::new();
+    let mut total = 0usize;
+    for line in listed
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        // The pod is untrusted: re-check every name and bound what is kept.
+        let Some((name, content)) = std::str::from_utf8(line)
+            .ok()
+            .and_then(|text| text.split_once('\t'))
+            .filter(|(name, _)| super::sandbox::valid_artifact_name(name))
+            .and_then(|(name, encoded)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+                    .map(|content| (name, content))
+            })
+        else {
+            tracing::warn!(target: "factory_sandbox", pod = %pod.name, "skipped an invalid artifact");
+            continue;
+        };
+        if artifacts.len() >= MAX_ARTIFACTS || total + content.len() > MAX_ARTIFACT_BYTES {
+            break;
+        }
+        total += content.len();
+        artifacts.push((name.to_string(), content));
+    }
+    Ok(artifacts)
+}
+
+/// Drives the agent while sending a diff of its work every `every`. A failed
+/// checkpoint is skipped: checkpoints are a safety net, not part of the result.
+async fn with_checkpoints(
+    runtime: &dyn SandboxRuntime,
+    pod: &PodHandle,
+    base_sha: &str,
+    checkpoints: &Checkpoints,
+    agent: impl std::future::Future<Output = anyhow::Result<ExecOutput>>,
+) -> anyhow::Result<ExecOutput> {
+    tokio::pin!(agent);
+    let mut ticker = tokio::time::interval(checkpoints.every);
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            output = &mut agent => return output,
+            _ = ticker.tick() => {
+                match take_diff(runtime, pod, base_sha).await {
+                    Ok(diff) if !diff.is_empty() => {
+                        let _ = checkpoints.sink.send(diff);
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(target: "factory_sandbox", pod = %pod.name, "checkpoint failed: {error:#}"),
+                }
+            }
+        }
+    }
 }
 
 async fn take_diff(
@@ -432,6 +594,8 @@ mod tests {
         hang_create: bool,
         failing_npm: bool,
         has_orphan: bool,
+        bad_artifact: bool,
+        slow_command: Option<Duration>,
         lost_status: bool,
         diff: Vec<u8>,
     }
@@ -468,6 +632,21 @@ mod tests {
                 stdin.map(|s| s.len()).unwrap_or(0),
                 joined
             ));
+            if joined.contains("open(sys.argv[1],'wb')") {
+                return Ok(ExecOutput::default());
+            }
+            if joined.contains("base64.b64encode") {
+                let stdout = if self.bad_artifact {
+                    b"../evil.png\taGk=\n".to_vec()
+                } else {
+                    b"shot-1.png\taGk=\n".to_vec()
+                };
+                return Ok(ExecOutput {
+                    exit_code: 0,
+                    stdout,
+                    stderr: vec![],
+                });
+            }
             if joined.contains(" npm ") {
                 return Ok(ExecOutput {
                     exit_code: if self.failing_npm { 1 } else { 0 },
@@ -490,6 +669,9 @@ mod tests {
                 }
                 if self.hang_command {
                     std::future::pending::<()>().await;
+                }
+                if let Some(delay) = self.slow_command {
+                    tokio::time::sleep(delay).await;
                 }
                 if self.lost_status {
                     return Ok(ExecOutput {
@@ -524,6 +706,7 @@ mod tests {
                 created_unix,
                 deadline_secs: Some(600),
                 run_id: Some("run-other".into()),
+                slot: Some("main".into()),
             };
             let mut pods = vec![
                 // Deadline + grace (600 + 300) long past.
@@ -541,6 +724,12 @@ mod tests {
                     run_id: Some("run-A".into()),
                     ..pod("task-orphan", 10_000)
                 });
+                // A sibling of the same run in another slot (resolver fanout).
+                pods.push(TaskPodInfo {
+                    run_id: Some("run-A".into()),
+                    slot: Some("issue-7".into()),
+                    ..pod("task-sibling", 10_000)
+                });
             }
             Ok(pods)
         }
@@ -551,7 +740,7 @@ mod tests {
             manifest: serde_json::json!({"metadata": {
                 "name": "task-1",
                 "namespace": "ns",
-                "labels": {"factory.nexusmind/run": "run-A"}
+                "labels": {"factory.nexusmind/run": "run-A", "factory.nexusmind/slot": "main"}
             }}),
             workspace_tar: vec![1, 2, 3],
             command: Some(vec!["claude".into(), "-p".into()]),
@@ -564,7 +753,102 @@ mod tests {
             verification_env: Vec::new(),
             command_timeout_secs: 300,
             reproduce_failures: false,
+            files: Vec::new(),
+            collect_dir: None,
+            checkpoints: None,
         }
+    }
+
+    #[tokio::test]
+    async fn checkpoints_stream_diffs_while_the_agent_works() {
+        let fake = Arc::new(Fake {
+            slow_command: Some(Duration::from_millis(120)),
+            diff: b"diff --git a/x b/x".to_vec(),
+            ..Default::default()
+        });
+        let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut job = job(SHA);
+        job.checkpoints = Some(Checkpoints {
+            every: Duration::from_millis(30),
+            sink,
+        });
+        let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert_eq!(result.diff, b"diff --git a/x b/x");
+        let mut checkpoints = 0;
+        while let Ok(diff) = received.try_recv() {
+            assert_eq!(diff, b"diff --git a/x b/x");
+            checkpoints += 1;
+        }
+        assert!(checkpoints >= 2, "{checkpoints}");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_job_hands_over_its_last_diff_before_the_pod_goes() {
+        let fake = Arc::new(Fake {
+            hang_command: true,
+            diff: b"diff --git a/partial b/partial".to_vec(),
+            ..Default::default()
+        });
+        let (sink, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut job = job(SHA);
+        job.wall_time = Duration::from_millis(50);
+        job.checkpoints = Some(Checkpoints {
+            every: Duration::from_secs(3600),
+            sink,
+        });
+        let error = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "sandbox_timeout");
+        assert_eq!(
+            received.try_recv().unwrap(),
+            b"diff --git a/partial b/partial"
+        );
+        let calls = fake.calls.lock().unwrap().clone();
+        let diff = calls.iter().rposition(|c| c.contains("git diff")).unwrap();
+        assert!(
+            diff < calls.iter().rposition(|c| c == "delete").unwrap(),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn files_go_in_on_stdin_and_artifacts_come_back_validated() {
+        let fake = Arc::new(Fake::default());
+        let mut job = job(SHA);
+        job.files = vec![("/tmp/cfg.json".into(), b"{\"secret\":1}".to_vec())];
+        job.collect_dir = Some("/tmp/out".into());
+        let result = run_in_sandbox(fake.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            result.artifacts,
+            [("shot-1.png".to_string(), b"hi".to_vec())]
+        );
+        let calls = fake.calls.lock().unwrap().clone();
+        let write = calls.iter().find(|c| c.contains("/tmp/cfg.json")).unwrap();
+        assert!(write.starts_with("exec[12]"), "{write}");
+        assert!(!write.contains("secret"), "{write}");
+        let position = |needle: &str| calls.iter().position(|c| c.contains(needle)).unwrap();
+        assert!(position("tar -x") < position("/tmp/cfg.json"), "{calls:?}");
+        assert!(position("/tmp/cfg.json") < position("claude"), "{calls:?}");
+        assert!(
+            position("claude") < position("base64.b64encode"),
+            "{calls:?}"
+        );
+
+        let hostile = Arc::new(Fake {
+            bad_artifact: true,
+            ..Default::default()
+        });
+        // A hostile name is dropped; the finished run still succeeds.
+        let result = run_in_sandbox(hostile.clone(), &job, &mut |_: &[u8]| {})
+            .await
+            .unwrap();
+        assert!(result.artifacts.is_empty());
+        assert!(result.output.is_some());
     }
 
     fn with_checks(mut job: SandboxJob) -> SandboxJob {
@@ -714,8 +998,13 @@ mod tests {
             .expect("orphan deleted");
         let create = calls.iter().position(|c| c == "create").unwrap();
         assert!(orphan < create, "{calls:?}");
-        // Pods of other runs are the GC's business, not this run's.
+        // Pods of other runs are the GC's business, not this run's, and parallel
+        // pods of this run in other slots are siblings, not orphans.
         assert!(!calls.iter().any(|c| c.contains("task-live")), "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| c.contains("task-sibling")),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -1060,7 +1349,13 @@ impl SandboxRuntime for KubeRuntime {
                     run_id: pod
                         .metadata
                         .labels
+                        .as_ref()
                         .and_then(|labels| labels.get(super::sandbox::RUN_LABEL).cloned()),
+                    slot: pod
+                        .metadata
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(super::sandbox::SLOT_LABEL).cloned()),
                 })
             })
             .collect())

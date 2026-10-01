@@ -24,7 +24,7 @@
 
 ## 6. De-privileging and drill
 - [ ] 6.1 Adversarial drill script: from a task pod try the DB, the worker environment, credential files, non-allowlisted hosts and the Kubernetes API; every attempt must fail — `scripts/factory/sandbox_drill.py` written (confinement, userns, PID ns, SA token, /data, RO rootfs, env credentials, direct network, proxy denials, registry token scope, fork limit); **run in the cluster pending**
-- [ ] 6.2 Migrate templates (reviewer → QA → resolver); local execution only behind an explicit unsafe flag
+- [ ] 6.2 Migrate templates (reviewer → QA → resolver); local execution only behind an explicit unsafe flag — reviewer ✅, QA/judge ✅ (tests pod + agent pod, signed hosts, Playwright via proxy, screenshots); resolver pending; default flip + admin selector pending
 
 ## 7. Recover
 - [x] 7.1 Never resume in place (the exec stream dies with the worker): lease expiry requeues from scratch; a retry deletes its orphan pods first; delivery keys are attempt-independent
