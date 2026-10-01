@@ -91,7 +91,8 @@ RUN if [ "$INSTALL_SCANNERS" = "true" ]; then \
     fi
 
 # nuclei (active DAST) for the security_dast template. Templates are baked at build
-# time into /opt/nuclei-home/nuclei-templates — a path NOT shadowed by the runtime
+# time into /opt/nuclei-home/nuclei-templates (world-readable: sandbox task pods
+# run as a non-root UID; the public templates hold no secret) — a path NOT shadowed by the runtime
 # volume mounts on /claude-home — so runs use them via `-t` with update checks
 # disabled and never download templates or phone home at run time.
 #
@@ -110,6 +111,7 @@ RUN if [ "$INSTALL_NUCLEI" = "true" ]; then \
       && chmod +x /usr/local/bin/nuclei \
       && rm -f /tmp/nuclei.zip \
       && HOME=/opt/nuclei-home nuclei -update-templates \
+      && chmod -R a+rX /opt/nuclei-home \
       && nuclei -version \
       && rm -rf /var/lib/apt/lists/* ; \
     else \
@@ -150,6 +152,7 @@ RUN if [ "$INSTALL_BROWSERS" = "true" ]; then \
       && chmod +x "${PKG}/${BIN}" \
       && playwright install --with-deps chromium \
       && mcp-server-playwright install-browser chrome-for-testing \
+      && chmod -R a+rX /ms-playwright \
       && ls -la /ms-playwright/ \
       && npm cache clean --force \
       && rm -rf /var/lib/apt/lists/* ; \

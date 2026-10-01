@@ -162,6 +162,16 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
 - **Verification at publish** runs in a commands pod over the applied checkout; a failing command blocks the publish, as locally.
 - The worker's outer timeout is the pods' lifetime + 180 s, so the inner deadline (and its last diff) always fires first.
 
+### Scanners in the sandbox
+
+- `security_scan` (semgrep + osv-scanner) and `security_dast` (nuclei) run in a commands pod; the worker only parses their reports. Hosts: `semgrep.dev`, `api.osv.dev`, `api.deps.dev` for SAST/SCA; the targets' HTTPS hosts for DAST. nuclei reads its proxy from a file written into the pod (`-proxy /tmp/nuclei-proxy.txt`), keeping the token out of the exec request. Scanner pods never get target credentials.
+- **Fail closed, never "clean by accident":** a semgrep report that is not JSON, or has only fatal errors and no results, fails the scan (`scanner_failed`). Before nuclei, each target is probed through the proxy with `curl`; an unreachable target fails the scan (`dast_target_unreachable`) instead of yielding an empty report. Scanner timeouts, missing binaries and oversized reports keep their codes; sandbox infrastructure failures are `blocked_runtime` with a code only.
+- The image makes `/opt/nuclei-home` and `/ms-playwright` world-readable: task pods run as a non-root UID.
+
+### Default isolation
+
+`FACTORY_ISOLATION_DEFAULT=sandbox` makes agents without an explicit `isolation` run sandboxed (supported templates and the Claude executor only). It is set in production after the drill passes, so deploying this code never moves agents into a sandbox that does not exist yet. An explicit choice always wins. The admin wizard offers Server default / Sandbox / Local (unsafe, with a warning) and, for QA and judge, the extra hosts list (validated as on the server, at most 16).
+
 ### Migration order
 
 `github_pr_reviewer` goes first: it is read-only, so the diff is empty and the review output is the transcript. Then `qa`, then `github_issue_resolver`. Each template gets `isolation: "sandbox"` in its agent config (`executor` already names the provider, `claude` | `nexus`). Absent means `local` until the drill passes, then the default flips to `sandbox`; `isolation: "local"` stays as an explicit, UI-flagged unsafe escape hatch. A sandbox request that cannot be honored (template not migrated, `nexus` executor) is refused on save (422) and blocked at run time, never silently run locally.

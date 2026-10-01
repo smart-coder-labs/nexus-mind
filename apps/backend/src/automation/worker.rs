@@ -352,6 +352,35 @@ fn sandbox_write_consumer(
 /// must always fire first so partial work is kept.
 const SANDBOX_OUTER_MARGIN: Duration = Duration::from_secs(180);
 
+/// A scanner template that could not produce a report. Scanner and policy codes
+/// stay policy blocks as before; sandbox infrastructure failures are runtime
+/// blocks with only a code (never raw cluster text).
+fn scanner_failure_outcome(
+    sandboxed: bool,
+    run_id: &str,
+    error: &anyhow::Error,
+) -> (String, serde_json::Value) {
+    let code = error.to_string();
+    let policy = code.starts_with("scanner_")
+        || matches!(
+            code.as_str(),
+            "command_not_allowlisted"
+                | "target_not_sandboxable"
+                | "too_many_sandbox_hosts"
+                | "invalid_sandbox_allowed_hosts"
+                | "no_authorized_target"
+                | "dast_target_unreachable"
+        );
+    if !sandboxed || policy {
+        ("blocked_policy".into(), json!({"code":code}))
+    } else {
+        (
+            "blocked_runtime".into(),
+            json!({"code":"sandbox_failed","detail":super::sandboxed::failure_code(run_id, error)}),
+        )
+    }
+}
+
 /// The outcome of a sandboxed agent that did not return: running out of time
 /// is a budget outcome (partial work is kept), anything else a runtime block.
 fn sandbox_failure_outcome(run_id: &str, error: &anyhow::Error) -> (String, serde_json::Value) {
@@ -416,6 +445,9 @@ async fn resolver_verification(
             reproduce_failures: false,
             hosts: &[],
             label: "v",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
         },
     )
     .await?;
@@ -507,6 +539,9 @@ async fn qa_results_sandboxed(
             reproduce_failures,
             hosts,
             label: "t",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
         },
     )
     .await?;
@@ -707,6 +742,24 @@ async fn spawn_capture(
     }
 }
 
+/// Where scanners run: in the worker (local isolation) or in a sandbox commands
+/// pod, where the worker only parses their reports.
+enum ScannerRunner<'a> {
+    Local,
+    Sandbox {
+        store: &'a SqliteStore,
+        claim: &'a queries::ClaimedAutonomousRun,
+    },
+}
+
+/// Hosts the scanners themselves need: Semgrep's rule registry and the OSV and
+/// deps.dev vulnerability APIs. Their own telemetry endpoints stay unreachable.
+const SCANNER_HOSTS: &[&str] = &["semgrep.dev", "api.osv.dev", "api.deps.dev"];
+/// nuclei takes its proxy from a file, so the pod token never enters argv.
+const NUCLEI_PROXY_FILE: &str = "/tmp/nuclei-proxy.txt";
+/// Scanner JSON reports can be large; anything beyond is an error, not a cut.
+const SCANNER_MAX_STDOUT: usize = 16 * 1024 * 1024;
+
 /// Run one allowlisted security scanner. `argv[0]` MUST be an allowlisted program
 /// (built by `security_scan::build_*_argv`, the only place fixed flags live); any
 /// other program is rejected before spawn.
@@ -723,59 +776,6 @@ async fn run_scanner_capture(
     }
     spawn_capture(program, rest, workdir, timeout_secs).await
 }
-
-/// Worker-driven security scan: run the allowlisted scanners over the checkout and
-/// return canonical findings for the agent to triage. SAST always runs; SCA runs
-/// unless explicitly disabled. A missing scanner fails the run closed
-/// (`scanner_unavailable`) instead of silently passing.
-async fn run_security_scanners(
-    workdir: &Path,
-    config: &serde_json::Value,
-) -> anyhow::Result<Vec<serde_json::Value>> {
-    let mut findings = Vec::new();
-    let mut invocations = 0usize;
-
-    // SAST — always.
-    // Default to `p/ci` rather than `auto`: `auto` contacts the Semgrep registry
-    // and emits pseudonymous telemetry, which is inappropriate as the default for a
-    // security tool. `p/ci` is a curated offline-capable ruleset; the admin can
-    // still opt into `auto` explicitly.
-    let ruleset = config
-        .pointer("/sast/ruleset")
-        .and_then(|value| value.as_str())
-        .unwrap_or("p/ci");
-    let semgrep_argv = super::security_scan::build_semgrep_argv(ruleset, ".", 30)?;
-    invocations += 1;
-    let semgrep_out =
-        run_scanner_capture(&semgrep_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&semgrep_out) {
-        findings.extend(super::security_scan::map_semgrep_json(&value));
-    }
-
-    // SCA — unless explicitly disabled in the definition config.
-    let sca_enabled = config
-        .pointer("/sca/enabled")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    if sca_enabled {
-        let osv_argv = super::security_scan::build_osv_argv(".");
-        invocations += 1;
-        let osv_out =
-            run_scanner_capture(&osv_argv, workdir, SECURITY_SCANNER_TIMEOUT_SECS).await?;
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&osv_out) {
-            findings.extend(super::security_scan::map_osv_json(&value));
-        }
-    }
-
-    debug_assert!(invocations <= super::security_scan::MAX_SCANNER_INVOCATIONS);
-    Ok(findings)
-}
-
-/// How long a single nuclei scan of one target may run before it is killed. The scan
-/// is scoped to a fast tag set, so a well-behaved run finishes in minutes; this is the
-/// backstop for an unreachable or very slow target.
-const DAST_SCAN_TIMEOUT_SECS: u64 = 900;
-
 /// Run one allowlisted DAST scanner. `argv[0]` MUST be an allowlisted program (built
 /// by `security_dast::build_nuclei_argv`); anything else is rejected before spawn.
 async fn run_dast_capture(
@@ -792,6 +792,156 @@ async fn run_dast_capture(
     spawn_capture(program, rest, workdir, timeout_secs).await
 }
 
+#[derive(Clone, Copy)]
+enum ScannerKind {
+    /// SAST/SCA over the checkout (security_scan allowlist).
+    Static,
+    /// nuclei against authorized targets (security_dast allowlist).
+    Dynamic,
+}
+
+impl ScannerKind {
+    fn allows(self, argv: &[String]) -> bool {
+        argv.first().is_some_and(|program| match self {
+            ScannerKind::Static => super::security_scan::is_allowlisted_program(program),
+            ScannerKind::Dynamic => super::security_dast::is_allowlisted_program(program),
+        })
+    }
+}
+
+/// Runs each argv and returns its stdout, in order.
+async fn capture_scanners(
+    runner: &ScannerRunner<'_>,
+    kind: ScannerKind,
+    workdir: &Path,
+    argvs: &[Vec<String>],
+    timeout_secs: u64,
+    hosts: &[String],
+    nuclei_proxy: bool,
+    // Sandbox only: commands that must all succeed before the scanners' output
+    // is trusted (target reachability through the proxy).
+    probes: &[Vec<String>],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    match runner {
+        ScannerRunner::Local => {
+            let mut outputs = Vec::new();
+            for argv in argvs {
+                outputs.push(match kind {
+                    ScannerKind::Static => run_scanner_capture(argv, workdir, timeout_secs).await?,
+                    ScannerKind::Dynamic => run_dast_capture(argv, workdir, timeout_secs).await?,
+                });
+            }
+            Ok(outputs)
+        }
+        ScannerRunner::Sandbox { store, claim } => {
+            if !argvs.iter().all(|argv| kind.allows(argv)) {
+                anyhow::bail!("command_not_allowlisted")
+            }
+            let unused_receipts = std::sync::Mutex::new(Vec::new());
+            let run = super::sandboxed::SandboxedRun {
+                store,
+                org_id: &claim.org_id,
+                run_id: &claim.run.id,
+                attempt_id: &claim.attempt_id,
+                retry: 0,
+                workdir,
+                secret_values: &[],
+                seq_base: 0,
+                wall_time: Duration::ZERO,
+                verification: &[],
+                receipts: &unused_receipts,
+                qa: None,
+                slot: "main",
+                writes: None,
+            };
+            let commands: Vec<Vec<String>> = probes.iter().chain(argvs).cloned().collect();
+            let runs = super::sandboxed::run_commands_sandboxed(
+                &run,
+                &super::sandboxed::CommandsSpec {
+                    commands: &commands,
+                    extra_env: &[],
+                    timeout_secs,
+                    reproduce_failures: false,
+                    hosts,
+                    label: "s",
+                    max_stdout: SCANNER_MAX_STDOUT,
+                    files: Vec::new(),
+                    proxy_file: nuclei_proxy.then_some(NUCLEI_PROXY_FILE),
+                },
+            )
+            .await?;
+            super::sandboxed::check_probes(&runs[..probes.len()])?;
+            runs[probes.len()..]
+                .iter()
+                .map(super::sandboxed::scanner_output)
+                .collect()
+        }
+    }
+}
+
+/// Worker-driven security scan: run the allowlisted scanners over the checkout and
+/// return canonical findings for the agent to triage. SAST always runs; SCA runs
+/// unless explicitly disabled. A missing scanner fails the run closed
+/// (`scanner_unavailable`) instead of silently passing.
+async fn run_security_scanners(
+    workdir: &Path,
+    config: &serde_json::Value,
+    runner: &ScannerRunner<'_>,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    // SAST — always.
+    // Default to `p/ci` rather than `auto`: `auto` contacts the Semgrep registry
+    // and emits pseudonymous telemetry, which is inappropriate as the default for a
+    // security tool. `p/ci` is a curated offline-capable ruleset; the admin can
+    // still opt into `auto` explicitly.
+    let ruleset = config
+        .pointer("/sast/ruleset")
+        .and_then(|value| value.as_str())
+        .unwrap_or("p/ci");
+    let mut argvs = vec![super::security_scan::build_semgrep_argv(ruleset, ".", 30)?];
+    // SCA — unless explicitly disabled in the definition config.
+    let sca_enabled = config
+        .pointer("/sca/enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    if sca_enabled {
+        argvs.push(super::security_scan::build_osv_argv("."));
+    }
+    debug_assert!(argvs.len() <= super::security_scan::MAX_SCANNER_INVOCATIONS);
+    let hosts: Vec<String> = SCANNER_HOSTS.iter().map(|host| host.to_string()).collect();
+    let outputs = capture_scanners(
+        runner,
+        ScannerKind::Static,
+        workdir,
+        &argvs,
+        SECURITY_SCANNER_TIMEOUT_SECS,
+        &hosts,
+        false,
+        &[],
+    )
+    .await?;
+    let mut findings = Vec::new();
+    for (index, output) in outputs.iter().enumerate() {
+        let parsed = serde_json::from_slice::<serde_json::Value>(output);
+        if index == 0 {
+            // SAST must prove it scanned: an unreadable report or one with only
+            // fatal errors (rules not loaded, network) would otherwise read as clean.
+            let value = parsed.map_err(|_| anyhow::anyhow!("scanner_failed"))?;
+            if super::security_scan::semgrep_report_failed(&value) {
+                anyhow::bail!("scanner_failed")
+            }
+            findings.extend(super::security_scan::map_semgrep_json(&value));
+        } else if let Ok(value) = parsed {
+            findings.extend(super::security_scan::map_osv_json(&value));
+        }
+    }
+    Ok(findings)
+}
+
+/// How long a single nuclei scan of one target may run before it is killed. The scan
+/// is scoped to a fast tag set, so a well-behaved run finishes in minutes; this is the
+/// backstop for an unreachable or very slow target.
+const DAST_SCAN_TIMEOUT_SECS: u64 = 900;
+
 /// Worker-driven active DAST: for each authorized `web_application` target, run nuclei
 /// against the target's registered URL (never free-form run input), keep only findings
 /// on the authorized host (scope guard lives in `map_nuclei_jsonl`), and return canonical
@@ -800,6 +950,7 @@ async fn run_dast_capture(
 async fn run_dast_scan(
     workdir: &Path,
     config: &serde_json::Value,
+    runner: &ScannerRunner<'_>,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let selected = config
         .get("target_name")
@@ -832,20 +983,50 @@ async fn run_dast_scan(
         .unwrap_or(20)
         .clamp(1, 500) as u32;
 
-    let mut findings = Vec::new();
-    let mut invocations = 0usize;
+    let sandboxed = matches!(runner, ScannerRunner::Sandbox { .. });
+    let mut scans: Vec<(String, Vec<String>)> = Vec::new();
+    let mut tunnel_hosts: Vec<String> = Vec::new();
     for target in targets
         .into_iter()
         .take(super::security_dast::MAX_DAST_INVOCATIONS)
     {
         let target_config = target.get("config").cloned().unwrap_or(serde_json::json!({}));
         let (host, url) = super::security_dast::authorized_target_url(&target_config)?;
-        let argv = super::security_dast::build_nuclei_argv(&url, severity, rate_limit, 10)?;
-        invocations += 1;
-        let out = run_dast_capture(&argv, workdir, DAST_SCAN_TIMEOUT_SECS).await?;
-        findings.extend(super::security_dast::map_nuclei_jsonl(&out, &host));
+        let mut argv = super::security_dast::build_nuclei_argv(&url, severity, rate_limit, 10)?;
+        if sandboxed {
+            // The proxy tunnels HTTPS on 443 only, to this run's signed hosts.
+            let reachable = crate::factory::sandbox::sandbox_hosts(
+                &serde_json::json!({"targets": [{"kind": "web_application", "enabled": true, "config": target_config}]}),
+            )?;
+            tunnel_hosts.extend(reachable);
+            argv.extend(["-proxy".to_string(), NUCLEI_PROXY_FILE.to_string()]);
+        }
+        scans.push((host, argv));
     }
-    debug_assert!(invocations <= super::security_dast::MAX_DAST_INVOCATIONS);
+    let argvs: Vec<Vec<String>> = scans.iter().map(|(_, argv)| argv.clone()).collect();
+    let probes: Vec<Vec<String>> = if sandboxed {
+        tunnel_hosts
+            .iter()
+            .map(|host| super::sandboxed::reachability_probe(host))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let outputs = capture_scanners(
+        runner,
+        ScannerKind::Dynamic,
+        workdir,
+        &argvs,
+        DAST_SCAN_TIMEOUT_SECS,
+        &tunnel_hosts,
+        sandboxed,
+        &probes,
+    )
+    .await?;
+    let mut findings = Vec::new();
+    for ((host, _), output) in scans.iter().zip(outputs.iter()) {
+        findings.extend(super::security_dast::map_nuclei_jsonl(output, host));
+    }
     Ok(findings)
 }
 
@@ -4320,7 +4501,12 @@ async fn execute_claim(
         // Worker-driven: run the allowlisted scanners over the checkout and inject
         // their canonical findings for the agent to triage. A missing scanner fails
         // the run closed rather than passing silently.
-        match run_security_scanners(&workdir, &runtime_config).await {
+        let runner = if sandboxed {
+            ScannerRunner::Sandbox { store, claim }
+        } else {
+            ScannerRunner::Local
+        };
+        match run_security_scanners(&workdir, &runtime_config, &runner).await {
             Ok(scanner_findings) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("scanner_findings".into(), json!(scanner_findings));
@@ -4328,7 +4514,7 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                return scanner_failure_outcome(sandboxed, &claim.run.id, &error);
             }
         }
     }
@@ -4337,7 +4523,12 @@ async fn execute_claim(
         // web_application target(s); the URL never comes from run input and findings
         // are scope-guarded to the authorized host. No authorized target or a missing
         // scanner fails the run closed.
-        match run_dast_scan(&workdir, &runtime_config).await {
+        let runner = if sandboxed {
+            ScannerRunner::Sandbox { store, claim }
+        } else {
+            ScannerRunner::Local
+        };
+        match run_dast_scan(&workdir, &runtime_config, &runner).await {
             Ok(scanner_findings) => {
                 if let Some(object) = runtime_config.as_object_mut() {
                     object.insert("scanner_findings".into(), json!(scanner_findings));
@@ -4345,7 +4536,7 @@ async fn execute_claim(
             }
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(&workdir).await;
-                return ("blocked_policy".into(), json!({"code":error.to_string()}));
+                return scanner_failure_outcome(sandboxed, &claim.run.id, &error);
             }
         }
     }
@@ -7273,7 +7464,9 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("bad.py"), "eval(user_input)\n").unwrap();
         let config = json!({"sast":{"ruleset":"rule.yml"},"sca":{"enabled":false}});
-        let findings = run_security_scanners(root, &config).await.unwrap();
+        let findings = run_security_scanners(root, &config, &ScannerRunner::Local)
+            .await
+            .unwrap();
         assert!(
             findings
                 .iter()
@@ -7331,7 +7524,7 @@ mod tests {
     async fn run_dast_scan_fails_closed_without_authorized_target() {
         let dir = std::env::temp_dir();
         // No web_application targets at all.
-        let err = run_dast_scan(&dir, &json!({"targets": []}))
+        let err = run_dast_scan(&dir, &json!({"targets": []}), &ScannerRunner::Local)
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "no_authorized_target");
@@ -7339,6 +7532,7 @@ mod tests {
         let err2 = run_dast_scan(
             &dir,
             &json!({"targets": [{"kind":"repository","name":"r","enabled":true,"config":{}}]}),
+            &ScannerRunner::Local,
         )
         .await
         .unwrap_err();

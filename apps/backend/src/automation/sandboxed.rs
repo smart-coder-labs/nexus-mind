@@ -220,6 +220,7 @@ impl Prepared {
             verification_env: Vec::new(),
             command_timeout_secs: crate::factory::verification::COMMAND_TIMEOUT_SECS,
             reproduce_failures: false,
+            command_stdout_cap: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
             files: Vec::new(),
             collect_dir: None,
             checkpoints: None,
@@ -237,6 +238,13 @@ pub(crate) struct CommandsSpec<'a> {
     pub hosts: &'a [String],
     /// Distinguishes this commands pod from the run's others (e.g. "t", "v").
     pub label: &'a str,
+    /// Most stdout kept per command.
+    pub max_stdout: usize,
+    /// Files written into the pod before the commands run (path, content).
+    pub files: Vec<(String, Vec<u8>)>,
+    /// Write `http://run:<pod token>@<proxy>` to this path, for tools that take
+    /// their proxy from a file rather than the environment (nuclei).
+    pub proxy_file: Option<&'a str>,
 }
 
 pub(crate) async fn run_commands_sandboxed(
@@ -275,6 +283,15 @@ async fn run_commands(
     job.verification_env.extend(spec.extra_env.iter().cloned());
     job.command_timeout_secs = spec.timeout_secs;
     job.reproduce_failures = spec.reproduce_failures;
+    job.command_stdout_cap = spec.max_stdout;
+    job.files = spec.files.clone();
+    if let Some(path) = spec.proxy_file {
+        let proxy = format!(
+            "http://run:{token}@{}\n",
+            crate::factory::sandbox::PROXY_AUTHORITY
+        );
+        job.files.push((path.to_string(), proxy.into_bytes()));
+    }
     let mut runs = run_in_sandbox(prepared.runtime.clone(), &job, &mut |_: &[u8]| {})
         .await?
         .verification;
@@ -304,6 +321,44 @@ fn scrub(run: &mut crate::factory::sandbox_exec::CommandRun, secret: &[u8]) {
     replace(&mut run.stderr, secret);
     if let Some(again) = run.reproduction.as_deref_mut() {
         scrub(again, secret);
+    }
+}
+
+/// A scanner's report from a commands pod, or why there is none. The worker only
+/// parses this output; it never runs the scanner itself for a sandboxed run.
+pub(crate) fn scanner_output(
+    run: &crate::factory::sandbox_exec::CommandRun,
+) -> anyhow::Result<Vec<u8>> {
+    match run.exit_code {
+        None => anyhow::bail!("scanner_failed"),
+        // `timeout` exits 124, or 137 when it had to kill.
+        Some(124 | 137) => anyhow::bail!("scanner_timeout"),
+        Some(126 | 127) => anyhow::bail!("scanner_unavailable"),
+        Some(_) if run.stdout_truncated => anyhow::bail!("scanner_output_too_large"),
+        Some(_) => Ok(run.stdout.clone()),
+    }
+}
+
+/// A reachability probe for a scan target, run through the proxy before the
+/// scanner: a target the sandbox cannot reach must fail the scan, not produce an
+/// empty, clean-looking report.
+pub(crate) fn reachability_probe(host: &str) -> Vec<String> {
+    // curl takes the proxy from HTTPS_PROXY; it fails on transport errors only.
+    ["curl", "-sS", "-o", "/dev/null", "--max-time", "20"]
+        .iter()
+        .map(|part| part.to_string())
+        .chain(std::iter::once(format!("https://{host}/")))
+        .collect()
+}
+
+/// Every probe must have connected (any HTTP status is fine).
+pub(crate) fn check_probes(
+    runs: &[crate::factory::sandbox_exec::CommandRun],
+) -> anyhow::Result<()> {
+    if runs.iter().all(|run| run.exit_code == Some(0)) {
+        Ok(())
+    } else {
+        anyhow::bail!("dast_target_unreachable")
     }
 }
 
@@ -410,6 +465,9 @@ pub(crate) async fn run_claude_sandboxed(
             reproduce_failures: false,
             hosts: &[],
             label: "v",
+            max_stdout: crate::factory::sandbox_exec::DEFAULT_COMMAND_STDOUT,
+            files: Vec::new(),
+            proxy_file: None,
         };
         let runs = run_commands(&prepared, &run, &spec).await?;
         if let Ok(mut slot) = run.receipts.lock() {
@@ -492,6 +550,59 @@ mod tests {
         );
         assert_eq!(run.stderr, b"clean");
         assert_eq!(run.reproduction.unwrap().stderr, b"[REDACTED]");
+    }
+
+    #[test]
+    fn scanner_runs_are_classified_without_guessing() {
+        use crate::factory::sandbox_exec::CommandRun;
+        let run = |exit_code: Option<i32>, truncated: bool| CommandRun {
+            exit_code,
+            stdout: b"{}".to_vec(),
+            stdout_truncated: truncated,
+            ..Default::default()
+        };
+        // Scanners exit non-zero when they find something: the report still counts.
+        assert_eq!(scanner_output(&run(Some(0), false)).unwrap(), b"{}");
+        assert_eq!(scanner_output(&run(Some(1), false)).unwrap(), b"{}");
+        for (exit_code, truncated, code) in [
+            (Some(124), false, "scanner_timeout"),
+            (Some(137), false, "scanner_timeout"),
+            (Some(127), false, "scanner_unavailable"),
+            (Some(126), false, "scanner_unavailable"),
+            (None, false, "scanner_failed"),
+            (Some(0), true, "scanner_output_too_large"),
+        ] {
+            assert_eq!(
+                scanner_output(&run(exit_code, truncated))
+                    .unwrap_err()
+                    .to_string(),
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn unreachable_scan_targets_fail_the_scan() {
+        use crate::factory::sandbox_exec::CommandRun;
+        let probe = reachability_probe("app.acme.test");
+        assert_eq!(probe.first().map(String::as_str), Some("curl"));
+        assert_eq!(
+            probe.last().map(String::as_str),
+            Some("https://app.acme.test/")
+        );
+        let run = |exit_code| CommandRun {
+            exit_code,
+            ..Default::default()
+        };
+        assert!(check_probes(&[run(Some(0)), run(Some(0))]).is_ok());
+        for bad in [Some(56), Some(7), None] {
+            assert_eq!(
+                check_probes(&[run(Some(0)), run(bad)])
+                    .unwrap_err()
+                    .to_string(),
+                "dast_target_unreachable"
+            );
+        }
     }
 
     #[test]

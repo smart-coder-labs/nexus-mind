@@ -120,8 +120,14 @@ pub enum Isolation {
 }
 
 /// Templates migrated to the sandbox so far (design §4, migration order).
-pub const SANDBOX_TEMPLATES: &[&str] =
-    &["github_pr_reviewer", "qa", "judge", "github_issue_resolver"];
+pub const SANDBOX_TEMPLATES: &[&str] = &[
+    "github_pr_reviewer",
+    "qa",
+    "judge",
+    "github_issue_resolver",
+    "security_scan",
+    "security_dast",
+];
 
 /// Parses and validates `isolation`. A sandbox request that cannot be honored is
 /// an error, never a silent fallback to local execution.
@@ -130,7 +136,31 @@ pub fn autonomous_isolation(
     template_key: &str,
     executor: &str,
 ) -> anyhow::Result<Isolation> {
+    resolve_isolation(config, template_key, executor, default_isolation())
+}
+
+/// The isolation of agents that do not set one: `FACTORY_ISOLATION_DEFAULT`
+/// (`sandbox` once the cluster side is deployed and the drill passed), local
+/// otherwise. A deploy never flips running agents before the sandbox exists.
+pub fn default_isolation() -> Isolation {
+    match std::env::var("FACTORY_ISOLATION_DEFAULT").as_deref() {
+        Ok("sandbox") => Isolation::Sandbox,
+        _ => Isolation::Local,
+    }
+}
+
+/// `isolation` from the agent config, or `default` when unset. The default only
+/// applies where a sandbox can run; an explicit sandbox request that cannot be
+/// honored is an error, never a silent fallback to local execution.
+pub fn resolve_isolation(
+    config: &Value,
+    template_key: &str,
+    executor: &str,
+    default: Isolation,
+) -> anyhow::Result<Isolation> {
+    let supported = executor == "claude" && SANDBOX_TEMPLATES.contains(&template_key);
     let isolation = match config.get("isolation") {
+        None if supported => return Ok(default),
         None => return Ok(Isolation::Local),
         Some(Value::String(value)) if value == "local" => return Ok(Isolation::Local),
         Some(Value::String(value)) if value == "sandbox" => Isolation::Sandbox,
@@ -240,7 +270,14 @@ pub fn parse_allowed_hosts(value: Option<&Value>) -> anyhow::Result<Vec<String>>
                 .filter(|host| super::egress::valid_host(host))
                 .ok_or_else(|| anyhow::anyhow!("invalid_sandbox_allowed_hosts"))
         })
-        .collect()
+        .collect::<anyhow::Result<Vec<String>>>()
+        .and_then(|hosts| {
+            // Checked again with the targets at run time; refuse the obvious case on save.
+            if hosts.len() > MAX_SANDBOX_HOSTS {
+                anyhow::bail!("too_many_sandbox_hosts")
+            }
+            Ok(hosts)
+        })
 }
 
 /// Where the Playwright MCP writes screenshots inside the pod.
@@ -392,15 +429,27 @@ mod tests {
     fn isolation_defaults_to_local_and_sandbox_never_falls_back() {
         let reviewer = "github_pr_reviewer";
         assert_eq!(
-            autonomous_isolation(&json!({}), reviewer, "claude").unwrap(),
+            resolve_isolation(&json!({}), reviewer, "claude", Isolation::Local).unwrap(),
             Isolation::Local
         );
         assert_eq!(
-            autonomous_isolation(&json!({"isolation": "local"}), "qa", "claude").unwrap(),
+            resolve_isolation(
+                &json!({"isolation": "local"}),
+                "qa",
+                "claude",
+                Isolation::Local
+            )
+            .unwrap(),
             Isolation::Local
         );
         assert_eq!(
-            autonomous_isolation(&json!({"isolation": "sandbox"}), reviewer, "claude").unwrap(),
+            resolve_isolation(
+                &json!({"isolation": "sandbox"}),
+                reviewer,
+                "claude",
+                Isolation::Local
+            )
+            .unwrap(),
             Isolation::Sandbox
         );
         for (config, template, executor, code) in [
@@ -430,7 +479,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                autonomous_isolation(&config, template, executor)
+                resolve_isolation(&config, template, executor, Isolation::Local)
                     .unwrap_err()
                     .to_string(),
                 code,
@@ -623,6 +672,41 @@ mod tests {
         ] {
             assert!(!valid_artifact_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_sandbox_default_applies_only_where_a_sandbox_can_run() {
+        let unset = json!({});
+        assert_eq!(
+            resolve_isolation(
+                &unset,
+                "github_issue_resolver",
+                "claude",
+                Isolation::Sandbox
+            )
+            .unwrap(),
+            Isolation::Sandbox
+        );
+        // Unsupported template or executor: the default cannot apply, so it is local.
+        assert_eq!(
+            resolve_isolation(&unset, "lead_generation", "claude", Isolation::Sandbox).unwrap(),
+            Isolation::Local
+        );
+        assert_eq!(
+            resolve_isolation(&unset, "qa", "nexus", Isolation::Sandbox).unwrap(),
+            Isolation::Local
+        );
+        // An explicit choice always wins over the default.
+        assert_eq!(
+            resolve_isolation(
+                &json!({"isolation": "local"}),
+                "qa",
+                "claude",
+                Isolation::Sandbox
+            )
+            .unwrap(),
+            Isolation::Local
+        );
     }
 
     #[test]

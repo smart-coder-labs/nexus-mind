@@ -16773,6 +16773,16 @@ mod autonomous_executor_tests {
     }
 
     #[test]
+    fn saved_configs_reject_too_many_sandbox_hosts() {
+        let hosts: Vec<String> = (0..17).map(|i| format!("h{i}.acme.test")).collect();
+        let config = serde_json::json!({"sandbox_allowed_hosts": hosts});
+        assert_eq!(
+            super::validate_autonomous_executor(&config, "qa").unwrap_err().to_string(),
+            "too_many_sandbox_hosts"
+        );
+    }
+
+    #[test]
     fn run_input_cannot_override_agent_config() {
         assert!(super::RUN_INPUT_KEYS.contains(&"app_base_url"));
         for protected in ["isolation", "sandbox_allowed_hosts", "auto_merge", "verification_commands", "executor"] {

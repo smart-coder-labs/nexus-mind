@@ -152,6 +152,8 @@ pub struct SandboxJob {
     pub command_timeout_secs: u64,
     /// Re-run a failing command once and keep both outcomes (QA flakiness).
     pub reproduce_failures: bool,
+    /// Most stdout kept per command (scanners print large JSON reports).
+    pub command_stdout_cap: usize,
     /// Files written into the pod after the workspace (path, content), on stdin.
     pub files: Vec<(String, Vec<u8>)>,
     /// A pod directory whose artifacts (screenshots) are returned after the agent.
@@ -192,6 +194,8 @@ pub struct CommandRun {
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
     pub stdout: Vec<u8>,
+    /// The command printed more than the job's stdout cap; `stdout` is cut.
+    pub stdout_truncated: bool,
     pub stderr: Vec<u8>,
     pub reproduction: Option<Box<CommandRun>>,
 }
@@ -539,8 +543,8 @@ async fn verify(
     runs
 }
 
-/// Largest stdout kept per command; stderr is capped by the runtime.
-const MAX_COMMAND_STDOUT: usize = 200_000;
+/// Default stdout kept per command; stderr is capped by the runtime.
+pub const DEFAULT_COMMAND_STDOUT: usize = 200_000;
 
 /// A failing command or a broken exec is evidence, not a job failure.
 async fn run_command(
@@ -570,7 +574,12 @@ async fn run_command(
             argv: argv.to_vec(),
             exit_code: (output.exit_code >= 0).then_some(output.exit_code),
             duration_ms,
-            stdout: output.stdout.into_iter().take(MAX_COMMAND_STDOUT).collect(),
+            stdout_truncated: output.stdout.len() > job.command_stdout_cap,
+            stdout: output
+                .stdout
+                .into_iter()
+                .take(job.command_stdout_cap)
+                .collect(),
             stderr: output.stderr,
             reproduction: None,
         },
@@ -758,6 +767,7 @@ mod tests {
             verification_env: Vec::new(),
             command_timeout_secs: 300,
             reproduce_failures: false,
+            command_stdout_cap: DEFAULT_COMMAND_STDOUT,
             files: Vec::new(),
             collect_dir: None,
             checkpoints: None,
@@ -942,6 +952,7 @@ mod tests {
             .unwrap();
         assert!(result.output.is_none());
         let run = &result.verification[0];
+        assert!(!run.stdout_truncated);
         assert_eq!(run.exit_code, Some(1));
         assert_eq!(run.reproduction.as_ref().unwrap().exit_code, Some(1));
         let calls = fake.calls.lock().unwrap();
