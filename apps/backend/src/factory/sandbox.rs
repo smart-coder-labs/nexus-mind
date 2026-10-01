@@ -8,8 +8,9 @@
 use serde_json::{json, Value};
 
 pub const SANDBOX_NAMESPACE: &str = "nexusmind-sandbox";
-/// Service DNS name and port of the egress proxy inside the cluster.
-pub const PROXY_AUTHORITY: &str = "factory-egress-proxy.nexusmind-sandbox.svc.cluster.local:8080";
+/// Service DNS name and port of the egress proxy inside the cluster. It runs in its
+/// own namespace, outside the worker's Role, so no exec right reaches its secrets.
+pub const PROXY_AUTHORITY: &str = "factory-egress-proxy.nexusmind-egress.svc.cluster.local:8080";
 /// Non-root UID the task runs as (mapped to an unprivileged host UID by user namespaces).
 pub const TASK_UID: i64 = 10001;
 /// Workspace mount inside the pod.
@@ -806,7 +807,7 @@ mod tests {
             format!("http://run:v2.org-1.run.1.sig@{PROXY_AUTHORITY}")
         );
         assert!(
-            env["NO_PROXY"].contains("factory-egress-proxy.nexusmind-sandbox.svc.cluster.local")
+            env["NO_PROXY"].contains("factory-egress-proxy.nexusmind-egress.svc.cluster.local")
         );
         assert_eq!(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
         assert_eq!(env["DISABLE_AUTOUPDATER"], "1");

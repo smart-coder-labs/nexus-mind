@@ -46,6 +46,11 @@ spec:
       labels:
         app: nexusmind-backend
     spec:
+      # The factory-worker identity (task pods in nexusmind-sandbox) belongs to the
+      # worker only. The API container shares this pod, so no token is mounted
+      # pod-wide: the worker alone gets a projected token below.
+      serviceAccountName: factory-worker
+      automountServiceAccountToken: false
       imagePullSecrets:
         - name: ghcr-pull
       initContainers:
@@ -143,12 +148,20 @@ spec:
             # URLs (the public /evidence re-signing endpoint) in GitHub comments.
             - name: PUBLIC_API_BASE_URL
               value: https://api.nexusmind.smartcoderlabs.com
+            # Factory F1: task pod image. FACTORY_PROXY_SIGNING_KEY comes from
+            # nexusmind-env. Agents run sandboxed only with isolation=sandbox until
+            # FACTORY_ISOLATION_DEFAULT=sandbox is set (after the drill).
+            - name: FACTORY_SANDBOX_IMAGE
+              value: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
           volumeMounts:
             - name: data
               mountPath: /data
             - name: data
               mountPath: /claude-home
               subPath: claude-home
+            - name: factory-worker-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
           resources:
             requests:
               cpu: 250m
@@ -159,6 +172,20 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: nexusmind-data
+        # What automount would have provided, for the worker container only.
+        - name: factory-worker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3607
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: {fieldPath: metadata.namespace}
 ---
 apiVersion: v1
 kind: Service
