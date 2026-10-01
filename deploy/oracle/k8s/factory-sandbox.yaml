@@ -1,22 +1,33 @@
 # Factory F1 sandbox (openspec/changes/factory-f1-sandbox, design §2).
 #
-# Task pods run untrusted work (agent sessions, repository tests, scanners) with
-# no credentials and no egress except the egress proxy. The proxy is the only pod
-# here with internet access and the only holder of the real credentials.
+# Task pods (nexusmind-sandbox) run untrusted work (agent sessions, repository
+# tests, scanners) with no credentials and no egress except the egress proxy. The
+# proxy lives in its own namespace (nexusmind-egress): it is the only pod with
+# internet access and the only holder of the real credentials, and it sits outside
+# the worker's Role, so no pods/exec right can ever reach its secrets.
 #
 # One-time secret, out of band (never commit values):
-#   kubectl -n nexusmind-sandbox create secret generic factory-egress-proxy \
+#   kubectl -n nexusmind-egress create secret generic factory-egress-proxy \
 #     --from-literal=FACTORY_PROXY_SIGNING_KEY=<same value as the worker's> \
 #     --from-literal=FACTORY_ANTHROPIC_OAUTH_TOKEN=<claude setup-token> \
 #     --from-literal=FACTORY_NEXUSMIND_KEYS='{"<org_id>":"<nexus-bot key>"}'
 # The worker gets FACTORY_PROXY_SIGNING_KEY through nexusmind-env.
-# Image pull secret, copied from the main namespace:
+# Image pull secret, copied from the main namespace into both namespaces:
 #   kubectl get secret ghcr-pull -n nexusmind -o json | jq '.metadata={name:"ghcr-pull",namespace:"nexusmind-sandbox"}' | kubectl apply -f -
+#   kubectl get secret ghcr-pull -n nexusmind -o json | jq '.metadata={name:"ghcr-pull",namespace:"nexusmind-egress"}' | kubectl apply -f -
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: nexusmind-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusmind-egress
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: latest
@@ -37,22 +48,33 @@ spec:
   podSelector: {matchLabels: {role: task}}
   policyTypes: [Egress]
   egress:
-    - to: [{podSelector: {matchLabels: {app: factory-egress-proxy}}}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: nexusmind-egress}}
+          podSelector: {matchLabels: {app: factory-egress-proxy}}
       ports: [{protocol: TCP, port: 8080}]
     - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
           podSelector: {matchLabels: {k8s-app: kube-dns}}
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: nexusmind-egress}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
 # The proxy accepts only task pods, and reaches the internet on 443 plus DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: {name: proxy, namespace: nexusmind-sandbox}
+metadata: {name: proxy, namespace: nexusmind-egress}
 spec:
   podSelector: {matchLabels: {app: factory-egress-proxy}}
   policyTypes: [Ingress, Egress]
   ingress:
-    - from: [{podSelector: {matchLabels: {role: task}}}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: nexusmind-sandbox}}
+          podSelector: {matchLabels: {role: task}}
       ports: [{protocol: TCP, port: 8080}]
   egress:
     - to:
@@ -68,7 +90,7 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: {name: factory-egress-proxy, namespace: nexusmind-sandbox}
+metadata: {name: factory-egress-proxy, namespace: nexusmind-egress}
 spec:
   replicas: 1
   selector: {matchLabels: {app: factory-egress-proxy}}
@@ -103,7 +125,7 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: {name: factory-egress-proxy, namespace: nexusmind-sandbox}
+metadata: {name: factory-egress-proxy, namespace: nexusmind-egress}
 spec:
   selector: {app: factory-egress-proxy}
   ports: [{port: 8080, targetPort: 8080}]

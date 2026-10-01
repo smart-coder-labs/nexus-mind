@@ -136,6 +136,12 @@ Kubernetes access goes through the `kube` crate (kube-rs) using the in-cluster S
 - **Diff out:** `git diff --binary <base_sha>` plus untracked files (`git add -N .` first), capped at 5 MB. It is applied in the worker with `git apply --index` and then goes through the existing `ensure_diff_has_no_secrets`.
 - **GC:** a worker tick lists `role=task` pods older than `activeDeadlineSeconds + 5 min` and deletes them.
 
+### Credential isolation in the cluster (ADR 76267cfb)
+
+- The egress proxy runs in its own namespace, `nexusmind-egress` (PSA restricted, default-deny; ingress only from `role=task` pods in `nexusmind-sandbox`). The `factory-worker` Role covers `nexusmind-sandbox` only, so no `pods/exec` right can reach the proxy and read its credentials.
+- The backend API and the worker share one pod. The pod mounts no ServiceAccount token (`automountServiceAccountToken: false`); the worker container alone gets the `factory-worker` token through a projected volume at the standard path. The API container holds no Kubernetes credential.
+- Secrets are created and rotated with `scripts/factory/configure_sandbox_secrets.zsh`. It reads the Claude OAuth token and the bot key (`FACTORY_BOT_KEY`) from `~/.zshrc`, generates the signing key, and sends values only over stdin, so they never appear in argv, history or output. The same signing key is merged into `nexusmind-env` for the worker.
+
 ### Known limits (to settle in the drill)
 
 - The worker's pre-lease probe (`probe_claude`, `claude_ready`) still checks the worker's own Claude login, so a worker that needs re-auth blocks sandboxed runs too, although they use the proxy's credential. Once every template runs sandboxed, the probe moves to the proxy.
