@@ -305,7 +305,7 @@ async fn prepare_nexus_workspace(workdir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn command_ok(mut command: Command) -> anyhow::Result<()> {
+pub(crate) async fn command_ok(mut command: Command) -> anyhow::Result<()> {
     let output = timeout(
         Duration::from_secs(300),
         command.kill_on_drop(true).output(),
@@ -1626,7 +1626,12 @@ async fn github_access_for_connector(
     server_gh_token().await
 }
 
-async fn server_gh_token() -> anyhow::Result<String> {
+/// The server's GitHub login (for tools such as the golden replay).
+pub async fn server_github_token() -> anyhow::Result<String> {
+    server_gh_token().await
+}
+
+pub(crate) async fn server_gh_token() -> anyhow::Result<String> {
     let mut command = Command::new("gh");
     restrict_claude_environment(&mut command);
     let output = timeout(
@@ -1680,7 +1685,7 @@ async fn close_resolved_issue(
     }
 }
 
-fn authenticated_git(token: &str) -> Command {
+pub(crate) fn authenticated_git(token: &str) -> Command {
     use base64::Engine as _;
     let mut command = Command::new("git");
     // GitHub git-over-HTTPS requires Basic auth (username `x-access-token`, token

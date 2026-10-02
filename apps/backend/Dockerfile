@@ -177,6 +177,9 @@ COPY --from=builder /app/target/release/nexusmind /app/nexusmind
 COPY --from=builder /app/target/release/autonomous_worker /app/autonomous_worker
 # Sandbox egress proxy (factory F1): runs in the nexusmind-sandbox namespace.
 COPY --from=builder /app/target/release/factory-egress-proxy /app/factory-egress-proxy
+# Golden task replay through the verification gate (run inside the worker):
+#   factory-golden-replay <org_id> < tasks.jsonl
+COPY --from=builder /app/target/release/factory-golden-replay /app/factory-golden-replay
 COPY --from=nexus-builder /app/target/release/nexus /app/nexus
 # The SDD importer has to ship with the image, or it cannot be run where it is
 # actually needed. It is a one-shot binary, invoked manually:
@@ -198,7 +201,7 @@ COPY --from=builder /app/target/release/backfill-embeddings /app/backfill-embedd
 
 # Fail the build, not the deploy, if any binary needs a library or glibc version
 # the runtime does not have.
-RUN for bin in nexusmind autonomous_worker factory-egress-proxy nexus import-sdd nexusmind-seed backfill-embeddings; do \
+RUN for bin in nexusmind autonomous_worker factory-egress-proxy factory-golden-replay nexus import-sdd nexusmind-seed backfill-embeddings; do \
       if ldd "/app/$bin" 2>&1 | grep -q "not found"; then \
         ldd "/app/$bin"; echo "incompatible binary: $bin"; exit 1; \
       fi; \

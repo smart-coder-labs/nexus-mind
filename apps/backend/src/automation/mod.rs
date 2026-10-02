@@ -1,4 +1,5 @@
 pub mod connectors;
+pub mod golden_replay;
 pub mod image_gen;
 pub mod linkedin;
 pub mod merge_gate;

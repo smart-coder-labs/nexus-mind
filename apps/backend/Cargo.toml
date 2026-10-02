@@ -25,6 +25,10 @@ name = "import-sdd"
 path = "src/bin/import_sdd.rs"
 
 [[bin]]
+name = "factory-golden-replay"
+path = "src/bin/factory_golden_replay.rs"
+
+[[bin]]
 name = "migrate-knowledge"
 path = "src/bin/migrate_knowledge.rs"
 
