@@ -75,6 +75,10 @@ export interface AutonomousAgentConnector { id:string; kind:'github_app'|'slack'
 export interface AutonomousAgentFinding { id:string;definition_id:string;run_id:string;fingerprint:string;title:string;severity:string;status:string;summary:string;evidence:Record<string,unknown>;occurrence_count:number;created_at:string;updated_at:string }
 export interface AutonomousAgentDelivery { id:string;run_id:string;finding_id:string|null;channel:string;status:string;external_id:string|null;external_url:string|null;attempts:number;last_error_code:string|null;created_at:string;updated_at:string }
 export interface AutonomousAgentEvent { sequence:number;kind:string;payload:Record<string,unknown>;created_at:string }
+/** F1 verification gate: one check of a report (command in the sandbox or CI check). */
+export interface VerificationCheck { name:string;status:'PASS'|'FAIL'|'SKIP'|'ERROR';duration_ms?:number;artifact?:string|null }
+export interface VerificationReport { schema_version:number;task_id:string;head_sha:string;passed:boolean;checks:VerificationCheck[];blocking_failures:string[];eligible_for_merge:boolean;human_approval_required:boolean }
+export interface StoredVerificationReport { head_sha:string;created_at:string;report:VerificationReport }
 export interface AutonomousAgentTarget { id:string;definition_id:string;kind:string;name:string;config:Record<string,unknown>;credential_connector_id:string|null;enabled:boolean;created_at:string;updated_at:string }
 export interface AutonomousAgentOrgSettings { enabled:boolean;retention_days:number }
 export interface AutonomousAgentMetrics { queued:number;running:number;blocked:number;open_findings:number;failed_deliveries:number;dead_letters:number;estimated_cost_usd:number }
