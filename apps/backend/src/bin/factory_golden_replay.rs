@@ -16,8 +16,9 @@ use nexusmind::{
 };
 use std::io::BufRead;
 
-/// Task pods run in parallel; the node has room for a few installs at once.
-const CONCURRENCY: usize = 2;
+/// One task pod at a time: the node's CPU requests leave room for a single
+/// sandbox pod, and a second one stays Pending until its ready timeout fails it.
+const CONCURRENCY: usize = 1;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
