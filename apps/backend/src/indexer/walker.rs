@@ -9,10 +9,33 @@ const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// This prunes huge trees (e.g. `node_modules`) even when the repo has no
 /// `.gitignore`, so large repos stay indexable. Matched on any path component.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", ".hg", ".svn", "dist", "build", "out", "target",
-    "vendor", "bin", "obj", ".next", ".nuxt", ".svelte-kit", ".angular",
-    "coverage", "__pycache__", ".venv", "venv", ".tox", ".cache", ".gradle",
-    ".idea", ".vscode", "Pods", "DerivedData", ".terraform",
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "dist",
+    "build",
+    "out",
+    "target",
+    "vendor",
+    "bin",
+    "obj",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".angular",
+    "coverage",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".cache",
+    ".gradle",
+    ".idea",
+    ".vscode",
+    "Pods",
+    "DerivedData",
+    ".terraform",
 ];
 
 /// Well-known lock / dependency-manifest files that pollute code search: they are
@@ -21,8 +44,15 @@ const SKIP_DIRS: &[&str] = &[
 /// would otherwise be chunked and rank at the top for real code queries. Matched by
 /// exact file name.
 const NOISE_FILES: &[&str] = &[
-    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock",
-    "poetry.lock", "composer.lock", "Gemfile.lock", "go.sum", "bun.lockb",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "go.sum",
+    "bun.lockb",
 ];
 
 /// True when `file_name` is a machine-generated noise file that must never be
@@ -44,30 +74,57 @@ fn is_noise_file(file_name: &str) -> bool {
 /// or config file to the code index.
 const CODE_EXTENSIONS: &[&str] = &[
     // Rust
-    "rs",
-    // TypeScript / JavaScript
-    "ts", "tsx", "js", "jsx", "mjs", "cjs",
-    // Python
-    "py",
-    // Go
-    "go",
-    // JVM
-    "java", "kt", "kts",
-    // C / C++
-    "c", "h", "cc", "cpp", "cxx", "hpp",
-    // C#
-    "cs",
-    // Ruby / PHP
-    "rb", "php",
-    // Swift
-    "swift",
-    // Shell
+    "rs", // TypeScript / JavaScript
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", // Python
+    "py", // Go
+    "go", // JVM
+    "java", "kt", "kts", // C / C++
+    "c", "h", "cc", "cpp", "cxx", "hpp", // C#
+    "cs", // Ruby / PHP
+    "rb", "php", // Swift
+    "swift", // Shell
     "sh", "bash", "zsh",
     // Web source (markup/styles/components — real source, not config)
-    "html", "htm", "css", "scss", "sass", "vue", "svelte",
-    // SQL
+    "html", "htm", "css", "scss", "sass", "vue", "svelte", // SQL
     "sql",
 ];
+
+/// Config files admitted into the code index for LEXICAL search only (no
+/// embeddings): CI workflows, deploy manifests, Dockerfiles, build manifests and
+/// GraphQL schemas are where infrastructure and API tasks land, and BM25 matches
+/// their specific terms without the semantic noise that kept them out of the
+/// code corpus. Lockfiles stay excluded via [`NOISE_FILES`]; env files are never
+/// matched (they may hold secrets).
+const CONFIG_EXTENSIONS: &[&str] = &["yml", "yaml", "toml", "json", "graphql", "gql"];
+
+/// Config files are capped tighter than code: a big one is generated data.
+const CONFIG_MAX_FILE_SIZE: u64 = 256 * 1024;
+
+/// Hidden entries admitted when config is walked; every other dot-entry stays out.
+const ALLOWED_HIDDEN: &[&str] = &[".github", ".gitlab-ci.yml"];
+
+/// The language label of a config file admitted for lexical search, if it is one.
+fn config_language(file_name: &str, ext: Option<&str>) -> Option<&'static str> {
+    let lower = file_name.to_ascii_lowercase();
+    // Manifests named for secrets (a k8s Secret, credentials.json) may hold values.
+    if lower.contains("secret") || lower.contains("credential") {
+        return None;
+    }
+    if file_name == "Dockerfile"
+        || file_name.starts_with("Dockerfile.")
+        || file_name.ends_with(".dockerfile")
+    {
+        return Some("dockerfile");
+    }
+    if file_name == "Makefile" {
+        return Some("makefile");
+    }
+    match ext? {
+        "graphql" | "gql" => Some("graphql"),
+        ext if CONFIG_EXTENSIONS.contains(&ext) => language_for_ext(ext),
+        _ => None,
+    }
+}
 
 /// True when `ext` is a real source-code extension admitted into the code corpus.
 /// Excludes docs (`md`), data, and config (`json`, `yaml`, `toml`, `txt`, …).
@@ -90,6 +147,8 @@ pub struct FileMeta {
     /// Used by the indexer to bound Pass-1 batches by bytes so peak memory stays
     /// bounded regardless of individual file sizes.
     pub size: u64,
+    /// Indexed for lexical search only: chunks get no embedding (config files).
+    pub lexical_only: bool,
 }
 
 /// Reads a file's UTF-8 content and its SHA-256 hex hash on demand.
@@ -109,15 +168,33 @@ pub fn read_file(path: &str) -> Option<(String, String)> {
 /// cap. Returns lightweight metadata (paths only — NO content) so a huge repo's
 /// discovery stays cheap; content is read later, one file at a time.
 pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
+    walk(root_path, false)
+}
+
+/// The files of the code index: source code (embedded and lexical) plus config
+/// files for lexical search only (see [`CONFIG_EXTENSIONS`]), including CI
+/// workflows under `.github/`.
+pub fn walk_index_files(root_path: &str) -> Result<Vec<FileMeta>> {
+    walk(root_path, true)
+}
+
+fn walk(root_path: &str, include_config: bool) -> Result<Vec<FileMeta>> {
     let mut results = Vec::new();
 
     let walker = ignore::WalkBuilder::new(root_path)
-        .hidden(true)
+        // With config, hidden entries are filtered below so `.github` gets in.
+        .hidden(!include_config)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .require_git(false)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
+            if include_config && entry.depth() > 0 {
+                let name = entry.file_name().to_string_lossy();
+                if name.starts_with('.') && !ALLOWED_HIDDEN.contains(&name.as_ref()) {
+                    return false;
+                }
+            }
             // Prune heavy directories before descending into them.
             if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
@@ -179,6 +256,24 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
             .and_then(|e| e.to_str())
             .map(|s| s.to_string());
         if !ext.as_deref().map(is_code_extension).unwrap_or(false) {
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if let Some(language) = include_config
+                .then(|| config_language(file_name, ext.as_deref()))
+                .flatten()
+            {
+                if size <= CONFIG_MAX_FILE_SIZE {
+                    results.push(FileMeta {
+                        path: path.to_string_lossy().into_owned(),
+                        ext,
+                        language: Some(language.to_string()),
+                        size,
+                        lexical_only: true,
+                    });
+                }
+            }
             continue;
         }
         let language = ext
@@ -194,6 +289,7 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
             ext,
             language,
             size,
+            lexical_only: false,
         });
     }
 
@@ -240,7 +336,11 @@ mod tests {
         fs::write(dir.path().join("big.rs"), big_content).unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(files.len(), 1, "oversized file must be skipped, only small.rs");
+        assert_eq!(
+            files.len(),
+            1,
+            "oversized file must be skipped, only small.rs"
+        );
         assert!(files[0].path.ends_with("small.rs"));
     }
 
@@ -248,7 +348,11 @@ mod tests {
     fn walk_prunes_heavy_directories() {
         let dir = make_temp_project();
         fs::create_dir(dir.path().join("node_modules")).unwrap();
-        fs::write(dir.path().join("node_modules").join("dep.js"), "module.exports = {}").unwrap();
+        fs::write(
+            dir.path().join("node_modules").join("dep.js"),
+            "module.exports = {}",
+        )
+        .unwrap();
         fs::create_dir(dir.path().join("target")).unwrap();
         fs::write(dir.path().join("target").join("build.rs"), "fn b() {}").unwrap();
         fs::write(dir.path().join("app.js"), "function app() {}").unwrap();
@@ -271,7 +375,11 @@ mod tests {
         fs::write(dir.path().join("app.js"), "function app() {}").unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(files.len(), 1, "only the real source file must remain: {files:?}");
+        assert_eq!(
+            files.len(),
+            1,
+            "only the real source file must remain: {files:?}"
+        );
         assert!(files[0].path.ends_with("app.js"));
     }
 
@@ -289,9 +397,71 @@ mod tests {
         fs::write(dir.path().join("foo.ts"), "export function foo() {}").unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(files.len(), 1, "only the .ts source file must remain: {files:?}");
+        assert_eq!(
+            files.len(),
+            1,
+            "only the .ts source file must remain: {files:?}"
+        );
         assert!(files[0].path.ends_with("foo.ts"));
         assert_eq!(files[0].language.as_deref(), Some("typescript"));
+    }
+
+    #[test]
+    fn the_index_walk_adds_config_for_lexical_search_only() {
+        let dir = make_temp_project();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::create_dir_all(root.join(".secret")).unwrap();
+        fs::create_dir_all(root.join("schema")).unwrap();
+        fs::write(root.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+        fs::write(root.join(".gitlab-ci.yml"), "stages: []\n").unwrap();
+        fs::write(root.join(".secret/keys.yml"), "k: v\n").unwrap();
+        fs::write(root.join(".env"), "TOKEN=x\n").unwrap();
+        fs::write(root.join(".env.production.json"), "{}").unwrap();
+        fs::write(root.join("Dockerfile"), "FROM rust\n").unwrap();
+        fs::write(root.join("Dockerfile.worker"), "FROM rust\n").unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("schema/api.graphql"), "type Query { a: Int }\n").unwrap();
+        fs::write(root.join("package-lock.json"), "{}").unwrap();
+        fs::write(root.join("README.md"), "# docs stay in the doc corpus\n").unwrap();
+        fs::write(root.join("huge.json"), vec![b' '; 300 * 1024]).unwrap();
+        fs::write(root.join("app-secret.yaml"), "kind: Secret\n").unwrap();
+        fs::write(root.join("credentials.json"), "{}").unwrap();
+        fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+
+        let mut found: Vec<(String, bool, String)> = walk_index_files(root.to_str().unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| {
+                let rel = f
+                    .path
+                    .strip_prefix(root.to_str().unwrap())
+                    .unwrap()
+                    .trim_start_matches('/')
+                    .to_string();
+                (rel, f.lexical_only, f.language.unwrap_or_default())
+            })
+            .collect();
+        found.sort();
+        let expect = |rel: &str, lexical: bool, language: &str| {
+            (rel.to_string(), lexical, language.to_string())
+        };
+        assert_eq!(
+            found,
+            vec![
+                expect(".github/workflows/ci.yml", true, "yaml"),
+                expect(".gitlab-ci.yml", true, "yaml"),
+                expect("Cargo.toml", true, "toml"),
+                expect("Dockerfile", true, "dockerfile"),
+                expect("Dockerfile.worker", true, "dockerfile"),
+                expect("main.rs", false, "rust"),
+                expect("schema/api.graphql", true, "graphql"),
+            ]
+        );
+        // The code-only walk (migration connector) is unchanged.
+        let code = walk_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(code.len(), 1);
+        assert!(!code[0].lexical_only);
     }
 
     #[test]
@@ -323,6 +493,9 @@ mod tests {
         let dir = make_temp_project();
         let p = dir.path().join("bin.rs");
         fs::write(&p, [0u8, 159, 146, 150]).unwrap(); // invalid UTF-8
-        assert!(read_file(p.to_str().unwrap()).is_none(), "binary returns None");
+        assert!(
+            read_file(p.to_str().unwrap()).is_none(),
+            "binary returns None"
+        );
     }
 }

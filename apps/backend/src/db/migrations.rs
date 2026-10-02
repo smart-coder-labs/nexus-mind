@@ -104,13 +104,23 @@ pub fn run_all(conn: &Connection) -> Result<()> {
 /// identifier terms (`retrieval::lexical::identifier_terms`) added by
 /// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
 /// chunk's row when the chunk is deleted (re-index, project removal cascade).
-/// Existing chunks are backfilled. Idempotent, all-or-nothing.
+/// Existing chunks are backfilled. Also adds `code_chunks.lexical_only` for config
+/// chunks that are never embedded. Idempotent, all-or-nothing.
 pub fn run_v82(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 82 {
         return Ok(());
     }
     let tx = conn.unchecked_transaction()?;
+    let has_flag: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_chunks') WHERE name = 'lexical_only'")?
+        .exists([])?;
+    if !has_flag {
+        // Config chunks are searched lexically only and never wait for a vector.
+        tx.execute_batch(
+            "ALTER TABLE code_chunks ADD COLUMN lexical_only INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     tx.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
              path, symbol, body,

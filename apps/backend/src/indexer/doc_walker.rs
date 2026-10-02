@@ -146,6 +146,7 @@ pub fn walk_docs(root_path: &str, opts: &DocWalkOptions) -> Result<Vec<FileMeta>
             ext,
             language: Some("markdown".to_string()),
             size,
+            lexical_only: false,
         });
     }
 

@@ -107,9 +107,9 @@ fn main() -> anyhow::Result<()> {
         |r| r.get(0),
     )?;
     let (chunks, unembedded): (i64, i64) = conn.query_row(
-        "SELECT count(*), count(*) - count(embedding) FROM code_chunks WHERE code_project_id = ?1",
+        "SELECT count(*), sum(embedding IS NULL AND lexical_only = 0) FROM code_chunks WHERE code_project_id = ?1",
         [project_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
     )?;
     if embed.is_some() && unembedded > 0 {
         anyhow::bail!("{unembedded} of {chunks} chunks have no vector; rerun to resume embedding");

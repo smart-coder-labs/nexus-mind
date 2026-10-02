@@ -16,7 +16,7 @@ use crate::{
     indexer::{
         chunker::Chunker,
         tree_sitter_chunker::{FileGraph, TreeSitterChunker},
-        walker::walk_files,
+        walker::walk_index_files,
     },
     models::types::{CodeProject, IndexProjectResponse},
 };
@@ -112,7 +112,7 @@ pub fn index_project(
     let chunker = TreeSitterChunker::default();
 
     // Walk the directory
-    let files = walk_files(root_path)?;
+    let files = walk_index_files(root_path)?;
 
     // Get or create the code_project row and fetch stored file hashes
     let code_project_id = {
@@ -356,7 +356,9 @@ pub fn index_project(
                 continue;
             }
 
-            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc {
+            // Config files are searched lexically only (`walker::CONFIG_EXTENSIONS`).
+            let lexical_only = file_meta.lexical_only;
+            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc.filter(|_| !lexical_only) {
                 // Embed a compact NL-friendly skeleton (symbol name + signature +
                 // leading doc comment), NOT the raw body — this is what cosine ranks
                 // against. `chunk.content` still stores the real body for get_context
@@ -391,6 +393,9 @@ pub fn index_project(
                     &chunk.content,
                     embedding.as_deref(),
                 )?;
+            }
+            if lexical_only {
+                db_queries::mark_file_chunks_lexical_only(&conn, code_project_id, rel_path)?;
             }
             // Stamped only once the chunks are in. If embedding failed the vectors
             // are NULL and the `unembedded` half picks the file up on the next run —

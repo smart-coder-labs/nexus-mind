@@ -5831,12 +5831,26 @@ pub fn list_files_with_unembedded_chunks(
 ) -> Result<std::collections::HashSet<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT file_path FROM code_chunks \
-         WHERE code_project_id = ?1 AND embedding IS NULL",
+         WHERE code_project_id = ?1 AND embedding IS NULL AND lexical_only = 0",
     )?;
     let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
         r.get::<_, String>(0)
     })?;
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
+/// Marks a file's chunks as lexical-only: searched by BM25, never embedded, and
+/// so never reported as waiting for a vector.
+pub fn mark_file_chunks_lexical_only(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_chunks SET lexical_only = 1 WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
 }
 
 /// Returns the set of file paths that already have file-owned code symbols.

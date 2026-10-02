@@ -202,4 +202,45 @@ mod tests {
         let files: Vec<&str> = hits.iter().map(|h| h.file_path.as_str()).collect();
         assert_eq!(files, ["src/pages/SaleDetailPage.tsx"]);
     }
+
+    #[test]
+    fn config_files_are_found_lexically_and_never_wait_for_a_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::write(
+            root.join(".github/workflows/deploy.yml"),
+            "name: Deploy\njobs:\n  backend:\n    runs-on: ubuntu-latest\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Dockerfile"),
+            "FROM rust:1.98-slim-bookworm\nARG VITE_API_URL\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() { serve(); }\n").unwrap();
+
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, _, _) =
+            queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        crate::indexer::index_project(&org.id, "app", root.to_str().unwrap(), &db, None, false)
+            .unwrap();
+
+        let conn = db.lock().unwrap();
+        let project: i64 = conn
+            .query_row("SELECT id FROM code_projects WHERE name = 'app'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let hits =
+            lexical::bm25_file_ranking(&conn, project, "vite api url baked into docker").unwrap();
+        assert_eq!(hits[0].file_path, "Dockerfile");
+        let hits = lexical::bm25_file_ranking(&conn, project, "deploy backend job").unwrap();
+        assert_eq!(hits[0].file_path, ".github/workflows/deploy.yml");
+        // Without an embedder the code file waits for a vector; config never does.
+        let pending = queries::list_files_with_unembedded_chunks(&conn, project).unwrap();
+        assert_eq!(pending, ["main.rs".to_string()].into_iter().collect());
+    }
 }
