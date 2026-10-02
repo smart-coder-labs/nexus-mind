@@ -92,6 +92,25 @@ pub struct ReplayOutcome {
     pub blocking_failures: Vec<String>,
     /// Set when the replay itself could not run (clone, sandbox).
     pub error: Option<String>,
+    /// The end of the first failing command's output, to tell a broken install
+    /// from a failing test. The proxy token is already scrubbed.
+    pub failure_output: Option<String>,
+}
+
+/// Most output kept from a failing command.
+const FAILURE_OUTPUT_BYTES: usize = 600;
+
+/// The last bytes of the first failing command's stderr (stdout when stderr is
+/// empty).
+pub fn failure_output(runs: &[crate::factory::sandbox_exec::CommandRun]) -> Option<String> {
+    let failed = runs.iter().find(|run| run.exit_code != Some(0))?;
+    let stream = if failed.stderr.iter().any(|b| !b.is_ascii_whitespace()) {
+        &failed.stderr
+    } else {
+        &failed.stdout
+    };
+    let tail = &stream[stream.len().saturating_sub(FAILURE_OUTPUT_BYTES)..];
+    Some(String::from_utf8_lossy(tail).trim().to_string())
 }
 
 /// Replays one golden task: checkout of `merge_sha` (the worker's GitHub token
@@ -111,11 +130,13 @@ pub async fn replay_task(
         skipped: commands_for(task).is_empty(),
         blocking_failures: Vec::new(),
         error: None,
+        failure_output: None,
     };
     match replay(store, org_id, github_token, task).await {
-        Ok(report) => {
+        Ok((report, output)) => {
             outcome.passed = report.passed;
             outcome.blocking_failures = report.blocking_failures;
+            outcome.failure_output = output;
         }
         Err(error) => {
             outcome.error = Some(super::sandboxed::failure_code(&task.id, &error));
@@ -129,12 +150,15 @@ async fn replay(
     org_id: &str,
     github_token: &str,
     task: &GoldenTask,
-) -> anyhow::Result<crate::factory::contracts::VerificationReport> {
+) -> anyhow::Result<(
+    crate::factory::contracts::VerificationReport,
+    Option<String>,
+)> {
     validate_task(task)?;
     let commands = commands_for(task);
-    let receipts = if commands.is_empty() {
+    let (receipts, output) = if commands.is_empty() {
         // Nothing executable in the sandbox image: the report says so.
-        Vec::new()
+        (Vec::new(), None)
     } else {
         let checkout = tempfile::tempdir()?;
         let workdir = checkout.path().join("repo");
@@ -192,14 +216,17 @@ async fn replay(
             },
         )
         .await?;
-        runs.iter().map(|run| run.receipt()).collect()
+        (
+            runs.iter().map(|run| run.receipt()).collect(),
+            failure_output(&runs),
+        )
     };
     let report =
         crate::factory::verification::build_report(&task.id, &task.merge_sha, &receipts, &[], &[])?;
     let db = store.conn();
     let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
     crate::db::factory_queries::save_verification_report(&conn, org_id, REPLAY_RUN_ID, &report)?;
-    Ok(report)
+    Ok((report, output))
 }
 
 /// Installs and test suites of real repositories take longer than a verification
@@ -293,6 +320,31 @@ mod tests {
             mutate(&mut bad);
             assert_eq!(validate_task(&bad).unwrap_err().to_string(), code);
         }
+    }
+
+    #[test]
+    fn a_failure_keeps_the_end_of_the_first_failing_output() {
+        let run =
+            |code: i32, stdout: &str, stderr: &str| crate::factory::sandbox_exec::CommandRun {
+                argv: vec!["npm".into()],
+                exit_code: Some(code),
+                duration_ms: 1,
+                stdout: stdout.as_bytes().to_vec(),
+                stdout_truncated: false,
+                stderr: stderr.as_bytes().to_vec(),
+                reproduction: None,
+            };
+        assert_eq!(failure_output(&[run(0, "ok", "")]), None);
+        let long = format!("{}npm error 404 Not Found", "x".repeat(2000));
+        let tail =
+            failure_output(&[run(0, "", ""), run(1, "", &long), run(1, "", "later")]).unwrap();
+        assert!(tail.ends_with("npm error 404 Not Found"));
+        assert_eq!(tail.len(), FAILURE_OUTPUT_BYTES);
+        // Jest reports on stdout when stderr is empty.
+        assert_eq!(
+            failure_output(&[run(1, "Tests: 1 failed\n", "  \n")]).unwrap(),
+            "Tests: 1 failed"
+        );
     }
 
     #[test]

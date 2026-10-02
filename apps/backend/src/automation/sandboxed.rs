@@ -286,8 +286,9 @@ async fn run_commands(
     job.command_stdout_cap = spec.max_stdout;
     job.files = spec.files.clone();
     // Private npm scopes resolve through the proxy's read-only GitHub Packages
-    // route: user .npmrc (HOME is /tmp in a commands pod) for every scope, and a
-    // project .npmrc next to each lockfile, since project config wins over user.
+    // route: user .npmrc (HOME is /tmp in a commands pod) for every scope, a
+    // project .npmrc next to each lockfile, since project config wins over user,
+    // and the lockfile's private tarball URLs rewritten to the same route.
     let found = workspace_npm_scopes(run.workdir);
     if !found.is_empty() {
         let registry = format!(
@@ -303,6 +304,17 @@ async fn run_commands(
             github_packages_npmrc(&all, &registry).into_bytes(),
         ));
         for (relative, scopes) in &found {
+            let lockfile = run.workdir.join(relative).join("package-lock.json");
+            if let Some(proxied) = std::fs::read_to_string(&lockfile)
+                .ok()
+                .and_then(|raw| proxied_lockfile(&raw, &registry))
+            {
+                let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
+                    .join(relative)
+                    .join("package-lock.json");
+                job.files
+                    .push((target.to_string_lossy().into_owned(), proxied.into_bytes()));
+            }
             let existing = std::fs::read_to_string(run.workdir.join(relative).join(".npmrc")).ok();
             let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
                 .join(relative)
@@ -449,7 +461,12 @@ pub(crate) fn project_npmrc(
         let redirects_scope = scopes
             .iter()
             .any(|scope| lower.starts_with(&format!("{scope}:registry")));
-        if redirects_scope || lower.contains("npm.pkg.github.com/:_authtoken") {
+        // A repository's `replace-registry-host` would send the proxied tarball
+        // URLs to the default registry; the pod's own value is appended below.
+        if redirects_scope
+            || lower.contains("npm.pkg.github.com/:_authtoken")
+            || lower.starts_with("replace-registry-host")
+        {
             continue;
         }
         npmrc.push_str(line);
@@ -459,8 +476,10 @@ pub(crate) fn project_npmrc(
     npmrc
 }
 
-/// A token-free `.npmrc` that sends those scopes to the proxy's GitHub Packages
-/// route; `replace-registry-host` rewrites the lockfile's tarball URLs too.
+/// A token-free `.npmrc` that sends those scopes' metadata to the proxy's GitHub
+/// Packages route. Tarballs follow the lockfile, which [`proxied_lockfile`]
+/// rewrites: npm's `replace-registry-host` swaps a matching host for the default
+/// registry, never a scope's, so it cannot do this.
 pub(crate) fn github_packages_npmrc(
     scopes: &std::collections::BTreeSet<String>,
     registry_url: &str,
@@ -469,8 +488,17 @@ pub(crate) fn github_packages_npmrc(
     for scope in scopes {
         npmrc.push_str(&format!("{scope}:registry={registry_url}\n"));
     }
-    npmrc.push_str("replace-registry-host=npm.pkg.github.com\n");
+    npmrc.push_str("replace-registry-host=npmjs\n");
     npmrc
+}
+
+/// The lockfile with its GitHub Packages `resolved` URLs pointing at the proxy
+/// route (which checks the scope and adds the credential), or `None` when it has
+/// none. Integrity hashes are unchanged: the bytes are the same.
+pub(crate) fn proxied_lockfile(raw: &str, registry_url: &str) -> Option<String> {
+    const FROM: &str = "\"resolved\": \"https://npm.pkg.github.com/";
+    raw.contains(FROM)
+        .then(|| raw.replace(FROM, &format!("\"resolved\": \"{registry_url}")))
 }
 
 /// A scanner's report from a commands pod, or why there is none. The worker only
@@ -795,11 +823,29 @@ mod tests {
             npmrc.contains("@xell-shop:registry=http://proxy:8080/r/TOKEN/ghpkg/\n"),
             "{npmrc}"
         );
-        assert!(
-            npmrc.contains("replace-registry-host=npm.pkg.github.com\n"),
-            "{npmrc}"
-        );
+        // npm rewrites a matching `resolved` host to the DEFAULT registry, never
+        // a scope's: tarballs go through the rewritten lockfile instead.
+        assert!(npmrc.contains("replace-registry-host=npmjs\n"), "{npmrc}");
+        assert!(!npmrc.contains("npm.pkg.github.com"), "{npmrc}");
         assert!(!npmrc.contains("_authToken"), "{npmrc}");
+    }
+
+    #[test]
+    fn the_lockfile_fetches_private_tarballs_through_the_proxy() {
+        let raw = r#"{"packages": {
+  "node_modules/@kasymir/ui-commons": {"resolved": "https://npm.pkg.github.com/download/@kasymir/ui-commons/0.2.8/354042b"},
+  "node_modules/rxjs": {"resolved": "https://registry.npmjs.org/rxjs/-/rxjs-7.8.2.tgz"},
+  "node_modules/x": {"description": "see https://npm.pkg.github.com/ for docs"}
+}}"#;
+        let proxied = proxied_lockfile(raw, "http://proxy/r/T/ghpkg/").unwrap();
+        assert!(
+            proxied.contains(r#""resolved": "http://proxy/r/T/ghpkg/download/@kasymir/ui-commons/0.2.8/354042b""#),
+            "{proxied}"
+        );
+        assert!(proxied.contains("https://registry.npmjs.org/rxjs/-/rxjs-7.8.2.tgz"));
+        // Only `resolved` values change.
+        assert!(proxied.contains("see https://npm.pkg.github.com/ for docs"));
+        assert!(proxied_lockfile(r#"{"packages": {}}"#, "http://proxy/r/T/ghpkg/").is_none());
     }
 
     #[test]
@@ -821,6 +867,12 @@ mod tests {
             "{npmrc}"
         );
         assert!(!npmrc.contains("_authToken"), "{npmrc}");
+        let pinned = project_npmrc(
+            Some("replace-registry-host=always\n"),
+            &scopes,
+            "http://proxy/r/T/ghpkg/",
+        );
+        assert!(!pinned.contains("always"), "{pinned}");
         assert!(
             project_npmrc(None, &scopes, "http://proxy/r/T/ghpkg/").contains("@kasymir:registry=")
         );
