@@ -170,7 +170,9 @@ pub struct Checkpoints {
 
 /// Commits the unpacked workspace as the diff baseline. Hooks cannot run: the
 /// repository is created here, with none.
-const BASELINE_SCRIPT: &str = "cd /workspace && git init -q && git add -A && git -c user.name=sandbox -c user.email=sandbox@invalid commit -q --no-verify --allow-empty -m baseline";
+/// `/workspace` is a root-owned emptyDir (group-writable via fsGroup), so every
+/// git command trusts that exact path explicitly.
+const BASELINE_SCRIPT: &str = "cd /workspace && git -c safe.directory=/workspace init -q && git -c safe.directory=/workspace add -A && git -c safe.directory=/workspace -c user.name=sandbox -c user.email=sandbox@invalid commit -q --no-verify --allow-empty -m baseline";
 
 /// How long the last diff of a timed-out job may take.
 const FINAL_DIFF_TIMEOUT: Duration = Duration::from_secs(60);
@@ -501,13 +503,17 @@ async fn with_checkpoints(
     }
 }
 
-async fn take_diff(runtime: &dyn SandboxRuntime, pod: &PodHandle) -> anyhow::Result<Vec<u8>> {
-    // Against the baseline commit made after unpacking; intent-to-add makes new
-    // files appear in the diff without staging their content.
-    let diff_script = format!(
-        "cd {} && git add -A -N . && git diff --binary HEAD",
+/// Against the baseline commit made after unpacking; intent-to-add makes new
+/// files appear in the diff without staging their content.
+fn diff_script() -> String {
+    format!(
+        "cd {0} && git -c safe.directory={0} add -A -N . && git -c safe.directory={0} diff --binary HEAD",
         super::sandbox::WORKSPACE
-    );
+    )
+}
+
+async fn take_diff(runtime: &dyn SandboxRuntime, pod: &PodHandle) -> anyhow::Result<Vec<u8>> {
+    let diff_script = diff_script();
     let diff = runtime
         .exec(
             pod,
@@ -671,7 +677,7 @@ mod tests {
             if joined.contains(" cargo ") {
                 anyhow::bail!("exec_stream_broken")
             }
-            if joined.contains("git diff") {
+            if joined.contains("diff --binary") {
                 return Ok(ExecOutput {
                     exit_code: 0,
                     stdout: self.diff.clone(),
@@ -774,6 +780,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_pod_git_command_trusts_the_root_owned_workspace() {
+        // /workspace is an emptyDir owned by root; git refuses it as dubious
+        // ownership unless told to trust that exact path.
+        for script in [BASELINE_SCRIPT.to_string(), diff_script()] {
+            let git_calls = script.matches("git ").count();
+            let trusted = script.matches("git -c safe.directory=/workspace").count();
+            assert_eq!(git_calls, trusted, "{script}");
+        }
+    }
+
     #[tokio::test]
     async fn diffs_are_taken_against_a_fresh_baseline_commit() {
         let fake = Arc::new(Fake::default());
@@ -782,10 +799,10 @@ mod tests {
             .unwrap();
         let calls = fake.calls.lock().unwrap().clone();
         let position = |needle: &str| calls.iter().position(|c| c.contains(needle)).unwrap();
-        assert!(position("tar -x") < position("git init"), "{calls:?}");
-        assert!(position("git init") < position("claude"), "{calls:?}");
+        assert!(position("tar -x") < position(" init -q"), "{calls:?}");
+        assert!(position(" init -q") < position("claude"), "{calls:?}");
         assert!(
-            calls[position("git diff")].ends_with("git diff --binary HEAD"),
+            calls[position("diff --binary")].ends_with("diff --binary HEAD"),
             "{calls:?}"
         );
 
@@ -800,7 +817,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.contains("git init")));
+            .any(|c| c.contains(" init -q")));
     }
 
     #[tokio::test]
@@ -851,7 +868,10 @@ mod tests {
             b"diff --git a/partial b/partial"
         );
         let calls = fake.calls.lock().unwrap().clone();
-        let diff = calls.iter().rposition(|c| c.contains("git diff")).unwrap();
+        let diff = calls
+            .iter()
+            .rposition(|c| c.contains("diff --binary"))
+            .unwrap();
         assert!(
             diff < calls.iter().rposition(|c| c == "delete").unwrap(),
             "{calls:?}"
@@ -917,8 +937,8 @@ mod tests {
         assert_eq!(result.verification[0].argv, ["npm", "test"]);
         let calls = fake.calls.lock().unwrap();
         let position = |needle: &str| calls.iter().position(|c| c.contains(needle)).unwrap();
-        assert!(position("claude") < position("git diff"), "{calls:?}");
-        assert!(position("git diff") < position(" npm "), "{calls:?}");
+        assert!(position("claude") < position("diff --binary"), "{calls:?}");
+        assert!(position("diff --binary") < position(" npm "), "{calls:?}");
         let npm = &calls[position(" npm ")];
         // The environment travels on stdin: nothing of it is in the exec request.
         assert!(
@@ -989,7 +1009,10 @@ mod tests {
             .unwrap();
         assert!(result.diff.is_empty());
         let calls = fake.calls.lock().unwrap();
-        assert!(!calls.iter().any(|c| c.contains("git diff")), "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| c.contains("diff --binary")),
+            "{calls:?}"
+        );
         assert_eq!(calls.last().unwrap(), "delete");
     }
 
@@ -1078,7 +1101,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "command_status_unknown");
         let calls = fake.calls.lock().unwrap();
-        assert!(!calls.iter().any(|c| c.contains("git diff")), "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| c.contains("diff --binary")),
+            "{calls:?}"
+        );
         assert_eq!(calls.last().unwrap(), "delete");
     }
 
@@ -1104,9 +1130,9 @@ mod tests {
             "{}",
             calls[2]
         );
-        assert!(calls[3].contains("git init"));
+        assert!(calls[3].contains(" init -q"));
         assert!(calls[4].contains("claude"));
-        assert!(calls[5].contains("git diff --binary HEAD"));
+        assert!(calls[5].contains("diff --binary HEAD"));
         assert_eq!(calls.last().unwrap(), "delete");
     }
 
