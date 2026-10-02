@@ -1,6 +1,6 @@
 # NexusMind Software Factory — Implementation Plan
 
-Status: **planning** · Owner: cesar · Last updated: 2026-09-29
+Status: **F0 and F1 in production** · Owner: cesar · Last updated: 2026-10-02
 
 Source documents:
 
@@ -126,6 +126,11 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Implement a `VerificationReport` builder that unifies the existing scanners, tests and DAST into one gate.
 - Harden `recover`: only resume with the original authorization and an owned worktree, and never repeat completed writes.
 - **Exit:** 100% of generated code runs isolated; the gate produces reports for all golden tasks.
+- **Status (2026-10-02): in production, one exit item open.** Every template runs in ephemeral k3s task pods by default (`FACTORY_ISOLATION_DEFAULT=sandbox`); the adversarial drill passed in production. As built (see `openspec/changes/archive/2026-10-02-factory-f1-sandbox`):
+  - Containers are Kubernetes pods (user namespaces, PSA restricted, read-only root, no ServiceAccount token, `prlimit` process cap) rather than podman/colima; OD-3 is resolved by that.
+  - The credential broker is the egress proxy: pods hold only short-lived HMAC run tokens, and the proxy injects the Claude and NexusMind credentials. GitHub writes stay in the worker (the pod never receives a GitHub token) instead of going through the proxy.
+  - Repository code (tests, verification, scanners) runs in a separate commands pod with a registry-only token.
+  - **Open:** the gate has produced reports for real sandboxed runs, but the golden task set (kept outside the repo, F0) has not yet been replayed through the sandbox to produce reports for all golden tasks.
 
 ### F2: Code intelligence, "Bibliotecario" (2–3 weeks)
 
@@ -184,7 +189,7 @@ Also in this phase:
 
 | # | Question | Needed by |
 |---|---|---|
-| OD-3 | Container runtime on macOS dev machines (podman machine vs colima) and on the prod host (Fly.io machine limits for rootless) | F1 |
+| OD-3 | ~~Container runtime on macOS dev machines (podman machine vs colima) and on the prod host (Fly.io machine limits for rootless)~~ Resolved in F1: ephemeral pods on the production k3s cluster | F1 |
 | OD-4 | Exact model per tier, and a monthly budget cap per org | F3 |
 | OD-5 | False-low-risk threshold that enables automatic routing | F3 |
 | OD-6 | Where the Model Gateway credentials live (existing `crypto.rs` secret store vs external) | F3 |

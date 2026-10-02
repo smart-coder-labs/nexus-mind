@@ -1,4 +1,4 @@
-# Factory F1 sandbox (openspec/changes/factory-f1-sandbox, design §2).
+# Factory F1 sandbox (openspec/changes/archive/2026-10-02-factory-f1-sandbox, design §2).
 #
 # Task pods (nexusmind-sandbox) run untrusted work (agent sessions, repository
 # tests, scanners) with no credentials and no egress except the egress proxy. The
