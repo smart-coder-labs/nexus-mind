@@ -18,8 +18,7 @@ if [[ "$BOT_KEY" != nm_* ]]; then
 fi
 
 SIGNING_KEY="$(openssl rand -hex 32)"
-GHPKG_TOKEN="${FACTORY_GHPKG_TOKEN:-}"
-export SIGNING_KEY BOT_KEY ORG_ID CLAUDE_FACTORY_OAUTH_TOKEN GHPKG_TOKEN
+export SIGNING_KEY BOT_KEY ORG_ID CLAUDE_FACTORY_OAUTH_TOKEN
 
 # 1. Proxy secret (nexusmind-sandbox).
 python3 - <<'PY' | ssh oracle 'sudo kubectl apply -f -'
@@ -33,9 +32,8 @@ print(json.dumps({
         "FACTORY_PROXY_SIGNING_KEY": os.environ["SIGNING_KEY"],
         "FACTORY_ANTHROPIC_OAUTH_TOKEN": os.environ["CLAUDE_FACTORY_OAUTH_TOKEN"],
         "FACTORY_NEXUSMIND_KEYS": json.dumps({os.environ["ORG_ID"]: os.environ["BOT_KEY"]}),
-        # Optional: read-only GitHub Packages token for private npm scopes.
-        **({"FACTORY_GITHUB_PACKAGES_TOKENS": json.dumps({os.environ["ORG_ID"]: os.environ["GHPKG_TOKEN"]})}
-           if os.environ.get("GHPKG_TOKEN") else {}),
+        # Optional: set it afterwards with set_github_packages_token.zsh, which
+        # also records the npm scopes the token may read.
     },
 }))
 PY
@@ -46,5 +44,5 @@ import json, os
 print(json.dumps({"stringData": {"FACTORY_PROXY_SIGNING_KEY": os.environ["SIGNING_KEY"]}}))
 PY
 
-unset SIGNING_KEY BOT_KEY GHPKG_TOKEN
+unset SIGNING_KEY BOT_KEY
 echo "Done: factory-egress-proxy secret created and nexusmind-env patched."

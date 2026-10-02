@@ -235,6 +235,23 @@ pub fn registry_only_run_id(run_id: &str) -> String {
     format!("{run_id}{REGISTRY_ONLY_SUFFIX}")
 }
 
+/// The npm scope a GitHub Packages request is for (`/@scope%2fname`,
+/// `/@scope/name`, `/download/@scope/...`), lowercased. `None` for anything else:
+/// the proxy only serves packages of the org's allowed scopes.
+pub fn github_packages_scope(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or("");
+    let rest = path
+        .strip_prefix("/download/")
+        .or_else(|| path.strip_prefix('/'))?;
+    let decoded = rest.replacen("%2f", "/", 1).replacen("%2F", "/", 1);
+    let scope = decoded.strip_prefix('@')?.split('/').next()?;
+    let valid = !scope.is_empty()
+        && scope
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    valid.then(|| format!("@{}", scope.to_ascii_lowercase()))
+}
+
 /// Exact paths the Anthropic route may reach.
 const ANTHROPIC_PATHS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
 
@@ -793,6 +810,23 @@ mod tests {
             "64:ff9b::a9fe:a9fe",
         ] {
             assert!(!is_public_ip(ip(internal)), "{internal}");
+        }
+    }
+
+    #[test]
+    fn github_packages_paths_name_their_scope() {
+        for (path, scope) in [
+            ("/@kasymir%2fui-commons", Some("@kasymir")),
+            ("/@Kasymir%2Fui-commons", Some("@kasymir")),
+            ("/@kasymir/ui-commons", Some("@kasymir")),
+            ("/download/@xell-shop/ui/1.0.0/abc123", Some("@xell-shop")),
+            ("/@kasymir%2fui?write=true", Some("@kasymir")),
+            ("/", None),
+            ("/-/whoami", None),
+            ("/unscoped-package", None),
+            ("/download/unscoped/1.0.0/x", None),
+        ] {
+            assert_eq!(github_packages_scope(path).as_deref(), scope, "{path}");
         }
     }
 

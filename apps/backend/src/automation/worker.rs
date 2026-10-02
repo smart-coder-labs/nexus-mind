@@ -469,17 +469,16 @@ async fn store_run_verification_report(
     workdir: &Path,
     receipts: &[crate::factory::verification::VerificationReceipt],
 ) {
-    let head = match claim.config.pointer("/trigger/head_sha").and_then(|v| v.as_str()) {
-        Some(head) => Some(head.to_string()),
-        None => Command::new("git")
-            .current_dir(workdir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
-    };
+    // The checkout's own HEAD: the commit the sandbox actually verified (for the
+    // reviewer, prepare_repository already refused a head that moved).
+    let head = Command::new("git")
+        .current_dir(workdir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
     let Some(head) = head else { return };
     let report = match crate::factory::verification::build_report(&claim.run.id, &head, receipts, &[], &[]) {
         Ok(report) => report,

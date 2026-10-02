@@ -62,6 +62,24 @@ pub fn commands_for(task: &GoldenTask) -> Vec<Vec<String>> {
     }
 }
 
+/// Checks a task before any pod is started: the report needs a canonical UUID,
+/// and the checkout a valid repository and a full commit SHA.
+pub fn validate_task(task: &GoldenTask) -> anyhow::Result<()> {
+    let canonical = uuid::Uuid::parse_str(&task.id)
+        .ok()
+        .is_some_and(|id| id.hyphenated().to_string() == task.id);
+    if !canonical {
+        anyhow::bail!("invalid_task_id")
+    }
+    if super::connectors::validate_repository(&task.repository).is_err() {
+        anyhow::bail!("invalid_repository")
+    }
+    if task.merge_sha.len() != 40 || !task.merge_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid_merge_sha")
+    }
+    Ok(())
+}
+
 /// One line of the replay summary.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct ReplayOutcome {
@@ -69,6 +87,8 @@ pub struct ReplayOutcome {
     pub repository: String,
     pub merge_sha: String,
     pub passed: bool,
+    /// No executable evidence in the sandbox image (e.g. Rust-only changes).
+    pub skipped: bool,
     pub blocking_failures: Vec<String>,
     /// Set when the replay itself could not run (clone, sandbox).
     pub error: Option<String>,
@@ -88,6 +108,7 @@ pub async fn replay_task(
         repository: task.repository.clone(),
         merge_sha: task.merge_sha.clone(),
         passed: false,
+        skipped: commands_for(task).is_empty(),
         blocking_failures: Vec::new(),
         error: None,
     };
@@ -109,10 +130,7 @@ async fn replay(
     github_token: &str,
     task: &GoldenTask,
 ) -> anyhow::Result<crate::factory::contracts::VerificationReport> {
-    super::connectors::validate_repository(&task.repository)?;
-    if task.merge_sha.len() != 40 || !task.merge_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-        anyhow::bail!("invalid_merge_sha")
-    }
+    validate_task(task)?;
     let commands = commands_for(task);
     let receipts = if commands.is_empty() {
         // Nothing executable in the sandbox image: the report says so.
@@ -246,6 +264,35 @@ mod tests {
             argv(&commands_for(&ui)),
             ["npm ci", "npm test -- --ci --passWithNoTests"]
         );
+    }
+
+    #[test]
+    fn tasks_are_validated_before_any_pod_starts() {
+        let good = task("kasymir/kasymir-app-ui", &["src/a"]);
+        validate_task(&good).unwrap();
+        for (mutate, code) in [
+            (
+                Box::new(|t: &mut GoldenTask| t.id = "not-a-uuid".into())
+                    as Box<dyn Fn(&mut GoldenTask)>,
+                "invalid_task_id",
+            ),
+            (
+                Box::new(|t: &mut GoldenTask| t.id = t.id.to_uppercase()),
+                "invalid_task_id",
+            ),
+            (
+                Box::new(|t: &mut GoldenTask| t.merge_sha = "abc".into()),
+                "invalid_merge_sha",
+            ),
+            (
+                Box::new(|t: &mut GoldenTask| t.repository = "../etc".into()),
+                "invalid_repository",
+            ),
+        ] {
+            let mut bad = good.clone();
+            mutate(&mut bad);
+            assert_eq!(validate_task(&bad).unwrap_err().to_string(), code);
+        }
     }
 
     #[test]

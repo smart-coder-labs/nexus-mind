@@ -34,6 +34,13 @@ async fn main() -> anyhow::Result<()> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(&line))
         .collect::<Result<_, _>>()?;
+    // One run label per task id: a duplicate would share a pod slot, and the
+    // orphan cleanup of one would delete the other's pod.
+    let mut seen = std::collections::HashSet::new();
+    let tasks: Vec<GoldenTask> = tasks
+        .into_iter()
+        .filter(|task| seen.insert(task.id.clone()))
+        .collect();
     let total = tasks.len();
     let outcomes: Vec<_> = futures_util::stream::iter(tasks.iter())
         .map(|task| replay_task(&store, &org_id, &token, task))
@@ -41,11 +48,19 @@ async fn main() -> anyhow::Result<()> {
         .inspect(|outcome| println!("{}", serde_json::to_string(outcome).unwrap_or_default()))
         .collect()
         .await;
-    let passed = outcomes.iter().filter(|o| o.passed).count();
     let errors = outcomes.iter().filter(|o| o.error.is_some()).count();
+    let skipped = outcomes
+        .iter()
+        .filter(|o| o.error.is_none() && o.skipped)
+        .count();
+    let passed = outcomes
+        .iter()
+        .filter(|o| o.error.is_none() && o.passed)
+        .count();
+    let failed = total - errors - skipped - passed;
     println!(
         "{}",
-        serde_json::json!({"summary": {"tasks": total, "passed": passed, "not_passed": total - passed - errors, "errors": errors}})
+        serde_json::json!({"summary": {"tasks": total, "passed": passed, "failed": failed, "skipped_no_evidence": skipped, "errors": errors}})
     );
     Ok(())
 }

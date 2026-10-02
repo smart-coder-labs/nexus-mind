@@ -250,7 +250,7 @@ function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: 
 }
 
 // The star of the redesign: turns run.finished's raw JSON into a readable story.
-function RunDetail({ run, events, transcript, verification = [], runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; verification?: StoredVerificationReport[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
+function RunDetail({ run, events, transcript, verificationReports = [], runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; verificationReports?: StoredVerificationReport[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
   const canContinue = Boolean(onContinue) && ['budget_exhausted', 'partial', 'blocked_policy', 'failed', 'cancelled'].includes(run.status)
   const meta = runStatusMeta(run.status)
   const finished = events.find(e => e.kind === 'run.finished')
@@ -380,7 +380,7 @@ function RunDetail({ run, events, transcript, verification = [], runActive, agen
       </div>
 
       {/* F1 verification gate: commands run in the sandbox + CI checks, per head */}
-      <VerificationReports reports={verification} />
+      <VerificationReports reports={verificationReports} />
 
       {/* full agent conversation (streamed) */}
       <div>
@@ -792,7 +792,7 @@ export default function AutonomousAgents() {
           </div>
           <aside className="rounded-[14px] border border-border-primary p-5 overflow-y-auto min-h-0">
             {selectedRun ? (
-              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} verification={verification.data?.reports ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
+              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} verificationReports={verification.data?.reports ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>

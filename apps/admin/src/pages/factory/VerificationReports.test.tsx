@@ -26,6 +26,20 @@ function stored(passed: boolean): StoredVerificationReport {
 }
 
 describe('VerificationReports', () => {
+  it('states merge eligibility only when CI checks are part of the report', () => {
+    const report = stored(true)
+    report.report.checks.push({ name: 'ci:build', status: 'PASS' })
+    render(<VerificationReports reports={[report]} />)
+    expect(screen.getByText(/eligible for merge/i)).toBeInTheDocument()
+  })
+
+  it('keeps repeated commands as separate rows', () => {
+    const report = stored(true)
+    report.report.checks.push({ name: 'cmd:npm test', status: 'FAIL' })
+    render(<VerificationReports reports={[report]} />)
+    expect(screen.getAllByText('npm test')).toHaveLength(2)
+  })
+
   it('renders nothing when the run has no report', () => {
     const { container } = render(<VerificationReports reports={[]} />)
     expect(container).toBeEmptyDOMElement()
@@ -38,7 +52,9 @@ describe('VerificationReports', () => {
     expect(within(section).getByText('0123456789ab')).toBeInTheDocument()
     expect(within(section).getByText('npm test')).toBeInTheDocument()
     expect(within(section).getByText('PASS')).toBeInTheDocument()
-    expect(within(section).getByText(/eligible for merge/i)).toBeInTheDocument()
+    // Without CI checks the report speaks for the sandbox commands only.
+    expect(within(section).getByText(/sandbox commands only/i)).toBeInTheDocument()
+    expect(within(section).queryByText(/eligible for merge/i)).not.toBeInTheDocument()
   })
 
   it('names what blocks a failing report', () => {

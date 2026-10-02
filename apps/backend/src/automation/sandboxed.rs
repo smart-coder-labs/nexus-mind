@@ -286,17 +286,32 @@ async fn run_commands(
     job.command_stdout_cap = spec.max_stdout;
     job.files = spec.files.clone();
     // Private npm scopes resolve through the proxy's read-only GitHub Packages
-    // route. The pod's HOME is /tmp in a commands pod (verification_env).
-    let scopes = workspace_npm_scopes(run.workdir);
-    if !scopes.is_empty() {
+    // route: user .npmrc (HOME is /tmp in a commands pod) for every scope, and a
+    // project .npmrc next to each lockfile, since project config wins over user.
+    let found = workspace_npm_scopes(run.workdir);
+    if !found.is_empty() {
         let registry = format!(
             "http://{}/r/{token}/ghpkg/",
             crate::factory::sandbox::PROXY_AUTHORITY
         );
+        let all: std::collections::BTreeSet<String> = found
+            .iter()
+            .flat_map(|(_, scopes)| scopes.iter().cloned())
+            .collect();
         job.files.push((
             "/tmp/.npmrc".to_string(),
-            github_packages_npmrc(&scopes, &registry).into_bytes(),
+            github_packages_npmrc(&all, &registry).into_bytes(),
         ));
+        for (relative, scopes) in &found {
+            let existing = std::fs::read_to_string(run.workdir.join(relative).join(".npmrc")).ok();
+            let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
+                .join(relative)
+                .join(".npmrc");
+            job.files.push((
+                target.to_string_lossy().into_owned(),
+                project_npmrc(existing.as_deref(), scopes, &registry).into_bytes(),
+            ));
+        }
     }
     if let Some(path) = spec.proxy_file {
         let proxy = format!(
@@ -342,40 +357,37 @@ fn scrub(run: &mut crate::factory::sandbox_exec::CommandRun, secret: &[u8]) {
 pub(crate) fn github_packages_scopes(
     lockfile: &serde_json::Value,
 ) -> std::collections::BTreeSet<String> {
-    fn from_github(entry: &serde_json::Value) -> bool {
-        entry
-            .get("resolved")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|url| url.starts_with("https://npm.pkg.github.com/"))
-    }
-    fn scope_of(name: &str) -> Option<String> {
-        // The last `node_modules/` segment is the package; scoped names start with @.
-        let package = name.rsplit("node_modules/").next().unwrap_or(name);
-        package
-            .strip_prefix('@')
-            .and_then(|rest| rest.split('/').next())
-            .map(|scope| format!("@{scope}"))
+    /// `https://npm.pkg.github.com/download/@scope/name/...` → `@scope`. Taken from
+    /// the URL, not the entry name, so aliased dependencies count too.
+    fn scope(entry: &serde_json::Value) -> Option<String> {
+        let url = entry.get("resolved")?.as_str()?;
+        let rest = url.strip_prefix("https://npm.pkg.github.com/")?;
+        let rest = rest.strip_prefix("download/").unwrap_or(rest);
+        let scope = rest.strip_prefix('@')?.split(['/', '%']).next()?;
+        (!scope.is_empty()).then(|| format!("@{}", scope.to_ascii_lowercase()))
     }
     fn walk_v1(deps: &serde_json::Value, scopes: &mut std::collections::BTreeSet<String>) {
-        for (name, entry) in deps.as_object().into_iter().flatten() {
-            if from_github(entry) {
-                scopes.extend(scope_of(name));
-            }
+        for entry in deps
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(_, entry)| entry)
+        {
+            scopes.extend(scope(entry));
             if let Some(nested) = entry.get("dependencies") {
                 walk_v1(nested, scopes);
             }
         }
     }
     let mut scopes = std::collections::BTreeSet::new();
-    for (name, entry) in lockfile
+    for entry in lockfile
         .get("packages")
         .and_then(|p| p.as_object())
         .into_iter()
         .flatten()
+        .map(|(_, entry)| entry)
     {
-        if from_github(entry) {
-            scopes.extend(scope_of(name));
-        }
+        scopes.extend(scope(entry));
     }
     if let Some(deps) = lockfile.get("dependencies") {
         walk_v1(deps, &mut scopes);
@@ -385,12 +397,25 @@ pub(crate) fn github_packages_scopes(
 
 /// GitHub Packages scopes across the workspace's `package-lock.json` files (up to
 /// three levels deep, never inside `node_modules` or `.git`).
-fn workspace_npm_scopes(workdir: &Path) -> std::collections::BTreeSet<String> {
-    fn walk(dir: &Path, depth: usize, scopes: &mut std::collections::BTreeSet<String>) {
-        let lock = dir.join("package-lock.json");
-        if let Ok(raw) = std::fs::read_to_string(&lock) {
+fn workspace_npm_scopes(
+    workdir: &Path,
+) -> Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        depth: usize,
+        found: &mut Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)>,
+    ) {
+        if let Ok(raw) = std::fs::read_to_string(dir.join("package-lock.json")) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                scopes.extend(github_packages_scopes(&value));
+                let scopes = github_packages_scopes(&value);
+                if !scopes.is_empty() {
+                    let relative = dir
+                        .strip_prefix(root)
+                        .unwrap_or(Path::new(""))
+                        .to_path_buf();
+                    found.push((relative, scopes));
+                }
             }
         }
         if depth == 0 {
@@ -399,14 +424,39 @@ fn workspace_npm_scopes(workdir: &Path) -> std::collections::BTreeSet<String> {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let name = entry.file_name();
             let skip = name == "node_modules" || name == ".git";
+            // Symlinks are not followed: the walk stays inside the checkout.
             if !skip && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                walk(&entry.path(), depth - 1, scopes);
+                walk(root, &entry.path(), depth - 1, found);
             }
         }
     }
-    let mut scopes = std::collections::BTreeSet::new();
-    walk(workdir, 3, &mut scopes);
-    scopes
+    let mut found = Vec::new();
+    walk(workdir, workdir, 3, &mut found);
+    found
+}
+
+/// A project `.npmrc` for the pod: the repository's own settings, minus its
+/// registry lines for the private scopes and any GitHub auth token, plus the
+/// proxy mapping (a project `.npmrc` takes precedence over the user one).
+pub(crate) fn project_npmrc(
+    existing: Option<&str>,
+    scopes: &std::collections::BTreeSet<String>,
+    registry_url: &str,
+) -> String {
+    let mut npmrc = String::new();
+    for line in existing.unwrap_or_default().lines() {
+        let lower = line.trim().to_ascii_lowercase();
+        let redirects_scope = scopes
+            .iter()
+            .any(|scope| lower.starts_with(&format!("{scope}:registry")));
+        if redirects_scope || lower.contains("npm.pkg.github.com/:_authtoken") {
+            continue;
+        }
+        npmrc.push_str(line);
+        npmrc.push('\n');
+    }
+    npmrc.push_str(&github_packages_npmrc(scopes, registry_url));
+    npmrc
 }
 
 /// A token-free `.npmrc` that sends those scopes to the proxy's GitHub Packages
@@ -721,6 +771,12 @@ mod tests {
         }});
         let scopes: Vec<String> = github_packages_scopes(&v1).into_iter().collect();
         assert_eq!(scopes, ["@acme", "@byte4bit-fenextjs"]);
+        // An aliased dependency is named by its alias; the scope is in its URL.
+        let aliased = serde_json::json!({"packages": {
+            "node_modules/ui": {"resolved": "https://npm.pkg.github.com/download/@Kasymir/ui-commons/2.0.0/def"}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&aliased).into_iter().collect();
+        assert_eq!(scopes, ["@kasymir"]);
         assert!(github_packages_scopes(&serde_json::json!({})).is_empty());
     }
 
@@ -744,6 +800,30 @@ mod tests {
             "{npmrc}"
         );
         assert!(!npmrc.contains("_authToken"), "{npmrc}");
+    }
+
+    #[test]
+    fn a_project_npmrc_keeps_its_settings_but_sends_private_scopes_to_the_proxy() {
+        let scopes: std::collections::BTreeSet<String> =
+            ["@kasymir".to_string()].into_iter().collect();
+        let existing = "@Kasymir:registry=https://npm.pkg.github.com/\n//npm.pkg.github.com/:_authToken=${NPM_TOKEN}\nlegacy-peer-deps=true\n";
+        let npmrc = project_npmrc(Some(existing), &scopes, "http://proxy/r/T/ghpkg/");
+        assert!(npmrc.contains("legacy-peer-deps=true"), "{npmrc}");
+        assert!(
+            npmrc.contains("@kasymir:registry=http://proxy/r/T/ghpkg/"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("https://npm.pkg.github.com/\n@"), "{npmrc}");
+        assert!(
+            !npmrc
+                .to_lowercase()
+                .contains("@kasymir:registry=https://npm.pkg.github.com"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("_authToken"), "{npmrc}");
+        assert!(
+            project_npmrc(None, &scopes, "http://proxy/r/T/ghpkg/").contains("@kasymir:registry=")
+        );
     }
 
     #[test]

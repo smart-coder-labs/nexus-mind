@@ -15,6 +15,14 @@ const STATUS_STYLE: Record<VerificationCheck['status'], string> = {
   SKIP: 'text-text-tertiary border-border-primary',
 }
 
+/** Merge eligibility is only meaningful when the report includes CI checks (the
+ *  merge path's report); a run's own report covers the sandbox commands. */
+function verdict(report: StoredVerificationReport['report']): string {
+  const hasCi = report.checks.some(check => check.name.startsWith('ci:'))
+  if (!hasCi) return report.passed ? 'Sandbox commands only' : 'Sandbox commands failed'
+  return report.eligible_for_merge ? 'Eligible for merge' : 'Needs a human before merge'
+}
+
 function seconds(ms?: number): string | null {
   return typeof ms === 'number' ? `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s` : null
 }
@@ -39,11 +47,11 @@ export function VerificationReports({ reports }: { reports: StoredVerificationRe
             </span>
             <span className="text-text-tertiary">head</span>
             <code className="font-mono text-text-secondary">{head_sha.slice(0, 12)}</code>
-            <span className="text-text-tertiary">· {report.eligible_for_merge ? 'Eligible for merge' : 'Needs a human before merge'}</span>
+            <span className="text-text-tertiary">· {verdict(report)}</span>
           </div>
           <ul className="m-0 p-0 list-none space-y-1">
-            {report.checks.map(check => (
-              <li key={check.name} className="flex items-center gap-2 text-xs">
+            {report.checks.map((check, index) => (
+              <li key={`${index}-${check.name}`} className="flex items-center gap-2 text-xs">
                 <span className={`w-12 shrink-0 rounded border px-1 text-center font-mono text-[10px] ${STATUS_STYLE[check.status]}`}>{check.status}</span>
                 <span className="font-mono text-text-primary break-all">{checkLabel(check.name)}</span>
                 {seconds(check.duration_ms) && <span className="ml-auto shrink-0 text-text-tertiary">{seconds(check.duration_ms)}</span>}

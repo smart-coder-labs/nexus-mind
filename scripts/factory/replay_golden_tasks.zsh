@@ -8,6 +8,10 @@ set -euo pipefail
 
 DATASET="${GOLDEN_DIR:-$HOME/.nexusmind/evals/golden/v1}"
 ORG_ID="${1:-bdf4b2aa-3f52-422e-8bee-a1babbb7d337}"   # default: SmartCoderLabs
+if [[ ! "$ORG_ID" =~ ^[0-9a-f-]{36}$ ]]; then
+  echo "ORG_ID must be an organization UUID." >&2
+  exit 1
+fi
 
 python3 - "$DATASET" <<'PY' | ssh oracle 'sudo kubectl -n nexusmind exec -i deploy/nexusmind-backend -c autonomous-worker -- sh -c "cat > /tmp/golden-tasks.jsonl"'
 import glob, json, os, sys
@@ -17,5 +21,5 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.jsonl"))):
             task = json.loads(line)
             print(json.dumps({k: task[k] for k in ("id", "repository", "merge_sha", "changed_files")}))
 PY
-ssh oracle "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'wc -l < /tmp/golden-tasks.jsonl; nohup /app/factory-golden-replay $ORG_ID < /tmp/golden-tasks.jsonl > /tmp/golden-replay.out 2>/tmp/golden-replay.err &'"
+ssh oracle "sudo kubectl -n nexusmind exec deploy/nexusmind-backend -c autonomous-worker -- sh -c 'wc -l < /tmp/golden-tasks.jsonl; nohup /app/factory-golden-replay \"$ORG_ID\" < /tmp/golden-tasks.jsonl > /tmp/golden-replay.out 2>/tmp/golden-replay.err &'"
 echo "Replay started for org $ORG_ID."
