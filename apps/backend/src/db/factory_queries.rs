@@ -690,6 +690,52 @@ pub fn get_verification_report(
     }))
 }
 
+/// A stored report with when it was produced.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct StoredVerificationReport {
+    pub head_sha: String,
+    pub created_at: String,
+    pub report: crate::factory::contracts::VerificationReport,
+}
+
+/// Every report of a run, newest first. Reports that no longer validate are
+/// skipped rather than shown.
+pub fn list_verification_reports(
+    conn: &Connection,
+    org_id: &str,
+    run_id: &str,
+) -> Result<Vec<StoredVerificationReport>> {
+    let mut statement = conn.prepare(
+        "SELECT head_sha, created_at, report FROM factory_verification_reports
+          WHERE org_id = ?1 AND run_id = ?2
+          ORDER BY created_at DESC, rowid DESC",
+    )?;
+    let rows = statement.query_map([org_id, run_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut reports = Vec::new();
+    for row in rows {
+        let (head_sha, created_at, raw) = row?;
+        let Ok(report) =
+            serde_json::from_str::<crate::factory::contracts::VerificationReport>(&raw)
+        else {
+            continue;
+        };
+        if report.validate().is_ok() && report.head_sha == head_sha {
+            reports.push(StoredVerificationReport {
+                head_sha,
+                created_at,
+                report,
+            });
+        }
+    }
+    Ok(reports)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +764,29 @@ mod tests {
             stop: vec![],
             version: NonZeroU32::new(version).unwrap(),
         }
+    }
+
+    #[test]
+    fn a_runs_reports_are_listed_newest_first_and_org_scoped() {
+        let (conn, org, _) = setup();
+        let task = "0f9b7c2e-1d2a-4c3b-9e8f-0123456789ab";
+        let report = |sha: &str| {
+            crate::factory::verification::build_report(task, sha, &[], &[], &[]).unwrap()
+        };
+        let first = "0123456789abcdef0123456789abcdef01234567";
+        let second = "fedcba9876543210fedcba9876543210fedcba98";
+        save_verification_report(&conn, &org, "run-1", &report(first)).unwrap();
+        conn.execute(
+            "UPDATE factory_verification_reports SET created_at = datetime('now', '-1 hour')",
+            [],
+        )
+        .unwrap();
+        save_verification_report(&conn, &org, "run-1", &report(second)).unwrap();
+        save_verification_report(&conn, &org, "run-2", &report(first)).unwrap();
+        let listed = list_verification_reports(&conn, &org, "run-1").unwrap();
+        let heads: Vec<&str> = listed.iter().map(|r| r.head_sha.as_str()).collect();
+        assert_eq!(heads, [second, first]);
+        assert!(list_verification_reports(&conn, "other-org", "run-1").unwrap().is_empty());
     }
 
     #[test]

@@ -461,6 +461,48 @@ async fn resolver_verification(
     Ok(receipts)
 }
 
+/// Stores the verification report of a sandboxed run for the checked-out head.
+/// Best effort: a report that cannot be stored never changes the run's outcome.
+async fn store_run_verification_report(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    receipts: &[crate::factory::verification::VerificationReceipt],
+) {
+    let head = match claim.config.pointer("/trigger/head_sha").and_then(|v| v.as_str()) {
+        Some(head) => Some(head.to_string()),
+        None => Command::new("git")
+            .current_dir(workdir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+    };
+    let Some(head) = head else { return };
+    let report = match crate::factory::verification::build_report(&claim.run.id, &head, receipts, &[], &[]) {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(run_id = %claim.run.id, "verification report not built: {error:#}");
+            return;
+        }
+    };
+    let db = store.conn();
+    let stored = match db.lock() {
+        Ok(conn) => crate::db::factory_queries::save_verification_report(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            &report,
+        ),
+        Err(_) => Err(anyhow::anyhow!("database_lock")),
+    };
+    if let Err(error) = stored {
+        tracing::warn!(run_id = %claim.run.id, "verification report not stored: {error:#}");
+    }
+}
+
 /// Resolves when the run must stop: its lease is lost (the heartbeat, renewed
 /// here every 2 s, failed) or an operator cancelled it.
 async fn run_stop_signal(store: &SqliteStore, claim: &queries::ClaimedAutonomousRun) {
@@ -4887,8 +4929,14 @@ async fn execute_claim(
         }
     }
         if sandboxed {
-            if let (Some(object), Ok(receipts)) = (outcome.1.as_object_mut(), sandbox_receipts.lock()) {
-                object.insert("verification_receipts".into(), json!(*receipts));
+            let receipts = sandbox_receipts.lock().map(|r| r.clone()).unwrap_or_default();
+            if let Some(object) = outcome.1.as_object_mut() {
+                object.insert("verification_receipts".into(), json!(receipts));
+            }
+            // Every sandboxed run with evidence leaves a report, not only the ones
+            // that reach the merge path (which may later replace it with CI checks).
+            if !receipts.is_empty() {
+                store_run_verification_report(store, claim, &workdir, &receipts).await;
             }
         }
         // Evaluate the structured output inside the run loop so a malformed
