@@ -44,6 +44,9 @@ pub struct EgressConfig {
     /// Reverse requests served at once; beyond this they are shed with 503 so one
     /// sandbox cannot exhaust the proxy's memory or sockets.
     pub max_in_flight: usize,
+    /// Read-only GitHub Packages token per organization (`org_id → token`), for
+    /// private npm dependencies. A run whose org has none fails closed.
+    pub github_packages_tokens: std::collections::HashMap<String, String>,
     /// Tests only: let tunnels reach private addresses. The binary never sets it.
     pub allow_private_upstreams: bool,
 }
@@ -254,6 +257,13 @@ async fn reverse(
         (Upstream::Nexusmind, _, Some(token)) => {
             injected.push(("authorization".into(), format!("Bearer {token}")));
         }
+        (Upstream::GithubPackages, _, _) => match config.github_packages_tokens.get(&run.org_id) {
+            Some(token) => injected.push(("authorization".into(), format!("Bearer {token}"))),
+            None => {
+                tracing::warn!(target: "factory_egress", run_id, ?upstream, "upstream not configured");
+                return text(StatusCode::SERVICE_UNAVAILABLE, "upstream not configured\n");
+            }
+        },
         _ => {
             tracing::warn!(target: "factory_egress", run_id, ?upstream, "upstream not configured");
             return text(StatusCode::SERVICE_UNAVAILABLE, "upstream not configured\n");

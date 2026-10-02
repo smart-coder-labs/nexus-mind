@@ -285,6 +285,19 @@ async fn run_commands(
     job.reproduce_failures = spec.reproduce_failures;
     job.command_stdout_cap = spec.max_stdout;
     job.files = spec.files.clone();
+    // Private npm scopes resolve through the proxy's read-only GitHub Packages
+    // route. The pod's HOME is /tmp in a commands pod (verification_env).
+    let scopes = workspace_npm_scopes(run.workdir);
+    if !scopes.is_empty() {
+        let registry = format!(
+            "http://{}/r/{token}/ghpkg/",
+            crate::factory::sandbox::PROXY_AUTHORITY
+        );
+        job.files.push((
+            "/tmp/.npmrc".to_string(),
+            github_packages_npmrc(&scopes, &registry).into_bytes(),
+        ));
+    }
     if let Some(path) = spec.proxy_file {
         let proxy = format!(
             "http://run:{token}@{}\n",
@@ -322,6 +335,92 @@ fn scrub(run: &mut crate::factory::sandbox_exec::CommandRun, secret: &[u8]) {
     if let Some(again) = run.reproduction.as_deref_mut() {
         scrub(again, secret);
     }
+}
+
+/// The npm scopes a lockfile resolves from GitHub Packages (lockfile v2/v3
+/// `packages`, or v1 `dependencies`).
+pub(crate) fn github_packages_scopes(
+    lockfile: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
+    fn from_github(entry: &serde_json::Value) -> bool {
+        entry
+            .get("resolved")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|url| url.starts_with("https://npm.pkg.github.com/"))
+    }
+    fn scope_of(name: &str) -> Option<String> {
+        // The last `node_modules/` segment is the package; scoped names start with @.
+        let package = name.rsplit("node_modules/").next().unwrap_or(name);
+        package
+            .strip_prefix('@')
+            .and_then(|rest| rest.split('/').next())
+            .map(|scope| format!("@{scope}"))
+    }
+    fn walk_v1(deps: &serde_json::Value, scopes: &mut std::collections::BTreeSet<String>) {
+        for (name, entry) in deps.as_object().into_iter().flatten() {
+            if from_github(entry) {
+                scopes.extend(scope_of(name));
+            }
+            if let Some(nested) = entry.get("dependencies") {
+                walk_v1(nested, scopes);
+            }
+        }
+    }
+    let mut scopes = std::collections::BTreeSet::new();
+    for (name, entry) in lockfile
+        .get("packages")
+        .and_then(|p| p.as_object())
+        .into_iter()
+        .flatten()
+    {
+        if from_github(entry) {
+            scopes.extend(scope_of(name));
+        }
+    }
+    if let Some(deps) = lockfile.get("dependencies") {
+        walk_v1(deps, &mut scopes);
+    }
+    scopes
+}
+
+/// GitHub Packages scopes across the workspace's `package-lock.json` files (up to
+/// three levels deep, never inside `node_modules` or `.git`).
+fn workspace_npm_scopes(workdir: &Path) -> std::collections::BTreeSet<String> {
+    fn walk(dir: &Path, depth: usize, scopes: &mut std::collections::BTreeSet<String>) {
+        let lock = dir.join("package-lock.json");
+        if let Ok(raw) = std::fs::read_to_string(&lock) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                scopes.extend(github_packages_scopes(&value));
+            }
+        }
+        if depth == 0 {
+            return;
+        }
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let skip = name == "node_modules" || name == ".git";
+            if !skip && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                walk(&entry.path(), depth - 1, scopes);
+            }
+        }
+    }
+    let mut scopes = std::collections::BTreeSet::new();
+    walk(workdir, 3, &mut scopes);
+    scopes
+}
+
+/// A token-free `.npmrc` that sends those scopes to the proxy's GitHub Packages
+/// route; `replace-registry-host` rewrites the lockfile's tarball URLs too.
+pub(crate) fn github_packages_npmrc(
+    scopes: &std::collections::BTreeSet<String>,
+    registry_url: &str,
+) -> String {
+    let mut npmrc = String::new();
+    for scope in scopes {
+        npmrc.push_str(&format!("{scope}:registry={registry_url}\n"));
+    }
+    npmrc.push_str("replace-registry-host=npm.pkg.github.com\n");
+    npmrc
 }
 
 /// A scanner's report from a commands pod, or why there is none. The worker only
@@ -603,6 +702,48 @@ mod tests {
                 "dast_target_unreachable"
             );
         }
+    }
+
+    #[test]
+    fn private_scopes_come_from_github_packages_resolutions_only() {
+        let v3 = serde_json::json!({"packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"resolved": "https://registry.npmjs.org/react/-/react-18.2.0.tgz"},
+            "node_modules/@xell-shop/ui": {"resolved": "https://npm.pkg.github.com/download/@xell-shop/ui/1.0.0/abc"},
+            "node_modules/a/node_modules/@kasymir/ui-commons": {"resolved": "https://npm.pkg.github.com/download/@kasymir/ui-commons/2.0.0/def"},
+            "node_modules/@types/node": {"resolved": "https://registry.npmjs.org/@types/node/-/node-20.0.0.tgz"}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&v3).into_iter().collect();
+        assert_eq!(scopes, ["@kasymir", "@xell-shop"]);
+        let v1 = serde_json::json!({"dependencies": {
+            "@byte4bit-fenextjs/core": {"resolved": "https://npm.pkg.github.com/download/@byte4bit-fenextjs/core/1.0.0/x",
+                "dependencies": {"@acme/inner": {"resolved": "https://npm.pkg.github.com/download/@acme/inner/1.0.0/y"}}}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&v1).into_iter().collect();
+        assert_eq!(scopes, ["@acme", "@byte4bit-fenextjs"]);
+        assert!(github_packages_scopes(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_npmrc_points_scopes_at_the_proxy_without_a_credential() {
+        let scopes: std::collections::BTreeSet<String> =
+            ["@kasymir".to_string(), "@xell-shop".to_string()]
+                .into_iter()
+                .collect();
+        let npmrc = github_packages_npmrc(&scopes, "http://proxy:8080/r/TOKEN/ghpkg/");
+        assert!(
+            npmrc.contains("@kasymir:registry=http://proxy:8080/r/TOKEN/ghpkg/\n"),
+            "{npmrc}"
+        );
+        assert!(
+            npmrc.contains("@xell-shop:registry=http://proxy:8080/r/TOKEN/ghpkg/\n"),
+            "{npmrc}"
+        );
+        assert!(
+            npmrc.contains("replace-registry-host=npm.pkg.github.com\n"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("_authToken"), "{npmrc}");
     }
 
     #[test]

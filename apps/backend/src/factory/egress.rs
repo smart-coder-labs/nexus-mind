@@ -12,6 +12,8 @@
 pub enum Upstream {
     Anthropic,
     Nexusmind,
+    /// Private npm packages (GitHub Packages), read-only, with the org's token.
+    GithubPackages,
 }
 
 impl Upstream {
@@ -19,6 +21,7 @@ impl Upstream {
         match self {
             Upstream::Anthropic => "api.anthropic.com",
             Upstream::Nexusmind => "api.nexusmind.smartcoderlabs.com",
+            Upstream::GithubPackages => "npm.pkg.github.com",
         }
     }
 }
@@ -295,11 +298,18 @@ pub fn decide(
     let upstream = match route {
         "anthropic" => Upstream::Anthropic,
         "nexusmind" => Upstream::Nexusmind,
+        "ghpkg" => Upstream::GithubPackages,
         _ => return deny("unknown_route", Some(&run)),
     };
-    // Code under test holds a registry-only token: no credentialed upstream.
-    if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) {
+    // Code under test holds a registry-only token: it may install packages
+    // (including private ones, read-only) but never reach Claude or NexusMind.
+    if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) && upstream != Upstream::GithubPackages {
         return deny("token_scope", Some(&run));
+    }
+    if upstream == Upstream::GithubPackages
+        && !(method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+    {
+        return deny("method_not_allowed", Some(&run));
     }
     let path_and_query = if tail.starts_with('/') {
         tail.to_string()
@@ -784,6 +794,51 @@ mod tests {
         ] {
             assert!(!is_public_ip(ip(internal)), "{internal}");
         }
+    }
+
+    #[test]
+    fn github_packages_is_a_read_only_registry_route_open_to_registry_tokens() {
+        let registry = token(&registry_only_run_id("run-1"), NOW + 60);
+        let agent = token("run-1", NOW + 60);
+        for t in [&registry, &agent] {
+            for method in ["GET", "HEAD"] {
+                assert!(
+                    matches!(
+                        decide(
+                            KEY,
+                            method,
+                            &format!("/r/{t}/ghpkg/@acme%2fui"),
+                            None,
+                            ALLOW,
+                            NOW
+                        ),
+                        Decision::Reverse {
+                            upstream: Upstream::GithubPackages,
+                            ..
+                        }
+                    ),
+                    "{method}"
+                );
+            }
+        }
+        for method in ["PUT", "POST", "DELETE", "PATCH"] {
+            assert_eq!(
+                decide(
+                    KEY,
+                    method,
+                    &format!("/r/{registry}/ghpkg/@acme%2fui"),
+                    None,
+                    ALLOW,
+                    NOW
+                ),
+                Decision::Deny {
+                    reason: "method_not_allowed",
+                    run_id: Some("run-1-registry".into())
+                },
+                "{method}"
+            );
+        }
+        assert_eq!(Upstream::GithubPackages.host(), "npm.pkg.github.com");
     }
 
     #[test]

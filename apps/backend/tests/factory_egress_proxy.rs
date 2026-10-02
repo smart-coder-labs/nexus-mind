@@ -60,6 +60,9 @@ async fn proxy_with_options(
         upstream_override: Some(upstream.to_string()),
         max_in_flight,
         allow_private_upstreams,
+        github_packages_tokens: [("org-1".to_string(), "ghp_packages_org_1".to_string())]
+            .into_iter()
+            .collect(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -388,4 +391,48 @@ async fn the_anthropic_credential_only_reaches_inference_endpoints() {
         .unwrap();
     assert_eq!(response.status(), 403);
     assert!(seen.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn github_packages_gets_the_orgs_read_token_even_for_registry_tokens() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let expires = chrono::Utc::now().timestamp() + 300;
+    let registry = sign_run_token(
+        KEY,
+        "org-1",
+        &nexusmind::factory::egress::registry_only_run_id("run-42"),
+        expires,
+    )
+    .unwrap();
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{base}/r/{registry}/ghpkg/@acme%2fui"))
+        .header("authorization", "Bearer sandbox-guess")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    {
+        let seen = seen.0.lock().unwrap();
+        assert_eq!(seen[0].0, "/@acme%2fui");
+        assert_eq!(seen[0].1["authorization"], "Bearer ghp_packages_org_1");
+    }
+    // Writes never reach the registry.
+    let publish = client
+        .put(format!("{base}/r/{registry}/ghpkg/@acme%2fui"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(publish.status(), 403);
+    // An org without a token fails closed.
+    let other = sign_run_token(KEY, "org-2", "run-7", expires).unwrap();
+    let unconfigured = client
+        .get(format!("{base}/r/{other}/ghpkg/@acme%2fui"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unconfigured.status(), 503);
+    assert_eq!(seen.0.lock().unwrap().len(), 1);
 }
