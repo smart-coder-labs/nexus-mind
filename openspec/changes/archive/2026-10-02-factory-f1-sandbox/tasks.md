@@ -23,8 +23,13 @@
 - [x] 5.1 `VerificationReport` builder bound to `head_sha`; the merge path requires it (stored per run and head, v81; required again after the soak; local reviewers decline)
 
 ## 6. De-privileging and drill
-- [ ] 6.1 Adversarial drill script: from a task pod try the DB, the worker environment, credential files, non-allowlisted hosts and the Kubernetes API; every attempt must fail — `scripts/factory/sandbox_drill.py` written (confinement, userns, PID ns, SA token, /data, RO rootfs, env credentials, direct network, proxy denials, registry token scope, fork limit); **run in the cluster pending**
-- [ ] 6.2 Migrate templates (reviewer → QA → resolver); local execution only behind an explicit unsafe flag — reviewer ✅, QA/judge ✅ (tests pod + agent pod, signed hosts, Playwright via proxy, screenshots), resolver ✅ (single + fanout, WIP checkpoints from the pod, verification over the applied change), scanners ✅; default via `FACTORY_ISOLATION_DEFAULT=sandbox` (set after the drill) + admin selector ✅
+- [x] 6.1 Adversarial drill: `scripts/factory/sandbox_drill.py` run in production (2026-10-02) inside the agent pod and the commands pod of a real sandboxed PR review (run `73c1e1a7`, PR #284). Every attack blocked: confinement (non-root, no caps, no_new_privs, seccomp), own user and PID namespaces, no SA token, no DB/volume/credentials (no mount, no credential files), read-only root, no direct network (internet, Anthropic, GitHub, Kubernetes API, backend, metadata), proxy denials (no token 407, off-allowlist/metadata/non-inference/forged 403, registry token to Anthropic 403), no agent token anywhere in the commands pod, fork limit. The first run found `workspace_unpack_failed` (non-root tar on the root-owned `/workspace`, git dubious ownership), fixed in #285
+- [x] 6.2 Templates migrated (reviewer, QA, judge, resolver single + fanout, security_scan, security_dast); `FACTORY_ISOLATION_DEFAULT=sandbox` set in production after the drill (2026-10-02); `isolation: "local"` stays as an explicit, UI-flagged unsafe escape hatch
 
 ## 7. Recover
 - [x] 7.1 Never resume in place (the exec stream dies with the worker): lease expiry requeues from scratch; a retry deletes its orphan pods first; delivery keys are attempt-independent
+
+## Rollout record (production)
+- #281 F1 code; #282 bookworm builders + `ldd` guard (the trixie builder broke glibc and took prod down ~15 min; rolled back by image digest); #283 proxy in its own namespace (`nexusmind-egress`) and the ServiceAccount token mounted only in the worker container; #285 non-root workspace unpack.
+- Cluster: `nexusmind-sandbox` (task pods, no credentials), `nexusmind-egress` (proxy + its secret), `factory-worker` Role scoped to the sandbox namespace (verified: 200 there, 403 on egress and nexusmind).
+- Secrets via `scripts/factory/configure_sandbox_secrets.zsh`. Bot keys exist for SmartCoderLabs only; other orgs get one when they run sandboxed agents (their NexusMind route answers 503 until then).

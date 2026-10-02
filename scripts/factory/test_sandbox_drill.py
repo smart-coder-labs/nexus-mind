@@ -91,6 +91,46 @@ class Network(unittest.TestCase):
         self.assertIn("inconclusive", detail)
 
 
+class SensitivePaths(unittest.TestCase):
+    MOUNTINFO = (
+        "1 0 0:1 / / ro - overlay overlay rw\n"
+        "2 1 0:2 / /workspace rw - ext4 /dev/sda1 rw\n"
+    )
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make(self, *parts):
+        path = os.path.join(self.root, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+
+    def test_an_absent_path_is_safe(self):
+        self.assertEqual(d.path_exposure(os.path.join(self.root, "missing"), self.MOUNTINFO), [])
+
+    def test_an_empty_image_directory_is_safe(self):
+        self.make("claude-home", ".npm", "_cacache", "index")
+        self.assertEqual(d.path_exposure(os.path.join(self.root, "claude-home"), self.MOUNTINFO), [])
+
+    def test_a_mount_point_is_exposed(self):
+        self.assertEqual(d.path_exposure("/workspace", self.MOUNTINFO), ["mounted"])
+
+    def test_credential_and_data_files_are_exposed(self):
+        self.make("data", "nexusmind.db")
+        self.make("home", ".claude", ".credentials.json")
+        self.make("home", ".config", "gh", "hosts.yml")
+        self.assertEqual(d.path_exposure(os.path.join(self.root, "data"), self.MOUNTINFO), ["nexusmind.db"])
+        self.assertEqual(
+            sorted(d.path_exposure(os.path.join(self.root, "home"), self.MOUNTINFO)),
+            [".claude/.credentials.json", ".config/gh/hosts.yml"],
+        )
+
+
 class Verdicts(unittest.TestCase):
     def test_the_drill_fails_if_any_attack_succeeds(self):
         results = [d.Result("net:internet", True, "blocked"), d.Result("fs:db", False, "readable")]

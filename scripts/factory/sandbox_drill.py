@@ -93,6 +93,35 @@ def leaked_credentials(env):
     return sorted(leaked)
 
 
+# File names that hold credentials or the worker's data wherever they appear.
+SENSITIVE_FILES = {
+    ".credentials.json",
+    ".claude.json",
+    ".env",
+    ".git-credentials",
+    ".netrc",
+    "hosts.yml",
+    "config.json",
+}
+SENSITIVE_SUFFIXES = (".db", ".db-wal", ".sqlite", ".pem", ".key")
+
+
+def path_exposure(path, mountinfo):
+    """Why `path` exposes something to the pod: it is a mount point, or it holds
+    credential or data files. An empty directory baked into the image is safe."""
+    mount_points = {line.split()[4] for line in mountinfo.splitlines() if len(line.split()) > 4}
+    if os.path.abspath(path) in mount_points:
+        return ["mounted"]
+    if not os.path.exists(path):
+        return []
+    found = []
+    for directory, _, files in os.walk(path):
+        for name in files:
+            if name in SENSITIVE_FILES or name.endswith(SENSITIVE_SUFFIXES):
+                found.append(os.path.relpath(os.path.join(directory, name), path))
+    return sorted(found)
+
+
 class Result:
     def __init__(self, name, blocked, detail):
         self.name = name
@@ -130,8 +159,12 @@ def check_process():
 def check_files():
     token = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     yield Result("fs:service_account_token", not os.path.exists(token), token)
-    for path in ["/data", "/data/nexusmind.db", "/claude-home", "/app/.env"]:
-        yield Result(f"fs:{path}", not os.path.exists(path), "absent" if not os.path.exists(path) else "present")
+    mountinfo = read("/proc/self/mountinfo")
+    # The worker's volume paths exist as empty directories in the image; what
+    # matters is that nothing is mounted there and no credential or data is inside.
+    for path in ["/data", "/claude-home", "/app"]:
+        exposed = path_exposure(path, mountinfo)
+        yield Result(f"fs:{path}", not exposed, exposed or "no mount, no credential or data files")
     for directory in ["/etc", "/usr/bin", "/app"]:
         target = os.path.join(directory, ".drill-write")
         try:
