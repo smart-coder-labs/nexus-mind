@@ -30,11 +30,16 @@ async fn pack_workspace_limited(
     max_bytes: usize,
 ) -> anyhow::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
-    let mut child = Command::new("tar")
+    // The top-level entries, not ".": the pod's /workspace is a root-owned emptyDir
+    // and a non-root `tar -x` fails restoring the root's mode and mtime. Any `.git`
+    // at any depth is left out (the repository, a worktree's `.git` file,
+    // submodules, vendored repositories); the pod builds its own baseline.
+    let mut child = Command::new("sh")
         .current_dir(workdir)
-        // Any `.git` at any depth: the top-level repository, a worktree's `.git`
-        // file, submodules and vendored repositories. The pod builds its own.
-        .args(["-c", "-f", "-", "--exclude=.git", "."])
+        .args([
+            "-c",
+            "find . -mindepth 1 -maxdepth 1 ! -name .git -print0 | tar --null -c -f - --exclude=.git -T -",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -183,6 +188,30 @@ mod tests {
             .lines()
             .map(|line| line.trim_start_matches("./").to_string())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn the_archive_has_no_root_entry_so_the_pod_never_touches_the_workspace_root() {
+        let dir = repo().await;
+        let raw = Command::new("tar")
+            .args(["-t", "-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let archive = pack_workspace(dir.path(), &[]).await.unwrap();
+        let mut raw = raw;
+        raw.stdin.take().unwrap().write_all(&archive).await.unwrap();
+        let listing = String::from_utf8(raw.wait_with_output().await.unwrap().stdout).unwrap();
+        // The pod's /workspace is owned by root: restoring "." metadata fails there.
+        assert!(
+            !listing.lines().any(|line| line == "./" || line == "."),
+            "{listing}"
+        );
+        assert!(
+            listing.lines().any(|line| line.ends_with("a.txt")),
+            "{listing}"
+        );
     }
 
     #[tokio::test]
