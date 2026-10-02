@@ -5894,7 +5894,9 @@ pub fn insert_code_chunk(
             start_line, end_line, content, embedding
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    crate::retrieval::lexical::index_chunk(conn, id, file_path, symbol, content)?;
+    Ok(id)
 }
 
 /// Return all (chunk_id, embedding_blob) pairs for a project. Used for cosine ranking.

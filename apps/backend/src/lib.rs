@@ -13,4 +13,5 @@ pub mod migration;
 pub mod models;
 pub mod policy;
 pub mod repository_config;
+pub mod retrieval;
 pub mod store;

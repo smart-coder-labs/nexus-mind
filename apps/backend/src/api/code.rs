@@ -347,7 +347,7 @@ fn keyword_boost(
 ///
 /// `query_tokens` must already be lowercased and stopword-filtered (see
 /// [`tokenize_query`]).
-fn rerank_score(
+pub(crate) fn rerank_score(
     cosine: f32,
     file_path: &str,
     symbol: Option<&str>,
@@ -363,7 +363,7 @@ fn rerank_score(
 /// Split a natural-language query into distinct lowercase tokens, dropping
 /// stopwords and very short fragments. Deterministic order is irrelevant —
 /// callers only test membership.
-fn tokenize_query(query: &str) -> Vec<String> {
+pub(crate) fn tokenize_query(query: &str) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for raw in query.split(|c: char| !c.is_alphanumeric()) {
         if raw.len() < 2 {
@@ -1107,57 +1107,20 @@ pub async fn post_locate(
     };
 
     // Fetch embeddings + lightweight (id → file_path, symbol) locations (no content).
-    let (pairs, locations) = {
+    let ranked = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
-        let pairs = db_queries::get_code_embeddings(&conn, code_project_id).map_err(db_err)?;
-        let locations =
-            db_queries::get_code_chunk_locations(&conn, code_project_id).map_err(db_err)?;
-        (pairs, locations)
+        crate::retrieval::dense_file_ranking(&conn, code_project_id, &input.query, &q_vec)
+            .map_err(db_err)?
     };
-
-    if pairs.is_empty() {
-        return Ok(Json(LocateCodeResponse { results: vec![] }));
-    }
-
-    let loc_map: std::collections::HashMap<i64, (String, Option<String>)> = locations
+    let mut results: Vec<LocateCodeHit> = ranked
         .into_iter()
-        .map(|(id, fp, sym)| (id, (fp, sym)))
-        .collect();
-
-    // Tokenize the query once for the keyword-hybrid boost.
-    let query_tokens = tokenize_query(&input.query);
-
-    // Cosine-rank every chunk, apply the deterministic re-rank (kind weighting
-    // + keyword boost), then collapse to the best-scoring chunk per file.
-    let mut best: std::collections::HashMap<String, (f32, Option<String>)> =
-        std::collections::HashMap::new();
-    for (id, blob) in pairs {
-        let v = embed::deserialize(&blob);
-        let cosine = embed::cosine(&q_vec, &v);
-        if let Some((file_path, symbol)) = loc_map.get(&id) {
-            let score = rerank_score(cosine, file_path, symbol.as_deref(), &query_tokens);
-            let entry = best.entry(file_path.clone()).or_insert((f32::MIN, None));
-            if score > entry.0 {
-                *entry = (score, symbol.clone());
-            }
-        }
-    }
-
-    let mut results: Vec<LocateCodeHit> = best
-        .into_iter()
-        .map(|(file_path, (score, top_symbol))| LocateCodeHit {
-            file_path,
-            top_symbol,
-            score,
+        .map(|hit| LocateCodeHit {
+            file_path: hit.file_path,
+            top_symbol: hit.top_symbol,
+            score: hit.score,
         })
         .collect();
-
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
     results.truncate(limit as usize);
 
     Ok(Json(LocateCodeResponse { results }))

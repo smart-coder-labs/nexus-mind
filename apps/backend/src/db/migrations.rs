@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 81;
+pub const LATEST_USER_VERSION: i32 = 82;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -94,6 +94,49 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v79(conn)?;
     run_v80(conn)?;
     run_v81(conn)?;
+    run_v82(conn)?;
+    Ok(())
+}
+
+/// Migration v82: lexical index over code chunks (factory F2, BM25 leg).
+///
+/// Contentless FTS5: the index only, never a second copy of the code. Rows are
+/// identifier terms (`retrieval::lexical::identifier_terms`) added by
+/// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
+/// chunk's row when the chunk is deleted (re-index, project removal cascade).
+/// Existing chunks are backfilled. Idempotent, all-or-nothing.
+pub fn run_v82(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 82 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+             path, symbol, body,
+             content='', contentless_delete=1,
+             tokenize='unicode61 remove_diacritics 2'
+         );
+         CREATE TRIGGER IF NOT EXISTS code_chunks_fts_delete
+         AFTER DELETE ON code_chunks BEGIN
+             DELETE FROM code_chunks_fts WHERE rowid = old.id;
+         END;",
+    )?;
+    {
+        let mut stmt = tx.prepare("SELECT id, file_path, symbol, content FROM code_chunks")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            crate::retrieval::lexical::index_chunk(
+                &tx,
+                row.get(0)?,
+                &row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.as_deref(),
+                &row.get::<_, String>(3)?,
+            )?;
+        }
+    }
+    tx.execute_batch("PRAGMA user_version = 82;")?;
+    tx.commit()?;
     Ok(())
 }
 
