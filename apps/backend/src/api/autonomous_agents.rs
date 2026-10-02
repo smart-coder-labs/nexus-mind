@@ -838,6 +838,24 @@ pub async fn get_run(
     ))
 }
 
+/// The verification reports of a run (F1 gate), newest first.
+pub async fn list_run_verification_reports(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_error())?;
+    require_explicit_permission(&conn, &auth, None, "autonomous_agent:read")?;
+    // 404 for a run of another org, as get_run does.
+    queries::get_autonomous_agent_run(&conn, &auth.org_id, &id)
+        .map_err(store_error)?
+        .ok_or_else(not_found)?;
+    let reports = crate::db::factory_queries::list_verification_reports(&conn, &auth.org_id, &id)
+        .map_err(store_error)?;
+    Ok(Json(serde_json::json!({ "reports": reports })))
+}
+
 pub async fn cancel_run(
     State(store): State<SqliteStore>,
     Extension(auth): Extension<AuthContext>,

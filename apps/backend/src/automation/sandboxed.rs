@@ -285,6 +285,34 @@ async fn run_commands(
     job.reproduce_failures = spec.reproduce_failures;
     job.command_stdout_cap = spec.max_stdout;
     job.files = spec.files.clone();
+    // Private npm scopes resolve through the proxy's read-only GitHub Packages
+    // route: user .npmrc (HOME is /tmp in a commands pod) for every scope, and a
+    // project .npmrc next to each lockfile, since project config wins over user.
+    let found = workspace_npm_scopes(run.workdir);
+    if !found.is_empty() {
+        let registry = format!(
+            "http://{}/r/{token}/ghpkg/",
+            crate::factory::sandbox::PROXY_AUTHORITY
+        );
+        let all: std::collections::BTreeSet<String> = found
+            .iter()
+            .flat_map(|(_, scopes)| scopes.iter().cloned())
+            .collect();
+        job.files.push((
+            "/tmp/.npmrc".to_string(),
+            github_packages_npmrc(&all, &registry).into_bytes(),
+        ));
+        for (relative, scopes) in &found {
+            let existing = std::fs::read_to_string(run.workdir.join(relative).join(".npmrc")).ok();
+            let target = std::path::Path::new(crate::factory::sandbox::WORKSPACE)
+                .join(relative)
+                .join(".npmrc");
+            job.files.push((
+                target.to_string_lossy().into_owned(),
+                project_npmrc(existing.as_deref(), scopes, &registry).into_bytes(),
+            ));
+        }
+    }
     if let Some(path) = spec.proxy_file {
         let proxy = format!(
             "http://run:{token}@{}\n",
@@ -322,6 +350,127 @@ fn scrub(run: &mut crate::factory::sandbox_exec::CommandRun, secret: &[u8]) {
     if let Some(again) = run.reproduction.as_deref_mut() {
         scrub(again, secret);
     }
+}
+
+/// The npm scopes a lockfile resolves from GitHub Packages (lockfile v2/v3
+/// `packages`, or v1 `dependencies`).
+pub(crate) fn github_packages_scopes(
+    lockfile: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
+    /// `https://npm.pkg.github.com/download/@scope/name/...` → `@scope`. Taken from
+    /// the URL, not the entry name, so aliased dependencies count too.
+    fn scope(entry: &serde_json::Value) -> Option<String> {
+        let url = entry.get("resolved")?.as_str()?;
+        let rest = url.strip_prefix("https://npm.pkg.github.com/")?;
+        let rest = rest.strip_prefix("download/").unwrap_or(rest);
+        let scope = rest.strip_prefix('@')?.split(['/', '%']).next()?;
+        (!scope.is_empty()).then(|| format!("@{}", scope.to_ascii_lowercase()))
+    }
+    fn walk_v1(deps: &serde_json::Value, scopes: &mut std::collections::BTreeSet<String>) {
+        for entry in deps
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(_, entry)| entry)
+        {
+            scopes.extend(scope(entry));
+            if let Some(nested) = entry.get("dependencies") {
+                walk_v1(nested, scopes);
+            }
+        }
+    }
+    let mut scopes = std::collections::BTreeSet::new();
+    for entry in lockfile
+        .get("packages")
+        .and_then(|p| p.as_object())
+        .into_iter()
+        .flatten()
+        .map(|(_, entry)| entry)
+    {
+        scopes.extend(scope(entry));
+    }
+    if let Some(deps) = lockfile.get("dependencies") {
+        walk_v1(deps, &mut scopes);
+    }
+    scopes
+}
+
+/// GitHub Packages scopes across the workspace's `package-lock.json` files (up to
+/// three levels deep, never inside `node_modules` or `.git`).
+fn workspace_npm_scopes(
+    workdir: &Path,
+) -> Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        depth: usize,
+        found: &mut Vec<(std::path::PathBuf, std::collections::BTreeSet<String>)>,
+    ) {
+        if let Ok(raw) = std::fs::read_to_string(dir.join("package-lock.json")) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let scopes = github_packages_scopes(&value);
+                if !scopes.is_empty() {
+                    let relative = dir
+                        .strip_prefix(root)
+                        .unwrap_or(Path::new(""))
+                        .to_path_buf();
+                    found.push((relative, scopes));
+                }
+            }
+        }
+        if depth == 0 {
+            return;
+        }
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let skip = name == "node_modules" || name == ".git";
+            // Symlinks are not followed: the walk stays inside the checkout.
+            if !skip && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                walk(root, &entry.path(), depth - 1, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(workdir, workdir, 3, &mut found);
+    found
+}
+
+/// A project `.npmrc` for the pod: the repository's own settings, minus its
+/// registry lines for the private scopes and any GitHub auth token, plus the
+/// proxy mapping (a project `.npmrc` takes precedence over the user one).
+pub(crate) fn project_npmrc(
+    existing: Option<&str>,
+    scopes: &std::collections::BTreeSet<String>,
+    registry_url: &str,
+) -> String {
+    let mut npmrc = String::new();
+    for line in existing.unwrap_or_default().lines() {
+        let lower = line.trim().to_ascii_lowercase();
+        let redirects_scope = scopes
+            .iter()
+            .any(|scope| lower.starts_with(&format!("{scope}:registry")));
+        if redirects_scope || lower.contains("npm.pkg.github.com/:_authtoken") {
+            continue;
+        }
+        npmrc.push_str(line);
+        npmrc.push('\n');
+    }
+    npmrc.push_str(&github_packages_npmrc(scopes, registry_url));
+    npmrc
+}
+
+/// A token-free `.npmrc` that sends those scopes to the proxy's GitHub Packages
+/// route; `replace-registry-host` rewrites the lockfile's tarball URLs too.
+pub(crate) fn github_packages_npmrc(
+    scopes: &std::collections::BTreeSet<String>,
+    registry_url: &str,
+) -> String {
+    let mut npmrc = String::new();
+    for scope in scopes {
+        npmrc.push_str(&format!("{scope}:registry={registry_url}\n"));
+    }
+    npmrc.push_str("replace-registry-host=npm.pkg.github.com\n");
+    npmrc
 }
 
 /// A scanner's report from a commands pod, or why there is none. The worker only
@@ -603,6 +752,78 @@ mod tests {
                 "dast_target_unreachable"
             );
         }
+    }
+
+    #[test]
+    fn private_scopes_come_from_github_packages_resolutions_only() {
+        let v3 = serde_json::json!({"packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"resolved": "https://registry.npmjs.org/react/-/react-18.2.0.tgz"},
+            "node_modules/@xell-shop/ui": {"resolved": "https://npm.pkg.github.com/download/@xell-shop/ui/1.0.0/abc"},
+            "node_modules/a/node_modules/@kasymir/ui-commons": {"resolved": "https://npm.pkg.github.com/download/@kasymir/ui-commons/2.0.0/def"},
+            "node_modules/@types/node": {"resolved": "https://registry.npmjs.org/@types/node/-/node-20.0.0.tgz"}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&v3).into_iter().collect();
+        assert_eq!(scopes, ["@kasymir", "@xell-shop"]);
+        let v1 = serde_json::json!({"dependencies": {
+            "@byte4bit-fenextjs/core": {"resolved": "https://npm.pkg.github.com/download/@byte4bit-fenextjs/core/1.0.0/x",
+                "dependencies": {"@acme/inner": {"resolved": "https://npm.pkg.github.com/download/@acme/inner/1.0.0/y"}}}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&v1).into_iter().collect();
+        assert_eq!(scopes, ["@acme", "@byte4bit-fenextjs"]);
+        // An aliased dependency is named by its alias; the scope is in its URL.
+        let aliased = serde_json::json!({"packages": {
+            "node_modules/ui": {"resolved": "https://npm.pkg.github.com/download/@Kasymir/ui-commons/2.0.0/def"}
+        }});
+        let scopes: Vec<String> = github_packages_scopes(&aliased).into_iter().collect();
+        assert_eq!(scopes, ["@kasymir"]);
+        assert!(github_packages_scopes(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_npmrc_points_scopes_at_the_proxy_without_a_credential() {
+        let scopes: std::collections::BTreeSet<String> =
+            ["@kasymir".to_string(), "@xell-shop".to_string()]
+                .into_iter()
+                .collect();
+        let npmrc = github_packages_npmrc(&scopes, "http://proxy:8080/r/TOKEN/ghpkg/");
+        assert!(
+            npmrc.contains("@kasymir:registry=http://proxy:8080/r/TOKEN/ghpkg/\n"),
+            "{npmrc}"
+        );
+        assert!(
+            npmrc.contains("@xell-shop:registry=http://proxy:8080/r/TOKEN/ghpkg/\n"),
+            "{npmrc}"
+        );
+        assert!(
+            npmrc.contains("replace-registry-host=npm.pkg.github.com\n"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("_authToken"), "{npmrc}");
+    }
+
+    #[test]
+    fn a_project_npmrc_keeps_its_settings_but_sends_private_scopes_to_the_proxy() {
+        let scopes: std::collections::BTreeSet<String> =
+            ["@kasymir".to_string()].into_iter().collect();
+        let existing = "@Kasymir:registry=https://npm.pkg.github.com/\n//npm.pkg.github.com/:_authToken=${NPM_TOKEN}\nlegacy-peer-deps=true\n";
+        let npmrc = project_npmrc(Some(existing), &scopes, "http://proxy/r/T/ghpkg/");
+        assert!(npmrc.contains("legacy-peer-deps=true"), "{npmrc}");
+        assert!(
+            npmrc.contains("@kasymir:registry=http://proxy/r/T/ghpkg/"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("https://npm.pkg.github.com/\n@"), "{npmrc}");
+        assert!(
+            !npmrc
+                .to_lowercase()
+                .contains("@kasymir:registry=https://npm.pkg.github.com"),
+            "{npmrc}"
+        );
+        assert!(!npmrc.contains("_authToken"), "{npmrc}");
+        assert!(
+            project_npmrc(None, &scopes, "http://proxy/r/T/ghpkg/").contains("@kasymir:registry=")
+        );
     }
 
     #[test]

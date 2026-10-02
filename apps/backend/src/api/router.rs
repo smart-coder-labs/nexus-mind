@@ -638,6 +638,10 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
             get(autonomous_agents::get_run),
         )
         .route(
+            "/v1/autonomous-agent-runs/:id/verification-reports",
+            get(autonomous_agents::list_run_verification_reports),
+        )
+        .route(
             "/v1/autonomous-agent-runs/:id/cancel",
             post(autonomous_agents::cancel_run),
         )

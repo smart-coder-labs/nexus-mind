@@ -22,6 +22,9 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "static.crates.io",
     "index.crates.io",
     "codeload.github.com",
+    // GitHub Packages answers tarball downloads with a redirect to a presigned
+    // URL here; it carries no credential.
+    "pkg-npm.githubusercontent.com",
 ];
 
 fn env(name: &str) -> Option<String> {
@@ -70,6 +73,14 @@ async fn main() -> anyhow::Result<()> {
             None => Default::default(),
         },
         tunnel_allowlist,
+        github_packages_tokens: match env("FACTORY_GITHUB_PACKAGES_TOKENS") {
+            Some(raw) => serde_json::from_str(&raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "FACTORY_GITHUB_PACKAGES_TOKENS must be a JSON object of org_id -> token"
+                )
+            })?,
+            None => Default::default(),
+        },
         upstream_override: None,
         allow_private_upstreams: false,
         max_in_flight: env("FACTORY_PROXY_MAX_IN_FLIGHT")
@@ -78,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let listen = env("FACTORY_PROXY_LISTEN").unwrap_or_else(|| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&listen).await?;
-    tracing::info!(target: "factory_egress", %listen, anthropic = config.anthropic.is_some(), nexusmind_orgs = config.nexusmind_keys.len(), tunnels = config.tunnel_allowlist.len(), "egress proxy listening");
+    tracing::info!(target: "factory_egress", %listen, anthropic = config.anthropic.is_some(), nexusmind_orgs = config.nexusmind_keys.len(), github_packages_orgs = config.github_packages_tokens.len(), tunnels = config.tunnel_allowlist.len(), "egress proxy listening");
     serve(listener, Arc::new(config)).await?;
     Ok(())
 }

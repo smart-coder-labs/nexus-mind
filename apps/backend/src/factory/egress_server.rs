@@ -44,8 +44,20 @@ pub struct EgressConfig {
     /// Reverse requests served at once; beyond this they are shed with 503 so one
     /// sandbox cannot exhaust the proxy's memory or sockets.
     pub max_in_flight: usize,
+    /// Read-only GitHub Packages access per organization, for private npm
+    /// dependencies. A run whose org has none fails closed.
+    pub github_packages_tokens: std::collections::HashMap<String, GithubPackagesAuth>,
     /// Tests only: let tunnels reach private addresses. The binary never sets it.
     pub allow_private_upstreams: bool,
+}
+
+/// A classic PAT (GitHub Packages for npm accepts no other kind) can read every
+/// package its owner can, so the proxy serves only the org's own scopes with it.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct GithubPackagesAuth {
+    pub token: String,
+    /// Allowed npm scopes, e.g. `@kasymir` (compared lowercase).
+    pub scopes: Vec<String>,
 }
 
 /// Upper bound on a tunnel's lifetime (package downloads, not long-lived streams).
@@ -254,6 +266,25 @@ async fn reverse(
         (Upstream::Nexusmind, _, Some(token)) => {
             injected.push(("authorization".into(), format!("Bearer {token}")));
         }
+        (Upstream::GithubPackages, _, _) => match config.github_packages_tokens.get(&run.org_id) {
+            Some(auth) => {
+                let allowed =
+                    super::egress::github_packages_scope(path_and_query).is_some_and(|scope| {
+                        auth.scopes
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(&scope))
+                    });
+                if !allowed {
+                    tracing::warn!(target: "factory_egress", run_id, ?upstream, "github packages scope not allowed");
+                    return text(StatusCode::FORBIDDEN, "egress denied\n");
+                }
+                injected.push(("authorization".into(), format!("Bearer {}", auth.token)));
+            }
+            None => {
+                tracing::warn!(target: "factory_egress", run_id, ?upstream, "upstream not configured");
+                return text(StatusCode::SERVICE_UNAVAILABLE, "upstream not configured\n");
+            }
+        },
         _ => {
             tracing::warn!(target: "factory_egress", run_id, ?upstream, "upstream not configured");
             return text(StatusCode::SERVICE_UNAVAILABLE, "upstream not configured\n");

@@ -12,6 +12,8 @@
 pub enum Upstream {
     Anthropic,
     Nexusmind,
+    /// Private npm packages (GitHub Packages), read-only, with the org's token.
+    GithubPackages,
 }
 
 impl Upstream {
@@ -19,6 +21,7 @@ impl Upstream {
         match self {
             Upstream::Anthropic => "api.anthropic.com",
             Upstream::Nexusmind => "api.nexusmind.smartcoderlabs.com",
+            Upstream::GithubPackages => "npm.pkg.github.com",
         }
     }
 }
@@ -232,6 +235,23 @@ pub fn registry_only_run_id(run_id: &str) -> String {
     format!("{run_id}{REGISTRY_ONLY_SUFFIX}")
 }
 
+/// The npm scope a GitHub Packages request is for (`/@scope%2fname`,
+/// `/@scope/name`, `/download/@scope/...`), lowercased. `None` for anything else:
+/// the proxy only serves packages of the org's allowed scopes.
+pub fn github_packages_scope(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or("");
+    let rest = path
+        .strip_prefix("/download/")
+        .or_else(|| path.strip_prefix('/'))?;
+    let decoded = rest.replacen("%2f", "/", 1).replacen("%2F", "/", 1);
+    let scope = decoded.strip_prefix('@')?.split('/').next()?;
+    let valid = !scope.is_empty()
+        && scope
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    valid.then(|| format!("@{}", scope.to_ascii_lowercase()))
+}
+
 /// Exact paths the Anthropic route may reach.
 const ANTHROPIC_PATHS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
 
@@ -295,11 +315,18 @@ pub fn decide(
     let upstream = match route {
         "anthropic" => Upstream::Anthropic,
         "nexusmind" => Upstream::Nexusmind,
+        "ghpkg" => Upstream::GithubPackages,
         _ => return deny("unknown_route", Some(&run)),
     };
-    // Code under test holds a registry-only token: no credentialed upstream.
-    if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) {
+    // Code under test holds a registry-only token: it may install packages
+    // (including private ones, read-only) but never reach Claude or NexusMind.
+    if run.run_id.ends_with(REGISTRY_ONLY_SUFFIX) && upstream != Upstream::GithubPackages {
         return deny("token_scope", Some(&run));
+    }
+    if upstream == Upstream::GithubPackages
+        && !(method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+    {
+        return deny("method_not_allowed", Some(&run));
     }
     let path_and_query = if tail.starts_with('/') {
         tail.to_string()
@@ -784,6 +811,68 @@ mod tests {
         ] {
             assert!(!is_public_ip(ip(internal)), "{internal}");
         }
+    }
+
+    #[test]
+    fn github_packages_paths_name_their_scope() {
+        for (path, scope) in [
+            ("/@kasymir%2fui-commons", Some("@kasymir")),
+            ("/@Kasymir%2Fui-commons", Some("@kasymir")),
+            ("/@kasymir/ui-commons", Some("@kasymir")),
+            ("/download/@xell-shop/ui/1.0.0/abc123", Some("@xell-shop")),
+            ("/@kasymir%2fui?write=true", Some("@kasymir")),
+            ("/", None),
+            ("/-/whoami", None),
+            ("/unscoped-package", None),
+            ("/download/unscoped/1.0.0/x", None),
+        ] {
+            assert_eq!(github_packages_scope(path).as_deref(), scope, "{path}");
+        }
+    }
+
+    #[test]
+    fn github_packages_is_a_read_only_registry_route_open_to_registry_tokens() {
+        let registry = token(&registry_only_run_id("run-1"), NOW + 60);
+        let agent = token("run-1", NOW + 60);
+        for t in [&registry, &agent] {
+            for method in ["GET", "HEAD"] {
+                assert!(
+                    matches!(
+                        decide(
+                            KEY,
+                            method,
+                            &format!("/r/{t}/ghpkg/@acme%2fui"),
+                            None,
+                            ALLOW,
+                            NOW
+                        ),
+                        Decision::Reverse {
+                            upstream: Upstream::GithubPackages,
+                            ..
+                        }
+                    ),
+                    "{method}"
+                );
+            }
+        }
+        for method in ["PUT", "POST", "DELETE", "PATCH"] {
+            assert_eq!(
+                decide(
+                    KEY,
+                    method,
+                    &format!("/r/{registry}/ghpkg/@acme%2fui"),
+                    None,
+                    ALLOW,
+                    NOW
+                ),
+                Decision::Deny {
+                    reason: "method_not_allowed",
+                    run_id: Some("run-1-registry".into())
+                },
+                "{method}"
+            );
+        }
+        assert_eq!(Upstream::GithubPackages.host(), "npm.pkg.github.com");
     }
 
     #[test]

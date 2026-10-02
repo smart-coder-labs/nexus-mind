@@ -305,7 +305,7 @@ async fn prepare_nexus_workspace(workdir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn command_ok(mut command: Command) -> anyhow::Result<()> {
+pub(crate) async fn command_ok(mut command: Command) -> anyhow::Result<()> {
     let output = timeout(
         Duration::from_secs(300),
         command.kill_on_drop(true).output(),
@@ -459,6 +459,47 @@ async fn resolver_verification(
         receipts.push(json!({"argv": run.argv, "status": "passed", "duration_ms": run.duration_ms}));
     }
     Ok(receipts)
+}
+
+/// Stores the verification report of a sandboxed run for the checked-out head.
+/// Best effort: a report that cannot be stored never changes the run's outcome.
+async fn store_run_verification_report(
+    store: &SqliteStore,
+    claim: &queries::ClaimedAutonomousRun,
+    workdir: &Path,
+    receipts: &[crate::factory::verification::VerificationReceipt],
+) {
+    // The checkout's own HEAD: the commit the sandbox actually verified (for the
+    // reviewer, prepare_repository already refused a head that moved).
+    let head = Command::new("git")
+        .current_dir(workdir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    let Some(head) = head else { return };
+    let report = match crate::factory::verification::build_report(&claim.run.id, &head, receipts, &[], &[]) {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(run_id = %claim.run.id, "verification report not built: {error:#}");
+            return;
+        }
+    };
+    let db = store.conn();
+    let stored = match db.lock() {
+        Ok(conn) => crate::db::factory_queries::save_verification_report(
+            &conn,
+            &claim.org_id,
+            &claim.run.id,
+            &report,
+        ),
+        Err(_) => Err(anyhow::anyhow!("database_lock")),
+    };
+    if let Err(error) = stored {
+        tracing::warn!(run_id = %claim.run.id, "verification report not stored: {error:#}");
+    }
 }
 
 /// Resolves when the run must stop: its lease is lost (the heartbeat, renewed
@@ -1584,7 +1625,12 @@ async fn github_access_for_connector(
     server_gh_token().await
 }
 
-async fn server_gh_token() -> anyhow::Result<String> {
+/// The server's GitHub login (for tools such as the golden replay).
+pub async fn server_github_token() -> anyhow::Result<String> {
+    server_gh_token().await
+}
+
+pub(crate) async fn server_gh_token() -> anyhow::Result<String> {
     let mut command = Command::new("gh");
     restrict_claude_environment(&mut command);
     let output = timeout(
@@ -1638,7 +1684,7 @@ async fn close_resolved_issue(
     }
 }
 
-fn authenticated_git(token: &str) -> Command {
+pub(crate) fn authenticated_git(token: &str) -> Command {
     use base64::Engine as _;
     let mut command = Command::new("git");
     // GitHub git-over-HTTPS requires Basic auth (username `x-access-token`, token
@@ -4887,8 +4933,14 @@ async fn execute_claim(
         }
     }
         if sandboxed {
-            if let (Some(object), Ok(receipts)) = (outcome.1.as_object_mut(), sandbox_receipts.lock()) {
-                object.insert("verification_receipts".into(), json!(*receipts));
+            let receipts = sandbox_receipts.lock().map(|r| r.clone()).unwrap_or_default();
+            if let Some(object) = outcome.1.as_object_mut() {
+                object.insert("verification_receipts".into(), json!(receipts));
+            }
+            // Every sandboxed run with evidence leaves a report, not only the ones
+            // that reach the merge path (which may later replace it with CI checks).
+            if !receipts.is_empty() {
+                store_run_verification_report(store, claim, &workdir, &receipts).await;
             }
         }
         // Evaluate the structured output inside the run loop so a malformed

@@ -120,6 +120,7 @@ import type {
   AutonomousAgentFinding,
   AutonomousAgentDelivery,
   AutonomousAgentEvent,
+  StoredVerificationReport,
   AutonomousAgentTarget,
   AutonomousAgentOrgSettings,
   AutonomousAgentMetrics,
@@ -1430,6 +1431,7 @@ export class NexusMindClient {
     return this.request('/v1/factory/bot/key', { method: 'POST' })
   }
   listAutonomousAgentRunEvents(id:string): Promise<AutonomousAgentEvent[]> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/events`) }
+  listRunVerificationReports(id:string): Promise<{reports:StoredVerificationReport[]}> { return this.request(`/v1/autonomous-agent-runs/${encodeURIComponent(id)}/verification-reports`) }
   // Turn-by-turn transcript from `after` (exclusive), paged by sequence. Callers
   // poll incrementally with the last sequence they hold so each poll only pulls
   // new turns instead of re-downloading the whole conversation.

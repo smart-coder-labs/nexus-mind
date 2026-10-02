@@ -32,6 +32,8 @@ print(json.dumps({
         "FACTORY_PROXY_SIGNING_KEY": os.environ["SIGNING_KEY"],
         "FACTORY_ANTHROPIC_OAUTH_TOKEN": os.environ["CLAUDE_FACTORY_OAUTH_TOKEN"],
         "FACTORY_NEXUSMIND_KEYS": json.dumps({os.environ["ORG_ID"]: os.environ["BOT_KEY"]}),
+        # Optional: set it afterwards with set_github_packages_token.zsh, which
+        # also records the npm scopes the token may read.
     },
 }))
 PY

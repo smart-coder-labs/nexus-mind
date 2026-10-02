@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use axum::{extract::State, http::HeaderMap, routing::any, Router};
 use nexusmind::factory::{
     egress::sign_run_token,
-    egress_server::{serve, AnthropicAuth, EgressConfig},
+    egress_server::{serve, AnthropicAuth, EgressConfig, GithubPackagesAuth},
 };
 
 const KEY: &[u8] = b"integration-signing-key-000000000";
@@ -60,6 +60,15 @@ async fn proxy_with_options(
         upstream_override: Some(upstream.to_string()),
         max_in_flight,
         allow_private_upstreams,
+        github_packages_tokens: [(
+            "org-1".to_string(),
+            GithubPackagesAuth {
+                token: "ghp_packages_org_1".to_string(),
+                scopes: vec!["@acme".to_string()],
+            },
+        )]
+        .into_iter()
+        .collect(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -388,4 +397,62 @@ async fn the_anthropic_credential_only_reaches_inference_endpoints() {
         .unwrap();
     assert_eq!(response.status(), 403);
     assert!(seen.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn github_packages_gets_the_orgs_read_token_even_for_registry_tokens() {
+    let (upstream, seen) = fake_upstream().await;
+    let base = proxy(&upstream, None).await;
+    let expires = chrono::Utc::now().timestamp() + 300;
+    let registry = sign_run_token(
+        KEY,
+        "org-1",
+        &nexusmind::factory::egress::registry_only_run_id("run-42"),
+        expires,
+    )
+    .unwrap();
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{base}/r/{registry}/ghpkg/@acme%2fui"))
+        .header("authorization", "Bearer sandbox-guess")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    {
+        let seen = seen.0.lock().unwrap();
+        assert_eq!(seen[0].0, "/@acme%2fui");
+        assert_eq!(seen[0].1["authorization"], "Bearer ghp_packages_org_1");
+    }
+    // Only the org's allowed scopes: never other packages the token can read,
+    // nor non-package endpoints.
+    for path in [
+        "@othercorp%2fsecret",
+        "-/whoami",
+        "download/@othercorp/secret/1.0.0/x",
+    ] {
+        let refused = client
+            .get(format!("{base}/r/{registry}/ghpkg/{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403, "{path}");
+    }
+    // Writes never reach the registry.
+    let publish = client
+        .put(format!("{base}/r/{registry}/ghpkg/@acme%2fui"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(publish.status(), 403);
+    // An org without a token fails closed.
+    let other = sign_run_token(KEY, "org-2", "run-7", expires).unwrap();
+    let unconfigured = client
+        .get(format!("{base}/r/{other}/ghpkg/@acme%2fui"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unconfigured.status(), 503);
+    assert_eq!(seen.0.lock().unwrap().len(), 1);
 }

@@ -13,7 +13,8 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Modal, ModalHeader, ModalTitle, ModalContent } from '../components/ui/Modal'
 import { Markdown } from '../components/ui/Markdown'
 import AutonomousAgentWizard from './AutonomousAgentWizard'
-import type { AutonomousAgentDefinition, AutonomousAgentDetail, AutonomousAgentEvent, AutonomousAgentRun, AutonomousAgentTemplate } from '../types'
+import type { AutonomousAgentDefinition, AutonomousAgentDetail, AutonomousAgentEvent, AutonomousAgentRun, AutonomousAgentTemplate, StoredVerificationReport } from '../types'
+import { VerificationReports } from './factory/VerificationReports'
 
 type Tab = 'agents' | 'templates' | 'runs' | 'findings' | 'runtime'
 
@@ -249,7 +250,7 @@ function TranscriptView({ turns, live }: { turns: AutonomousAgentEvent[]; live: 
 }
 
 // The star of the redesign: turns run.finished's raw JSON into a readable story.
-function RunDetail({ run, events, transcript, runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
+function RunDetail({ run, events, transcript, verificationReports = [], runActive, agentName, templateKey, onOpenFindings, onContinue, continuing }: { run: AutonomousAgentRun; events: AutonomousAgentEvent[]; transcript: AutonomousAgentEvent[]; verificationReports?: StoredVerificationReport[]; runActive?: boolean; agentName?: string; templateKey?: string; onOpenFindings?: () => void; onContinue?: (id: string) => void; continuing?: boolean }) {
   const canContinue = Boolean(onContinue) && ['budget_exhausted', 'partial', 'blocked_policy', 'failed', 'cancelled'].includes(run.status)
   const meta = runStatusMeta(run.status)
   const finished = events.find(e => e.kind === 'run.finished')
@@ -378,6 +379,9 @@ function RunDetail({ run, events, transcript, runActive, agentName, templateKey,
         {rows.length ? <ol className="m-0 p-0 list-none">{rows}</ol> : <p className="text-xs text-text-tertiary">No events recorded yet.</p>}
       </div>
 
+      {/* F1 verification gate: commands run in the sandbox + CI checks, per head */}
+      <VerificationReports reports={verificationReports} />
+
       {/* full agent conversation (streamed) */}
       <div>
         <p className="mb-3 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary"><MessagesSquare className="w-3.5 h-3.5" />Conversation{transcript.length ? <span className="text-text-tertiary/70">· {transcript.length} turns</span> : null}</p>
@@ -490,6 +494,8 @@ export default function AutonomousAgents() {
   // Lifecycle events barely change mid-run; the terminal-status effect below
   // refetches them once the run finishes, so no need to poll them live.
   const events = useQuery({ queryKey: ['autonomous-run-events', selectedRun?.id], queryFn: () => client.listAutonomousAgentRunEvents(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun) })
+  // Reports appear when the run finishes; the terminal-status refetch covers them.
+  const verification = useQuery({ queryKey: ['autonomous-run-verification', selectedRun?.id], queryFn: () => client.listRunVerificationReports(selectedRun!.id), enabled: can('autonomous_agent:read') && Boolean(selectedRun) })
   const transcript = useQuery({
     queryKey: ['autonomous-run-transcript', selectedRun?.id],
     // Incremental: only fetch turns after the last one we already hold, then
@@ -510,6 +516,7 @@ export default function AutonomousAgents() {
     if (selectedRun && selectedLiveStatus && !['queued', 'leased', 'running'].includes(selectedLiveStatus)) {
       void transcript.refetch()
       void events.refetch()
+      void verification.refetch()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLiveStatus, selectedRun?.id])
@@ -785,7 +792,7 @@ export default function AutonomousAgents() {
           </div>
           <aside className="rounded-[14px] border border-border-primary p-5 overflow-y-auto min-h-0">
             {selectedRun ? (
-              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
+              <RunDetail run={runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun} events={events.data ?? []} transcript={transcript.data ?? []} verificationReports={verification.data?.reports ?? []} runActive={['queued', 'leased', 'running'].includes((runs.data?.find(r => r.id === selectedRun.id) ?? selectedRun).status)} agentName={runAgent?.name} templateKey={runAgent?.template_key} onOpenFindings={() => setTab('findings')} onContinue={can('autonomous_agent:run') ? id => continueRun.mutate(id) : undefined} continuing={continueRun.isPending} />
             ) : <EmptyState title="Select a run" description="See the outcome, budget consumption, a readable timeline, and what the agent produced." />}
           </aside>
         </div>
