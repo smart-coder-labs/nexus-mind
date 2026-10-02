@@ -3,7 +3,8 @@
 //!
 //! Usage:
 //!   factory-retrieval-eval --db <eval.db> --repo <snapshot> --history <git repo> \
-//!     --project <name> [--variants dense,bm25,rrf] [--no-embed] < golden.jsonl
+//!     --project <name> [--variants dense,bm25,rrf] [--no-embed] \
+//!     [--config-weight <w>] < golden.jsonl
 //!
 //! The snapshot is indexed into the eval database (unchanged files are not
 //! re-processed on later runs, so an interrupted embedding pass resumes). Each
@@ -64,6 +65,10 @@ fn main() -> anyhow::Result<()> {
     let repo = std::fs::canonicalize(&repo)?.to_string_lossy().into_owned();
     let history = arg(&args, "--history").unwrap_or_else(|_| repo.clone());
     let no_embed = args.iter().any(|a| a == "--no-embed");
+    let config_weight: f32 = match arg(&args, "--config-weight") {
+        Ok(value) => value.parse()?,
+        Err(_) => lexical::CONFIG_WEIGHT,
+    };
     let variants: Vec<String> = arg(&args, "--variants")
         .unwrap_or_else(|_| if no_embed { "bm25" } else { "dense,bm25,rrf" }.to_string())
         .split(',')
@@ -157,7 +162,12 @@ fn main() -> anyhow::Result<()> {
         let paths = |hits: Vec<retrieval::FileHit>| -> Vec<String> {
             hits.into_iter().map(|h| h.file_path).collect()
         };
-        let lexical_ranking = paths(lexical::bm25_file_ranking(&conn, project_id, &query)?);
+        let lexical_ranking = paths(lexical::bm25_file_ranking_weighted(
+            &conn,
+            project_id,
+            &query,
+            config_weight,
+        )?);
         let dense_ranking = match &embed {
             Some(svc) => paths(retrieval::dense_file_ranking(
                 &conn,
