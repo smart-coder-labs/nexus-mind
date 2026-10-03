@@ -404,6 +404,28 @@ pub fn index_project(
         }
     }
 
+    // Prune files that left the walk (deleted, renamed, excluded by pattern or by
+    // the walker's own rules): their chunks would otherwise stay searchable
+    // forever. Paths are relative, as stored.
+    {
+        let current: HashSet<String> = files
+            .iter()
+            .map(|f| {
+                f.path
+                    .strip_prefix(root_path)
+                    .unwrap_or(&f.path)
+                    .trim_start_matches('/')
+                    .to_string()
+            })
+            .filter(|rel| !exclude_patterns.iter().any(|pat| rel.contains(pat.as_str())))
+            .collect();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let pruned = db_queries::prune_missing_code_files(&conn, code_project_id, &current)?;
+        if pruned > 0 {
+            tracing::info!(project = project_name, pruned, "pruned files no longer indexed");
+        }
+    }
+
     // Authoritative chunk count: Pass 2 inserts freshly-embedded chunks without
     // touching `total_chunks` (only Pass-1 unchanged/graph_only files increment it),
     // so a fresh index would report 0. Read the real row count from the table.
@@ -1067,5 +1089,48 @@ mod tests {
         assert_eq!(second.documents_scanned, 2);
         assert_eq!(second.documents_changed, 0, "unchanged files are not re-chunked");
         assert_eq!(second.chunks_written, 0);
+    }
+
+    #[test]
+    fn files_that_leave_the_walk_are_pruned_from_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("kept.ts"), "export const kept = 1;\n").unwrap();
+        std::fs::write(root.join("gone.ts"), "export const gone = 1;\n").unwrap();
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        crate::db::migrations::run_all(&conn).unwrap();
+        let (org, _, _) =
+            crate::db::queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        index_project(&org.id, "app", root.to_str().unwrap(), &db, None, false).unwrap();
+        {
+            // A chunk left by an older indexer for a file the walker skips today.
+            let conn = db.lock().unwrap();
+            let project: i64 = conn
+                .query_row("SELECT id FROM code_projects WHERE name = 'app'", [], |r| r.get(0))
+                .unwrap();
+            db_queries::insert_code_chunk(
+                &conn, project, "DESIGN.md", "h", None, None, 1, 2, "legacy doc", None,
+            )
+            .unwrap();
+        }
+        std::fs::remove_file(root.join("gone.ts")).unwrap();
+        index_project(&org.id, "app", root.to_str().unwrap(), &db, None, false).unwrap();
+
+        let conn = db.lock().unwrap();
+        let mut paths: Vec<String> = conn
+            .prepare("SELECT DISTINCT file_path FROM code_chunks UNION SELECT file_path FROM code_files")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        paths.sort();
+        assert_eq!(paths, ["kept.ts"]);
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM code_chunks_fts_docsize", [], |r| r.get(0))
+            .unwrap();
+        let chunks: i64 = conn.query_row("SELECT count(*) FROM code_chunks", [], |r| r.get(0)).unwrap();
+        assert_eq!(fts, chunks, "pruning keeps the lexical index in step");
     }
 }

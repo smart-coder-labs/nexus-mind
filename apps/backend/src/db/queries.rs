@@ -5839,6 +5839,39 @@ pub fn list_files_with_unembedded_chunks(
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
+/// Deletes the chunks and stored source of every file of a project that is not
+/// in `current` (relative paths). Returns how many files were pruned.
+pub fn prune_missing_code_files(
+    conn: &Connection,
+    code_project_id: i64,
+    current: &std::collections::HashSet<String>,
+) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path FROM code_chunks WHERE code_project_id = ?1
+         UNION SELECT file_path FROM code_files WHERE code_project_id = ?1",
+    )?;
+    let stored: Vec<String> = stmt
+        .query_map([code_project_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let missing: Vec<&String> = stored.iter().filter(|p| !current.contains(*p)).collect();
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    for path in &missing {
+        tx.execute(
+            "DELETE FROM code_chunks WHERE code_project_id = ?1 AND file_path = ?2",
+            rusqlite::params![code_project_id, path],
+        )?;
+        tx.execute(
+            "DELETE FROM code_files WHERE code_project_id = ?1 AND file_path = ?2",
+            rusqlite::params![code_project_id, path],
+        )?;
+    }
+    tx.commit()?;
+    Ok(missing.len())
+}
+
 /// Records the commit a project's index was built from (NULL when unknown).
 pub fn set_code_project_indexed_commit(
     conn: &Connection,
