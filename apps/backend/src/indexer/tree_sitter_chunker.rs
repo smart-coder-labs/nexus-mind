@@ -22,9 +22,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::indexer::chunker::{
-    is_comment_line, Chunker, LineWindowChunker, MarkdownChunker, RawChunk,
-};
+use crate::indexer::chunker::{is_comment_line, Chunker, LineWindowChunker, MarkdownChunker, RawChunk};
 
 // ── Code graph types ──────────────────────────────────────────────────────────
 
@@ -48,18 +46,18 @@ pub enum SymbolType {
 impl SymbolType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            SymbolType::Function => "Function",
-            SymbolType::Method => "Method",
-            SymbolType::Class => "Class",
-            SymbolType::Struct => "Struct",
-            SymbolType::Enum => "Enum",
+            SymbolType::Function  => "Function",
+            SymbolType::Method    => "Method",
+            SymbolType::Class     => "Class",
+            SymbolType::Struct    => "Struct",
+            SymbolType::Enum      => "Enum",
             SymbolType::Interface => "Interface",
-            SymbolType::Type => "Type",
-            SymbolType::Module => "Module",
-            SymbolType::File => "File",
-            SymbolType::Folder => "Folder",
-            SymbolType::Project => "Project",
-            SymbolType::External => "External",
+            SymbolType::Type      => "Type",
+            SymbolType::Module    => "Module",
+            SymbolType::File      => "File",
+            SymbolType::Folder    => "Folder",
+            SymbolType::Project   => "Project",
+            SymbolType::External  => "External",
         }
     }
 }
@@ -78,11 +76,11 @@ pub enum EdgeType {
 impl EdgeType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            EdgeType::Defines => "defines",
-            EdgeType::DefinesMethod => "defines_method",
-            EdgeType::Imports => "imports",
+            EdgeType::Defines        => "defines",
+            EdgeType::DefinesMethod  => "defines_method",
+            EdgeType::Imports        => "imports",
             EdgeType::ContainsFolder => "contains_folder",
-            EdgeType::ContainsFile => "contains_file",
+            EdgeType::ContainsFile   => "contains_file",
             EdgeType::ContainsProject => "contains_project",
         }
     }
@@ -104,35 +102,35 @@ pub enum Persist {
 /// A code entity extracted from one source file.
 #[derive(Debug, Clone)]
 pub struct RawSymbol {
-    pub symbol_type: SymbolType,
-    pub name: String,
+    pub symbol_type:    SymbolType,
+    pub name:           String,
     /// Stable identity key: `{rel_path}::{name}#{start_line}` for FileOwned, or
     /// `file::`, `folder::`, `project::`, `external::` prefixes for Shared nodes.
     pub qualified_name: String,
-    pub file_path: Option<String>,
-    pub file_hash: Option<String>,
-    pub start_line: Option<i64>,
-    pub end_line: Option<i64>,
-    pub language: String,
-    pub persist: Persist,
+    pub file_path:      Option<String>,
+    pub file_hash:      Option<String>,
+    pub start_line:     Option<i64>,
+    pub end_line:       Option<i64>,
+    pub language:       String,
+    pub persist:        Persist,
 }
 
 /// A directed edge between two code entities, identified by their `qualified_name`.
 #[derive(Debug, Clone)]
 pub struct RawEdge {
     pub from_qname: String,
-    pub to_qname: String,
-    pub edge_type: EdgeType,
-    pub file_path: Option<String>,
-    pub persist: Persist,
+    pub to_qname:   String,
+    pub edge_type:  EdgeType,
+    pub file_path:  Option<String>,
+    pub persist:    Persist,
 }
 
 /// All graph nodes and edges extracted from a single source file.
 #[derive(Debug, Clone)]
 pub struct FileGraph {
     pub file_rel_path: String,
-    pub symbols: Vec<RawSymbol>,
-    pub edges: Vec<RawEdge>,
+    pub symbols:       Vec<RawSymbol>,
+    pub edges:         Vec<RawEdge>,
 }
 
 /// AST-aware chunker with a line-window fallback.
@@ -448,7 +446,7 @@ fn is_method(kind: &str) -> bool {
         "function_item"            // Rust impl
             | "function_definition" // Python class
             | "decorated_definition"
-            | "method_definition" // JS / TS class
+            | "method_definition"   // JS / TS class
     )
 }
 
@@ -526,12 +524,12 @@ fn collect_graph_data<'a>(
         .unwrap_or("");
 
     let emit_edge = |edges: &mut Vec<RawEdge>,
-                     seen_edges: &mut HashSet<(String, String, &'static str)>,
-                     from: String,
-                     to: String,
-                     et: EdgeType,
-                     fp: Option<String>,
-                     persist: Persist| {
+                         seen_edges: &mut HashSet<(String, String, &'static str)>,
+                         from: String,
+                         to: String,
+                         et: EdgeType,
+                         fp: Option<String>,
+                         persist: Persist| {
         let key = (from.clone(), to.clone(), et.as_str());
         if seen_edges.insert(key) {
             edges.push(RawEdge {
@@ -561,7 +559,8 @@ fn collect_graph_data<'a>(
             if is_import {
                 let sources = extract_import_sources(node, language, content);
                 for source in sources {
-                    if let Some(resolved) = resolve_import(&source, file_dir, language, known_files)
+                    if let Some(resolved) =
+                        resolve_import(&source, file_dir, language, known_files)
                     {
                         let to_qname = format!("file::{}", resolved);
                         emit_edge(
@@ -579,15 +578,15 @@ fn collect_graph_data<'a>(
                         if !ext_name.is_empty() && seen_externals.insert(ext_name.clone()) {
                             let ext_qname = format!("external::{}", ext_name);
                             symbols.push(RawSymbol {
-                                symbol_type: SymbolType::External,
-                                name: ext_name.clone(),
+                                symbol_type:    SymbolType::External,
+                                name:           ext_name.clone(),
                                 qualified_name: ext_qname.clone(),
-                                file_path: None,
-                                file_hash: None,
-                                start_line: None,
-                                end_line: None,
-                                language: "external".to_string(),
-                                persist: Persist::Shared,
+                                file_path:      None,
+                                file_hash:      None,
+                                start_line:     None,
+                                end_line:       None,
+                                language:       "external".to_string(),
+                                persist:        Persist::Shared,
                             });
                             emit_edge(
                                 &mut edges,
@@ -624,17 +623,18 @@ fn collect_graph_data<'a>(
                     if let Some(container_name) = node_symbol(node, content) {
                         let cs = (node.start_position().row as i64) + 1;
                         let ce = (node.end_position().row as i64) + 1;
-                        let container_qname = format!("{}::{}#{}", file_path, container_name, cs);
+                        let container_qname =
+                            format!("{}::{}#{}", file_path, container_name, cs);
                         symbols.push(RawSymbol {
-                            symbol_type: SymbolType::Class,
-                            name: container_name.clone(),
+                            symbol_type:    SymbolType::Class,
+                            name:           container_name.clone(),
                             qualified_name: container_qname.clone(),
-                            file_path: Some(file_path.to_string()),
-                            file_hash: Some(file_hash.to_string()),
-                            start_line: Some(cs),
-                            end_line: Some(ce),
-                            language: language.to_string(),
-                            persist: Persist::FileOwned,
+                            file_path:      Some(file_path.to_string()),
+                            file_hash:      Some(file_hash.to_string()),
+                            start_line:     Some(cs),
+                            end_line:       Some(ce),
+                            language:       language.to_string(),
+                            persist:        Persist::FileOwned,
                         });
                         emit_edge(
                             &mut edges,
@@ -652,15 +652,15 @@ fn collect_graph_data<'a>(
                                 let method_qname =
                                     format!("{}::{}::{}#{}", file_path, container_name, mname, ms);
                                 symbols.push(RawSymbol {
-                                    symbol_type: SymbolType::Method,
-                                    name: mname,
+                                    symbol_type:    SymbolType::Method,
+                                    name:           mname,
                                     qualified_name: method_qname.clone(),
-                                    file_path: Some(file_path.to_string()),
-                                    file_hash: Some(file_hash.to_string()),
-                                    start_line: Some(ms),
-                                    end_line: Some(me),
-                                    language: language.to_string(),
-                                    persist: Persist::FileOwned,
+                                    file_path:      Some(file_path.to_string()),
+                                    file_hash:      Some(file_hash.to_string()),
+                                    start_line:     Some(ms),
+                                    end_line:       Some(me),
+                                    language:       language.to_string(),
+                                    persist:        Persist::FileOwned,
                                 });
                                 emit_edge(
                                     &mut edges,
@@ -675,26 +675,23 @@ fn collect_graph_data<'a>(
                         }
                     }
                 }
-                ("python", "class_definition")
-                | (
-                    "typescript" | "javascript",
-                    "class_declaration" | "abstract_class_declaration",
-                ) => {
+                ("python", "class_definition") | ("typescript" | "javascript", "class_declaration" | "abstract_class_declaration") => {
                     // Container: emit as Class + emit each method with defines_method edge.
                     if let Some(container_name) = node_symbol(node, content) {
                         let cs = (node.start_position().row as i64) + 1;
                         let ce = (node.end_position().row as i64) + 1;
-                        let container_qname = format!("{}::{}#{}", file_path, container_name, cs);
+                        let container_qname =
+                            format!("{}::{}#{}", file_path, container_name, cs);
                         symbols.push(RawSymbol {
-                            symbol_type: SymbolType::Class,
-                            name: container_name.clone(),
+                            symbol_type:    SymbolType::Class,
+                            name:           container_name.clone(),
                             qualified_name: container_qname.clone(),
-                            file_path: Some(file_path.to_string()),
-                            file_hash: Some(file_hash.to_string()),
-                            start_line: Some(cs),
-                            end_line: Some(ce),
-                            language: language.to_string(),
-                            persist: Persist::FileOwned,
+                            file_path:      Some(file_path.to_string()),
+                            file_hash:      Some(file_hash.to_string()),
+                            start_line:     Some(cs),
+                            end_line:       Some(ce),
+                            language:       language.to_string(),
+                            persist:        Persist::FileOwned,
                         });
                         emit_edge(
                             &mut edges,
@@ -712,15 +709,15 @@ fn collect_graph_data<'a>(
                                 let method_qname =
                                     format!("{}::{}::{}#{}", file_path, container_name, mname, ms);
                                 symbols.push(RawSymbol {
-                                    symbol_type: SymbolType::Method,
-                                    name: mname,
+                                    symbol_type:    SymbolType::Method,
+                                    name:           mname,
                                     qualified_name: method_qname.clone(),
-                                    file_path: Some(file_path.to_string()),
-                                    file_hash: Some(file_hash.to_string()),
-                                    start_line: Some(ms),
-                                    end_line: Some(me),
-                                    language: language.to_string(),
-                                    persist: Persist::FileOwned,
+                                    file_path:      Some(file_path.to_string()),
+                                    file_hash:      Some(file_hash.to_string()),
+                                    start_line:     Some(ms),
+                                    end_line:       Some(me),
+                                    language:       language.to_string(),
+                                    persist:        Persist::FileOwned,
                                 });
                                 emit_edge(
                                     &mut edges,
@@ -740,18 +737,18 @@ fn collect_graph_data<'a>(
                     let sym_type = go_type_decl_symbol_type(node);
                     if let Some(name) = go_type_decl_name(node, content) {
                         let start = (node.start_position().row as i64) + 1;
-                        let end = (node.end_position().row as i64) + 1;
+                        let end   = (node.end_position().row as i64) + 1;
                         let qname = format!("{}::{}#{}", file_path, name, start);
                         symbols.push(RawSymbol {
-                            symbol_type: sym_type,
-                            name: name.clone(),
+                            symbol_type:    sym_type,
+                            name:           name.clone(),
                             qualified_name: qname.clone(),
-                            file_path: Some(file_path.to_string()),
-                            file_hash: Some(file_hash.to_string()),
-                            start_line: Some(start),
-                            end_line: Some(end),
-                            language: language.to_string(),
-                            persist: Persist::FileOwned,
+                            file_path:      Some(file_path.to_string()),
+                            file_hash:      Some(file_hash.to_string()),
+                            start_line:     Some(start),
+                            end_line:       Some(end),
+                            language:       language.to_string(),
+                            persist:        Persist::FileOwned,
                         });
                         emit_edge(
                             &mut edges,
@@ -769,18 +766,18 @@ fn collect_graph_data<'a>(
                     let sym_type = lang_kind_to_symbol_type(language, kind);
                     if let Some(name) = node_symbol(node, content) {
                         let start = (node.start_position().row as i64) + 1;
-                        let end = (node.end_position().row as i64) + 1;
+                        let end   = (node.end_position().row as i64) + 1;
                         let qname = format!("{}::{}#{}", file_path, name, start);
                         symbols.push(RawSymbol {
-                            symbol_type: sym_type,
-                            name: name.clone(),
+                            symbol_type:    sym_type,
+                            name:           name.clone(),
                             qualified_name: qname.clone(),
-                            file_path: Some(file_path.to_string()),
-                            file_hash: Some(file_hash.to_string()),
-                            start_line: Some(start),
-                            end_line: Some(end),
-                            language: language.to_string(),
-                            persist: Persist::FileOwned,
+                            file_path:      Some(file_path.to_string()),
+                            file_hash:      Some(file_hash.to_string()),
+                            start_line:     Some(start),
+                            end_line:       Some(end),
+                            language:       language.to_string(),
+                            persist:        Persist::FileOwned,
                         });
                         emit_edge(
                             &mut edges,
@@ -809,23 +806,22 @@ fn collect_graph_data<'a>(
 /// Map a (language, ast-node-kind) pair to a [`SymbolType`].
 fn lang_kind_to_symbol_type(language: &str, kind: &str) -> SymbolType {
     match (language, kind) {
-        ("rust", "function_item") => SymbolType::Function,
-        ("rust", "struct_item") => SymbolType::Struct,
-        ("rust", "enum_item") => SymbolType::Enum,
-        ("rust", "trait_item") => SymbolType::Interface,
-        ("rust", "type_item" | "type_alias") => SymbolType::Type,
-        ("rust", "mod_item") => SymbolType::Module,
-        ("typescript" | "javascript", "function_declaration" | "arrow_function") => {
-            SymbolType::Function
-        }
+        ("rust", "function_item")                        => SymbolType::Function,
+        ("rust", "struct_item")                          => SymbolType::Struct,
+        ("rust", "enum_item")                            => SymbolType::Enum,
+        ("rust", "trait_item")                           => SymbolType::Interface,
+        ("rust", "type_item" | "type_alias")             => SymbolType::Type,
+        ("rust", "mod_item")                             => SymbolType::Module,
+        ("typescript" | "javascript",
+         "function_declaration" | "arrow_function")      => SymbolType::Function,
         ("typescript" | "javascript", "method_definition") => SymbolType::Method,
         ("typescript" | "javascript", "interface_declaration") => SymbolType::Interface,
         ("typescript" | "javascript", "type_alias_declaration") => SymbolType::Type,
         ("typescript" | "javascript", "enum_declaration") => SymbolType::Enum,
         ("python", "function_definition" | "decorated_definition") => SymbolType::Function,
-        ("go", "function_declaration") => SymbolType::Function,
-        ("go", "method_declaration") => SymbolType::Method,
-        _ => SymbolType::Function,
+        ("go", "function_declaration")                   => SymbolType::Function,
+        ("go", "method_declaration")                     => SymbolType::Method,
+        _                                                => SymbolType::Function,
     }
 }
 
@@ -840,9 +836,9 @@ fn go_type_decl_symbol_type(node: Node) -> SymbolType {
             if spec.kind() == "type_spec" {
                 if let Some(ty) = spec.child_by_field_name("type") {
                     return match ty.kind() {
-                        "struct_type" => SymbolType::Struct,
+                        "struct_type"    => SymbolType::Struct,
                         "interface_type" => SymbolType::Interface,
-                        _ => SymbolType::Type,
+                        _                => SymbolType::Type,
                     };
                 }
             }
@@ -859,10 +855,7 @@ fn go_type_decl_name<'a>(node: Node<'a>, content: &str) -> Option<String> {
         if let Some(spec) = node.named_child(i as u32) {
             if spec.kind() == "type_spec" {
                 if let Some(name_node) = spec.child_by_field_name("name") {
-                    return name_node
-                        .utf8_text(content.as_bytes())
-                        .ok()
-                        .map(|s| s.to_string());
+                    return name_node.utf8_text(content.as_bytes()).ok().map(|s| s.to_string());
                 }
             }
         }
@@ -1059,9 +1052,7 @@ fn normalize_path(path: &str) -> String {
     for seg in path.split('/') {
         match seg {
             "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
+            ".." => { parts.pop(); }
             s => parts.push(s),
         }
     }
@@ -1182,8 +1173,7 @@ mod tests {
     #[test]
     fn typescript_export_function() {
         let chunker = TreeSitterChunker::default();
-        let src =
-            "export function handler(req: Request): Response {\n  return new Response();\n}\n";
+        let src = "export function handler(req: Request): Response {\n  return new Response();\n}\n";
         let chunks = chunker.chunk("api/handler.ts", "h", Some("typescript"), src);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].symbol.as_deref(), Some("handler"));
@@ -1232,18 +1222,12 @@ mod tests {
         // windows and still produce searchable chunks (not an empty vec).
         let java = "public class OrderService {\n  public Order create(Cart c) { return new Order(c); }\n}\n";
         let jc = chunker.chunk("OrderService.java", "h", Some("java"), java);
-        assert!(
-            !jc.is_empty(),
-            "a .java file must yield ≥1 chunk via fallback"
-        );
+        assert!(!jc.is_empty(), "a .java file must yield ≥1 chunk via fallback");
 
         // Same guarantee for a shell script.
         let sh = "#!/usr/bin/env bash\nset -euo pipefail\ndeploy() {\n  kubectl apply -f k8s/\n}\n";
         let sc = chunker.chunk("deploy.sh", "h", Some("shell"), sh);
-        assert!(
-            !sc.is_empty(),
-            "a .sh file must yield ≥1 chunk via fallback"
-        );
+        assert!(!sc.is_empty(), "a .sh file must yield ≥1 chunk via fallback");
     }
 
     #[test]
@@ -1277,11 +1261,7 @@ mod tests {
         // Only comments and an import — no definitions for the AST to pick up.
         let src = "// header comment\n// another line\nuse std::fmt;\n";
         let chunks = chunker.chunk("src/x.rs", "h", Some("rust"), src);
-        assert_eq!(
-            chunks.len(),
-            1,
-            "no defs → whole-file fallback (one window)"
-        );
+        assert_eq!(chunks.len(), 1, "no defs → whole-file fallback (one window)");
         assert_eq!(chunks[0].start_line, 1);
         assert_eq!(chunks[0].end_line, 3);
     }
@@ -1289,10 +1269,7 @@ mod tests {
     #[test]
     fn oversized_symbol_is_subsplit() {
         let chunker = TreeSitterChunker {
-            fallback: LineWindowChunker {
-                window: 60,
-                overlap: 15,
-            },
+            fallback: LineWindowChunker { window: 60, overlap: 15 },
             markdown: MarkdownChunker::default(),
             max_chunk_lines: 50,
         };
@@ -1320,9 +1297,7 @@ mod tests {
     #[test]
     fn empty_file_produces_no_chunks() {
         let chunker = TreeSitterChunker::default();
-        assert!(chunker
-            .chunk("src/empty.rs", "h", Some("rust"), "")
-            .is_empty());
+        assert!(chunker.chunk("src/empty.rs", "h", Some("rust"), "").is_empty());
     }
 
     #[test]
@@ -1361,10 +1336,7 @@ mod tests {
             .iter()
             .find(|c| c.symbol.as_deref() == Some("authenticate"))
             .expect("authenticate chunk must exist");
-        assert_eq!(
-            chunk.start_line, 1,
-            "chunk must start at the doc-comment line"
-        );
+        assert_eq!(chunk.start_line, 1, "chunk must start at the doc-comment line");
         let embed = build_embed_text(chunk.symbol.as_deref(), &chunk.content);
         assert!(
             embed.contains("Authenticates the caller"),
@@ -1384,13 +1356,7 @@ mod tests {
     fn graph_edges(fg: &FileGraph) -> Vec<(&str, String, String)> {
         fg.edges
             .iter()
-            .map(|e| {
-                (
-                    e.edge_type.as_str(),
-                    e.from_qname.clone(),
-                    e.to_qname.clone(),
-                )
-            })
+            .map(|e| (e.edge_type.as_str(), e.from_qname.clone(), e.to_qname.clone()))
             .collect()
     }
 
@@ -1399,8 +1365,7 @@ mod tests {
         let chunker = TreeSitterChunker::default();
         let src = "struct Foo;\nimpl Foo {\n    fn bar(&self) {}\n}\n";
         let known = HashSet::new();
-        let (chunks, graph_opt) =
-            chunker.chunk_with_graph("src/foo.rs", "h", Some("rust"), src, &known);
+        let (chunks, graph_opt) = chunker.chunk_with_graph("src/foo.rs", "h", Some("rust"), src, &known);
         assert!(!chunks.is_empty(), "chunks must not be empty");
         let fg = graph_opt.expect("graph must be Some for supported language");
         let syms = graph_symbols(&fg);
@@ -1412,10 +1377,7 @@ mod tests {
         let has_defines_method = edges.iter().any(|(et, from, to)| {
             *et == "defines_method" && from.contains("Foo") && to.contains("bar")
         });
-        assert!(
-            has_defines_method,
-            "defines_method edge from Foo to bar must exist"
-        );
+        assert!(has_defines_method, "defines_method edge from Foo to bar must exist");
         // defines edge from File to Foo (container)
         let has_defines_foo = edges.iter().any(|(et, from, to)| {
             *et == "defines" && from.starts_with("file::") && to.contains("Foo")
@@ -1428,8 +1390,7 @@ mod tests {
         let chunker = TreeSitterChunker::default();
         let src = "package main\n\ntype Dog struct { Name string }\n\ntype Sayer interface { Say() string }\n\ntype MyInt int\n";
         let known = HashSet::new();
-        let (_chunks, graph_opt) =
-            chunker.chunk_with_graph("main.go", "h", Some("go"), src, &known);
+        let (_chunks, graph_opt) = chunker.chunk_with_graph("main.go", "h", Some("go"), src, &known);
         let fg = graph_opt.expect("graph must be Some for Go");
         let syms = graph_symbols(&fg);
         let dog = syms.iter().find(|(n, _)| n == "Dog").map(|(_, t)| *t);
@@ -1450,23 +1411,13 @@ mod tests {
             chunker.chunk_with_graph("src/index.ts", "h", Some("typescript"), src, &known);
         let fg = graph_opt.expect("graph must be Some for TypeScript");
         let edges = graph_edges(&fg);
-        let has_import_to_utils = edges
-            .iter()
-            .any(|(et, _from, to)| *et == "imports" && to == "file::src/utils.ts");
-        assert!(
-            has_import_to_utils,
-            "imports edge to file::src/utils.ts must exist; edges: {:?}",
-            edges
-        );
+        let has_import_to_utils = edges.iter().any(|(et, _from, to)| {
+            *et == "imports" && to == "file::src/utils.ts"
+        });
+        assert!(has_import_to_utils, "imports edge to file::src/utils.ts must exist; edges: {:?}", edges);
         // No external stub for './utils' when it resolves
-        let ext_stub = fg
-            .symbols
-            .iter()
-            .any(|s| s.symbol_type == SymbolType::External);
-        assert!(
-            !ext_stub,
-            "no External stub must be created for a resolved import"
-        );
+        let ext_stub = fg.symbols.iter().any(|s| s.symbol_type == SymbolType::External);
+        assert!(!ext_stub, "no External stub must be created for a resolved import");
     }
 
     #[test]
@@ -1483,13 +1434,10 @@ mod tests {
             .any(|s| s.symbol_type == SymbolType::External && s.name == "requests");
         assert!(has_ext, "External stub 'requests' must be created");
         let edges = graph_edges(&fg);
-        let has_import_to_ext = edges
-            .iter()
-            .any(|(et, _from, to)| *et == "imports" && to == "external::requests");
-        assert!(
-            has_import_to_ext,
-            "imports edge to external::requests must exist"
-        );
+        let has_import_to_ext = edges.iter().any(|(et, _from, to)| {
+            *et == "imports" && to == "external::requests"
+        });
+        assert!(has_import_to_ext, "imports edge to external::requests must exist");
     }
 
     #[test]
@@ -1497,11 +1445,9 @@ mod tests {
         let chunker = TreeSitterChunker::default();
         let src = "key: value\nlist:\n  - item\n";
         let known = HashSet::new();
-        let (_chunks, graph_opt) = chunker.chunk_with_graph("config.yaml", "h", None, src, &known);
-        assert!(
-            graph_opt.is_none(),
-            "unsupported language must produce None graph"
-        );
+        let (_chunks, graph_opt) =
+            chunker.chunk_with_graph("config.yaml", "h", None, src, &known);
+        assert!(graph_opt.is_none(), "unsupported language must produce None graph");
     }
 
     #[test]

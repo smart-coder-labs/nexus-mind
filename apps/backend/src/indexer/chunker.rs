@@ -14,13 +14,7 @@ pub struct RawChunk {
 /// the same interface without schema changes.
 pub trait Chunker: Send + Sync {
     /// Chunk the given file content into raw chunks.
-    fn chunk(
-        &self,
-        file_path: &str,
-        file_hash: &str,
-        language: Option<&str>,
-        content: &str,
-    ) -> Vec<RawChunk>;
+    fn chunk(&self, file_path: &str, file_hash: &str, language: Option<&str>, content: &str) -> Vec<RawChunk>;
 }
 
 /// Heuristic line-window chunker with overlap.
@@ -64,13 +58,7 @@ impl LineWindowChunker {
 }
 
 impl Chunker for LineWindowChunker {
-    fn chunk(
-        &self,
-        file_path: &str,
-        file_hash: &str,
-        language: Option<&str>,
-        content: &str,
-    ) -> Vec<RawChunk> {
+    fn chunk(&self, file_path: &str, file_hash: &str, language: Option<&str>, content: &str) -> Vec<RawChunk> {
         let lines: Vec<&str> = content.lines().collect();
         if lines.is_empty() {
             return vec![];
@@ -212,13 +200,7 @@ impl MarkdownChunker {
 }
 
 impl Chunker for MarkdownChunker {
-    fn chunk(
-        &self,
-        file_path: &str,
-        file_hash: &str,
-        _language: Option<&str>,
-        content: &str,
-    ) -> Vec<RawChunk> {
+    fn chunk(&self, file_path: &str, file_hash: &str, _language: Option<&str>, content: &str) -> Vec<RawChunk> {
         let lines: Vec<&str> = content.lines().collect();
         if lines.is_empty() {
             return vec![];
@@ -241,22 +223,11 @@ impl Chunker for MarkdownChunker {
                     Some(_) => {}
                 }
             }
-            let heading = if fence.is_some() {
-                None
-            } else {
-                Self::heading_title(line)
-            };
+            let heading = if fence.is_some() { None } else { Self::heading_title(line) };
 
             if let Some(title) = heading {
                 if !sec_lines.is_empty() {
-                    self.emit_section(
-                        file_path,
-                        file_hash,
-                        sec_symbol.clone(),
-                        sec_start,
-                        &sec_lines,
-                        &mut out,
-                    );
+                    self.emit_section(file_path, file_hash, sec_symbol.clone(), sec_start, &sec_lines, &mut out);
                 }
                 sec_start = i + 1; // 1-indexed
                 sec_symbol = Some(title);
@@ -269,14 +240,7 @@ impl Chunker for MarkdownChunker {
             }
         }
         if !sec_lines.is_empty() {
-            self.emit_section(
-                file_path,
-                file_hash,
-                sec_symbol.clone(),
-                sec_start,
-                &sec_lines,
-                &mut out,
-            );
+            self.emit_section(file_path, file_hash, sec_symbol.clone(), sec_start, &sec_lines, &mut out);
         }
 
         out
@@ -295,7 +259,7 @@ pub(crate) fn is_comment_line(line: &str) -> bool {
         || line.starts_with("/*") || line.starts_with('*') // block comments
         || line.starts_with("\"\"\"") || line.starts_with("'''") // Python docstrings
         || line.starts_with("<!--") // HTML / Markdown
-        || line.starts_with("--") // SQL
+        || line.starts_with("--")   // SQL
 }
 
 /// Build the compact, NL-friendly text that is embedded and cosine-ranked for a
@@ -397,14 +361,8 @@ mod tests {
 
     #[test]
     fn chunker_single_window_small_file() {
-        let chunker = LineWindowChunker {
-            window: 60,
-            overlap: 15,
-        };
-        let content = (1..=10)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let chunker = LineWindowChunker { window: 60, overlap: 15 };
+        let content = (1..=10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let chunks = chunker.chunk("src/lib.rs", "abc123", Some("rust"), &content);
         // File smaller than window — must produce exactly 1 chunk
         assert_eq!(chunks.len(), 1, "small file must produce 1 chunk");
@@ -415,46 +373,25 @@ mod tests {
     #[test]
     fn chunker_respects_window_and_overlap() {
         // 100 lines, window=60, overlap=15 → step=45 → starts at 0,45 → 2 chunks
-        let chunker = LineWindowChunker {
-            window: 60,
-            overlap: 15,
-        };
-        let content = (1..=100)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let chunker = LineWindowChunker { window: 60, overlap: 15 };
+        let content = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let chunks = chunker.chunk("src/main.rs", "deadbeef", Some("rust"), &content);
-        assert!(
-            chunks.len() >= 2,
-            "100-line file with window=60,overlap=15 must produce >= 2 chunks"
-        );
+        assert!(chunks.len() >= 2, "100-line file with window=60,overlap=15 must produce >= 2 chunks");
         // Check overlap: second chunk starts before first ends
         if chunks.len() >= 2 {
-            assert!(
-                chunks[1].start_line <= chunks[0].end_line,
-                "chunks must overlap: chunk[1].start={} <= chunk[0].end={}",
-                chunks[1].start_line,
-                chunks[0].end_line
-            );
+            assert!(chunks[1].start_line <= chunks[0].end_line,
+                    "chunks must overlap: chunk[1].start={} <= chunk[0].end={}",
+                    chunks[1].start_line, chunks[0].end_line);
         }
     }
 
     #[test]
     fn chunker_last_chunk_ends_at_eof() {
-        let chunker = LineWindowChunker {
-            window: 20,
-            overlap: 5,
-        };
-        let content = (1..=55)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let chunker = LineWindowChunker { window: 20, overlap: 5 };
+        let content = (1..=55).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let chunks = chunker.chunk("src/foo.rs", "cafebabe", Some("rust"), &content);
         let last = chunks.last().unwrap();
-        assert_eq!(
-            last.end_line, 55,
-            "last chunk end_line must equal line count"
-        );
+        assert_eq!(last.end_line, 55, "last chunk end_line must equal line count");
     }
 
     #[test]
@@ -467,15 +404,11 @@ mod tests {
     #[test]
     fn chunker_symbol_extraction_rust_fn() {
         let chunker = LineWindowChunker::default();
-        let content =
-            "use std::fmt;\n\npub fn authenticate_user(token: &str) -> bool {\n    true\n}\n";
+        let content = "use std::fmt;\n\npub fn authenticate_user(token: &str) -> bool {\n    true\n}\n";
         let chunks = chunker.chunk("src/auth.rs", "aabbcc", Some("rust"), content);
         assert_eq!(chunks.len(), 1);
-        assert_eq!(
-            chunks[0].symbol.as_deref(),
-            Some("authenticate_user"),
-            "must extract fn name from Rust code"
-        );
+        assert_eq!(chunks[0].symbol.as_deref(), Some("authenticate_user"),
+                   "must extract fn name from Rust code");
     }
 
     #[test]
@@ -485,10 +418,7 @@ mod tests {
         let chunks = chunker.chunk("service.py", "112233", Some("python"), content);
         assert_eq!(chunks.len(), 1);
         // Should capture class OR def — either is fine; just ensure it's not None
-        assert!(
-            chunks[0].symbol.is_some(),
-            "must extract symbol from Python code"
-        );
+        assert!(chunks[0].symbol.is_some(), "must extract symbol from Python code");
     }
 
     #[test]
@@ -555,22 +485,11 @@ Call the API.
         let chunks = chunker.chunk("docs/guide.md", "hash1", Some("markdown"), content);
         // One chunk per heading section.
         let symbols: Vec<Option<&str>> = chunks.iter().map(|c| c.symbol.as_deref()).collect();
-        assert!(
-            symbols.contains(&Some("Title")),
-            "must produce a chunk for the H1 heading"
-        );
-        assert!(
-            symbols.contains(&Some("Installation")),
-            "must produce a chunk for Installation"
-        );
-        assert!(
-            symbols.contains(&Some("Usage")),
-            "must produce a chunk for Usage"
-        );
+        assert!(symbols.contains(&Some("Title")), "must produce a chunk for the H1 heading");
+        assert!(symbols.contains(&Some("Installation")), "must produce a chunk for Installation");
+        assert!(symbols.contains(&Some("Usage")), "must produce a chunk for Usage");
         // All chunks are tagged as markdown so extension filtering works.
-        assert!(chunks
-            .iter()
-            .all(|c| c.language.as_deref() == Some("markdown")));
+        assert!(chunks.iter().all(|c| c.language.as_deref() == Some("markdown")));
     }
 
     #[test]
@@ -579,9 +498,7 @@ Call the API.
         let content = "Some intro text with no heading.\n\n# First\n\nBody.\n";
         let chunks = chunker.chunk("readme.md", "h", Some("markdown"), content);
         // Preamble becomes a leading chunk with no symbol.
-        assert!(chunks
-            .iter()
-            .any(|c| c.symbol.is_none() && c.content.contains("intro text")));
+        assert!(chunks.iter().any(|c| c.symbol.is_none() && c.content.contains("intro text")));
         assert!(chunks.iter().any(|c| c.symbol.as_deref() == Some("First")));
     }
 
@@ -600,9 +517,7 @@ More text.
 ";
         let chunks = chunker.chunk("x.md", "h", Some("markdown"), content);
         // The shell comment must NOT create its own section.
-        assert!(chunks
-            .iter()
-            .all(|c| c.symbol.as_deref() != Some("this is a shell comment, not a heading")));
+        assert!(chunks.iter().all(|c| c.symbol.as_deref() != Some("this is a shell comment, not a heading")));
         assert_eq!(
             chunks.iter().filter(|c| c.symbol.is_some()).count(),
             1,
@@ -632,14 +547,9 @@ Body.
         let chunks = chunker.chunk("x.md", "h", Some("markdown"), content);
         let symbols: Vec<Option<&str>> = chunks.iter().map(|c| c.symbol.as_deref()).collect();
         assert!(symbols.contains(&Some("Intro")));
+        assert!(symbols.contains(&Some("After Fence")), "real heading after mixed fences must be found: {symbols:?}");
         assert!(
-            symbols.contains(&Some("After Fence")),
-            "real heading after mixed fences must be found: {symbols:?}"
-        );
-        assert!(
-            !symbols
-                .iter()
-                .any(|s| s.map(|t| t.contains("not a heading")).unwrap_or(false)),
+            !symbols.iter().any(|s| s.map(|t| t.contains("not a heading")).unwrap_or(false)),
             "a `#` line inside the fence must not become a heading: {symbols:?}"
         );
     }
@@ -657,29 +567,14 @@ pub fn list_users(tenant: &str) -> Vec<User> {
 }";
         let text = build_embed_text(Some("list_users"), content);
         // Name is present (led).
-        assert!(
-            text.contains("list_users"),
-            "must contain the symbol name: {text}"
-        );
+        assert!(text.contains("list_users"), "must contain the symbol name: {text}");
         // Doc comment is present.
-        assert!(
-            text.contains("Lists all users"),
-            "must contain the doc comment: {text}"
-        );
+        assert!(text.contains("Lists all users"), "must contain the doc comment: {text}");
         // Signature is present.
-        assert!(
-            text.contains("pub fn list_users(tenant: &str)"),
-            "must contain the signature: {text}"
-        );
+        assert!(text.contains("pub fn list_users(tenant: &str)"), "must contain the signature: {text}");
         // The deep body must be excluded.
-        assert!(
-            !text.contains("SELECT id, email"),
-            "must exclude the SQL body: {text}"
-        );
-        assert!(
-            !text.contains("out.push"),
-            "must exclude the loop body: {text}"
-        );
+        assert!(!text.contains("SELECT id, email"), "must exclude the SQL body: {text}");
+        assert!(!text.contains("out.push"), "must exclude the loop body: {text}");
     }
 
     #[test]
@@ -707,23 +602,11 @@ pub fn list_users(tenant: &str) -> Vec<User> {
 
     #[test]
     fn markdown_oversized_section_is_subsplit() {
-        let chunker = MarkdownChunker {
-            max_section_lines: 10,
-            fallback: LineWindowChunker {
-                window: 5,
-                overlap: 1,
-            },
-        };
-        let body = (1..=40)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let chunker = MarkdownChunker { max_section_lines: 10, fallback: LineWindowChunker { window: 5, overlap: 1 } };
+        let body = (1..=40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let content = format!("# Big\n\n{body}\n");
         let chunks = chunker.chunk("big.md", "h", Some("markdown"), &content);
-        assert!(
-            chunks.len() > 1,
-            "an oversized section must be sub-split into multiple chunks"
-        );
+        assert!(chunks.len() > 1, "an oversized section must be sub-split into multiple chunks");
         // Every sub-chunk keeps the heading as its symbol.
         assert!(chunks.iter().all(|c| c.symbol.as_deref() == Some("Big")));
     }

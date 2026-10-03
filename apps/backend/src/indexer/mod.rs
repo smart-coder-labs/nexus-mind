@@ -43,7 +43,9 @@ fn plan_batches(sizes: &[u64], max_bytes: u64, max_files: usize) -> Vec<(usize, 
         let batch_len = i - start;
         // Cut the current (non-empty) batch before adding a file that would
         // overflow the byte cap or reach the count cap.
-        if batch_len > 0 && (batch_len >= max_files || acc.saturating_add(sizes[i]) > max_bytes) {
+        if batch_len > 0
+            && (batch_len >= max_files || acc.saturating_add(sizes[i]) > max_bytes)
+        {
             batches.push((start, i));
             start = i;
             acc = 0;
@@ -217,10 +219,7 @@ pub fn index_project(
                     .unwrap_or(&file_meta.path)
                     .trim_start_matches('/')
                     .to_string();
-                if exclude_patterns
-                    .iter()
-                    .any(|pat| rel_path.contains(pat.as_str()))
-                {
+                if exclude_patterns.iter().any(|pat| rel_path.contains(pat.as_str())) {
                     return None;
                 }
                 let (content, hash) = walker::read_file(&file_meta.path)?;
@@ -231,34 +230,16 @@ pub fn index_project(
                 // Both passes already settled at this exact content → don't re-parse.
                 if can_skip_file(graph_only, graphed_ok, chunked_ok, unembedded) {
                     return Some(Parsed {
-                        idx,
-                        rel_path,
-                        content: String::new(),
-                        hash,
-                        chunked_ok,
-                        unembedded,
-                        fg: None,
-                        has_chunks: false,
-                        skip: true,
+                        idx, rel_path, content: String::new(), hash,
+                        chunked_ok, unembedded, fg: None, has_chunks: false, skip: true,
                     });
                 }
                 let (raw_chunks, fg) = chunker.chunk_with_graph(
-                    &rel_path,
-                    &hash,
-                    file_meta.language.as_deref(),
-                    &content,
-                    &known_files,
+                    &rel_path, &hash, file_meta.language.as_deref(), &content, &known_files,
                 );
                 Some(Parsed {
-                    idx,
-                    rel_path,
-                    content,
-                    hash,
-                    chunked_ok,
-                    unembedded,
-                    fg,
-                    has_chunks: !raw_chunks.is_empty(),
-                    skip: false,
+                    idx, rel_path, content, hash, chunked_ok, unembedded, fg,
+                    has_chunks: !raw_chunks.is_empty(), skip: false,
                 })
             })
             .collect();
@@ -291,11 +272,7 @@ pub fn index_project(
                 // `code_files.content` still holds the old, and the file would be
                 // skipped forever serving stale source.
                 let source_stored = db_queries::upsert_code_file(
-                    &conn,
-                    code_project_id,
-                    &p.rel_path,
-                    &p.content,
-                    &p.hash,
+                    &conn, code_project_id, &p.rel_path, &p.content, &p.hash,
                 )
                 .is_ok();
                 // Pass 1 is done for this file at this content. Recorded rather than
@@ -381,30 +358,26 @@ pub fn index_project(
 
             // Config files are searched lexically only (`walker::CONFIG_EXTENSIONS`).
             let lexical_only = file_meta.lexical_only;
-            let embeddings: Vec<Option<Vec<u8>>> =
-                if let Some(svc) = embed_svc.filter(|_| !lexical_only) {
-                    // Embed a compact NL-friendly skeleton (symbol name + signature +
-                    // leading doc comment), NOT the raw body — this is what cosine ranks
-                    // against. `chunk.content` still stores the real body for get_context
-                    // / snippet retrieval; only the embedded-against text changes.
-                    let embed_texts: Vec<String> = raw_chunks
-                        .iter()
-                        .map(|c| chunker::build_embed_text(c.symbol.as_deref(), &c.content))
-                        .collect();
-                    let texts: Vec<&str> = embed_texts.iter().map(|s| s.as_str()).collect();
-                    match svc.embed_documents(&texts) {
-                        Ok(vecs) => vecs
-                            .into_iter()
-                            .map(|v| Some(embed::serialize(&v)))
-                            .collect(),
-                        Err(e) => {
-                            tracing::warn!("Failed to embed batch for {rel_path}: {e}");
-                            raw_chunks.iter().map(|_| None).collect()
-                        }
+            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc.filter(|_| !lexical_only) {
+                // Embed a compact NL-friendly skeleton (symbol name + signature +
+                // leading doc comment), NOT the raw body — this is what cosine ranks
+                // against. `chunk.content` still stores the real body for get_context
+                // / snippet retrieval; only the embedded-against text changes.
+                let embed_texts: Vec<String> = raw_chunks
+                    .iter()
+                    .map(|c| chunker::build_embed_text(c.symbol.as_deref(), &c.content))
+                    .collect();
+                let texts: Vec<&str> = embed_texts.iter().map(|s| s.as_str()).collect();
+                match svc.embed_documents(&texts) {
+                    Ok(vecs) => vecs.into_iter().map(|v| Some(embed::serialize(&v))).collect(),
+                    Err(e) => {
+                        tracing::warn!("Failed to embed batch for {rel_path}: {e}");
+                        raw_chunks.iter().map(|_| None).collect()
                     }
-                } else {
-                    raw_chunks.iter().map(|_| None).collect()
-                };
+                }
+            } else {
+                raw_chunks.iter().map(|_| None).collect()
+            };
 
             let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
             for (chunk, embedding) in raw_chunks.iter().zip(embeddings.iter()) {
@@ -440,7 +413,9 @@ pub fn index_project(
     };
 
     // Update project stats and mark success
-    let last_indexed = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let last_indexed = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     {
         let conn = db.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         db_queries::update_code_project_stats(
@@ -450,12 +425,7 @@ pub fn index_project(
             total_chunks,
             &last_indexed,
         )?;
-        let _ = db_queries::set_code_project_success(
-            &conn,
-            code_project_id,
-            files_indexed,
-            &last_indexed,
-        );
+        let _ = db_queries::set_code_project_success(&conn, code_project_id, files_indexed, &last_indexed);
         // NULL when the root is not a checkout: a pack never claims a commit the
         // index was not built from.
         db_queries::set_code_project_indexed_commit(
@@ -647,10 +617,7 @@ mod tests {
     fn a_stale_pass_always_forces_reprocessing() {
         assert!(!can_skip_file(false, false, true, false), "Pass 1 stale");
         assert!(!can_skip_file(false, true, false, false), "Pass 2 stale");
-        assert!(
-            needs_embedding_pass(false, false, false),
-            "stale Pass 2 reaches the embed pass"
-        );
+        assert!(needs_embedding_pass(false, false, false), "stale Pass 2 reaches the embed pass");
     }
 
     /// `graph_only` promises structure without semantic search, so it asks only
@@ -658,14 +625,8 @@ mod tests {
     /// to repair a vector it has no way to produce.
     #[test]
     fn graph_only_asks_only_about_the_graph_pass() {
-        assert!(
-            can_skip_file(true, true, false, true),
-            "Pass 2 state is not its business"
-        );
-        assert!(
-            !can_skip_file(true, false, true, false),
-            "but a stale graph is"
-        );
+        assert!(can_skip_file(true, true, false, true), "Pass 2 state is not its business");
+        assert!(!can_skip_file(true, false, true, false), "but a stale graph is");
         assert!(!needs_embedding_pass(true, false, true));
         assert!(!needs_embedding_pass(true, true, true));
     }
@@ -696,10 +657,7 @@ mod tests {
         for (start, end) in &batches {
             let count = end - start;
             assert!(count >= 1, "no empty batches");
-            assert!(
-                count <= max_files,
-                "count cap must hold: {count} > {max_files}"
-            );
+            assert!(count <= max_files, "count cap must hold: {count} > {max_files}");
             let total: u64 = sizes[*start..*end].iter().sum();
             // A batch may exceed the byte cap only if it is a single file.
             assert!(
@@ -753,20 +711,15 @@ mod tests {
         index_project("org1", "myproj", root, &db, None, true).expect("graph-only index");
         let after_graph_only: i64 = {
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0))
-                .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0)).unwrap()
         };
-        assert_eq!(
-            after_graph_only, 0,
-            "graph_only must not chunk — that is its contract"
-        );
+        assert_eq!(after_graph_only, 0, "graph_only must not chunk — that is its contract");
 
         // Nothing on disk changed, and both completeness checks pass.
         index_project("org1", "myproj", root, &db, None, false).expect("full index");
         let after_full: i64 = {
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0))
-                .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0)).unwrap()
         };
         assert!(
             after_full > 0,
@@ -793,22 +746,14 @@ mod tests {
         .unwrap();
 
         let db = setup_indexer_db();
-        let summary = index_project(
-            "org1",
-            "myproj",
-            dir.path().to_str().unwrap(),
-            &db,
-            None,
-            false,
-        )
-        .expect("index must succeed");
-        assert_eq!(
-            summary.file_count, 1,
-            "only the .ts source file must be indexed"
-        );
+        let summary = index_project("org1", "myproj", dir.path().to_str().unwrap(), &db, None, false)
+            .expect("index must succeed");
+        assert_eq!(summary.file_count, 1, "only the .ts source file must be indexed");
 
         let conn = db.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT file_path FROM code_chunks").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM code_chunks")
+            .unwrap();
         let paths: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
@@ -836,21 +781,9 @@ mod tests {
     fn a_second_identical_run_reprocesses_nothing() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(
-            dir.path().join("src").join("styles.scss"),
-            ".a { color: red; }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("src").join("index.tsx"),
-            "export * from './lib';\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("src").join("lib.tsx"),
-            "export function alpha() {}\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("src").join("styles.scss"), ".a { color: red; }\n").unwrap();
+        std::fs::write(dir.path().join("src").join("index.tsx"), "export * from './lib';\n").unwrap();
+        std::fs::write(dir.path().join("src").join("lib.tsx"), "export function alpha() {}\n").unwrap();
         let root = dir.path().to_str().unwrap();
         let db = setup_indexer_db();
 
@@ -858,36 +791,22 @@ mod tests {
 
         let paths: Vec<String> = {
             let conn = db.lock().unwrap();
-            let mut st = conn
-                .prepare("SELECT file_path FROM code_files ORDER BY file_path")
-                .unwrap();
-            let v = st
-                .query_map([], |r| r.get(0))
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
+            let mut st = conn.prepare("SELECT file_path FROM code_files ORDER BY file_path").unwrap();
+            let v = st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
             v
         };
-        assert!(
-            paths.len() >= 3,
-            "the fixture must reach code_files, got {paths:?}"
-        );
+        assert!(paths.len() >= 3, "the fixture must reach code_files, got {paths:?}");
 
         {
             let conn = db.lock().unwrap();
-            conn.execute("UPDATE code_files SET content = 'POISON'", [])
-                .unwrap();
+            conn.execute("UPDATE code_files SET content = 'POISON'", []).unwrap();
         }
         index_project("org1", "myproj", root, &db, None, false).expect("second index");
 
         let conn = db.lock().unwrap();
         for path in &paths {
             let content: String = conn
-                .query_row(
-                    "SELECT content FROM code_files WHERE file_path = ?1",
-                    [path],
-                    |r| r.get(0),
-                )
+                .query_row("SELECT content FROM code_files WHERE file_path = ?1", [path], |r| r.get(0))
                 .unwrap();
             assert_eq!(
                 content, "POISON",
@@ -913,12 +832,7 @@ mod tests {
         index_project("org1", "myproj", root, &db, None, false).expect("first index");
         let before: i64 = {
             let conn = db.lock().unwrap();
-            conn.query_row(
-                "SELECT COUNT(*) FROM code_chunks WHERE file_path='src/lib.tsx'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM code_chunks WHERE file_path='src/lib.tsx'", [], |r| r.get(0)).unwrap()
         };
         assert!(before > 0, "the fixture must produce chunks first");
 
@@ -928,17 +842,9 @@ mod tests {
 
         let after: i64 = {
             let conn = db.lock().unwrap();
-            conn.query_row(
-                "SELECT COUNT(*) FROM code_chunks WHERE file_path='src/lib.tsx'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM code_chunks WHERE file_path='src/lib.tsx'", [], |r| r.get(0)).unwrap()
         };
-        assert_eq!(
-            after, 0,
-            "stale chunks must not survive as current search results"
-        );
+        assert_eq!(after, 0, "stale chunks must not survive as current search results");
     }
 
     /// The other half of the contract: a file whose content DID change must be
@@ -954,25 +860,14 @@ mod tests {
         let db = setup_indexer_db();
 
         index_project("org1", "myproj", root, &db, None, false).expect("first index");
-        std::fs::write(
-            &file,
-            "export function alpha() {}\nexport function beta() {}\n",
-        )
-        .unwrap();
+        std::fs::write(&file, "export function alpha() {}\nexport function beta() {}\n").unwrap();
         index_project("org1", "myproj", root, &db, None, false).expect("second index");
 
         let conn = db.lock().unwrap();
         let content: String = conn
-            .query_row(
-                "SELECT content FROM code_files WHERE file_path = 'src/lib.tsx'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT content FROM code_files WHERE file_path = 'src/lib.tsx'", [], |r| r.get(0))
             .unwrap();
-        assert!(
-            content.contains("beta"),
-            "the new content must have been stored"
-        );
+        assert!(content.contains("beta"), "the new content must have been stored");
     }
 
     /// A fresh index (all files new → embedded in Pass 2) must report
@@ -989,20 +884,12 @@ mod tests {
         .unwrap();
 
         let db = setup_indexer_db();
-        let summary = index_project(
-            "org1",
-            "myproj",
-            dir.path().to_str().unwrap(),
-            &db,
-            None,
-            false,
-        )
-        .expect("index must succeed");
+        let summary = index_project("org1", "myproj", dir.path().to_str().unwrap(), &db, None, false)
+            .expect("index must succeed");
 
         let actual_rows: i64 = {
             let conn = db.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0))
-                .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0)).unwrap()
         };
         assert!(actual_rows > 0, "a fresh index must have inserted chunks");
         assert_eq!(
@@ -1078,10 +965,7 @@ mod tests {
 
         index_project("org1", "proj", root, &db, None, false).unwrap();
         let before = code_chunk_fingerprint(&db);
-        assert!(
-            !before.is_empty(),
-            "the code corpus must have been populated"
-        );
+        assert!(!before.is_empty(), "the code corpus must have been populated");
         assert!(
             before.iter().all(|(p, _)| p.ends_with(".rs")),
             "only code files belong in the code corpus; got {:?}",
@@ -1122,10 +1006,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            resp.documents_scanned, 2,
-            "README.md and docs/ARCHITECTURE.md"
-        );
+        assert_eq!(resp.documents_scanned, 2, "README.md and docs/ARCHITECTURE.md");
         assert_eq!(resp.documents_changed, 2);
         assert!(resp.chunks_written >= 2);
 
@@ -1136,8 +1017,7 @@ mod tests {
         assert_eq!(code_chunks, 0, "the doc pass must not write to code_chunks");
 
         // And the doc corpus answers for prose the code corpus never held.
-        let hits =
-            crate::db::doc_queries::search_docs_keyword(&conn, "org1", "normaliz", 10).unwrap();
+        let hits = crate::db::doc_queries::search_docs_keyword(&conn, "org1", "normaliz", 10).unwrap();
         assert!(!hits.is_empty(), "documentation search must find the prose");
         assert!(hits.iter().all(|h| h.path.ends_with(".md")));
     }
@@ -1149,16 +1029,8 @@ mod tests {
         let dir = repo_with_code_and_docs();
         let root = dir.path().to_str().unwrap();
         let db = seeded_db();
-        index_documents(
-            "org1",
-            None,
-            None,
-            root,
-            &doc_walker::DocWalkOptions::default(),
-            &db,
-            None,
-        )
-        .unwrap();
+        index_documents("org1", None, None, root, &doc_walker::DocWalkOptions::default(), &db, None)
+            .unwrap();
 
         let conn = db.lock().unwrap();
         let paths: Vec<String> = conn
@@ -1187,10 +1059,7 @@ mod tests {
 
         let second = index_documents("org1", None, None, root, &opts, &db, None).unwrap();
         assert_eq!(second.documents_scanned, 2);
-        assert_eq!(
-            second.documents_changed, 0,
-            "unchanged files are not re-chunked"
-        );
+        assert_eq!(second.documents_changed, 0, "unchanged files are not re-chunked");
         assert_eq!(second.chunks_written, 0);
     }
 }

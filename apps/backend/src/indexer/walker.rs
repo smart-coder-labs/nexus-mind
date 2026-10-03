@@ -9,33 +9,10 @@ const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// This prunes huge trees (e.g. `node_modules`) even when the repo has no
 /// `.gitignore`, so large repos stay indexable. Matched on any path component.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
-    ".hg",
-    ".svn",
-    "dist",
-    "build",
-    "out",
-    "target",
-    "vendor",
-    "bin",
-    "obj",
-    ".next",
-    ".nuxt",
-    ".svelte-kit",
-    ".angular",
-    "coverage",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".tox",
-    ".cache",
-    ".gradle",
-    ".idea",
-    ".vscode",
-    "Pods",
-    "DerivedData",
-    ".terraform",
+    "node_modules", ".git", ".hg", ".svn", "dist", "build", "out", "target",
+    "vendor", "bin", "obj", ".next", ".nuxt", ".svelte-kit", ".angular",
+    "coverage", "__pycache__", ".venv", "venv", ".tox", ".cache", ".gradle",
+    ".idea", ".vscode", "Pods", "DerivedData", ".terraform",
 ];
 
 /// Well-known lock / dependency-manifest files that pollute code search: they are
@@ -44,15 +21,8 @@ const SKIP_DIRS: &[&str] = &[
 /// would otherwise be chunked and rank at the top for real code queries. Matched by
 /// exact file name.
 const NOISE_FILES: &[&str] = &[
-    "pnpm-lock.yaml",
-    "package-lock.json",
-    "yarn.lock",
-    "Cargo.lock",
-    "poetry.lock",
-    "composer.lock",
-    "Gemfile.lock",
-    "go.sum",
-    "bun.lockb",
+    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock",
+    "poetry.lock", "composer.lock", "Gemfile.lock", "go.sum", "bun.lockb",
 ];
 
 /// True when `file_name` is a machine-generated noise file that must never be
@@ -74,18 +44,28 @@ fn is_noise_file(file_name: &str) -> bool {
 /// or config file to the code index.
 const CODE_EXTENSIONS: &[&str] = &[
     // Rust
-    "rs", // TypeScript / JavaScript
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", // Python
-    "py",  // Go
-    "go",  // JVM
-    "java", "kt", "kts", // C / C++
-    "c", "h", "cc", "cpp", "cxx", "hpp", // C#
-    "cs",  // Ruby / PHP
-    "rb", "php",   // Swift
-    "swift", // Shell
+    "rs",
+    // TypeScript / JavaScript
+    "ts", "tsx", "js", "jsx", "mjs", "cjs",
+    // Python
+    "py",
+    // Go
+    "go",
+    // JVM
+    "java", "kt", "kts",
+    // C / C++
+    "c", "h", "cc", "cpp", "cxx", "hpp",
+    // C#
+    "cs",
+    // Ruby / PHP
+    "rb", "php",
+    // Swift
+    "swift",
+    // Shell
     "sh", "bash", "zsh",
     // Web source (markup/styles/components — real source, not config)
-    "html", "htm", "css", "scss", "sass", "vue", "svelte", // SQL
+    "html", "htm", "css", "scss", "sass", "vue", "svelte",
+    // SQL
     "sql",
 ];
 
@@ -256,10 +236,7 @@ fn walk(root_path: &str, include_config: bool) -> Result<Vec<FileMeta>> {
             .and_then(|e| e.to_str())
             .map(|s| s.to_string());
         if !ext.as_deref().map(is_code_extension).unwrap_or(false) {
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             if let Some(language) = include_config
                 .then(|| config_language(file_name, ext.as_deref()))
                 .flatten()
@@ -336,11 +313,7 @@ mod tests {
         fs::write(dir.path().join("big.rs"), big_content).unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(
-            files.len(),
-            1,
-            "oversized file must be skipped, only small.rs"
-        );
+        assert_eq!(files.len(), 1, "oversized file must be skipped, only small.rs");
         assert!(files[0].path.ends_with("small.rs"));
     }
 
@@ -348,11 +321,7 @@ mod tests {
     fn walk_prunes_heavy_directories() {
         let dir = make_temp_project();
         fs::create_dir(dir.path().join("node_modules")).unwrap();
-        fs::write(
-            dir.path().join("node_modules").join("dep.js"),
-            "module.exports = {}",
-        )
-        .unwrap();
+        fs::write(dir.path().join("node_modules").join("dep.js"), "module.exports = {}").unwrap();
         fs::create_dir(dir.path().join("target")).unwrap();
         fs::write(dir.path().join("target").join("build.rs"), "fn b() {}").unwrap();
         fs::write(dir.path().join("app.js"), "function app() {}").unwrap();
@@ -375,11 +344,7 @@ mod tests {
         fs::write(dir.path().join("app.js"), "function app() {}").unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(
-            files.len(),
-            1,
-            "only the real source file must remain: {files:?}"
-        );
+        assert_eq!(files.len(), 1, "only the real source file must remain: {files:?}");
         assert!(files[0].path.ends_with("app.js"));
     }
 
@@ -397,11 +362,7 @@ mod tests {
         fs::write(dir.path().join("foo.ts"), "export function foo() {}").unwrap();
 
         let files = walk_files(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(
-            files.len(),
-            1,
-            "only the .ts source file must remain: {files:?}"
-        );
+        assert_eq!(files.len(), 1, "only the .ts source file must remain: {files:?}");
         assert!(files[0].path.ends_with("foo.ts"));
         assert_eq!(files[0].language.as_deref(), Some("typescript"));
     }
@@ -493,9 +454,6 @@ mod tests {
         let dir = make_temp_project();
         let p = dir.path().join("bin.rs");
         fs::write(&p, [0u8, 159, 146, 150]).unwrap(); // invalid UTF-8
-        assert!(
-            read_file(p.to_str().unwrap()).is_none(),
-            "binary returns None"
-        );
+        assert!(read_file(p.to_str().unwrap()).is_none(), "binary returns None");
     }
 }
