@@ -412,6 +412,9 @@ pub fn index_project(
         db_queries::count_chunks_for_project(&conn, code_project_id)?
     };
 
+    // Outside the DB lock: a subprocess must not stall every request.
+    let indexed_commit = head_commit(root_path);
+
     // Update project stats and mark success
     let last_indexed = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
@@ -431,7 +434,7 @@ pub fn index_project(
         db_queries::set_code_project_indexed_commit(
             &conn,
             code_project_id,
-            head_commit(root_path).as_deref(),
+            indexed_commit.as_deref(),
         )?;
     }
 
@@ -447,7 +450,10 @@ pub fn index_project(
 /// The checked-out commit of `root_path`, if it is a git work tree.
 fn head_commit(root_path: &str) -> Option<String> {
     let output = std::process::Command::new("git")
-        .args(["-C", root_path, "rev-parse", "--verify", "HEAD"])
+        // The checkout may belong to another uid (a volume in a pod): trust it
+        // for this read-only call instead of failing on "dubious ownership".
+        .args(["-c", &format!("safe.directory={root_path}"), "-C", root_path])
+        .args(["rev-parse", "--verify", "HEAD"])
         .output()
         .ok()?;
     let head = String::from_utf8_lossy(&output.stdout).trim().to_string();

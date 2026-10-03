@@ -52,17 +52,70 @@ pub fn index_chunk(
     Ok(())
 }
 
-/// The FTS5 query for a natural-language query: its distinct terms, quoted (so
-/// no FTS syntax from the user is interpreted), any of which may match.
+/// Rebuilds the whole lexical index from `code_chunks`. Rows only enter the
+/// index through `insert_code_chunk`, so chunks written any other way (a backup
+/// restore, a binary from before v82) are missing until this runs.
+pub fn rebuild_index(conn: &Connection) -> anyhow::Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("INSERT INTO code_chunks_fts(code_chunks_fts) VALUES('delete-all')", [])?;
+    let mut indexed = 0;
+    {
+        let mut stmt = tx.prepare("SELECT id, file_path, symbol, content FROM code_chunks")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            index_chunk(
+                &tx,
+                row.get(0)?,
+                &row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.as_deref(),
+                &row.get::<_, String>(3)?,
+            )?;
+            indexed += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(indexed)
+}
+
+/// Rebuilds the lexical index when its document count differs from the chunk
+/// count (two counts; run at startup and after a restore). Returns whether it
+/// rebuilt.
+pub fn ensure_index(conn: &Connection) -> anyhow::Result<bool> {
+    let chunks: i64 = conn.query_row("SELECT count(*) FROM code_chunks", [], |r| r.get(0))?;
+    let indexed: i64 =
+        conn.query_row("SELECT count(*) FROM code_chunks_fts_docsize", [], |r| r.get(0))?;
+    if chunks == indexed {
+        return Ok(false);
+    }
+    tracing::warn!(chunks, indexed, "lexical code index out of step; rebuilding");
+    rebuild_index(conn)?;
+    Ok(true)
+}
+
+/// Most bytes of a query that are read, and most distinct terms kept: the
+/// expression is built and matched while the database is locked.
+pub const MAX_QUERY_BYTES: usize = 4096;
+pub const MAX_TERMS: usize = 64;
+
+/// The FTS5 query for a natural-language query: its first [`MAX_TERMS`] distinct
+/// terms, quoted (so no FTS syntax from the user is interpreted), any of which
+/// may match.
 pub fn match_expression(query: &str) -> Option<String> {
+    let mut end = query.len().min(MAX_QUERY_BYTES);
+    while !query.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut seen = std::collections::HashSet::new();
     let mut terms: Vec<String> = Vec::new();
-    for term in identifier_terms(query).split_whitespace() {
+    for term in identifier_terms(&query[..end]).split_whitespace() {
+        if terms.len() == MAX_TERMS {
+            break;
+        }
         if term.chars().count() < 2 || STOPWORDS.contains(&term) {
             continue;
         }
-        let term = term.to_string();
-        if !terms.contains(&term) {
-            terms.push(term);
+        if seen.insert(term.to_string()) {
+            terms.push(term.to_string());
         }
     }
     (!terms.is_empty()).then(|| {
@@ -96,7 +149,8 @@ pub fn bm25_file_ranking(
     bm25_file_ranking_weighted(conn, code_project_id, query, CONFIG_WEIGHT)
 }
 
-/// One chunk matched by BM25, config weight applied (higher is better).
+/// One chunk matched by BM25, config weight applied: score in (0, 1], relative to
+/// the best match of the query (higher is better).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChunkHit {
     pub chunk_id: i64,
@@ -148,6 +202,14 @@ pub fn bm25_chunk_ranking(
         },
     )?;
     let mut hits = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    // Raw bm25() values carry corpus-wide statistics (IDF and lengths over every
+    // tenant's chunks); scores leave this function relative to the best hit.
+    let best = hits.iter().map(|h| h.score).fold(0.0_f32, f32::max);
+    if best > 0.0 {
+        for hit in &mut hits {
+            hit.score /= best;
+        }
+    }
     hits.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -223,6 +285,16 @@ mod tests {
             "src api sale detail page tsx"
         );
         assert_eq!(identifier_terms("Ünïcode café"), "ünïcode café");
+    }
+
+    #[test]
+    fn huge_queries_are_capped_in_bytes_and_terms() {
+        let words: Vec<String> = (0..10_000).map(|i| format!("w{i:05}x")).collect();
+        let expression = match_expression(&words.join(" ")).unwrap();
+        assert_eq!(expression.split(" OR ").count(), MAX_TERMS);
+        // A multi-byte query over the cap is cut on a character boundary.
+        let long = match_expression(&"é".repeat(5000)).unwrap();
+        assert_eq!(long.trim_matches('"').chars().count(), MAX_QUERY_BYTES / 2);
     }
 
     #[test]

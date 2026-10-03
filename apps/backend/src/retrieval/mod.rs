@@ -256,4 +256,36 @@ mod tests {
         let pending = queries::list_files_with_unembedded_chunks(&conn, project).unwrap();
         assert_eq!(pending, ["main.rs".to_string()].into_iter().collect());
     }
+
+    #[test]
+    fn chunks_written_around_the_index_are_recovered_by_ensure_index() {
+        let conn = crate::db::connection::connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, _, _) =
+            queries::bootstrap(&conn, "Acme", "acme", "admin@acme.com", "Admin").unwrap();
+        let project = queries::upsert_code_project(&conn, &org.id, "app", "/src").unwrap();
+        queries::insert_code_chunk(
+            &conn, project, "src/a.ts", "h", None, Some("indexedThing"), 1, 2, "x", None,
+        )
+        .unwrap();
+        // A restore writes rows directly, bypassing insert_code_chunk.
+        conn.execute(
+            "INSERT INTO code_chunks (code_project_id, file_path, file_hash, start_line, end_line, content)
+             VALUES (?1, 'src/restored.ts', 'h', 1, 2, 'export function restoredRefund() {}')",
+            [project],
+        )
+        .unwrap();
+        assert!(lexical::bm25_file_ranking(&conn, project, "restored refund").unwrap().is_empty());
+        assert!(lexical::ensure_index(&conn).unwrap());
+        let hits = lexical::bm25_file_ranking(&conn, project, "restored refund").unwrap();
+        assert_eq!(hits[0].file_path, "src/restored.ts");
+        // In step: no rebuild, and deletes keep the counts aligned.
+        assert!(!lexical::ensure_index(&conn).unwrap());
+        queries::delete_chunks_for_file(&conn, project, "src/a.ts").unwrap();
+        assert!(!lexical::ensure_index(&conn).unwrap());
+        // A second rebuild does not duplicate postings.
+        lexical::rebuild_index(&conn).unwrap();
+        lexical::rebuild_index(&conn).unwrap();
+        assert_eq!(lexical::bm25_file_ranking(&conn, project, "restored").unwrap().len(), 1);
+    }
 }

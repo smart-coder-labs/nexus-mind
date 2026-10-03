@@ -127,15 +127,7 @@ pub fn build(
                 chunk_id: chunk.chunk_id,
                 symbol: chunk.symbol.clone(),
                 kind: kind_of(&chunk.file_path, chunk.lexical_only),
-                reason: format!(
-                    "rank {} for the task text; matches {}",
-                    rank + 1,
-                    if matched.is_empty() {
-                        "its terms".to_string()
-                    } else {
-                        matched.join(", ")
-                    }
-                ),
+                reason: rank_reason(rank, &matched),
                 score: Some(f64::from(chunk.score)),
             });
         }
@@ -168,25 +160,25 @@ pub fn build(
         }
     }
 
+    // Every selected artifact is listed; the byte budget only limits evidence.
     let mut artifacts = Vec::new();
     let mut evidence = Vec::new();
     let mut remaining = budget;
     for item in selected {
-        if remaining == 0 {
-            break;
-        }
         let (path, start_line, end_line, content) = chunk_body(conn, item.chunk_id)?;
         let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(content.as_bytes())));
         let (content, truncated) = cut(&content, remaining);
-        remaining -= content.len();
-        evidence.push(Evidence {
-            artifact: artifacts.len(),
-            path: path.clone(),
-            start_line,
-            end_line,
-            content,
-            truncated,
-        });
+        if !content.is_empty() {
+            remaining -= content.len();
+            evidence.push(Evidence {
+                artifact: artifacts.len(),
+                path: path.clone(),
+                start_line,
+                end_line,
+                content,
+                truncated,
+            });
+        }
         artifacts.push(ContextArtifact {
             path,
             symbol: item.symbol,
@@ -219,6 +211,19 @@ pub fn build(
             stale,
         },
     })
+}
+
+/// Matched terms named in a reason; the contract caps a reason at 1024 chars.
+const REASON_TERMS: usize = 10;
+
+fn rank_reason(rank: usize, matched: &[String]) -> String {
+    let terms = match matched.len() {
+        0 => "its terms".to_string(),
+        n if n <= REASON_TERMS => matched.join(", "),
+        n => format!("{} +{} more", matched[..REASON_TERMS].join(", "), n - REASON_TERMS),
+    };
+    let reason = format!("rank {} for the task text; matches {terms}", rank + 1);
+    cut(&reason, 1024).0
 }
 
 /// What an artifact is, from its path (config chunks are lexical-only).
@@ -429,14 +434,28 @@ mod tests {
     }
 
     #[test]
-    fn the_byte_budget_cuts_evidence_on_a_character_boundary() {
+    fn the_byte_budget_cuts_evidence_but_keeps_every_artifact() {
         let (_dir, conn, project) = repo();
+        let full = build(&conn, project, &request("refund sale detail")).unwrap();
         let mut req = request("refund sale detail");
         req.max_bytes = 40;
         let response = build(&conn, project, &req).unwrap();
         let total: usize = response.evidence.iter().map(|e| e.content.len()).sum();
         assert!(total <= 40, "{total}");
         assert!(response.evidence.iter().any(|e| e.truncated));
+        assert!(response.evidence.iter().all(|e| !e.content.is_empty()));
+        assert!(response.evidence.len() < response.pack.artifacts.len());
+        let paths = |r: &PackResponse| r.pack.artifacts.iter().map(|a| a.path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(&response), paths(&full));
+    }
+
+    #[test]
+    fn a_reason_names_at_most_ten_terms_and_fits_the_contract() {
+        let many: Vec<String> = (0..300).map(|i| format!("term{i}")).collect();
+        let reason = rank_reason(0, &many);
+        assert!(reason.ends_with("+290 more"), "{reason}");
+        assert!(reason.len() <= 1024);
+        assert_eq!(rank_reason(2, &[]), "rank 3 for the task text; matches its terms");
     }
 
     #[test]

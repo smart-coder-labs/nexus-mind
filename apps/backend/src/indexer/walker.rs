@@ -86,8 +86,13 @@ const ALLOWED_HIDDEN: &[&str] = &[".github", ".gitlab-ci.yml"];
 /// The language label of a config file admitted for lexical search, if it is one.
 fn config_language(file_name: &str, ext: Option<&str>) -> Option<&'static str> {
     let lower = file_name.to_ascii_lowercase();
-    // Manifests named for secrets (a k8s Secret, credentials.json) may hold values.
-    if lower.contains("secret") || lower.contains("credential") {
+    // Names that announce key material (Terraform variables, service-account keys).
+    if lower.ends_with(".tfvars")
+        || lower.ends_with(".tfvars.json")
+        || lower.contains("service-account")
+        || lower.contains("serviceaccount")
+        || lower.ends_with("-key.json")
+    {
         return None;
     }
     if file_name == "Dockerfile"
@@ -104,6 +109,39 @@ fn config_language(file_name: &str, ext: Option<&str>) -> Option<&'static str> {
         ext if CONFIG_EXTENSIONS.contains(&ext) => language_for_ext(ext),
         _ => None,
     }
+}
+
+/// True when a path component announces secrets (`k8s/secrets/db.yaml`,
+/// `deploy/credentials/prod.json`, `app-secret.yaml`).
+fn secret_named(path: &std::path::Path) -> bool {
+    path.components().any(|component| {
+        let part = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        part.contains("secret") || part.contains("credential")
+    })
+}
+
+/// True when a config file's content looks like it holds a secret: a k8s
+/// `Secret`, a private key, cloud or registry credentials, or a literal value
+/// assigned to a password/token/key setting. Placeholders (`${VAR}`, `{{ x }}`,
+/// `<x>`) are not literals. Config is indexed only when this says no: its text
+/// is served verbatim as ContextPack evidence.
+pub(crate) fn looks_secret(content: &str) -> bool {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<regex::RegexSet> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        regex::RegexSet::new([
+            r#"(?m)^\s*kind:\s*['"]?Secret\b"#,
+            r#"-----BEGIN [A-Z ]*PRIVATE KEY-----"#,
+            r#""private_key"\s*:"#,
+            r#"(?i)aws_secret_access_key"#,
+            r#""auths"\s*:\s*\{"#,
+            r#"(?i)\b(oauth_token|access_token|refresh_token)\s*[:=]\s*['"]?[A-Za-z0-9_\-./+]{8,}"#,
+            r#"(?i)\b[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|token)[a-z0-9_.-]*['"]?\s*[:=]\s*['"]?[^\s'"$<{][^\s'"]{5,}"#,
+            r#"\b(ghp|gho|ghs|github_pat|sk|xox[abp]|AKIA)[_-]?[A-Za-z0-9_]{16,}"#,
+        ])
+        .expect("secret patterns compile")
+    });
+    patterns.is_match(content)
 }
 
 /// True when `ext` is a real source-code extension admitted into the code corpus.
@@ -241,7 +279,11 @@ fn walk(root_path: &str, include_config: bool) -> Result<Vec<FileMeta>> {
                 .then(|| config_language(file_name, ext.as_deref()))
                 .flatten()
             {
-                if size <= CONFIG_MAX_FILE_SIZE {
+                let relative = path.strip_prefix(root_path).unwrap_or(path);
+                let admissible = size <= CONFIG_MAX_FILE_SIZE
+                    && !secret_named(relative)
+                    && std::fs::read_to_string(path).is_ok_and(|text| !looks_secret(&text));
+                if admissible {
                     results.push(FileMeta {
                         path: path.to_string_lossy().into_owned(),
                         ext,
@@ -388,6 +430,12 @@ mod tests {
         fs::write(root.join("huge.json"), vec![b' '; 300 * 1024]).unwrap();
         fs::write(root.join("app-secret.yaml"), "kind: Secret\n").unwrap();
         fs::write(root.join("credentials.json"), "{}").unwrap();
+        fs::create_dir_all(root.join("k8s/secrets")).unwrap();
+        fs::write(root.join("k8s/secrets/db.yaml"), "a: 1\n").unwrap();
+        fs::write(root.join("postgres.yaml"), "apiVersion: v1\nkind: Secret\ndata:\n  p: eA==\n").unwrap();
+        fs::write(root.join("myproj-1a2b.json"), "{\"type\": \"service_account\", \"private_key\": \"x\"}").unwrap();
+        fs::write(root.join("docker-compose.yml"), "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: hunter2hunter2\n").unwrap();
+        fs::write(root.join("prod.tfvars"), "x = 1\n").unwrap();
         fs::write(root.join("main.rs"), "fn main() {}").unwrap();
 
         let mut found: Vec<(String, bool, String)> = walk_index_files(root.to_str().unwrap())
@@ -423,6 +471,34 @@ mod tests {
         let code = walk_files(root.to_str().unwrap()).unwrap();
         assert_eq!(code.len(), 1);
         assert!(!code[0].lexical_only);
+    }
+
+    #[test]
+    fn config_holding_secrets_is_recognised() {
+        for secret in [
+            "apiVersion: v1\nkind: Secret\n",
+            "-----BEGIN RSA PRIVATE KEY-----\nMII\n",
+            "{\"type\": \"service_account\", \"private_key\": \"x\"}",
+            "[default]\naws_secret_access_key = abc\n",
+            "{\"auths\": {\"ghcr.io\": {\"auth\": \"eA==\"}}}",
+            "github.com:\n    oauth_token: gho_abcdefghijklmnop\n",
+            "POSTGRES_PASSWORD: hunter2hunter2\n",
+            "api_key = \"sk-live-12345678\"\n",
+            "token: ghp_abcdefghijklmnopqrstuvwxyz123456\n",
+        ] {
+            assert!(looks_secret(secret), "{secret}");
+        }
+        for clean in [
+            "POSTGRES_PASSWORD: ${DB_PASSWORD}\n",
+            "password: \"{{ .Values.password }}\"\n",
+            "token: <your-token>\n",
+            "secretKeyRef:\n  name: db\n  key: password\n",
+            "on: push\njobs:\n  ci:\n    steps:\n      - run: cargo test\n",
+            "{\"name\": \"app\", \"scripts\": {\"test\": \"vitest\"}}",
+            "env:\n  NEXUSMIND_API_KEY: ${{ secrets.NEXUSMIND_API_KEY }}\n",
+        ] {
+            assert!(!looks_secret(clean), "{clean}");
+        }
     }
 
     #[test]

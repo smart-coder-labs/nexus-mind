@@ -96,6 +96,9 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v81(conn)?;
     run_v82(conn)?;
     run_v83(conn)?;
+    // Chunks restored from a backup or written by a pre-v82 binary have no
+    // lexical rows; a count mismatch triggers a rebuild.
+    crate::retrieval::lexical::ensure_index(conn)?;
     Ok(())
 }
 
@@ -153,21 +156,11 @@ pub fn run_v82(conn: &Connection) -> Result<()> {
              DELETE FROM code_chunks_fts WHERE rowid = old.id;
          END;",
     )?;
-    {
-        let mut stmt = tx.prepare("SELECT id, file_path, symbol, content FROM code_chunks")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            crate::retrieval::lexical::index_chunk(
-                &tx,
-                row.get(0)?,
-                &row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?.as_deref(),
-                &row.get::<_, String>(3)?,
-            )?;
-        }
-    }
     tx.execute_batch("PRAGMA user_version = 82;")?;
     tx.commit()?;
+    // Backfill: the run_all consistency check would also catch it, but a direct
+    // call keeps v82 self-contained.
+    crate::retrieval::lexical::rebuild_index(conn)?;
     Ok(())
 }
 
