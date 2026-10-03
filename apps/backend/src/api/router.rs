@@ -411,6 +411,7 @@ pub fn build_with_store(conn: Connection, config: Config) -> (Router, SqliteStor
         .route("/v1/code/index", post(code::post_index))
         .route("/v1/code/search", post(code::post_search))
         .route("/v1/code/locate", post(code::post_locate))
+        .route("/v1/code/context-pack", post(code::post_context_pack))
         .route("/v1/code/status/:project", get(code::get_status))
         .route("/v1/code/context", get(code::get_context))
         .route("/v1/code/graph", get(code::get_graph))

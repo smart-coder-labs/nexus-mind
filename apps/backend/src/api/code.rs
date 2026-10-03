@@ -1062,10 +1062,14 @@ mod budget_tests {
 
 /// `POST /v1/code/locate`
 ///
-/// Same query embedding + cosine ranking as `post_search`, but returns RANKED
-/// DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its best chunk's
-/// score) instead of chunk bodies. This is the lean, token-cheap output an agent
-/// uses to jump straight to the right file. Default limit 5.
+/// Returns RANKED DISTINCT FILE PATHS ONLY (deduped by file, a file's score = its
+/// best chunk's score) instead of chunk bodies: the lean, token-cheap output an
+/// agent uses to jump straight to the right file. Default limit 5.
+///
+/// Ranked by BM25 over identifier terms (factory F2): on the golden retrieval
+/// questions it beat the embedding ranking on both repositories (MRR 0.63 vs
+/// 0.60 and 0.51 vs 0.28). The embedding ranking remains the fallback when no
+/// query term matches.
 /// Returns HTTP 404 if the project has not been indexed.
 pub async fn post_locate(
     State(store): State<SqliteStore>,
@@ -1099,15 +1103,21 @@ pub async fn post_locate(
         .parse()
         .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
 
-    // Embed the query (reuse the same plumbing as search — no corpus re-embed).
-    let embed_svc = store.embed_service();
-    let q_vec = match embed_svc {
-        Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
-        None => return Ok(Json(LocateCodeResponse { results: vec![] })),
+    let lexical = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| lock_err())?;
+        crate::retrieval::lexical::bm25_file_ranking(&conn, code_project_id, &input.query)
+            .map_err(db_err)?
     };
-
-    // Fetch embeddings + lightweight (id → file_path, symbol) locations (no content).
-    let ranked = {
+    let ranked = if !lexical.is_empty() {
+        lexical
+    } else {
+        // No query term matched: fall back to the embedding ranking.
+        let embed_svc = store.embed_service();
+        let q_vec = match embed_svc {
+            Some(ref svc) => svc.embed_query(&input.query).map_err(db_err)?,
+            None => return Ok(Json(LocateCodeResponse { results: vec![] })),
+        };
         let db = store.conn();
         let conn = db.lock().map_err(|_| lock_err())?;
         crate::retrieval::dense_file_ranking(&conn, code_project_id, &input.query, &q_vec)
@@ -1124,6 +1134,96 @@ pub async fn post_locate(
     results.truncate(limit as usize);
 
     Ok(Json(LocateCodeResponse { results }))
+}
+
+/// Request body for `POST /v1/code/context-pack`.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ContextPackRequest {
+    pub project: String,
+    /// The task description the pack is assembled for.
+    pub query: String,
+    /// The factory task this pack belongs to (canonical UUID).
+    pub task_id: Option<String>,
+    /// The commit the task targets (40 hex); the index's commit when absent.
+    pub commit: Option<String>,
+    pub max_files: Option<usize>,
+    pub max_bytes: Option<usize>,
+}
+
+/// `POST /v1/code/context-pack`
+///
+/// The ContextPack for a task (factory F2, "Bibliotecario"): the files BM25
+/// ranks for the query with their best chunks, plus files one relative import
+/// away from the top ones. `pack` is the auditable contract (path, symbol, kind,
+/// reason, content hash); `evidence` carries the code under a byte budget;
+/// `index.stale` flags an index built from another commit than the task's.
+/// 404 when the project is not indexed, 409 `index_commit_unknown` when neither
+/// the request nor the index names a commit.
+pub async fn post_context_pack(
+    State(store): State<SqliteStore>,
+    Extension(auth): Extension<AuthContext>,
+    AppJson(input): AppJson<ContextPackRequest>,
+) -> Result<Json<crate::retrieval::context_pack::PackResponse>, (StatusCode, Json<ApiError>)> {
+    let invalid = |error: &str| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError {
+                error: error.to_string(),
+                code: "validation_error".to_string(),
+            }),
+        )
+    };
+    if input.query.trim().is_empty() || input.query.len() > 4096 {
+        return Err(invalid("query must be 1-4096 bytes"));
+    }
+    if let Some(task_id) = &input.task_id {
+        let canonical = uuid::Uuid::parse_str(task_id)
+            .is_ok_and(|id| id.hyphenated().to_string() == *task_id);
+        if !canonical {
+            return Err(invalid("task_id must be a canonical lowercase UUID"));
+        }
+    }
+    if let Some(commit) = &input.commit {
+        if commit.len() != 40 || !commit.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(invalid("commit must be a full lowercase SHA"));
+        }
+    }
+
+    let db = store.conn();
+    let conn = db.lock().map_err(|_| lock_err())?;
+    require_permission(&conn, &auth, None, "memory:search")?;
+    ensure_code_project_name_access(&conn, &auth, &input.project)?;
+    let code_project = db_queries::get_code_project(&auth.org_id, &input.project, &conn)
+        .map_err(db_err)?
+        .ok_or_else(|| project_not_indexed(&input.project))?;
+    let code_project_id: i64 = code_project
+        .id
+        .parse()
+        .map_err(|_| db_err(anyhow::anyhow!("invalid code_project_id")))?;
+    let request = crate::retrieval::context_pack::PackRequest {
+        query: &input.query,
+        task_id: input.task_id.as_deref(),
+        commit: input.commit.as_deref(),
+        max_files: input
+            .max_files
+            .unwrap_or(crate::retrieval::context_pack::DEFAULT_MAX_FILES),
+        max_bytes: input
+            .max_bytes
+            .unwrap_or(crate::retrieval::context_pack::DEFAULT_MAX_BYTES),
+    };
+    match crate::retrieval::context_pack::build(&conn, code_project_id, &request) {
+        Ok(response) => Ok(Json(response)),
+        Err(error) if error.to_string() == "index_commit_unknown" => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "The index has no commit; pass `commit` or re-index from a git checkout"
+                    .to_string(),
+                code: "index_commit_unknown".to_string(),
+            }),
+        )),
+        Err(error) => Err(db_err(error)),
+    }
 }
 
 /// `GET /v1/code/status/:project`
