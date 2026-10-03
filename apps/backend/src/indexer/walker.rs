@@ -76,12 +76,12 @@ const CODE_EXTENSIONS: &[&str] = &[
     // Rust
     "rs", // TypeScript / JavaScript
     "ts", "tsx", "js", "jsx", "mjs", "cjs", // Python
-    "py", // Go
-    "go", // JVM
+    "py",  // Go
+    "go",  // JVM
     "java", "kt", "kts", // C / C++
     "c", "h", "cc", "cpp", "cxx", "hpp", // C#
-    "cs", // Ruby / PHP
-    "rb", "php", // Swift
+    "cs",  // Ruby / PHP
+    "rb", "php",   // Swift
     "swift", // Shell
     "sh", "bash", "zsh",
     // Web source (markup/styles/components — real source, not config)

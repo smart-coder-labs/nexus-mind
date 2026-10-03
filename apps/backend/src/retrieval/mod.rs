@@ -2,8 +2,11 @@
 //! project, shared by the code search API, the ContextPack builder and the
 //! retrieval eval.
 
+pub mod context_pack;
 pub mod eval;
+pub mod graph;
 pub mod lexical;
+pub mod rerank;
 
 use rusqlite::Connection;
 
@@ -65,15 +68,21 @@ pub fn dense_file_ranking(
 /// Reciprocal rank fusion of file rankings: each file scores `Σ 1 / (k + rank)`
 /// over the lists it appears in. Best first; ties keep the first list's order.
 pub fn reciprocal_rank_fusion(rankings: &[Vec<String>], k: f64) -> Vec<String> {
+    let weighted: Vec<(&[String], f64)> = rankings.iter().map(|r| (r.as_slice(), 1.0)).collect();
+    weighted_reciprocal_rank_fusion(&weighted, k)
+}
+
+/// [`reciprocal_rank_fusion`] with a weight per ranking: `Σ w / (k + rank)`.
+pub fn weighted_reciprocal_rank_fusion(rankings: &[(&[String], f64)], k: f64) -> Vec<String> {
     let mut scores: Vec<(String, f64, usize)> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for ranking in rankings {
+    for &(ranking, weight) in rankings {
         for (rank, file) in ranking.iter().enumerate() {
             let at = *index.entry(file.clone()).or_insert_with(|| {
                 scores.push((file.clone(), 0.0, scores.len()));
                 scores.len() - 1
             });
-            scores[at].1 += 1.0 / (k + rank as f64 + 1.0);
+            scores[at].1 += weight / (k + rank as f64 + 1.0);
         }
     }
     scores.sort_by(|a, b| {
@@ -143,6 +152,10 @@ mod tests {
         let fused = reciprocal_rank_fusion(&[list(&["a", "b", "c"]), list(&["c", "d", "b"])], 60.0);
         assert_eq!(fused, ["c", "b", "a", "d"]);
         assert!(reciprocal_rank_fusion(&[], 60.0).is_empty());
+        // A down-weighted ranking's files come after the full-weight ones.
+        let (strong, weak) = (list(&["a", "b"]), list(&["c", "d"]));
+        let fused = weighted_reciprocal_rank_fusion(&[(&strong, 1.0), (&weak, 0.25)], 60.0);
+        assert_eq!(fused, ["a", "b", "c", "d"]);
     }
 
     #[test]

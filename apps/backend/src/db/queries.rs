@@ -5839,6 +5839,19 @@ pub fn list_files_with_unembedded_chunks(
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
 }
 
+/// Records the commit a project's index was built from (NULL when unknown).
+pub fn set_code_project_indexed_commit(
+    conn: &Connection,
+    code_project_id: i64,
+    commit: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET indexed_commit = ?2 WHERE id = ?1",
+        rusqlite::params![code_project_id, commit],
+    )?;
+    Ok(())
+}
+
 /// Marks a file's chunks as lexical-only: searched by BM25, never embedded, and
 /// so never reported as waiting for a vector.
 pub fn mark_file_chunks_lexical_only(

@@ -96,18 +96,28 @@ pub fn bm25_file_ranking(
     bm25_file_ranking_weighted(conn, code_project_id, query, CONFIG_WEIGHT)
 }
 
-/// [`bm25_file_ranking`] with an explicit config weight (the eval varies it).
-pub fn bm25_file_ranking_weighted(
+/// One chunk matched by BM25, config weight applied (higher is better).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkHit {
+    pub chunk_id: i64,
+    pub file_path: String,
+    pub symbol: Option<String>,
+    pub lexical_only: bool,
+    pub score: f32,
+}
+
+/// BM25 ranking of a project's chunks (best first, at most [`CHUNK_LIMIT`]).
+pub fn bm25_chunk_ranking(
     conn: &Connection,
     code_project_id: i64,
     query: &str,
     config_weight: f32,
-) -> anyhow::Result<Vec<FileHit>> {
+) -> anyhow::Result<Vec<ChunkHit>> {
     let Some(expression) = match_expression(query) else {
         return Ok(Vec::new());
     };
     let mut stmt = conn.prepare(
-        "SELECT c.file_path, c.symbol, bm25(code_chunks_fts, ?3, ?4, ?5) AS rank, c.lexical_only
+        "SELECT c.id, c.file_path, c.symbol, bm25(code_chunks_fts, ?3, ?4, ?5) AS rank, c.lexical_only
          FROM code_chunks_fts
          JOIN code_chunks c ON c.id = code_chunks_fts.rowid
          WHERE code_chunks_fts MATCH ?1 AND c.code_project_id = ?2
@@ -124,31 +134,44 @@ pub fn bm25_file_ranking_weighted(
             CHUNK_LIMIT
         ],
         |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, f64>(2)?,
-                r.get::<_, bool>(3)?,
-            ))
+            let lexical_only: bool = r.get(4)?;
+            // bm25() is lower-is-better (negative).
+            let rank: f64 = r.get(3)?;
+            let weight = if lexical_only { config_weight } else { 1.0 };
+            Ok(ChunkHit {
+                chunk_id: r.get(0)?,
+                file_path: r.get(1)?,
+                symbol: r.get(2)?,
+                lexical_only,
+                score: -rank as f32 * weight,
+            })
         },
     )?;
-    // bm25() is lower-is-better (negative); a file keeps its best chunk's score.
-    let mut best: std::collections::HashMap<String, (f32, Option<String>)> =
+    let mut hits = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
+    });
+    Ok(hits)
+}
+
+/// Files of a chunk ranking, each scored by its best chunk. Best first; ties by path.
+pub fn files_of(chunks: &[ChunkHit]) -> Vec<FileHit> {
+    let mut best: std::collections::HashMap<&str, (f32, Option<&str>)> =
         std::collections::HashMap::new();
-    for row in rows {
-        let (file_path, symbol, rank, lexical_only) = row?;
-        let weight = if lexical_only { config_weight } else { 1.0 };
-        let score = -rank as f32 * weight;
-        let entry = best.entry(file_path).or_insert((f32::MIN, None));
-        if score > entry.0 {
-            *entry = (score, symbol);
+    for chunk in chunks {
+        let entry = best.entry(&chunk.file_path).or_insert((f32::MIN, None));
+        if chunk.score > entry.0 {
+            *entry = (chunk.score, chunk.symbol.as_deref());
         }
     }
     let mut hits: Vec<FileHit> = best
         .into_iter()
-        .map(|(file_path, (score, top_symbol))| FileHit {
-            file_path,
-            top_symbol,
+        .map(|(file_path, (score, symbol))| FileHit {
+            file_path: file_path.to_string(),
+            top_symbol: symbol.map(str::to_string),
             score,
         })
         .collect();
@@ -158,7 +181,22 @@ pub fn bm25_file_ranking_weighted(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.file_path.cmp(&b.file_path))
     });
-    Ok(hits)
+    hits
+}
+
+/// [`bm25_file_ranking`] with an explicit config weight (the eval varies it).
+pub fn bm25_file_ranking_weighted(
+    conn: &Connection,
+    code_project_id: i64,
+    query: &str,
+    config_weight: f32,
+) -> anyhow::Result<Vec<FileHit>> {
+    Ok(files_of(&bm25_chunk_ranking(
+        conn,
+        code_project_id,
+        query,
+        config_weight,
+    )?))
 }
 
 /// Words too common in task titles to discriminate between files.

@@ -105,7 +105,8 @@ pub fn run_all(conn: &Connection) -> Result<()> {
 /// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
 /// chunk's row when the chunk is deleted (re-index, project removal cascade).
 /// Existing chunks are backfilled. Also adds `code_chunks.lexical_only` for config
-/// chunks that are never embedded. Idempotent, all-or-nothing.
+/// chunks that are never embedded, and `code_projects.indexed_commit`, the commit
+/// an index was built from. Idempotent, all-or-nothing.
 pub fn run_v82(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 82 {
@@ -120,6 +121,13 @@ pub fn run_v82(conn: &Connection) -> Result<()> {
         tx.execute_batch(
             "ALTER TABLE code_chunks ADD COLUMN lexical_only INTEGER NOT NULL DEFAULT 0;",
         )?;
+    }
+    let has_commit: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_projects') WHERE name = 'indexed_commit'")?
+        .exists([])?;
+    if !has_commit {
+        // The commit an index was built from: a ContextPack is pinned to it.
+        tx.execute_batch("ALTER TABLE code_projects ADD COLUMN indexed_commit TEXT;")?;
     }
     tx.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(

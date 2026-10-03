@@ -75,8 +75,19 @@ fn main() -> anyhow::Result<()> {
         .map(str::to_string)
         .collect();
     for variant in &variants {
-        let needs_vectors = variant != "bm25";
-        if !["dense", "bm25", "rrf"].contains(&variant.as_str()) || (no_embed && needs_vectors) {
+        let needs_vectors = variant != "bm25" && !variant.starts_with("rerank:");
+        let known = [
+            "dense",
+            "bm25",
+            "rrf",
+            "rerank:bge-base",
+            "rerank:jina-turbo",
+        ]
+        .contains(&variant.as_str())
+            || variant
+                .strip_prefix("rrf:")
+                .is_some_and(|w| w.parse::<f64>().is_ok());
+        if !known || (no_embed && needs_vectors) {
             anyhow::bail!("unsupported variant {variant}");
         }
     }
@@ -98,6 +109,13 @@ fn main() -> anyhow::Result<()> {
     } else {
         Some(Arc::new(EmbedService::init()?))
     };
+
+    let mut rerankers = std::collections::HashMap::new();
+    for variant in &variants {
+        if let Some(name) = variant.strip_prefix("rerank:") {
+            rerankers.insert(variant.clone(), retrieval::rerank::Reranker::init(name)?);
+        }
+    }
 
     eprintln!("indexing {repo} as {project}…");
     let started = std::time::Instant::now();
@@ -162,6 +180,8 @@ fn main() -> anyhow::Result<()> {
         let paths = |hits: Vec<retrieval::FileHit>| -> Vec<String> {
             hits.into_iter().map(|h| h.file_path).collect()
         };
+        let lexical_hits =
+            lexical::bm25_file_ranking_weighted(&conn, project_id, &query, config_weight)?;
         let lexical_ranking = paths(lexical::bm25_file_ranking_weighted(
             &conn,
             project_id,
@@ -181,10 +201,24 @@ fn main() -> anyhow::Result<()> {
             let ranked = match variant.as_str() {
                 "dense" => dense_ranking.clone(),
                 "bm25" => lexical_ranking.clone(),
-                _ => retrieval::reciprocal_rank_fusion(
-                    &[dense_ranking.clone(), lexical_ranking.clone()],
-                    RRF_K,
-                ),
+                reranked if reranked.starts_with("rerank:") => {
+                    paths(rerankers[reranked].rerank_files(
+                        &conn,
+                        project_id,
+                        &query,
+                        lexical_hits.clone(),
+                    )?)
+                }
+                other => {
+                    // `rrf` weighs both legs equally; `rrf:<w>` gives dense weight w.
+                    let dense_weight = other
+                        .strip_prefix("rrf:")
+                        .map_or(Ok(1.0), str::parse::<f64>)?;
+                    retrieval::weighted_reciprocal_rank_fusion(
+                        &[(&lexical_ranking, 1.0), (&dense_ranking, dense_weight)],
+                        RRF_K,
+                    )
+                }
             };
             let recalls = KS.map(|k| eval::recall_at(&ranked, &gold, k));
             let hits = KS.map(|k| eval::hit_at(&ranked, &gold, k));

@@ -250,6 +250,10 @@ mod tests {
         fs::write(dir.path().join("README.md"), "# ours").unwrap();
 
         let found = walk_docs(dir.path().to_str().unwrap(), &DocWalkOptions::default()).unwrap();
-        assert_eq!(found.len(), 1, "a dependency's README is not our documentation");
+        assert_eq!(
+            found.len(),
+            1,
+            "a dependency's README is not our documentation"
+        );
     }
 }
