@@ -1,6 +1,6 @@
 # NexusMind Software Factory — Implementation Plan
 
-Status: **F0 and F1 in production** · Owner: cesar · Last updated: 2026-10-02
+Status: **F0 and F1 in production; F2 built (pending deploy)** · Owner: cesar · Last updated: 2026-10-02
 
 Source documents:
 
@@ -140,6 +140,36 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 - Implement rank fusion, a reranker and dependency expansion, then the `ContextPack` builder.
 - Add the MCP tool `get_context_pack` to `only_context`.
 - **Exit:** baseline Recall@K and MRR on retrieval golden questions.
+- **Status (2026-10-03): exit met; CodeRankEmbed pending.** F2 absorbed plan #54 (Explorer/Solver): one retrieval engine, and the ContextPack is #54's ContextPacket (ADR d005bdda). Every choice was measured with `factory-retrieval-eval` (`scripts/factory/eval_retrieval.zsh`).
+  - **How it is measured.**
+    - Questions come from the golden tasks: each PR title without its `type(scope):` prefix.
+    - The gold set is the files the change modified. Added files are excluded.
+    - Each repository is indexed from a pinned snapshot: nexus-mind `3de6eb3` (26 questions) and kasymir-app-ui `7e93b88` (20 questions).
+  - **Baseline (BM25, the production ranker):**
+
+    | Repository | Hit@5 | Hit@10 | Hit@20 | MRR | Recall@10 | Recall@20 |
+    |---|---|---|---|---|---|---|
+    | nexus-mind | 0.88 | 0.92 | 0.96 | 0.63 | 0.44 | 0.58 |
+    | kasymir-app-ui | 0.65 | 0.80 | 0.85 | 0.51 | 0.22 | 0.30 |
+
+  - **What was tried and lost.** None of the alternatives beat BM25 alone, so none ships.
+    - The Nomic embedding ranking that `/v1/code/locate` used: MRR 0.60 on nexus-mind and 0.28 on kasymir.
+    - RRF with dense weights from 0.1 to 1.0.
+    - Cross-encoder rerankers: bge-reranker-base and jina-reranker-v1-turbo. The multilingual Jina reranker was not tried because its licence is non-commercial.
+    - Equal-weight RRF lost too: MRR 0.64 and 0.41 against BM25's 0.63 and 0.51.
+  - **Built:**
+    - FTS5 index over identifier-split terms (migration v82, contentless).
+    - Config files (CI workflows, Dockerfiles, manifests, GraphQL) indexed for lexical search only, weighted 0.7. That removed every code-question regression while CI and deploy questions became answerable.
+    - The ContextPack builder: ranked files with their best chunks, then up to three files one relative import away, appended after the ranked files. Each artifact carries a reason and a content hash, and the evidence carries the code under a byte budget.
+    - Packs are pinned to a commit (`code_projects.indexed_commit`, migration v83).
+    - `POST /v1/code/context-pack`, and `/v1/code/locate` switched to BM25 with embeddings as the fallback.
+    - The MCP tool `get_context_pack` in `legacy`, the curated registry and `only_context` (nexusmind-mcp 0.19.0).
+  - **Import expansion.** Appending neighbours raised Recall@8 from 0.428 to 0.433 on nexus-mind and from 0.19 to 0.21 on kasymir, where components import their hooks and interfaces relatively. Letting neighbours displace ranked files lost recall on nexus-mind.
+  - **SCIP is deferred** (ADR d005bdda). Only relative imports resolve to files today; aliased imports end at external nodes.
+  - **Open:**
+    - CodeRankEmbed. The weak leg is the embedding model, so it is the next candidate. It has no official ONNX export, so it needs a self-export (torch) and a full re-embed.
+    - Questions about infra and gold files outside the index: 29 of 241 nexus-mind gold files are docs or unsupported types.
+    - Production indexes were last built on 2026-08-28 and 2026-09-07. Config files and `indexed_commit` appear only after a re-index.
 
 ### F3: Router and Model Gateway (1–2 weeks)
 
