@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 82;
+pub const LATEST_USER_VERSION: i32 = 83;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -95,6 +95,27 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v80(conn)?;
     run_v81(conn)?;
     run_v82(conn)?;
+    run_v83(conn)?;
+    Ok(())
+}
+
+/// Migration v83: `code_projects.indexed_commit`, the commit an index was built
+/// from (NULL when the root is not a checkout). A ContextPack is pinned to it.
+/// Idempotent.
+pub fn run_v83(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 83 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let exists: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_projects') WHERE name = 'indexed_commit'")?
+        .exists([])?;
+    if !exists {
+        tx.execute_batch("ALTER TABLE code_projects ADD COLUMN indexed_commit TEXT;")?;
+    }
+    tx.execute_batch("PRAGMA user_version = 83;")?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -105,8 +126,7 @@ pub fn run_all(conn: &Connection) -> Result<()> {
 /// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
 /// chunk's row when the chunk is deleted (re-index, project removal cascade).
 /// Existing chunks are backfilled. Also adds `code_chunks.lexical_only` for config
-/// chunks that are never embedded, and `code_projects.indexed_commit`, the commit
-/// an index was built from. Idempotent, all-or-nothing.
+/// chunks that are never embedded. Idempotent, all-or-nothing.
 pub fn run_v82(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version >= 82 {
@@ -121,13 +141,6 @@ pub fn run_v82(conn: &Connection) -> Result<()> {
         tx.execute_batch(
             "ALTER TABLE code_chunks ADD COLUMN lexical_only INTEGER NOT NULL DEFAULT 0;",
         )?;
-    }
-    let has_commit: bool = tx
-        .prepare("SELECT 1 FROM pragma_table_info('code_projects') WHERE name = 'indexed_commit'")?
-        .exists([])?;
-    if !has_commit {
-        // The commit an index was built from: a ContextPack is pinned to it.
-        tx.execute_batch("ALTER TABLE code_projects ADD COLUMN indexed_commit TEXT;")?;
     }
     tx.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(

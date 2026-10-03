@@ -75,11 +75,13 @@ fn main() -> anyhow::Result<()> {
         .map(str::to_string)
         .collect();
     for variant in &variants {
-        let needs_vectors = variant != "bm25" && !variant.starts_with("rerank:");
+        let needs_vectors =
+            !["bm25", "pack"].contains(&variant.as_str()) && !variant.starts_with("rerank:");
         let known = [
             "dense",
             "bm25",
             "rrf",
+            "pack",
             "rerank:bge-base",
             "rerank:jina-turbo",
         ]
@@ -182,12 +184,7 @@ fn main() -> anyhow::Result<()> {
         };
         let lexical_hits =
             lexical::bm25_file_ranking_weighted(&conn, project_id, &query, config_weight)?;
-        let lexical_ranking = paths(lexical::bm25_file_ranking_weighted(
-            &conn,
-            project_id,
-            &query,
-            config_weight,
-        )?);
+        let lexical_ranking = paths(lexical_hits.clone());
         let dense_ranking = match &embed {
             Some(svc) => paths(retrieval::dense_file_ranking(
                 &conn,
@@ -201,6 +198,27 @@ fn main() -> anyhow::Result<()> {
             let ranked = match variant.as_str() {
                 "dense" => dense_ranking.clone(),
                 "bm25" => lexical_ranking.clone(),
+                // Files in the order a default ContextPack delivers them.
+                "pack" => {
+                    let response = retrieval::context_pack::build(
+                        &conn,
+                        project_id,
+                        &retrieval::context_pack::PackRequest {
+                            query: &query,
+                            task_id: None,
+                            commit: Some(&task.merge_sha),
+                            max_files: retrieval::context_pack::DEFAULT_MAX_FILES,
+                            max_bytes: retrieval::context_pack::MAX_BYTES,
+                        },
+                    )?;
+                    let mut files: Vec<String> = Vec::new();
+                    for artifact in response.pack.artifacts {
+                        if !files.contains(&artifact.path) {
+                            files.push(artifact.path);
+                        }
+                    }
+                    files
+                }
                 reranked if reranked.starts_with("rerank:") => {
                     paths(rerankers[reranked].rerank_files(
                         &conn,
@@ -240,6 +258,7 @@ fn main() -> anyhow::Result<()> {
                     "recall@5": recalls[0], "recall@10": recalls[1], "recall@20": recalls[2],
                     "hit@5": hits[0], "hit@10": hits[1], "hit@20": hits[2],
                     "rr": rr, "top5": &ranked[..ranked.len().min(5)],
+                    "top20": &ranked[..ranked.len().min(20)],
                 })
             );
         }

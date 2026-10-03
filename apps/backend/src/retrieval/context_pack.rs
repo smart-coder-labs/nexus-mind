@@ -22,7 +22,8 @@ pub const DEFAULT_MAX_BYTES: usize = 24_000;
 pub const MAX_BYTES: usize = 64_000;
 /// Matching chunks kept per ranked file.
 const CHUNKS_PER_FILE: usize = 2;
-/// Top files whose imports are followed, and neighbours added at most.
+/// Top files whose imports are followed, and neighbours added at most (beyond
+/// the ranked files).
 const EXPANSION_SEEDS: usize = 3;
 const MAX_NEIGHBOURS: usize = 3;
 
@@ -106,10 +107,12 @@ pub fn build(
         })
         .unwrap_or_default();
 
-    // Ranked files first, leaving room for the import neighbours of the top ones.
-    let ranked_slots = max_files
-        .saturating_sub(MAX_NEIGHBOURS.min(max_files / 3))
-        .max(1);
+    // Ranked files first; import neighbours of the top ones come after them, on
+    // top of `max_files`, and are the first evidence the byte budget cuts. On the
+    // golden questions displacing ranked files with neighbours cost nexus-mind
+    // recall while appending them helped kasymir (relative imports between a
+    // component and its hooks/interfaces).
+    let ranked_slots = max_files;
     let mut selected: Vec<Selected> = Vec::new();
     let mut chosen_files: Vec<String> = Vec::new();
     for (rank, file) in files.iter().take(ranked_slots).enumerate() {
@@ -140,7 +143,7 @@ pub fn build(
     let mut neighbours = 0;
     'seeds: for seed in files.iter().take(EXPANSION_SEEDS.min(ranked_slots)) {
         for (path, relation) in graph::import_neighbours(conn, code_project_id, &seed.file_path)? {
-            if neighbours >= MAX_NEIGHBOURS || chosen_files.len() >= max_files {
+            if neighbours >= MAX_NEIGHBOURS {
                 break 'seeds;
             }
             if chosen_files.contains(&path) {
