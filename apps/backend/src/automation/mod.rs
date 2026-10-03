@@ -12,4 +12,5 @@ pub mod sandboxed;
 pub mod scheduler;
 pub mod security_dast;
 pub mod security_scan;
+pub mod shadow;
 pub mod worker;

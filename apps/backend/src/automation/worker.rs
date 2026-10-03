@@ -2582,6 +2582,20 @@ async fn publish_template_output(
                     )?;
                 }
             }
+            // F3 shadow (ADR 7d6f870f): the decision model's verdict on this head
+            // is recorded next to its later outcome. It never changes the review
+            // or the merge; a failure only loses one data point.
+            if let Err(error) = super::shadow::record_merge_shadow(
+                store,
+                &claim.org_id,
+                &token,
+                repository,
+                number,
+            )
+            .await
+            {
+                tracing::warn!(repository, number, "shadow decision not recorded: {error:#}");
+            }
             // Opt-in auto-merge: squash-merge (keeping the branch) only when the
             // review found nothing blocking AND every required check on the PR head
             // is green. Best-effort — a skipped/failed merge never fails the review.

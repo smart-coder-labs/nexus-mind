@@ -429,6 +429,85 @@ pub async fn list_recent_github_pulls(token: &str, repository: &str) -> Result<V
     .await
 }
 
+/// Merged pull requests of `repository` merged at or after `since` (RFC 3339),
+/// newest first, at most `max`. Pages by recent update, which bounds the walk.
+pub async fn list_merged_pulls(
+    token: &str,
+    repository: &str,
+    since: &str,
+    max: usize,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let mut merged = Vec::new();
+    for page in 1..=20 {
+        let batch = github_get(
+            token,
+            &format!(
+                "/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
+            ),
+        )
+        .await?;
+        let items = batch.as_array().cloned().unwrap_or_default();
+        if items.is_empty() {
+            break;
+        }
+        let mut older_page = true;
+        for pull in items {
+            let updated = pull.get("updated_at").and_then(|v| v.as_str()).unwrap_or_default();
+            if updated >= since {
+                older_page = false;
+            }
+            let merged_at = pull.get("merged_at").and_then(|v| v.as_str()).unwrap_or_default();
+            if !merged_at.is_empty() && merged_at >= since {
+                merged.push(pull);
+            }
+        }
+        if older_page || merged.len() >= max {
+            break;
+        }
+    }
+    merged.sort_by(|a, b| {
+        let at = |v: &Value| v.get("merged_at").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        at(b).cmp(&at(a))
+    });
+    merged.truncate(max);
+    Ok(merged)
+}
+
+/// Commits on `branch` between `since` and `until` (RFC 3339), up to 500.
+pub async fn list_branch_commits(
+    token: &str,
+    repository: &str,
+    branch: &str,
+    since: &str,
+    until: &str,
+) -> Result<Vec<Value>> {
+    let (owner, repo) = repository_parts(repository)?;
+    let mut commits = Vec::new();
+    for page in 1..=5 {
+        let batch = github_get(
+            token,
+            &format!(
+                "/repos/{owner}/{repo}/commits?sha={branch}&since={since}&until={until}&per_page=100&page={page}"
+            ),
+        )
+        .await?;
+        let items = batch.as_array().cloned().unwrap_or_default();
+        let full = items.len() == 100;
+        commits.extend(items);
+        if !full {
+            break;
+        }
+    }
+    Ok(commits)
+}
+
+/// One commit with the files it changed.
+pub async fn get_commit(token: &str, repository: &str, sha: &str) -> Result<Value> {
+    let (owner, repo) = repository_parts(repository)?;
+    github_get(token, &format!("/repos/{owner}/{repo}/commits/{sha}")).await
+}
+
 pub async fn find_github_issue_by_marker(
     token: &str,
     repository: &str,

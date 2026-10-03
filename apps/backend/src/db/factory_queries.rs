@@ -280,6 +280,181 @@ pub struct DecisionRecord {
     pub inputs: serde_json::Value,
 }
 
+/// A decision model's verdict on one reviewed PR head, recorded in shadow.
+#[derive(Clone, Debug)]
+pub struct ShadowDecision<'a> {
+    pub provider: &'a str,
+    pub repository: &'a str,
+    pub pull_number: i64,
+    pub head_sha: &'a str,
+    pub answer: &'a crate::factory::jev::Answer,
+    pub verdict: crate::factory::jev::Verdict,
+    /// The deterministic floor that would block this merge, if any.
+    pub floor: Option<&'a str>,
+    pub latency_ms: u64,
+}
+
+/// Whether this head already has a shadow decision (a re-review asks nothing new).
+pub fn shadow_decision_exists(
+    conn: &Connection,
+    org_id: &str,
+    repository: &str,
+    pull_number: i64,
+    head_sha: &str,
+) -> Result<bool> {
+    Ok(conn
+        .prepare(
+            "SELECT 1 FROM factory_shadow_decisions
+             WHERE org_id = ?1 AND repository = ?2 AND pull_number = ?3 AND head_sha = ?4",
+        )?
+        .exists(params![org_id, repository, pull_number, head_sha])?)
+}
+
+/// Records a shadow decision; a second one for the same head is ignored.
+pub fn record_shadow_decision(
+    conn: &Connection,
+    org_id: &str,
+    decision: &ShadowDecision<'_>,
+) -> Result<bool> {
+    let verdict = match decision.verdict {
+        crate::factory::jev::Verdict::Allow => "allow",
+        crate::factory::jev::Verdict::Hold => "hold",
+    };
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO factory_shadow_decisions
+           (id, org_id, provider, model, repository, pull_number, head_sha, task_class,
+            class_confidence, risk, risk_confidence, needs_human, verdict, floor,
+            latency_ms, input_tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            org_id,
+            decision.provider,
+            decision.answer.model,
+            decision.repository,
+            decision.pull_number,
+            decision.head_sha,
+            decision.answer.task_class,
+            decision.answer.class_confidence,
+            decision.answer.risk,
+            decision.answer.risk_confidence,
+            decision.answer.needs_human,
+            verdict,
+            decision.floor,
+            decision.latency_ms as i64,
+            decision.answer.input_tokens.map(|t| t as i64),
+        ],
+    )?;
+    Ok(inserted == 1)
+}
+
+/// Shadow decisions whose outcome is not settled yet: (id, repository, pull).
+pub fn list_pending_shadow_decisions(
+    conn: &Connection,
+    org_id: &str,
+) -> Result<Vec<(String, String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, repository, pull_number FROM factory_shadow_decisions
+         WHERE org_id = ?1 AND outcome = 'pending' ORDER BY created_at",
+    )?;
+    let rows = stmt.query_map([org_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Stores a shadow decision's outcome and the signals behind it.
+pub fn set_shadow_outcome(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    merged_at: Option<&str>,
+    merge_sha: Option<&str>,
+    outcome: &str,
+    signals: &[String],
+) -> Result<()> {
+    conn.execute(
+        "UPDATE factory_shadow_decisions
+         SET merged_at = ?3, merge_sha = ?4, outcome = ?5, outcome_signals = ?6,
+             outcome_checked_at = datetime('now')
+         WHERE org_id = ?1 AND id = ?2",
+        params![org_id, id, merged_at, merge_sha, outcome, serde_json::to_string(signals)?],
+    )?;
+    Ok(())
+}
+
+/// The id of the shadow decision for a PR head, if any.
+pub fn shadow_decision_id(
+    conn: &Connection,
+    org_id: &str,
+    repository: &str,
+    pull_number: i64,
+    head_sha: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM factory_shadow_decisions
+         WHERE org_id = ?1 AND repository = ?2 AND pull_number = ?3 AND head_sha = ?4",
+    )?;
+    let mut rows = stmt.query(params![org_id, repository, pull_number, head_sha])?;
+    Ok(match rows.next()? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    })
+}
+
+/// The OD-5 bar (ADR 7d6f870f): automatic routing for a class needs at least
+/// this many settled `allow` decisions with a false-low-risk rate at most
+/// [`OD5_MAX_FALSE_LOW_RATE`].
+pub const OD5_MIN_SETTLED_ALLOWS: i64 = 50;
+pub const OD5_MAX_FALSE_LOW_RATE: f64 = 0.02;
+
+/// Shadow results for one task class.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ShadowClassReport {
+    pub task_class: String,
+    pub decisions: i64,
+    pub allowed: i64,
+    /// `allow` decisions whose outcome is known (signals window passed or a
+    /// human labelled them).
+    pub settled_allowed: i64,
+    /// Settled `allow` decisions that were actually high risk.
+    pub false_low: i64,
+    pub false_low_rate: Option<f64>,
+    /// Whether this class clears the OD-5 bar.
+    pub meets_od5: bool,
+}
+
+/// Per-class false-low-risk report. A human label, when present, overrides the
+/// automatic signals (a flaky CI run is not a risky change).
+pub fn shadow_report(conn: &Connection, org_id: &str) -> Result<Vec<ShadowClassReport>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_class,
+                COUNT(*),
+                SUM(verdict = 'allow'),
+                SUM(verdict = 'allow' AND (human_label IS NOT NULL OR outcome IN ('clean','high_risk'))),
+                SUM(verdict = 'allow' AND
+                    CASE WHEN human_label IS NOT NULL THEN human_label = 'high'
+                         ELSE outcome = 'high_risk' END)
+         FROM factory_shadow_decisions
+         WHERE org_id = ?1 AND outcome != 'not_merged'
+         GROUP BY task_class ORDER BY task_class",
+    )?;
+    let rows = stmt.query_map([org_id], |r| {
+        let settled: i64 = r.get(3)?;
+        let false_low: i64 = r.get(4)?;
+        let rate = (settled > 0).then(|| false_low as f64 / settled as f64);
+        Ok(ShadowClassReport {
+            task_class: r.get(0)?,
+            decisions: r.get(1)?,
+            allowed: r.get(2)?,
+            settled_allowed: settled,
+            false_low,
+            false_low_rate: rate,
+            meets_od5: settled >= OD5_MIN_SETTLED_ALLOWS
+                && rate.is_some_and(|rate| rate <= OD5_MAX_FALSE_LOW_RATE),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn record_decision(conn: &Connection, org_id: &str, record: &DecisionRecord) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
