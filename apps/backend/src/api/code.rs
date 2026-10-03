@@ -587,7 +587,10 @@ pub async fn post_index(
     let spawn_project = project_name.clone();
     let spawn_path = effective_root_path.clone();
     let graph_only = input.graph_only.unwrap_or(false);
-    tokio::spawn(async move {
+    // Clone and index are blocking, CPU-heavy work (git, rayon, ONNX): on an
+    // async worker they starved the runtime, and /v1/health timed out until the
+    // liveness probe restarted the backend mid-index (2026-10-03).
+    tokio::task::spawn_blocking(move || {
         if let Some(ref bare_url) = bare_repo_url {
             // Surface clone/pull failures (e.g. auth failure on a private repo)
             // as a project error instead of silently indexing an empty directory.
@@ -1731,7 +1734,10 @@ pub async fn post_reindex(
     // Bare clone URL — credentials are never embedded here.
     let bare_repo_url: Option<String> = repo_url.as_deref().map(|u| u.trim().to_string());
 
-    tokio::spawn(async move {
+    // Clone and index are blocking, CPU-heavy work (git, rayon, ONNX): on an
+    // async worker they starved the runtime, and /v1/health timed out until the
+    // liveness probe restarted the backend mid-index (2026-10-03).
+    tokio::task::spawn_blocking(move || {
         // If a repo URL is set, git pull/clone first. Resolve the path to index.
         let effective_path = if let Some(ref bare_url) = bare_repo_url {
             let clone_dir = format!("/tmp/nexusmind/{}/{}", org_id, project_name);
