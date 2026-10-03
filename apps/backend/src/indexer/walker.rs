@@ -69,6 +69,81 @@ const CODE_EXTENSIONS: &[&str] = &[
     "sql",
 ];
 
+/// Config files admitted into the code index for LEXICAL search only (no
+/// embeddings): CI workflows, deploy manifests, Dockerfiles, build manifests and
+/// GraphQL schemas are where infrastructure and API tasks land, and BM25 matches
+/// their specific terms without the semantic noise that kept them out of the
+/// code corpus. Lockfiles stay excluded via [`NOISE_FILES`]; env files are never
+/// matched (they may hold secrets).
+const CONFIG_EXTENSIONS: &[&str] = &["yml", "yaml", "toml", "json", "graphql", "gql"];
+
+/// Config files are capped tighter than code: a big one is generated data.
+const CONFIG_MAX_FILE_SIZE: u64 = 256 * 1024;
+
+/// Hidden entries admitted when config is walked; every other dot-entry stays out.
+const ALLOWED_HIDDEN: &[&str] = &[".github", ".gitlab-ci.yml"];
+
+/// The language label of a config file admitted for lexical search, if it is one.
+fn config_language(file_name: &str, ext: Option<&str>) -> Option<&'static str> {
+    let lower = file_name.to_ascii_lowercase();
+    // Names that announce key material (Terraform variables, service-account keys).
+    if lower.ends_with(".tfvars")
+        || lower.ends_with(".tfvars.json")
+        || lower.contains("service-account")
+        || lower.contains("serviceaccount")
+        || lower.ends_with("-key.json")
+    {
+        return None;
+    }
+    if file_name == "Dockerfile"
+        || file_name.starts_with("Dockerfile.")
+        || file_name.ends_with(".dockerfile")
+    {
+        return Some("dockerfile");
+    }
+    if file_name == "Makefile" {
+        return Some("makefile");
+    }
+    match ext? {
+        "graphql" | "gql" => Some("graphql"),
+        ext if CONFIG_EXTENSIONS.contains(&ext) => language_for_ext(ext),
+        _ => None,
+    }
+}
+
+/// True when a path component announces secrets (`k8s/secrets/db.yaml`,
+/// `deploy/credentials/prod.json`, `app-secret.yaml`).
+fn secret_named(path: &std::path::Path) -> bool {
+    path.components().any(|component| {
+        let part = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        part.contains("secret") || part.contains("credential")
+    })
+}
+
+/// True when a config file's content looks like it holds a secret: a k8s
+/// `Secret`, a private key, cloud or registry credentials, or a literal value
+/// assigned to a password/token/key setting. Placeholders (`${VAR}`, `{{ x }}`,
+/// `<x>`) are not literals. Config is indexed only when this says no: its text
+/// is served verbatim as ContextPack evidence.
+pub(crate) fn looks_secret(content: &str) -> bool {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<regex::RegexSet> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        regex::RegexSet::new([
+            r#"(?m)^\s*kind:\s*['"]?Secret\b"#,
+            r#"-----BEGIN [A-Z ]*PRIVATE KEY-----"#,
+            r#""private_key"\s*:"#,
+            r#"(?i)aws_secret_access_key"#,
+            r#""auths"\s*:\s*\{"#,
+            r#"(?i)\b(oauth_token|access_token|refresh_token)\s*[:=]\s*['"]?[A-Za-z0-9_\-./+]{8,}"#,
+            r#"(?i)\b[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|token)[a-z0-9_.-]*['"]?\s*[:=]\s*['"]?[^\s'"$<{][^\s'"]{5,}"#,
+            r#"\b(ghp|gho|ghs|github_pat|sk|xox[abp]|AKIA)[_-]?[A-Za-z0-9_]{16,}"#,
+        ])
+        .expect("secret patterns compile")
+    });
+    patterns.is_match(content)
+}
+
 /// True when `ext` is a real source-code extension admitted into the code corpus.
 /// Excludes docs (`md`), data, and config (`json`, `yaml`, `toml`, `txt`, …).
 fn is_code_extension(ext: &str) -> bool {
@@ -90,6 +165,8 @@ pub struct FileMeta {
     /// Used by the indexer to bound Pass-1 batches by bytes so peak memory stays
     /// bounded regardless of individual file sizes.
     pub size: u64,
+    /// Indexed for lexical search only: chunks get no embedding (config files).
+    pub lexical_only: bool,
 }
 
 /// Reads a file's UTF-8 content and its SHA-256 hex hash on demand.
@@ -109,15 +186,33 @@ pub fn read_file(path: &str) -> Option<(String, String)> {
 /// cap. Returns lightweight metadata (paths only — NO content) so a huge repo's
 /// discovery stays cheap; content is read later, one file at a time.
 pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
+    walk(root_path, false)
+}
+
+/// The files of the code index: source code (embedded and lexical) plus config
+/// files for lexical search only (see [`CONFIG_EXTENSIONS`]), including CI
+/// workflows under `.github/`.
+pub fn walk_index_files(root_path: &str) -> Result<Vec<FileMeta>> {
+    walk(root_path, true)
+}
+
+fn walk(root_path: &str, include_config: bool) -> Result<Vec<FileMeta>> {
     let mut results = Vec::new();
 
     let walker = ignore::WalkBuilder::new(root_path)
-        .hidden(true)
+        // With config, hidden entries are filtered below so `.github` gets in.
+        .hidden(!include_config)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .require_git(false)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
+            if include_config && entry.depth() > 0 {
+                let name = entry.file_name().to_string_lossy();
+                if name.starts_with('.') && !ALLOWED_HIDDEN.contains(&name.as_ref()) {
+                    return false;
+                }
+            }
             // Prune heavy directories before descending into them.
             if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
@@ -179,6 +274,25 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
             .and_then(|e| e.to_str())
             .map(|s| s.to_string());
         if !ext.as_deref().map(is_code_extension).unwrap_or(false) {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if let Some(language) = include_config
+                .then(|| config_language(file_name, ext.as_deref()))
+                .flatten()
+            {
+                let relative = path.strip_prefix(root_path).unwrap_or(path);
+                let admissible = size <= CONFIG_MAX_FILE_SIZE
+                    && !secret_named(relative)
+                    && std::fs::read_to_string(path).is_ok_and(|text| !looks_secret(&text));
+                if admissible {
+                    results.push(FileMeta {
+                        path: path.to_string_lossy().into_owned(),
+                        ext,
+                        language: Some(language.to_string()),
+                        size,
+                        lexical_only: true,
+                    });
+                }
+            }
             continue;
         }
         let language = ext
@@ -194,6 +308,7 @@ pub fn walk_files(root_path: &str) -> Result<Vec<FileMeta>> {
             ext,
             language,
             size,
+            lexical_only: false,
         });
     }
 
@@ -292,6 +407,98 @@ mod tests {
         assert_eq!(files.len(), 1, "only the .ts source file must remain: {files:?}");
         assert!(files[0].path.ends_with("foo.ts"));
         assert_eq!(files[0].language.as_deref(), Some("typescript"));
+    }
+
+    #[test]
+    fn the_index_walk_adds_config_for_lexical_search_only() {
+        let dir = make_temp_project();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::create_dir_all(root.join(".secret")).unwrap();
+        fs::create_dir_all(root.join("schema")).unwrap();
+        fs::write(root.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+        fs::write(root.join(".gitlab-ci.yml"), "stages: []\n").unwrap();
+        fs::write(root.join(".secret/keys.yml"), "k: v\n").unwrap();
+        fs::write(root.join(".env"), "TOKEN=x\n").unwrap();
+        fs::write(root.join(".env.production.json"), "{}").unwrap();
+        fs::write(root.join("Dockerfile"), "FROM rust\n").unwrap();
+        fs::write(root.join("Dockerfile.worker"), "FROM rust\n").unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("schema/api.graphql"), "type Query { a: Int }\n").unwrap();
+        fs::write(root.join("package-lock.json"), "{}").unwrap();
+        fs::write(root.join("README.md"), "# docs stay in the doc corpus\n").unwrap();
+        fs::write(root.join("huge.json"), vec![b' '; 300 * 1024]).unwrap();
+        fs::write(root.join("app-secret.yaml"), "kind: Secret\n").unwrap();
+        fs::write(root.join("credentials.json"), "{}").unwrap();
+        fs::create_dir_all(root.join("k8s/secrets")).unwrap();
+        fs::write(root.join("k8s/secrets/db.yaml"), "a: 1\n").unwrap();
+        fs::write(root.join("postgres.yaml"), "apiVersion: v1\nkind: Secret\ndata:\n  p: eA==\n").unwrap();
+        fs::write(root.join("myproj-1a2b.json"), "{\"type\": \"service_account\", \"private_key\": \"x\"}").unwrap();
+        fs::write(root.join("docker-compose.yml"), "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: hunter2hunter2\n").unwrap();
+        fs::write(root.join("prod.tfvars"), "x = 1\n").unwrap();
+        fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+
+        let mut found: Vec<(String, bool, String)> = walk_index_files(root.to_str().unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| {
+                let rel = f
+                    .path
+                    .strip_prefix(root.to_str().unwrap())
+                    .unwrap()
+                    .trim_start_matches('/')
+                    .to_string();
+                (rel, f.lexical_only, f.language.unwrap_or_default())
+            })
+            .collect();
+        found.sort();
+        let expect = |rel: &str, lexical: bool, language: &str| {
+            (rel.to_string(), lexical, language.to_string())
+        };
+        assert_eq!(
+            found,
+            vec![
+                expect(".github/workflows/ci.yml", true, "yaml"),
+                expect(".gitlab-ci.yml", true, "yaml"),
+                expect("Cargo.toml", true, "toml"),
+                expect("Dockerfile", true, "dockerfile"),
+                expect("Dockerfile.worker", true, "dockerfile"),
+                expect("main.rs", false, "rust"),
+                expect("schema/api.graphql", true, "graphql"),
+            ]
+        );
+        // The code-only walk (migration connector) is unchanged.
+        let code = walk_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(code.len(), 1);
+        assert!(!code[0].lexical_only);
+    }
+
+    #[test]
+    fn config_holding_secrets_is_recognised() {
+        for secret in [
+            "apiVersion: v1\nkind: Secret\n",
+            "-----BEGIN RSA PRIVATE KEY-----\nMII\n",
+            "{\"type\": \"service_account\", \"private_key\": \"x\"}",
+            "[default]\naws_secret_access_key = abc\n",
+            "{\"auths\": {\"ghcr.io\": {\"auth\": \"eA==\"}}}",
+            "github.com:\n    oauth_token: gho_abcdefghijklmnop\n",
+            "POSTGRES_PASSWORD: hunter2hunter2\n",
+            "api_key = \"sk-live-12345678\"\n",
+            "token: ghp_abcdefghijklmnopqrstuvwxyz123456\n",
+        ] {
+            assert!(looks_secret(secret), "{secret}");
+        }
+        for clean in [
+            "POSTGRES_PASSWORD: ${DB_PASSWORD}\n",
+            "password: \"{{ .Values.password }}\"\n",
+            "token: <your-token>\n",
+            "secretKeyRef:\n  name: db\n  key: password\n",
+            "on: push\njobs:\n  ci:\n    steps:\n      - run: cargo test\n",
+            "{\"name\": \"app\", \"scripts\": {\"test\": \"vitest\"}}",
+            "env:\n  NEXUSMIND_API_KEY: ${{ secrets.NEXUSMIND_API_KEY }}\n",
+        ] {
+            assert!(!looks_secret(clean), "{clean}");
+        }
     }
 
     #[test]

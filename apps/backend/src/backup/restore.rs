@@ -86,6 +86,8 @@ pub fn restore_from_dump(
     }
 
     tx.commit().context("committing restore transaction")?;
+    // Restored code chunks bypass insert_code_chunk: re-derive the lexical index.
+    crate::retrieval::lexical::ensure_index(conn).context("rebuilding the lexical code index")?;
     Ok(summary)
 }
 

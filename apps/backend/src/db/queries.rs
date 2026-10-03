@@ -5831,12 +5831,39 @@ pub fn list_files_with_unembedded_chunks(
 ) -> Result<std::collections::HashSet<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT file_path FROM code_chunks \
-         WHERE code_project_id = ?1 AND embedding IS NULL",
+         WHERE code_project_id = ?1 AND embedding IS NULL AND lexical_only = 0",
     )?;
     let rows = stmt.query_map(rusqlite::params![code_project_id], |r| {
         r.get::<_, String>(0)
     })?;
     Ok(rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+}
+
+/// Records the commit a project's index was built from (NULL when unknown).
+pub fn set_code_project_indexed_commit(
+    conn: &Connection,
+    code_project_id: i64,
+    commit: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_projects SET indexed_commit = ?2 WHERE id = ?1",
+        rusqlite::params![code_project_id, commit],
+    )?;
+    Ok(())
+}
+
+/// Marks a file's chunks as lexical-only: searched by BM25, never embedded, and
+/// so never reported as waiting for a vector.
+pub fn mark_file_chunks_lexical_only(
+    conn: &Connection,
+    code_project_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE code_chunks SET lexical_only = 1 WHERE code_project_id = ?1 AND file_path = ?2",
+        rusqlite::params![code_project_id, file_path],
+    )?;
+    Ok(())
 }
 
 /// Returns the set of file paths that already have file-owned code symbols.
@@ -5894,7 +5921,9 @@ pub fn insert_code_chunk(
             start_line, end_line, content, embedding
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    crate::retrieval::lexical::index_chunk(conn, id, file_path, symbol, content)?;
+    Ok(id)
 }
 
 /// Return all (chunk_id, embedding_blob) pairs for a project. Used for cosine ranking.

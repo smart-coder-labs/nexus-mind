@@ -16,7 +16,7 @@ use crate::{
     indexer::{
         chunker::Chunker,
         tree_sitter_chunker::{FileGraph, TreeSitterChunker},
-        walker::walk_files,
+        walker::walk_index_files,
     },
     models::types::{CodeProject, IndexProjectResponse},
 };
@@ -112,7 +112,7 @@ pub fn index_project(
     let chunker = TreeSitterChunker::default();
 
     // Walk the directory
-    let files = walk_files(root_path)?;
+    let files = walk_index_files(root_path)?;
 
     // Get or create the code_project row and fetch stored file hashes
     let code_project_id = {
@@ -356,7 +356,9 @@ pub fn index_project(
                 continue;
             }
 
-            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc {
+            // Config files are searched lexically only (`walker::CONFIG_EXTENSIONS`).
+            let lexical_only = file_meta.lexical_only;
+            let embeddings: Vec<Option<Vec<u8>>> = if let Some(svc) = embed_svc.filter(|_| !lexical_only) {
                 // Embed a compact NL-friendly skeleton (symbol name + signature +
                 // leading doc comment), NOT the raw body — this is what cosine ranks
                 // against. `chunk.content` still stores the real body for get_context
@@ -392,6 +394,9 @@ pub fn index_project(
                     embedding.as_deref(),
                 )?;
             }
+            if lexical_only {
+                db_queries::mark_file_chunks_lexical_only(&conn, code_project_id, rel_path)?;
+            }
             // Stamped only once the chunks are in. If embedding failed the vectors
             // are NULL and the `unembedded` half picks the file up on the next run —
             // the two conditions stay independent on purpose.
@@ -407,6 +412,9 @@ pub fn index_project(
         db_queries::count_chunks_for_project(&conn, code_project_id)?
     };
 
+    // Outside the DB lock: a subprocess must not stall every request.
+    let indexed_commit = head_commit(root_path);
+
     // Update project stats and mark success
     let last_indexed = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
@@ -421,6 +429,13 @@ pub fn index_project(
             &last_indexed,
         )?;
         let _ = db_queries::set_code_project_success(&conn, code_project_id, files_indexed, &last_indexed);
+        // NULL when the root is not a checkout: a pack never claims a commit the
+        // index was not built from.
+        db_queries::set_code_project_indexed_commit(
+            &conn,
+            code_project_id,
+            indexed_commit.as_deref(),
+        )?;
     }
 
     Ok(IndexProjectResponse {
@@ -430,6 +445,20 @@ pub fn index_project(
         chunk_count: total_chunks,
         last_indexed,
     })
+}
+
+/// The checked-out commit of `root_path`, if it is a git work tree.
+fn head_commit(root_path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        // The checkout may belong to another uid (a volume in a pod): trust it
+        // for this read-only call instead of failing on "dubious ownership".
+        .args(["-c", &format!("safe.directory={root_path}"), "-C", root_path])
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && head.len() == 40 && head.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(head)
 }
 
 /// Returns the current indexing status of a code project.

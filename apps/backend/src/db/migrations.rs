@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// the failures were indistinguishable from a real regression. There is now one
 /// place to change and one test, `run_all_ends_on_the_latest_user_version`,
 /// that fails if this and the last migration disagree.
-pub const LATEST_USER_VERSION: i32 = 81;
+pub const LATEST_USER_VERSION: i32 = 83;
 
 /// Entry point called by main.rs. Runs all migrations in order.
 pub fn run_all(conn: &Connection) -> Result<()> {
@@ -94,6 +94,73 @@ pub fn run_all(conn: &Connection) -> Result<()> {
     run_v79(conn)?;
     run_v80(conn)?;
     run_v81(conn)?;
+    run_v82(conn)?;
+    run_v83(conn)?;
+    // Chunks restored from a backup or written by a pre-v82 binary have no
+    // lexical rows; a count mismatch triggers a rebuild.
+    crate::retrieval::lexical::ensure_index(conn)?;
+    Ok(())
+}
+
+/// Migration v83: `code_projects.indexed_commit`, the commit an index was built
+/// from (NULL when the root is not a checkout). A ContextPack is pinned to it.
+/// Idempotent.
+pub fn run_v83(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 83 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let exists: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_projects') WHERE name = 'indexed_commit'")?
+        .exists([])?;
+    if !exists {
+        tx.execute_batch("ALTER TABLE code_projects ADD COLUMN indexed_commit TEXT;")?;
+    }
+    tx.execute_batch("PRAGMA user_version = 83;")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Migration v82: lexical index over code chunks (factory F2, BM25 leg).
+///
+/// Contentless FTS5: the index only, never a second copy of the code. Rows are
+/// identifier terms (`retrieval::lexical::identifier_terms`) added by
+/// `insert_code_chunk`; the rowid is the chunk id, and a trigger removes a
+/// chunk's row when the chunk is deleted (re-index, project removal cascade).
+/// Existing chunks are backfilled. Also adds `code_chunks.lexical_only` for config
+/// chunks that are never embedded. Idempotent, all-or-nothing.
+pub fn run_v82(conn: &Connection) -> Result<()> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= 82 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let has_flag: bool = tx
+        .prepare("SELECT 1 FROM pragma_table_info('code_chunks') WHERE name = 'lexical_only'")?
+        .exists([])?;
+    if !has_flag {
+        // Config chunks are searched lexically only and never wait for a vector.
+        tx.execute_batch(
+            "ALTER TABLE code_chunks ADD COLUMN lexical_only INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+             path, symbol, body,
+             content='', contentless_delete=1,
+             tokenize='unicode61 remove_diacritics 2'
+         );
+         CREATE TRIGGER IF NOT EXISTS code_chunks_fts_delete
+         AFTER DELETE ON code_chunks BEGIN
+             DELETE FROM code_chunks_fts WHERE rowid = old.id;
+         END;",
+    )?;
+    tx.execute_batch("PRAGMA user_version = 82;")?;
+    tx.commit()?;
+    // Backfill: the run_all consistency check would also catch it, but a direct
+    // call keeps v82 self-contained.
+    crate::retrieval::lexical::rebuild_index(conn)?;
     Ok(())
 }
 
