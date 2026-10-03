@@ -59,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
             };
             let max: usize = arg(&args, "--max").map_or(Ok(200), |m| m.parse())?;
             let key = shadow::shadow_key().ok_or_else(|| anyhow::anyhow!("TYPESAFE_API_KEY not set"))?;
+            if !shadow::shadow_enabled_for(org_id) {
+                anyhow::bail!("org {org_id} is not in FACTORY_JEV_SHADOW_ORGS: its PR data may not go to the decision model");
+            }
             let token = nexusmind::automation::worker::server_github_token().await?;
             backfill(&store, org_id, &token, &key, repository, &since, max).await
         }

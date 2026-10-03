@@ -22,7 +22,8 @@ pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 pub const MAX_ALLOWED_RISK: f64 = 0.15;
 pub const MIN_RISK_CONFIDENCE: f64 = 0.9;
 
-/// What is sent per change; descriptions and path lists are capped.
+/// What is sent per change; titles, descriptions and path lists are capped.
+const MAX_TITLE_CHARS: usize = 300;
 const MAX_DESCRIPTION_CHARS: usize = 2000;
 const MAX_PATHS: usize = 100;
 
@@ -85,6 +86,7 @@ pub fn verdict(answer: &Answer) -> Verdict {
 }
 
 pub fn build_request(change: &Change<'_>) -> Value {
+    let title: String = change.title.chars().take(MAX_TITLE_CHARS).collect();
     let description: String = change.description.chars().take(MAX_DESCRIPTION_CHARS).collect();
     let paths: Vec<&String> = change.paths.iter().take(MAX_PATHS).collect();
     let classes: serde_json::Map<String, Value> = TASK_CLASSES
@@ -93,7 +95,7 @@ pub fn build_request(change: &Change<'_>) -> Value {
         .collect();
     json!({
         "model": MODEL,
-        "state": {"title": change.title, "description": description, "paths": paths},
+        "state": {"title": title, "description": description, "paths": paths},
         "questions": {
             "task_class": {
                 "type": "choice",
@@ -132,6 +134,15 @@ pub fn parse_response(body: &Value) -> anyhow::Result<Answer> {
             .filter(|n| n.is_finite())
             .ok_or_else(|| anyhow::anyhow!("jev_schema: {field} missing"))
     };
+    // A confidence or probability outside 0..=1 (a percent, say) is a schema
+    // violation, never clamped into an `allow`.
+    let probability = |value: &Value, field: &str| -> anyhow::Result<f64> {
+        let n = number(value, field)?;
+        if !(0.0..=1.0).contains(&n) {
+            anyhow::bail!("jev_schema: {field} {n} outside 0..=1");
+        }
+        Ok(n)
+    };
     let class = answer("task_class", "choice")?;
     let task_class = class
         .get("choice")
@@ -145,13 +156,16 @@ pub fn parse_response(body: &Value) -> anyhow::Result<Answer> {
     if !(0.0..=levels).contains(&score) {
         anyhow::bail!("jev_schema: risk score {score} outside 0..={levels}");
     }
-    let needs_human = answer("needs_human", "noul")?.get("noul").and_then(Value::as_f64);
+    let needs_human = match answer("needs_human", "noul")?.get("noul") {
+        Some(Value::Null) | None => None,
+        Some(_) => Some(probability(answer("needs_human", "noul")?, "noul")?),
+    };
     Ok(Answer {
         model: body.get("model").and_then(Value::as_str).map(str::to_string),
         task_class,
-        class_confidence: number(class, "confidence")?.clamp(0.0, 1.0),
+        class_confidence: probability(class, "confidence")?,
         risk: score / levels,
-        risk_confidence: number(risk, "confidence")?.clamp(0.0, 1.0),
+        risk_confidence: probability(risk, "confidence")?,
         needs_human,
         input_tokens: body.pointer("/usage/input_tokens").and_then(Value::as_u64),
     })
@@ -215,6 +229,11 @@ mod tests {
         let mut wrong_type = response("docs", 1.0, 0.0, 1.0);
         wrong_type["answers"]["risk"]["type"] = json!("choice");
         assert!(parse_response(&wrong_type).is_err());
+        // A percent-scale confidence must not become an `allow`.
+        assert!(parse_response(&response("docs", 1.0, 0.0, 95.0)).is_err());
+        let mut bad_noul = response("docs", 1.0, 0.0, 1.0);
+        bad_noul["answers"]["needs_human"]["noul"] = json!(3.0);
+        assert!(parse_response(&bad_noul).is_err());
         let mut missing_confidence = response("docs", 1.0, 0.0, 1.0);
         missing_confidence["answers"]["risk"].as_object_mut().unwrap().remove("confidence");
         assert!(parse_response(&missing_confidence).is_err());
@@ -234,7 +253,8 @@ mod tests {
     fn the_request_caps_what_leaves_the_machine() {
         let paths: Vec<String> = (0..500).map(|i| format!("src/f{i}.rs")).collect();
         let long = "x".repeat(10_000);
-        let request = build_request(&Change { title: "t", description: &long, paths: &paths });
+        let request = build_request(&Change { title: &long, description: &long, paths: &paths });
+        assert_eq!(request["state"]["title"].as_str().unwrap().len(), MAX_TITLE_CHARS);
         assert_eq!(request["state"]["description"].as_str().unwrap().len(), MAX_DESCRIPTION_CHARS);
         assert_eq!(request["state"]["paths"].as_array().unwrap().len(), MAX_PATHS);
         assert_eq!(request["questions"]["risk"]["criteria"].as_array().unwrap().len(), 4);

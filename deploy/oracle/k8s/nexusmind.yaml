@@ -153,6 +153,11 @@ spec:
             # FACTORY_ISOLATION_DEFAULT=sandbox is set (after the drill).
             - name: FACTORY_SANDBOX_IMAGE
               value: ghcr.io/smart-coder-labs/nexusmind-backend:main-arm64
+            # Orgs whose PR metadata may go to the decision model (Jev, TypeSafe)
+            # for F3 shadow decisions. SmartCoderLabs only, by owner decision
+            # (ADR 7d6f870f); every other tenant needs its own opt-in.
+            - name: FACTORY_JEV_SHADOW_ORGS
+              value: bdf4b2aa-3f52-422e-8bee-a1babbb7d337
           volumeMounts:
             - name: data
               mountPath: /data

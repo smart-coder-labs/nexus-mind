@@ -9,7 +9,12 @@ const OUTCOME_LABEL: Record<ShadowOutcome, string> = {
   clean: 'Clean',
   high_risk: 'High risk',
   not_merged: 'Not merged',
+  superseded: 'Another head was merged',
+  unresolvable: 'Could not be read',
 }
+
+/** Outcomes the report counts; only those are worth a person's label. */
+const COUNTED: ShadowOutcome[] = ['pending', 'clean', 'high_risk']
 
 /** `reverted_by:1a2b3c` → `reverted by 1a2b3c`. */
 function signalLabel(signal: string): string {
@@ -67,7 +72,7 @@ export function ShadowRouterPanel({ client, canWrite }: { client: NexusMindClien
         <p role="alert" className="text-xs text-text-primary">Could not load the shadow decisions.</p>
       )}
 
-      {report.isSuccess && classes.length === 0 && (
+      {report.isSuccess && decisions.isSuccess && classes.length === 0 && rows.length === 0 && (
         <p className="text-xs text-text-tertiary">
           No shadow decisions yet. They are recorded after each pull request review, or in bulk with{' '}
           <code>factory-shadow backfill</code>.
@@ -113,7 +118,8 @@ export function ShadowRouterPanel({ client, canWrite }: { client: NexusMindClien
               key={row.id}
               row={row}
               canWrite={canWrite}
-              busy={label.isPending && label.variables?.id === row.id}
+              // One label write at a time: concurrent clicks could land out of order.
+              busy={label.isPending}
               onLabel={value => label.mutate({ id: row.id, value })}
             />
           ))}
@@ -137,6 +143,7 @@ function DecisionRow({
   busy: boolean
   onLabel: (value: 'low' | 'high' | null) => void
 }) {
+  const name = `${row.repository}#${row.pull_number}`
   const url = `https://github.com/${row.repository}/pull/${row.pull_number}`
   return (
     <li className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -154,16 +161,16 @@ function DecisionRow({
         {row.human_label && (
           <span className="text-text-tertiary">Labelled {row.human_label === 'high' ? 'risky' : 'fine'}</span>
         )}
-        {canWrite && (
+        {canWrite && COUNTED.includes(row.outcome) && (
           <>
-            <Button size="sm" variant="secondary" disabled={busy || row.human_label === 'high'} onClick={() => onLabel('high')}>
+            <Button size="sm" variant="secondary" aria-label={`${name} was risky`} disabled={busy || row.human_label === 'high'} onClick={() => onLabel('high')}>
               Was risky
             </Button>
-            <Button size="sm" variant="secondary" disabled={busy || row.human_label === 'low'} onClick={() => onLabel('low')}>
+            <Button size="sm" variant="secondary" aria-label={`${name} was fine`} disabled={busy || row.human_label === 'low'} onClick={() => onLabel('low')}>
               Was fine
             </Button>
             {row.human_label && (
-              <Button size="sm" variant="ghost" disabled={busy} onClick={() => onLabel(null)}>
+              <Button size="sm" variant="ghost" aria-label={`Clear the label of ${name}`} disabled={busy} onClick={() => onLabel(null)}>
                 Clear
               </Button>
             )}

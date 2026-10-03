@@ -66,7 +66,7 @@ describe('ShadowRouterPanel', () => {
     expect(within(list).getByRole('link', { name: 'acme/app#42' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/42')
     expect(within(list).getByText(/reverted by 1a2b3c, CI failed on merge/)).toBeInTheDocument()
     expect(within(list).getByText('Would allow')).toBeInTheDocument()
-    await userEvent.click(within(list).getByRole('button', { name: /was fine/i }))
+    await userEvent.click(within(list).getByRole('button', { name: 'acme/app#42 was fine' }))
     await waitFor(() => expect(client.labelShadowDecision).toHaveBeenCalledWith('d1', 'low'))
   })
 
@@ -82,5 +82,12 @@ describe('ShadowRouterPanel', () => {
       listShadowDecisions: vi.fn().mockResolvedValue([]),
     } as Partial<NexusMindClient>)
     expect(await screen.findByText(/no shadow decisions yet/i)).toBeInTheDocument()
+  })
+
+  it('offers no label for decisions the report does not count', async () => {
+    setup({ listShadowDecisions: vi.fn().mockResolvedValue([{ ...decision, outcome: 'superseded', outcome_signals: [] }]) } as Partial<NexusMindClient>)
+    const list = await screen.findByRole('list', { name: /recent shadow decisions/i })
+    expect(within(list).getByText('Another head was merged')).toBeInTheDocument()
+    expect(within(list).queryByRole('button')).not.toBeInTheDocument()
   })
 })

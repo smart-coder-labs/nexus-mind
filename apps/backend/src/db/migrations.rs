@@ -135,7 +135,9 @@ pub fn run_v84(conn: &Connection) -> Result<()> {
              merged_at         TEXT,
              merge_sha         TEXT,
              outcome           TEXT NOT NULL DEFAULT 'pending'
-                               CHECK (outcome IN ('pending','clean','high_risk','not_merged')),
+                               CHECK (outcome IN ('pending','clean','high_risk','not_merged',
+                                                  'superseded','unresolvable')),
+             refresh_failures  INTEGER NOT NULL DEFAULT 0,
              outcome_signals   TEXT NOT NULL DEFAULT '[]',
              outcome_checked_at TEXT,
              human_label       TEXT CHECK (human_label IN ('low','high')),

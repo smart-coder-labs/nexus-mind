@@ -23,6 +23,17 @@ pub fn shadow_key() -> Option<String> {
         .filter(|key| !key.is_empty())
 }
 
+/// Organizations whose PR metadata may be sent to the decision model's provider
+/// (`FACTORY_JEV_SHADOW_ORGS`, comma-separated org ids). Empty means none: the
+/// key alone never opts a tenant in.
+pub fn shadow_enabled_for(org_id: &str) -> bool {
+    org_listed(&std::env::var("FACTORY_JEV_SHADOW_ORGS").unwrap_or_default(), org_id)
+}
+
+fn org_listed(list: &str, org_id: &str) -> bool {
+    !org_id.is_empty() && list.split(',').any(|allowed| allowed.trim() == org_id)
+}
+
 /// The PR's title, body and head commit, as the shadow decision needs them.
 pub fn pull_summary(pull: &serde_json::Value) -> Option<(String, String, String)> {
     let head = pull.pointer("/head/sha")?.as_str()?;
@@ -46,6 +57,9 @@ pub async fn record_merge_shadow(
     let Some(key) = shadow_key() else {
         return Ok(false);
     };
+    if !shadow_enabled_for(org_id) {
+        return Ok(false);
+    }
     let pull = super::connectors::get_github_pull(token, repository, number).await?;
     let Some((title, body, head_sha)) = pull_summary(&pull) else {
         anyhow::bail!("shadow_pull_unreadable");
@@ -95,9 +109,64 @@ pub struct RefreshSummary {
     pub failed: usize,
 }
 
-/// Settles an org's pending shadow decisions: merged PRs get their outcome
-/// (pending until the window passes without a signal), closed unmerged PRs are
-/// `not_merged`, open ones keep waiting.
+/// Pending decisions checked per org and pass.
+const REFRESH_BATCH: i64 = 50;
+/// A refresh pass never runs longer than this.
+const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// What settling one pending decision found.
+enum Settled {
+    /// Still open, or merged inside its outcome window.
+    Waiting,
+    Done,
+}
+
+async fn settle_one(
+    store: &SqliteStore,
+    org_id: &str,
+    token: &str,
+    row: &crate::db::factory_queries::PendingShadow,
+) -> anyhow::Result<Settled> {
+    use crate::db::factory_queries::set_shadow_outcome;
+    let pull = super::connectors::get_github_pull(token, &row.repository, row.pull_number).await?;
+    let merged_at = pull.get("merged_at").and_then(|v| v.as_str());
+    let merge_sha = pull.get("merge_commit_sha").and_then(|v| v.as_str());
+    let closed = pull.get("state").and_then(|v| v.as_str()) == Some("closed");
+    let save = |outcome: &str, signals: &[String]| -> anyhow::Result<()> {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        set_shadow_outcome(&conn, org_id, &row.id, merged_at, merge_sha, outcome, signals)
+    };
+    let Some(merged) = merged_at else {
+        if closed {
+            save("not_merged", &[])?;
+            return Ok(Settled::Done);
+        }
+        return Ok(Settled::Waiting);
+    };
+    // The decision was about this head. If another head was merged, the merged
+    // code is not what the model judged: its outcome says nothing about it.
+    if pull.pointer("/head/sha").and_then(|v| v.as_str()) != Some(row.head_sha.as_str()) {
+        save("superseded", &[])?;
+        return Ok(Settled::Done);
+    }
+    let window_end = chrono::DateTime::parse_from_rfc3339(merged)?.with_timezone(&chrono::Utc)
+        + chrono::Duration::days(OUTCOME_WINDOW_DAYS);
+    if chrono::Utc::now() < window_end {
+        // Record the merge; the outcome is read once, when the window ends.
+        save("pending", &[])?;
+        return Ok(Settled::Waiting);
+    }
+    let (outcome, signals) = collect_outcome(token, &row.repository, &pull).await?;
+    save(outcome, &signals)?;
+    Ok(Settled::Done)
+}
+
+/// Settles up to [`REFRESH_BATCH`] of an org's pending shadow decisions:
+/// merged heads get their outcome once their window has passed, a merge of a
+/// different head is `superseded`, closed unmerged PRs are `not_merged`, open
+/// ones keep waiting. A failure is counted; repeated failures end in
+/// `unresolvable`.
 pub async fn refresh_pending(
     store: &SqliteStore,
     org_id: &str,
@@ -106,46 +175,31 @@ pub async fn refresh_pending(
     let pending = {
         let db = store.conn();
         let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-        crate::db::factory_queries::list_pending_shadow_decisions(&conn, org_id)?
+        crate::db::factory_queries::list_pending_shadow_decisions(&conn, org_id, REFRESH_BATCH)?
     };
     let mut summary = RefreshSummary::default();
-    for (id, repository, number) in pending {
-        let result: anyhow::Result<bool> = async {
-            let pull = super::connectors::get_github_pull(token, &repository, number).await?;
-            let merged_at = pull.get("merged_at").and_then(|v| v.as_str());
-            let closed = pull.get("state").and_then(|v| v.as_str()) == Some("closed");
-            let (outcome, signals) = match merged_at {
-                Some(_) => collect_outcome(token, &repository, &pull).await?,
-                None if closed => ("not_merged", Vec::new()),
-                None => return Ok(false),
-            };
-            let db = store.conn();
-            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
-            crate::db::factory_queries::set_shadow_outcome(
-                &conn,
-                org_id,
-                &id,
-                merged_at,
-                pull.get("merge_commit_sha").and_then(|v| v.as_str()),
-                outcome,
-                &signals,
-            )?;
-            Ok(outcome != "pending")
-        }
-        .await;
-        match result {
-            Ok(true) => summary.settled += 1,
-            Ok(false) => summary.waiting += 1,
+    for row in pending {
+        match settle_one(store, org_id, token, &row).await {
+            Ok(Settled::Done) => summary.settled += 1,
+            Ok(Settled::Waiting) => summary.waiting += 1,
             Err(error) => {
                 summary.failed += 1;
-                tracing::warn!(repository, number, "shadow outcome not refreshed: {error:#}");
+                tracing::warn!(repository = row.repository, number = row.pull_number, "shadow outcome not refreshed: {error:#}");
+                let db = store.conn();
+                let recorded = match db.lock() {
+                    Ok(conn) => crate::db::factory_queries::record_shadow_refresh_failure(&conn, org_id, &row.id),
+                    Err(_) => Err(anyhow::anyhow!("database_lock")),
+                };
+                if let Err(error) = recorded {
+                    tracing::warn!("shadow refresh failure not recorded: {error:#}");
+                }
             }
         }
     }
     Ok(summary)
 }
 
-/// Worker tick: refresh every org that has pending shadow decisions.
+/// Refreshes every org with pending shadow decisions.
 pub async fn refresh_all(store: &SqliteStore) {
     let orgs: Vec<String> = {
         let db = store.conn();
@@ -177,6 +231,27 @@ pub async fn refresh_all(store: &SqliteStore) {
             Err(error) => tracing::warn!(org_id, "shadow refresh failed: {error:#}"),
         }
     }
+}
+
+static REFRESH_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Worker tick: starts a refresh pass beside the tick loop (which must keep
+/// claiming work), unless one is still running. A pass is bounded by
+/// [`REFRESH_TIMEOUT`].
+pub fn spawn_refresh(store: SqliteStore) {
+    use std::sync::atomic::Ordering;
+    if REFRESH_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        if tokio::time::timeout(REFRESH_TIMEOUT, refresh_all(&store)).await.is_err() {
+            tracing::warn!("shadow refresh pass timed out");
+        }
+        REFRESH_RUNNING.store(false, Ordering::Release);
+    });
 }
 
 // ---------------------------------------------------------------- outcomes
@@ -324,10 +399,12 @@ pub async fn collect_outcome(
         };
         later.push(LaterCommit { sha, message, files });
     }
+    // An unreadable CI is an error (the decision stays pending and is retried),
+    // never "CI did not fail".
     let ci_failed = super::connectors::list_commit_ci_runs(token, repository, merge_sha)
-        .await
-        .map(|runs| runs.iter().any(failed))
-        .unwrap_or(false);
+        .await?
+        .iter()
+        .any(failed);
     let summary = MergedPull {
         number,
         title: pull.get("title").and_then(|v| v.as_str()).unwrap_or_default(),
@@ -488,5 +565,72 @@ mod tests {
         assert_eq!((docs.decisions, docs.allowed, docs.settled_allowed, docs.false_low), (6, 5, 4, 2));
         assert_eq!(docs.false_low_rate, Some(0.5));
         assert!(!docs.meets_od5);
+    }
+
+    #[test]
+    fn only_listed_orgs_send_pull_requests_to_the_decision_model() {
+        let list = "aaa, bbb";
+        assert!(org_listed(list, "aaa"));
+        assert!(org_listed(list, "bbb"));
+        assert!(!org_listed(list, "ccc"));
+        assert!(!org_listed("", "aaa"));
+        assert!(!org_listed(",", ""));
+    }
+
+    #[test]
+    fn superseded_unresolvable_and_in_window_rows_stay_out_of_the_way() {
+        let conn = connect(":memory:").unwrap();
+        migrations::run_all(&conn).unwrap();
+        let (org, _, _) = queries::bootstrap(&conn, "Acme", "acme", "a@acme.com", "A").unwrap();
+        let answer = jev::Answer {
+            model: None,
+            task_class: "docs".into(),
+            class_confidence: 1.0,
+            risk: 0.0,
+            risk_confidence: 0.95,
+            needs_human: None,
+            input_tokens: None,
+        };
+        let mut ids = Vec::new();
+        for n in 1..=4 {
+            let head = format!("{n:040}");
+            factory_queries::record_shadow_decision(
+                &conn,
+                &org.id,
+                &factory_queries::ShadowDecision {
+                    provider: "jev",
+                    repository: "acme/app",
+                    pull_number: n,
+                    head_sha: &head,
+                    answer: &answer,
+                    verdict: jev::verdict(&answer),
+                    floor: None,
+                    latency_ms: 1,
+                },
+            )
+            .unwrap();
+            ids.push(factory_queries::shadow_decision_id(&conn, &org.id, "acme/app", n, &head).unwrap().unwrap());
+        }
+        // 1: a later head was merged. 2: merged an hour ago, inside its window.
+        // 3: fails every refresh. 4: open PR, still pending.
+        factory_queries::set_shadow_outcome(&conn, &org.id, &ids[0], Some("2026-01-01T00:00:00Z"), None, "superseded", &[]).unwrap();
+        let recent = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        factory_queries::set_shadow_outcome(&conn, &org.id, &ids[1], Some(&recent), None, "pending", &[]).unwrap();
+        for _ in 0..factory_queries::SHADOW_MAX_REFRESH_FAILURES {
+            factory_queries::record_shadow_refresh_failure(&conn, &org.id, &ids[2]).unwrap();
+        }
+        let pending: Vec<String> = factory_queries::list_pending_shadow_decisions(&conn, &org.id, 50)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(pending, [ids[3].clone()], "only the open PR is checked now");
+        let outcome: String = conn
+            .query_row("SELECT outcome FROM factory_shadow_decisions WHERE id = ?1", [&ids[2]], |r| r.get(0))
+            .unwrap();
+        assert_eq!(outcome, "unresolvable");
+        // Superseded and unresolvable rows leave the report; pending ones stay.
+        let report = factory_queries::shadow_report(&conn, &org.id).unwrap();
+        assert_eq!(report[0].decisions, 2);
     }
 }

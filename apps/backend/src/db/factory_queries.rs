@@ -348,17 +348,57 @@ pub fn record_shadow_decision(
     Ok(inserted == 1)
 }
 
-/// Shadow decisions whose outcome is not settled yet: (id, repository, pull).
+/// A pending shadow decision to settle.
+#[derive(Clone, Debug)]
+pub struct PendingShadow {
+    pub id: String,
+    pub repository: String,
+    pub pull_number: i64,
+    pub head_sha: String,
+}
+
+/// Pending shadow decisions worth checking now, oldest first, at most `limit`:
+/// unmerged ones (they may merge or close at any time) and merged ones whose
+/// 7-day outcome window has passed. A merged one inside its window is read once,
+/// when the window ends.
 pub fn list_pending_shadow_decisions(
     conn: &Connection,
     org_id: &str,
-) -> Result<Vec<(String, String, i64)>> {
+    limit: i64,
+) -> Result<Vec<PendingShadow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, repository, pull_number FROM factory_shadow_decisions
-         WHERE org_id = ?1 AND outcome = 'pending' ORDER BY created_at",
+        "SELECT id, repository, pull_number, head_sha FROM factory_shadow_decisions
+         WHERE org_id = ?1 AND outcome = 'pending'
+           AND (merged_at IS NULL OR datetime(merged_at, '+7 days') <= datetime('now'))
+         ORDER BY COALESCE(outcome_checked_at, created_at) LIMIT ?2",
     )?;
-    let rows = stmt.query_map([org_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let rows = stmt.query_map(params![org_id, limit], |r| {
+        Ok(PendingShadow {
+            id: r.get(0)?,
+            repository: r.get(1)?,
+            pull_number: r.get(2)?,
+            head_sha: r.get(3)?,
+        })
+    })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Failed refreshes after which a decision is given up as `unresolvable` (a
+/// deleted repository, a token without access, a PR too large to read).
+pub const SHADOW_MAX_REFRESH_FAILURES: i64 = 24;
+
+/// Counts a failed refresh; at [`SHADOW_MAX_REFRESH_FAILURES`] the decision
+/// becomes `unresolvable` and leaves the report.
+pub fn record_shadow_refresh_failure(conn: &Connection, org_id: &str, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE factory_shadow_decisions
+         SET refresh_failures = refresh_failures + 1,
+             outcome_checked_at = datetime('now'),
+             outcome = CASE WHEN refresh_failures + 1 >= ?3 THEN 'unresolvable' ELSE outcome END
+         WHERE org_id = ?1 AND id = ?2",
+        params![org_id, id, SHADOW_MAX_REFRESH_FAILURES],
+    )?;
+    Ok(())
 }
 
 /// Stores a shadow decision's outcome and the signals behind it.
@@ -510,7 +550,7 @@ pub fn shadow_report(conn: &Connection, org_id: &str) -> Result<Vec<ShadowClassR
                     CASE WHEN human_label IS NOT NULL THEN human_label = 'high'
                          ELSE outcome = 'high_risk' END)
          FROM factory_shadow_decisions
-         WHERE org_id = ?1 AND outcome != 'not_merged'
+         WHERE org_id = ?1 AND outcome NOT IN ('not_merged','superseded','unresolvable')
          GROUP BY task_class ORDER BY task_class",
     )?;
     let rows = stmt.query_map([org_id], |r| {

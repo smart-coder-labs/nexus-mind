@@ -1501,7 +1501,6 @@ export interface FactoryPolicy extends FactoryActionPolicy {
   updated_at: string
 }
 
-/** The per-organization identity sandboxed agents use to call NexusMind. */
 /** One task class in the decision-model shadow report (factory F3, OD-5). */
 export interface ShadowClassReport {
   task_class: string
@@ -1519,7 +1518,7 @@ export interface ShadowReport {
   max_false_low_rate: number
 }
 
-export type ShadowOutcome = 'pending' | 'clean' | 'high_risk' | 'not_merged'
+export type ShadowOutcome = 'pending' | 'clean' | 'high_risk' | 'not_merged' | 'superseded' | 'unresolvable'
 
 export interface ShadowDecision {
   id: string
@@ -1538,6 +1537,7 @@ export interface ShadowDecision {
   created_at: string
 }
 
+/** The per-organization identity sandboxed agents use to call NexusMind. */
 export interface FactoryBot {
   user_id: string
   role: string

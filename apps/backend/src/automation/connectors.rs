@@ -122,9 +122,13 @@ async fn github_patch(token: &str, path: &str, body: Value) -> Result<Value> {
         .await?)
 }
 
+/// No GitHub read may hang the worker: callers run on the tick loop.
+const GITHUB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn github_get(token: &str, path: &str) -> Result<Value> {
     Ok(reqwest::Client::new()
         .get(format!("https://api.github.com{path}"))
+        .timeout(GITHUB_TIMEOUT)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -474,7 +478,9 @@ pub async fn list_merged_pulls(
     Ok(merged)
 }
 
-/// Commits on `branch` between `since` and `until` (RFC 3339), up to 500.
+/// Commits on `branch` between `since` and `until` (RFC 3339). More than 500 is
+/// an error, not a partial list: GitHub returns newest first, so a cut would
+/// drop exactly the commits right after a merge.
 pub async fn list_branch_commits(
     token: &str,
     repository: &str,
@@ -496,10 +502,10 @@ pub async fn list_branch_commits(
         let full = items.len() == 100;
         commits.extend(items);
         if !full {
-            break;
+            return Ok(commits);
         }
     }
-    Ok(commits)
+    anyhow::bail!("too_many_commits")
 }
 
 /// One commit with the files it changed.
