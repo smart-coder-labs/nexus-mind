@@ -400,6 +400,82 @@ pub fn shadow_decision_id(
     })
 }
 
+/// A shadow decision as the admin lists it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ShadowDecisionRow {
+    pub id: String,
+    pub repository: String,
+    pub pull_number: i64,
+    pub head_sha: String,
+    pub task_class: String,
+    pub risk: f64,
+    pub risk_confidence: f64,
+    pub verdict: String,
+    pub floor: Option<String>,
+    pub outcome: String,
+    pub outcome_signals: Vec<String>,
+    pub merged_at: Option<String>,
+    pub human_label: Option<String>,
+    pub created_at: String,
+}
+
+/// The org's shadow decisions, newest first.
+pub fn list_shadow_decisions(
+    conn: &Connection,
+    org_id: &str,
+    limit: i64,
+) -> Result<Vec<ShadowDecisionRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, repository, pull_number, head_sha, task_class, risk, risk_confidence,
+                verdict, floor, outcome, outcome_signals, merged_at, human_label, created_at
+         FROM factory_shadow_decisions WHERE org_id = ?1
+         ORDER BY COALESCE(merged_at, created_at) DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![org_id, limit], |r| {
+        let signals: String = r.get(10)?;
+        Ok(ShadowDecisionRow {
+            id: r.get(0)?,
+            repository: r.get(1)?,
+            pull_number: r.get(2)?,
+            head_sha: r.get(3)?,
+            task_class: r.get(4)?,
+            risk: r.get(5)?,
+            risk_confidence: r.get(6)?,
+            verdict: r.get(7)?,
+            floor: r.get(8)?,
+            outcome: r.get(9)?,
+            outcome_signals: serde_json::from_str(&signals).unwrap_or_default(),
+            merged_at: r.get(11)?,
+            human_label: r.get(12)?,
+            created_at: r.get(13)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Sets or clears a person's verdict on whether a change was actually high
+/// risk. Returns false when the decision is not this org's.
+pub fn label_shadow_decision(
+    conn: &Connection,
+    org_id: &str,
+    id: &str,
+    label: Option<&str>,
+    user_id: &str,
+) -> Result<bool> {
+    if label.is_some_and(|l| l != "low" && l != "high") {
+        anyhow::bail!("invalid_label");
+    }
+    let changed = conn.execute(
+        "UPDATE factory_shadow_decisions
+         SET human_label = ?3,
+             labeled_by = CASE WHEN ?3 IS NULL THEN NULL ELSE ?4 END,
+             labeled_at = CASE WHEN ?3 IS NULL THEN NULL ELSE datetime('now') END
+         WHERE org_id = ?1 AND id = ?2",
+        params![org_id, id, label, user_id],
+    )?;
+    Ok(changed == 1)
+}
+
 /// The OD-5 bar (ADR 7d6f870f): automatic routing for a class needs at least
 /// this many settled `allow` decisions with a false-low-risk rate at most
 /// [`OD5_MAX_FALSE_LOW_RATE`].
