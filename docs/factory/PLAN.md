@@ -149,7 +149,7 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
 
     | Repository | Hit@5 | Hit@10 | Hit@20 | MRR | Recall@10 | Recall@20 |
     |---|---|---|---|---|---|---|
-    | nexus-mind | 0.88 | 0.92 | 0.96 | 0.63 | 0.44 | 0.58 |
+    | nexus-mind | 0.88 | 0.96 | 0.96 | 0.63 | 0.48 | 0.58 |
     | kasymir-app-ui | 0.65 | 0.80 | 0.85 | 0.51 | 0.22 | 0.30 |
 
   - **What was tried and lost.** None of the alternatives beat BM25 alone, so none ships.
@@ -165,6 +165,12 @@ Each phase is one SDD change. The exit criterion is measured, not asserted.
     - `POST /v1/code/context-pack`, and `/v1/code/locate` switched to BM25 with embeddings as the fallback.
     - The MCP tool `get_context_pack` in `legacy`, the curated registry and `only_context` (nexusmind-mcp 0.19.0).
   - **Import expansion.** Appending neighbours raised Recall@8 from 0.428 to 0.433 on nexus-mind and from 0.19 to 0.21 on kasymir, where components import their hooks and interfaces relatively. Letting neighbours displace ranked files lost recall on nexus-mind.
+  - **Hardening from the adversarial review.**
+    - Config files under secret/credential-named paths are excluded, and so is any config whose content looks like a secret: a k8s `Secret`, private keys, cloud or registry credentials, or literal password/token values.
+    - Queries are capped at 4096 bytes and 64 terms.
+    - BM25 scores are returned relative to the best hit, because raw scores carry statistics from other tenants.
+    - The budget limits evidence, never artifacts.
+    - The lexical index rebuilds itself when it is out of step with `code_chunks`, both at startup and after a backup restore.
   - **SCIP is deferred** (ADR d005bdda). Only relative imports resolve to files today; aliased imports end at external nodes.
   - **Open:**
     - CodeRankEmbed. The weak leg is the embedding model, so it is the next candidate. It has no official ONNX export, so it needs a self-export (torch) and a full re-embed.
