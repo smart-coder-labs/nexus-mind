@@ -7031,6 +7031,8 @@ pub fn spawn_local_worker(store: SqliteStore, config: Arc<Config>) -> tokio::tas
             }
             if ticks == 1 || ticks.is_multiple_of(240) {
                 reconcile_github_triggers(&store).await;
+                // F3 shadow: settle Jev decisions whose PRs merged or closed.
+                super::shadow::refresh_all(&store).await;
             }
             retry_one_delivery(&store, &config).await;
             process_due_soaks(&store).await;

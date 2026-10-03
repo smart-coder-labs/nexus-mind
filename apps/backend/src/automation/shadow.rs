@@ -85,6 +85,100 @@ pub async fn record_merge_shadow(
     )
 }
 
+// ---------------------------------------------------------------- refresh
+
+/// How a refresh pass went.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct RefreshSummary {
+    pub settled: usize,
+    pub waiting: usize,
+    pub failed: usize,
+}
+
+/// Settles an org's pending shadow decisions: merged PRs get their outcome
+/// (pending until the window passes without a signal), closed unmerged PRs are
+/// `not_merged`, open ones keep waiting.
+pub async fn refresh_pending(
+    store: &SqliteStore,
+    org_id: &str,
+    token: &str,
+) -> anyhow::Result<RefreshSummary> {
+    let pending = {
+        let db = store.conn();
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+        crate::db::factory_queries::list_pending_shadow_decisions(&conn, org_id)?
+    };
+    let mut summary = RefreshSummary::default();
+    for (id, repository, number) in pending {
+        let result: anyhow::Result<bool> = async {
+            let pull = super::connectors::get_github_pull(token, &repository, number).await?;
+            let merged_at = pull.get("merged_at").and_then(|v| v.as_str());
+            let closed = pull.get("state").and_then(|v| v.as_str()) == Some("closed");
+            let (outcome, signals) = match merged_at {
+                Some(_) => collect_outcome(token, &repository, &pull).await?,
+                None if closed => ("not_merged", Vec::new()),
+                None => return Ok(false),
+            };
+            let db = store.conn();
+            let conn = db.lock().map_err(|_| anyhow::anyhow!("database_lock"))?;
+            crate::db::factory_queries::set_shadow_outcome(
+                &conn,
+                org_id,
+                &id,
+                merged_at,
+                pull.get("merge_commit_sha").and_then(|v| v.as_str()),
+                outcome,
+                &signals,
+            )?;
+            Ok(outcome != "pending")
+        }
+        .await;
+        match result {
+            Ok(true) => summary.settled += 1,
+            Ok(false) => summary.waiting += 1,
+            Err(error) => {
+                summary.failed += 1;
+                tracing::warn!(repository, number, "shadow outcome not refreshed: {error:#}");
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Worker tick: refresh every org that has pending shadow decisions.
+pub async fn refresh_all(store: &SqliteStore) {
+    let orgs: Vec<String> = {
+        let db = store.conn();
+        let Ok(conn) = db.lock() else { return };
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT DISTINCT org_id FROM factory_shadow_decisions WHERE outcome = 'pending'",
+        ) else {
+            return;
+        };
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0));
+        match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => return,
+        }
+    };
+    if orgs.is_empty() {
+        return;
+    }
+    let token = match super::worker::server_github_token().await {
+        Ok(token) => token,
+        Err(error) => {
+            tracing::warn!("shadow refresh skipped, no GitHub token: {error:#}");
+            return;
+        }
+    };
+    for org_id in orgs {
+        match refresh_pending(store, &org_id, &token).await {
+            Ok(summary) => tracing::info!(org_id, ?summary, "shadow outcomes refreshed"),
+            Err(error) => tracing::warn!(org_id, "shadow refresh failed: {error:#}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- outcomes
 
 /// Days after a merge during which a revert, a follow-up fix or a red CI run
