@@ -126,6 +126,8 @@ import type {
   AutonomousAgentMetrics,
   FactoryActionPolicy,
   FactoryBot,
+  ShadowDecision,
+  ShadowReport,
   FactoryPolicy,
 } from '../types'
 import { isPublicRoute } from '../auth/public-routes'
@@ -1420,6 +1422,21 @@ export class NexusMindClient {
 
   deleteFactoryPolicy(id: string): Promise<void> {
     return this.request(`/v1/factory/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  getShadowReport(): Promise<ShadowReport> {
+    return this.request('/v1/factory/shadow/report')
+  }
+
+  listShadowDecisions(limit = 50): Promise<ShadowDecision[]> {
+    return this.request(`/v1/factory/shadow/decisions?limit=${limit}`)
+  }
+
+  labelShadowDecision(id: string, label: 'low' | 'high' | null): Promise<void> {
+    return this.request(`/v1/factory/shadow/decisions/${encodeURIComponent(id)}/label`, {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    })
   }
 
   getFactoryBot(): Promise<{ bot: FactoryBot | null }> {

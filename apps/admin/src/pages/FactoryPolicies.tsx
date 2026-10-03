@@ -8,6 +8,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Input, Textarea } from '../components/ui/Input'
 import { Modal, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '../components/ui/Modal'
 import { SandboxBotPanel } from './factory/SandboxBotPanel'
+import { ShadowRouterPanel } from './factory/ShadowRouterPanel'
 import type {
   FactoryAction,
   FactoryActionPolicy,
@@ -163,6 +164,7 @@ export default function FactoryPolicies() {
       {policies.isError && <p role="alert" className="text-sm text-text-secondary">Policies could not be loaded. Try again in a moment.</p>}
 
       <SandboxBotPanel client={client} canWrite={canWrite} />
+      <ShadowRouterPanel client={client} canWrite={canWrite} />
 
       {deleteError && <p role="alert" className="text-sm text-text-primary">{deleteError}</p>}
 
