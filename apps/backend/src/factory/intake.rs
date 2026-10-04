@@ -321,6 +321,285 @@ impl IntakeSource for NexusmindTaskIntake {
     }
 }
 
+// ---------------------------------------------------------------- Slack (F3)
+
+/// The reaction that hands a Slack message to the factory, when an allowed
+/// person adds it.
+pub const SLACK_INTAKE_REACTION: &str = "factory";
+
+/// Slack escapes `&`, `<` and `>` in message text.
+fn slack_unescape(text: &str) -> String {
+    text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+/// A top-level, human Slack message that an allowed person flagged with the
+/// `factory` reaction. Anyone in a channel can write a message, so the content
+/// is untrusted (plan D13) and never picks its own task class: it stays
+/// `Unknown`, which no auto-merge allowlist includes. An empty `allowed_reactors`
+/// flags nothing. `Ok(None)`: not for the factory. `Err`: malformed.
+pub fn slack_message_to_task_spec(
+    message: &Value,
+    channel_id: &str,
+    allowed_reactors: &[String],
+    target: &IntakeTarget,
+    now: DateTime<Utc>,
+) -> Result<Option<TaskSpec>, String> {
+    let ts = message.get("ts").and_then(|v| v.as_str()).ok_or("slack_ts_missing")?;
+    // A plain message or one with files; every other subtype is a bot or the system.
+    let human = message.get("bot_id").is_none()
+        && matches!(
+            message.get("subtype").and_then(|v| v.as_str()),
+            None | Some("file_share")
+        );
+    let is_reply = message
+        .get("thread_ts")
+        .and_then(|v| v.as_str())
+        .is_some_and(|thread| thread != ts);
+    let flagged = message
+        .get("reactions")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|r| r.get("name").and_then(|n| n.as_str()) == Some(SLACK_INTAKE_REACTION))
+        .flat_map(|r| r.get("users").and_then(|u| u.as_array()).into_iter().flatten())
+        .filter_map(|user| user.as_str())
+        .any(|user| allowed_reactors.iter().any(|allowed| allowed == user));
+    if !human || is_reply || !flagged {
+        return Ok(None);
+    }
+    let text = slack_unescape(
+        message.get("text").and_then(|v| v.as_str()).unwrap_or_default().trim(),
+    );
+    let title: String = text.lines().next().unwrap_or_default().chars().take(200).collect();
+    if title.trim().is_empty() {
+        return Err("slack_text_empty".into());
+    }
+    let reference = format!("{channel_id}:{ts}");
+    let source = TaskSource { kind: SourceKind::Slack, reference: reference.clone(), url: None };
+    build_spec(
+        source,
+        &format!("slack:{reference}->{}", target.repository),
+        OriginTrust::Untrusted,
+        target,
+        &title,
+        &text,
+        &[],
+        now,
+    )
+    .map(Some)
+}
+
+/// Slack messages of one channel flagged `:factory:` by an allowed person.
+/// Reads the most recent page of history (up to 200 messages).
+pub struct SlackIntake {
+    pub token: String,
+    pub channel_id: String,
+    /// Slack user ids whose `:factory:` reaction counts.
+    pub allowed_reactors: Vec<String>,
+    pub target: IntakeTarget,
+}
+
+/// Slack channel ids are uppercase alphanumerics (`C0123ABC`).
+pub fn valid_slack_channel(channel_id: &str) -> bool {
+    (8..=20).contains(&channel_id.len())
+        && channel_id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+#[async_trait]
+impl IntakeSource for SlackIntake {
+    fn kind(&self) -> SourceKind {
+        SourceKind::Slack
+    }
+
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>> {
+        if !valid_slack_channel(&self.channel_id) {
+            anyhow::bail!("invalid_slack_channel");
+        }
+        let body: Value = reqwest::Client::new()
+            .get("https://slack.com/api/conversations.history")
+            .bearer_auth(&self.token)
+            .query(&[("channel", self.channel_id.as_str()), ("limit", "200")])
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            anyhow::bail!("slack_error:{error}");
+        }
+        let messages = body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("slack_messages_unreadable"))?;
+        let now = Utc::now();
+        let mut specs = Vec::new();
+        for message in messages {
+            match slack_message_to_task_spec(
+                message,
+                &self.channel_id,
+                &self.allowed_reactors,
+                &self.target,
+                now,
+            ) {
+                Ok(Some(spec)) => specs.push(spec),
+                Ok(None) => {}
+                Err(reason) => tracing::warn!(channel = %self.channel_id, "Skipping Slack message in intake: {reason}"),
+            }
+        }
+        Ok(specs)
+    }
+}
+
+// ---------------------------------------------------------------- Sentry (F3)
+
+/// A Sentry field that is a string or a number, as text.
+fn sentry_number(issue: &Value, name: &str) -> String {
+    match issue.get(name) {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => "?".into(),
+    }
+}
+
+/// An unresolved Sentry issue at error or fatal level becomes a bugfix task.
+/// Its text comes from runtime errors (possibly user input), so it is always
+/// untrusted. `instance` names the Sentry host and org (`sentry.io/acme`):
+/// issue ids are only unique within one. `Ok(None)`: not for the factory.
+/// `Err`: malformed.
+pub fn sentry_issue_to_task_spec(
+    issue: &Value,
+    instance: &str,
+    target: &IntakeTarget,
+    now: DateTime<Utc>,
+) -> Result<Option<TaskSpec>, String> {
+    let id = issue.get("id").and_then(|v| v.as_str()).ok_or("sentry_id_missing")?;
+    let unresolved = issue.get("status").and_then(|v| v.as_str()) == Some("unresolved");
+    let severe = matches!(issue.get("level").and_then(|v| v.as_str()), Some("error" | "fatal"));
+    if !unresolved || !severe {
+        return Ok(None);
+    }
+    let field = |name: &str| issue.get(name).and_then(|v| v.as_str()).unwrap_or_default();
+    let title: String = field("title").chars().take(200).collect();
+    let description = format!(
+        "Sentry issue {}\n\nCulprit: {}\nEvents: {} · users affected: {}\nFirst seen: {} · last seen: {}\n{}",
+        field("shortId"),
+        field("culprit"),
+        sentry_number(issue, "count"),
+        sentry_number(issue, "userCount"),
+        field("firstSeen"),
+        field("lastSeen"),
+        field("permalink"),
+    );
+    let reference = format!("{instance}:{id}");
+    let source = TaskSource {
+        kind: SourceKind::Sentry,
+        reference: reference.clone(),
+        url: Some(field("permalink").to_string()).filter(|u| u.starts_with("https://")),
+    };
+    build_spec(
+        source,
+        &format!("sentry:{reference}->{}", target.repository),
+        OriginTrust::Untrusted,
+        target,
+        &title,
+        &description,
+        &["bug".to_string()],
+        now,
+    )
+    .map(Some)
+}
+
+/// Sentry org and project slugs: lowercase alphanumerics, `-` and `_`.
+pub fn valid_sentry_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.len() <= 100
+        && slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// The host of a Sentry base URL the token may be sent to: https, a DNS name
+/// (no IP literal, no localhost), no credentials, path, query or fragment.
+pub fn sentry_base_host(base_url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(base_url).ok()?;
+    // `host_str` of an IP literal parses back as an IP; a domain does not.
+    let host = url.host_str()?.to_ascii_lowercase();
+    if host.starts_with('[') || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let clean = url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(url.path(), "" | "/")
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.port().is_none()
+        && host != "localhost"
+        && !host.ends_with(".localhost")
+        && host.contains('.');
+    clean.then_some(host)
+}
+
+/// Issues of one Sentry project matching an explicit query. There is no default
+/// query: the query is the opt-in (e.g. `is:unresolved level:[error,fatal]
+/// tag:factory:yes`), so a noisy project does not flood the factory. Reads the
+/// first page of results.
+pub struct SentryIntake {
+    pub token: String,
+    /// `https://sentry.io` or a self-hosted base URL.
+    pub base_url: String,
+    pub org_slug: String,
+    pub project_slug: String,
+    pub query: String,
+    pub target: IntakeTarget,
+}
+
+#[async_trait]
+impl IntakeSource for SentryIntake {
+    fn kind(&self) -> SourceKind {
+        SourceKind::Sentry
+    }
+
+    async fn fetch(&self) -> anyhow::Result<Vec<TaskSpec>> {
+        if !valid_sentry_slug(&self.org_slug) || !valid_sentry_slug(&self.project_slug) {
+            anyhow::bail!("invalid_sentry_slug");
+        }
+        let host = sentry_base_host(&self.base_url)
+            .ok_or_else(|| anyhow::anyhow!("invalid_sentry_base_url"))?;
+        if self.query.trim().is_empty() {
+            anyhow::bail!("sentry_query_required");
+        }
+        let url = format!(
+            "https://{host}/api/0/projects/{}/{}/issues/",
+            self.org_slug, self.project_slug
+        );
+        let body: Value = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(&self.token)
+            .query(&[("query", self.query.as_str())])
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let issues = body
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("sentry_issues_unreadable"))?;
+        let instance = format!("{host}/{}", self.org_slug);
+        let now = Utc::now();
+        let mut specs = Vec::new();
+        for issue in issues {
+            match sentry_issue_to_task_spec(issue, &instance, &self.target, now) {
+                Ok(Some(spec)) => specs.push(spec),
+                Ok(None) => {}
+                Err(reason) => tracing::warn!(project = %self.project_slug, "Skipping Sentry issue in intake: {reason}"),
+            }
+        }
+        Ok(specs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +813,151 @@ mod tests {
         assert_eq!(spec.source.reference, "t-1");
         assert_eq!(spec.task_class, TaskClass::Tests);
         assert_eq!(spec.acceptance_criteria, vec!["covers empty state"]);
+    }
+
+    fn slack_message(reactors: &[&str]) -> Value {
+        json!({
+            "ts": "1730000000.000100",
+            "user": "U123",
+            "text": "Refund button missing &amp; broken #docs\nSteps: open a sale…",
+            "reactions": [{"name": "eyes", "users": ["U9"]}, {"name": "factory", "users": reactors}]
+        })
+    }
+
+    fn reactors() -> Vec<String> {
+        vec!["ULEAD".to_string()]
+    }
+
+    #[test]
+    fn a_slack_message_flagged_by_an_allowed_person_is_an_untrusted_task() {
+        let message = slack_message(&["U123", "ULEAD"]);
+        let spec = slack_message_to_task_spec(&message, "C0123ABCD", &reactors(), &target(), now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.title, "Refund button missing & broken #docs");
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        // The author's `#docs` does not pick the class.
+        assert_eq!(spec.task_class, TaskClass::Unknown);
+        assert_eq!(spec.source.reference, "C0123ABCD:1730000000.000100");
+        let again = slack_message_to_task_spec(&message, "C0123ABCD", &reactors(), &target(), now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.task_id, again.task_id);
+        let mut other = target();
+        other.repository = "acme/api".into();
+        let elsewhere = slack_message_to_task_spec(&message, "C0123ABCD", &reactors(), &other, now())
+            .unwrap()
+            .unwrap();
+        assert_ne!(spec.task_id, elsewhere.task_id);
+        // A thread parent counts; a file share is a human message.
+        let mut parent = message.clone();
+        parent["thread_ts"] = json!("1730000000.000100");
+        parent["subtype"] = json!("file_share");
+        assert!(slack_message_to_task_spec(&parent, "C0123ABCD", &reactors(), &target(), now())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn only_allowed_reactors_and_human_top_level_messages_count() {
+        let flagged = |message: &Value| {
+            slack_message_to_task_spec(message, "C0123ABCD", &reactors(), &target(), now()).unwrap()
+        };
+        // The author or anyone else adding `:factory:` is not enough.
+        assert_eq!(flagged(&slack_message(&["U123", "UGUEST"])), None);
+        assert_eq!(
+            slack_message_to_task_spec(&slack_message(&["ULEAD"]), "C0123ABCD", &[], &target(), now())
+                .unwrap(),
+            None
+        );
+        let mut bot = slack_message(&["ULEAD"]);
+        bot["bot_id"] = json!("B1");
+        let mut joined = slack_message(&["ULEAD"]);
+        joined["subtype"] = json!("channel_join");
+        let mut reply = slack_message(&["ULEAD"]);
+        reply["thread_ts"] = json!("1729999999.000001");
+        for message in [bot, joined, reply] {
+            assert_eq!(flagged(&message), None);
+        }
+        let mut empty = slack_message(&["ULEAD"]);
+        empty["text"] = json!("   ");
+        assert!(slack_message_to_task_spec(&empty, "C0123ABCD", &reactors(), &target(), now()).is_err());
+        let mut no_ts = slack_message(&["ULEAD"]);
+        no_ts.as_object_mut().unwrap().remove("ts");
+        assert!(slack_message_to_task_spec(&no_ts, "C0123ABCD", &reactors(), &target(), now()).is_err());
+        assert!(valid_slack_channel("C0123ABCD"));
+        assert!(!valid_slack_channel("c0123abcd"));
+        assert!(!valid_slack_channel("C01&x=1"));
+    }
+
+    fn sentry_issue() -> Value {
+        json!({
+            "id": "4501", "shortId": "APP-12", "title": "TypeError: refund is undefined",
+            "culprit": "SaleDetail in render", "status": "unresolved", "level": "error",
+            "count": "37", "userCount": 9, "permalink": "https://acme.sentry.io/issues/4501/",
+            "firstSeen": "2026-10-01T00:00:00Z", "lastSeen": "2026-10-03T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn an_unresolved_sentry_error_or_fatal_is_an_untrusted_bugfix() {
+        let spec = sentry_issue_to_task_spec(&sentry_issue(), "sentry.io/acme", &target(), now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.task_class, TaskClass::Bugfix);
+        assert_eq!(spec.origin_trust, OriginTrust::Untrusted);
+        assert_eq!(spec.source.reference, "sentry.io/acme:4501");
+        assert_eq!(spec.source.url.as_deref(), Some("https://acme.sentry.io/issues/4501/"));
+        assert!(spec.description.contains("Events: 37 · users affected: 9"), "{}", spec.description);
+        // Issue ids are per instance.
+        let other = sentry_issue_to_task_spec(&sentry_issue(), "sentry.acme.dev/acme", &target(), now())
+            .unwrap()
+            .unwrap();
+        assert_ne!(spec.task_id, other.task_id);
+
+        let mut fatal = sentry_issue();
+        fatal["level"] = json!("fatal");
+        fatal["title"] = json!("x".repeat(2000));
+        fatal["permalink"] = json!("http://insecure/1");
+        fatal["userCount"] = json!(null);
+        let fatal = sentry_issue_to_task_spec(&fatal, "sentry.io/acme", &target(), now()).unwrap().unwrap();
+        assert_eq!(fatal.title.chars().count(), 200);
+        assert_eq!(fatal.source.url, None);
+        assert!(fatal.description.contains("users affected: ?"));
+
+        let mut resolved = sentry_issue();
+        resolved["status"] = json!("resolved");
+        let mut warning = sentry_issue();
+        warning["level"] = json!("warning");
+        for skipped in [resolved, warning] {
+            assert_eq!(sentry_issue_to_task_spec(&skipped, "sentry.io/acme", &target(), now()).unwrap(), None);
+        }
+        let mut numeric_id = sentry_issue();
+        numeric_id["id"] = json!(4501);
+        assert!(sentry_issue_to_task_spec(&numeric_id, "sentry.io/acme", &target(), now()).is_err());
+    }
+
+    #[test]
+    fn the_sentry_token_only_goes_to_a_clean_https_host() {
+        assert_eq!(sentry_base_host("https://sentry.io").as_deref(), Some("sentry.io"));
+        assert_eq!(sentry_base_host("https://Sentry.Acme.dev/").as_deref(), Some("sentry.acme.dev"));
+        for bad in [
+            "http://sentry.io",
+            "https://sentry.io@evil.com",
+            "https://user:pw@sentry.io",
+            "https://10.0.0.5",
+            "https://[::1]",
+            "https://localhost",
+            "https://sentry.io/x?a=",
+            "https://sentry.io/#f",
+            "https://sentry.io:8443",
+            "https://intranet",
+            "not a url",
+        ] {
+            assert_eq!(sentry_base_host(bad), None, "{bad}");
+        }
+        assert!(valid_sentry_slug("acme-prod"));
+        assert!(!valid_sentry_slug(""));
+        assert!(!valid_sentry_slug("Acme/../x"));
     }
 }
