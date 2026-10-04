@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn factory_tasks_in_the_digest_are_unstarted_labelled_tasks() {
         let (conn, org, user) = setup();
-        let mut make = |title: &str, status: &str, label: Option<&str>| {
+        let make = |title: &str, status: &str, label: Option<&str>| {
             let task = queries::create_task(
                 &conn,
                 &org,
